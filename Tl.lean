@@ -6,5 +6,6 @@
 
 -- Verified core (proved, no I/O)
 import Tl.Crdt.Order
+import Tl.Crdt.Map
 
 -- Tested I/O shell

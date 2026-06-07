@@ -57,6 +57,9 @@ theorem le_of_lt [TotalOrd α] {a b : α} (h : lt a b) : le a b := h.1
 
 theorem lt_irrefl [TotalOrd α] (a : α) : ¬ lt a a := fun h => h.2 (le_refl a)
 
+theorem ne_of_lt [TotalOrd α] {a b : α} (h : lt a b) : a ≠ b := by
+  intro he; subst he; exact h.2 (le_refl _)
+
 theorem lt_trans [TotalOrd α] {a b c : α} (h1 : lt a b) (h2 : lt b c) : lt a c :=
   ⟨le_trans h1.1 h2.1, fun hca => h1.2 (le_trans h2.1 hca)⟩
 
