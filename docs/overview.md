@@ -52,6 +52,11 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
 - **Thm 8 — CvRDT inflation + idempotent re-delivery.** `le_apply`,
   `fold_le_of_subset`, and `apply_idem`.
 - **Thm 9 — `ready` time-monotonicity.** `ready_time_mono` (via `deferOk_mono`).
+- **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
+  congruences over `(issues, edges, status/priority/defer registers)`, and a
+  `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
+  side-channel writes change neither (`effectiveStatus_*`, `ready_*`). The
+  `related`-edge and `actor` cases remain (actor is not even a kernel `Op` field).
 
 **Tracked residuals** — defined and total in the kernel, soundness/completeness
 proof still outstanding (decomposed below; *not* downgraded to tests, per
@@ -76,10 +81,12 @@ Definition-of-Done #5):
 - **Thm 10 — `why` / `unblocks` correctness.** Both are defined and total
   (`Ready.lean`); the residual is soundness/completeness, sharing the
   `reachClosure`-saturation lemma with thm 6.
-- **Frame lemma.** The side-channel ops' deltas (`metaSet`/`labelAdd`/
-  `labelRemove`/`relate`) leave the issue/edge OR-Sets and the status/defer
-  registers untouched (mergewith-`none`/`empty` identities); the residual is the
-  `effectiveStatus`/`ready` congruence over that preserved projection.
+- **Frame lemma (`relate`/`unrelate` case).** The data side-channels are proved
+  (above); the residual is the `related`-edge case — a `related` `edgeAdd`/
+  `edgeRemove` changes the edge OR-Set, but `blockersOf`/`childrenOf` filter to
+  `Blocks`/`Parent`, so the filtered views (and hence `ready`/`effectiveStatus`)
+  are unchanged — which needs a lemma that an OR-Set add/remove of a `related`
+  element leaves the `Blocks`/`Parent`-filtered present-edge list fixed.
 
 Reserved (proved when its feature is built). *Compaction preserves the
 fold* — `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-closed
