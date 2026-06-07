@@ -38,6 +38,16 @@ variable {α : Type u} [TotalOrd α]
 /-- The empty OR-Set. -/
 def empty : OrSet α := ⟨AMap.empty, FinSet.empty⟩
 
+/-- The one-element delta `{e}` tagged `st` — an `add`'s contribution as a
+    standalone OR-Set, joined into a state by `merge` (ADR-0001: apply = join with
+    delta). -/
+def singletonAdd (e : α) (st : Stamp) : OrSet α :=
+  ⟨AMap.singleton e (FinSet.singleton st), FinSet.empty⟩
+
+/-- A pure-tombstone delta — a `remove`'s contribution: tombstone the observed
+    add-tags `obs`, joined into a state by `merge`. -/
+def tombstones (obs : FinSet Stamp) : OrSet α := ⟨AMap.empty, obs⟩
+
 /-- The add-tags observed for `e` (the empty set if `e` was never added). -/
 def tagsOf (s : OrSet α) (e : α) : FinSet Stamp := (s.adds.find e).getD FinSet.empty
 

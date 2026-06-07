@@ -54,9 +54,11 @@ theorem merge_idem (a : Reg V) : merge a a = a :=
 end Reg
 
 /-- The per-key-LWW metadata map (ADR-0002): a map of registers, its join the
-    register join applied key-wise. A side-channel; no kernel theorem depends on
-    it (the frame lemma). Convergence is `AMap.merge_*` with `Reg.merge`. -/
-abbrev MetaMap := AMap String (Reg String)
+    register join applied key-wise. Values are `Option String` so a `metaSet …
+    null` (clear) is a written `none`, distinct from key-absence (ADR-0008). A
+    side-channel; no kernel theorem depends on it (the frame lemma). Convergence is
+    `AMap.merge_*` with `Reg.merge`. -/
+abbrev MetaMap := AMap String (Reg (Option String))
 
 namespace MetaMap
 

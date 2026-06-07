@@ -9,5 +9,9 @@ import Tl.Crdt.Order
 import Tl.Crdt.Map
 import Tl.Crdt.Lww
 import Tl.Crdt.OrSet
+import Tl.Kernel.State
+import Tl.Kernel.Op
+import Tl.Kernel.Apply
+import Tl.Kernel.Invariant
 
 -- Tested I/O shell
