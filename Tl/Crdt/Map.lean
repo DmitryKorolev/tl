@@ -370,6 +370,12 @@ theorem merge_assoc {f : V → V → V} (hf : ∀ a b c, f (f a b) c = f a (f b 
 
 @[simp] theorem find_empty (k : K) : (empty : AMap K V).find k = none := rfl
 
+theorem merge_empty_left (f : V → V → V) (m : AMap K V) : merge f empty m = m := by
+  apply ext; intro k; rw [find_merge, find_empty, optCombine_none_left]
+
+theorem merge_empty_right (f : V → V → V) (m : AMap K V) : merge f m empty = m := by
+  apply ext; intro k; rw [find_merge, find_empty, optCombine_none_right]
+
 end AMap
 
 /-! ## `FinSet` — a canonical finite set (the map to `Unit`) -/
@@ -436,6 +442,10 @@ theorem union_idem (s : FinSet α) : union s s = s :=
 
 theorem union_assoc (s t u : FinSet α) : union (union s t) u = union s (union t u) :=
   AMap.merge_assoc (fun _ _ _ => rfl) s t u
+
+theorem union_empty_left (s : FinSet α) : union empty s = s := AMap.merge_empty_left _ s
+
+theorem union_empty_right (s : FinSet α) : union s empty = s := AMap.merge_empty_right _ s
 
 end FinSet
 

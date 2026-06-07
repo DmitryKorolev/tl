@@ -209,6 +209,16 @@ theorem merge_idem (s : State) : merge s s = s :=
       (AMap.merge_idem (fun a => IssueData.merge_idem a) s.data)
       (OrSet.merge_idem s.edges)
 
+theorem merge_empty_left (s : State) : merge empty s = s :=
+  ext (OrSet.merge_empty_left s.issues)
+      (AMap.merge_empty_left _ s.data)
+      (OrSet.merge_empty_left s.edges)
+
+theorem merge_empty_right (s : State) : merge s empty = s :=
+  ext (OrSet.merge_empty_right s.issues)
+      (AMap.merge_empty_right _ s.data)
+      (OrSet.merge_empty_right s.edges)
+
 /-! ### State-level reads -/
 
 /-- The data record for `id` (empty if no write has been folded). -/

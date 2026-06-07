@@ -115,6 +115,12 @@ theorem merge_idem (s : OrSet α) : merge s s = s :=
   ext (AMap.merge_idem (fun a => FinSet.union_idem a) s.adds)
       (FinSet.union_idem s.removed)
 
+theorem merge_empty_left (s : OrSet α) : merge empty s = s :=
+  ext (AMap.merge_empty_left _ s.adds) (FinSet.union_empty_left s.removed)
+
+theorem merge_empty_right (s : OrSet α) : merge s empty = s :=
+  ext (AMap.merge_empty_right _ s.adds) (FinSet.union_empty_right s.removed)
+
 end OrSet
 
 end Tl.Crdt

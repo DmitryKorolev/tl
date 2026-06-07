@@ -16,5 +16,6 @@ import Tl.Kernel.Invariant
 import Tl.Kernel.Rollup
 import Tl.Kernel.Ready
 import Tl.Kernel.Cycles
+import Tl.Kernel.Theorems
 
 -- Tested I/O shell
