@@ -13,5 +13,7 @@ import Tl.Kernel.State
 import Tl.Kernel.Op
 import Tl.Kernel.Apply
 import Tl.Kernel.Invariant
+import Tl.Kernel.Rollup
+import Tl.Kernel.Ready
 
 -- Tested I/O shell

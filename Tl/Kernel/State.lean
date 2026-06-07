@@ -241,6 +241,12 @@ def presentEdges (s : State) : List Edge := s.edges.presentElements
 def blockersOf (s : State) (i : IssueId) : List IssueId :=
   (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))).map (·.1)
 
+/-- The issues `i` blocks (its dependents) — `to` of each present outgoing `Blocks`
+    edge. Closing `i` discharges it as their blocker; the critical-path weight
+    (ADR-0004 thm 4) and `unblocks` walk this direction. -/
+def dependentsOf (s : State) (i : IssueId) : List IssueId :=
+  (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))).map (·.2.1)
+
 /-- The children of epic `i` — `to` of each present outgoing `Parent` edge. -/
 def childrenOf (s : State) (i : IssueId) : List IssueId :=
   (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))).map (·.2.1)
