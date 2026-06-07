@@ -51,6 +51,19 @@ theorem merge_idem (a : Reg V) : merge a a = a :=
 
 @[simp] theorem merge_none_right (a : Reg V) : merge a none = a := optCombine_none_right _ a
 
+/-- A merge keeps one of the two writes' values — the winner's. (The basis for
+    close-monotonicity: merging a closed write never produces a third value.) -/
+theorem merge_value_cases (R W : Reg V) :
+    (merge R W).value = R.value ∨ (merge R W).value = W.value := by
+  match R, W with
+  | none, none => exact Or.inl rfl
+  | none, some _ => exact Or.inr rfl
+  | some _, none => exact Or.inl rfl
+  | some r, some w =>
+    rcases tmax_eq r w with h | h
+    · exact Or.inl (congrArg (Option.map Prod.snd) (congrArg some h))
+    · exact Or.inr (congrArg (Option.map Prod.snd) (congrArg some h))
+
 end Reg
 
 /-- The per-key-LWW metadata map (ADR-0002): a map of registers, its join the
