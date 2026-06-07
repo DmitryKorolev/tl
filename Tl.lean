@@ -15,5 +15,6 @@ import Tl.Kernel.Apply
 import Tl.Kernel.Invariant
 import Tl.Kernel.Rollup
 import Tl.Kernel.Ready
+import Tl.Kernel.Cycles
 
 -- Tested I/O shell
