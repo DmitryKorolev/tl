@@ -220,6 +220,36 @@ def hasIssue (s : State) (id : IssueId) : Prop := s.issues.Present id
 instance (s : State) (id : IssueId) : Decidable (s.hasIssue id) :=
   inferInstanceAs (Decidable (s.issues.Present id))
 
+/-! ### Enumeration and edge queries (the tracker layer's primitives)
+
+`presentIssues`/`presentEdges` are the finite, duplicate-free node/edge sets the
+total recursions in `Rollup`/`Ready`/`Cycles` walk. The edge-query accessors pin
+the ADR-0003 §1 direction (`dep add A B` ⇒ edge `from=B, to=A`, i.e. B blocks A):
+a *blocker* of `i` is the `from` of an incoming `Blocks` edge; a *child* of epic
+`i` is the `to` of an outgoing `Parent` edge. They return ids even when the id is
+not itself a present issue — a *dangling* endpoint — because endpoint-existence is
+not an invariant (ADR-0003 §5); the read-time inertness of a dangling blocker is
+applied at *discharge* time in `Ready`, not here. -/
+
+/-- The materialized issue ids (present in the OR-Set). -/
+def presentIssues (s : State) : List IssueId := s.issues.presentElements
+
+/-- The live dependency edges. -/
+def presentEdges (s : State) : List Edge := s.edges.presentElements
+
+/-- The issues blocking `i` — `from` of each present incoming `Blocks` edge. -/
+def blockersOf (s : State) (i : IssueId) : List IssueId :=
+  (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))).map (·.1)
+
+/-- The children of epic `i` — `to` of each present outgoing `Parent` edge. -/
+def childrenOf (s : State) (i : IssueId) : List IssueId :=
+  (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))).map (·.2.1)
+
+/-- The parents of `i` — `from` of each present incoming `Parent` edge (more than
+    one is `multiParent`, ADR-0003 §4). -/
+def parentsOf (s : State) (i : IssueId) : List IssueId :=
+  (s.presentEdges.filter (fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.2.1 = i))).map (·.1)
+
 end State
 
 end Tl.Kernel

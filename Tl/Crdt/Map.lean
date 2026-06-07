@@ -261,6 +261,43 @@ theorem ext : {l1 l2 : List (K × V)} → Sorted l1 → Sorted l2 →
         exact hc
     rw [hp, htail]
 
+/-- A successful lookup's entry is in the list. -/
+theorem lookup_mem {k : K} {v : V} : {l : List (K × V)} → lookup k l = some v → (k, v) ∈ l
+  | [], h => by rw [lookup_nil] at h; exact nomatch h
+  | p :: ps, h => by
+    unfold lookup at h
+    by_cases hk : k = p.1
+    · rw [if_pos hk] at h
+      have hp : p = (k, v) := Prod.ext hk.symm (Option.some.inj h)
+      rw [hp]; exact List.mem_cons_self ..
+    · rw [if_neg hk] at h
+      exact List.mem_cons_of_mem p (lookup_mem h)
+
+/-- An entry's key looks up to some value. -/
+theorem isSome_lookup_of_mem {k : K} {v : V} :
+    {l : List (K × V)} → (k, v) ∈ l → (lookup k l).isSome = true
+  | [], h => nomatch h
+  | p :: ps, h => by
+    unfold lookup
+    by_cases hk : k = p.1
+    · rw [if_pos hk]; rfl
+    · rw [if_neg hk]
+      rcases List.mem_cons.mp h with he | he
+      · exact absurd (congrArg Prod.fst he) hk
+      · exact isSome_lookup_of_mem he
+
+/-- Keys of a `Sorted` list are duplicate-free — the strict sort gives the finite,
+    NoDup node set the tracker layer's well-founded recursion measures over. -/
+theorem sorted_map_fst_nodup : {l : List (K × V)} → Sorted l → (l.map Prod.fst).Nodup
+  | [], _ => by rw [List.map_nil]; exact List.nodup_nil
+  | p :: ps, ⟨hlb, hsp⟩ => by
+    rw [List.map_cons, List.nodup_cons]
+    refine ⟨?_, sorted_map_fst_nodup hsp⟩
+    intro hmem
+    rw [List.mem_map] at hmem
+    obtain ⟨q, hq, hqk⟩ := hmem
+    exact absurd hqk.symm (ne_of_lt (hlb q hq))
+
 end AssocList
 
 /-! ## `AMap` — a canonical finite map -/
@@ -282,6 +319,23 @@ def singleton (k : K) (v : V) : AMap K V := ⟨[(k, v)], ⟨nofun, trivial⟩⟩
 
 /-- Look up a key. -/
 def find (m : AMap K V) (k : K) : Option V := AssocList.lookup k m.toList
+
+/-- The keys, in sorted order — the finite, duplicate-free enumeration the OR-Set
+    and the tracker layer iterate over. -/
+def keys (m : AMap K V) : List K := m.toList.map Prod.fst
+
+theorem mem_keys {m : AMap K V} {k : K} : k ∈ m.keys ↔ (m.find k).isSome = true := by
+  unfold keys find
+  rw [List.mem_map]
+  constructor
+  · rintro ⟨p, hp, rfl⟩
+    exact AssocList.isSome_lookup_of_mem hp
+  · intro h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp h
+    exact ⟨(k, v), AssocList.lookup_mem hv, rfl⟩
+
+theorem keys_nodup (m : AMap K V) : m.keys.Nodup :=
+  AssocList.sorted_map_fst_nodup m.sorted
 
 /-- Merge two maps, combining overlapping keys with `f`. -/
 def merge (f : V → V → V) (m1 m2 : AMap K V) : AMap K V :=

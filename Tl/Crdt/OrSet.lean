@@ -59,13 +59,37 @@ def Present (s : OrSet α) (e : α) : Prop :=
 instance (s : OrSet α) (e : α) : Decidable (Present s e) :=
   inferInstanceAs (Decidable (∃ _ ∈ _, _))
 
-/-- Add `e` with add-tag `st` (the adding op's stamp). -/
-def add (e : α) (st : Stamp) (s : OrSet α) : OrSet α :=
-  ⟨AMap.merge FinSet.union s.adds (AMap.singleton e (FinSet.singleton st)), s.removed⟩
+/-- A present element has an add-tag entry. (Add-wins *distinctness* — that two
+    concurrent adds stay distinct — additionally relies on the carried nonce/stamp
+    uniqueness assumption, ADR-0007/overview Trusted; the kernel does not guard it,
+    but convergence holds regardless.) -/
+theorem isSome_of_present {s : OrSet α} {e : α} (h : Present s e) :
+    (s.adds.find e).isSome = true := by
+  cases hf : s.adds.find e with
+  | some _ => rfl
+  | none =>
+    exfalso
+    unfold Present at h
+    obtain ⟨p, hp, _⟩ := h
+    unfold tagsOf at hp
+    rw [hf] at hp
+    exact nomatch hp
 
-/-- Remove `e`, tombstoning the observed add-tags `obs`. -/
-def remove (obs : FinSet Stamp) (s : OrSet α) : OrSet α :=
-  ⟨s.adds, FinSet.union s.removed obs⟩
+/-- Every element ever added (present or not) — the keys of the add map. -/
+def elements (s : OrSet α) : List α := s.adds.keys
+
+/-- The present (live) elements — the enumeration `ready`/`list` iterate, proved to
+    coincide exactly with `Present` (`mem_presentElements`), so theorems stated over
+    `Present` are about the very set the CLI walks. -/
+def presentElements (s : OrSet α) : List α := s.elements.filter (fun e => decide (Present s e))
+
+theorem mem_presentElements (s : OrSet α) (e : α) : e ∈ s.presentElements ↔ Present s e := by
+  unfold presentElements
+  rw [List.mem_filter, decide_eq_true_iff]
+  refine ⟨fun h => h.2, fun hp => ⟨?_, hp⟩⟩
+  unfold elements
+  rw [AMap.mem_keys]
+  exact isSome_of_present hp
 
 /-- The CRDT join — componentwise. -/
 def merge (s t : OrSet α) : OrSet α :=

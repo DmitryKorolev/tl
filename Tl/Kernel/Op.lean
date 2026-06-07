@@ -65,6 +65,17 @@ def scalarData (st : Stamp) (w : ScalarWrites) : IssueData where
   labels := OrSet.empty
   metadata := AMap.empty
 
+/-- The data delta of a `create` — like `scalarData`, but the two total fields
+    are seeded as *ordinary LWW writes at the create stamp* when not carried:
+    `status := Open`, `priority := 2` (ADR-0002 §2 / ADR-0008 `create` row). These
+    are not privileged — a pre-`create` `update` at a later HLC still wins by LWW —
+    so reads never fall through to the materialization default for a created issue
+    (`statusOf`/`priorityOf`'s `getD` only fires for an orphan, pre-`create` id). -/
+def createData (st : Stamp) (w : ScalarWrites) : IssueData :=
+  scalarData st { w with
+    status := some (w.status.getD Status.Open)
+    priority := some (w.priority.getD (2 : Fin 5)) }
+
 /-- The data delta of a `metaSet`. -/
 def metaData (st : Stamp) (key : String) (val : Option String) : IssueData :=
   { IssueData.empty with metadata := AMap.singleton key (Reg.write st val) }
@@ -79,7 +90,7 @@ def labelRemoveData (obs : FinSet Stamp) : IssueData :=
 
 /-- The op's contribution as a standalone state; `apply` joins it in. -/
 def delta : Op → State
-  | create id st w => ⟨OrSet.singletonAdd id st, AMap.singleton id (scalarData st w), OrSet.empty⟩
+  | create id st w => ⟨OrSet.singletonAdd id st, AMap.singleton id (createData st w), OrSet.empty⟩
   | setFields id st w => ⟨OrSet.empty, AMap.singleton id (scalarData st w), OrSet.empty⟩
   | metaSet id st key val => ⟨OrSet.empty, AMap.singleton id (metaData st key val), OrSet.empty⟩
   | edgeAdd e st => ⟨OrSet.empty, AMap.empty, OrSet.singletonAdd e st⟩

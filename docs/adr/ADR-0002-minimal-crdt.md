@@ -157,6 +157,19 @@ defense-in-depth: not a nicety, it is what keeps the key total and the register 
 CRDT in every case. This obligation is discharged in the kernel proof (LWW join
 is a function because the key order is total).
 
+Implementation note (kernel realization). To make the register join an
+*unconditional* total commutative/associative/idempotent function — provable
+with no nonce-uniqueness side condition — the kernel orders register entries by
+the 4-tuple `(HLC, replica-id, nonce, value)`: the value order is appended as a
+final tie-break below the nonce. Under the nonce-uniqueness assumption this last
+level never fires (no two distinct writes tie on the triple), so observable
+behaviour is exactly the triple-keyed spec above and the genuine-last-writer
+guarantee is unchanged; the value tie-break only ever decides the (assumed-away)
+equal-triple case, where the spec makes no value guarantee anyway. So the carried
+nonce-uniqueness assumption (overview Trusted / ADR-0007) governs *which write
+wins*, never *whether the join is well-defined* — the kernel theorem
+(`Tl.Crdt.Reg.merge_comm/assoc/idem`) holds outright.
+
 ## Consequences
 
 - `dep remove` converges. Removing an edge tombstones the observed add;
