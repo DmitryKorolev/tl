@@ -1,0 +1,19 @@
+name = "tl"
+version = "0.1.0"
+defaultTargets = ["tl"]
+# Proof/test discipline: batteries (std4) only — no Mathlib (ADR-0009).
+# Tactics restricted to explicit calc/cases/simp-only; avoid omega/decide/aesop
+# as closers. Pins are immutable commits, not branches/tags (ADR-0009).
+
+[[require]]
+name = "batteries"
+git = "https://github.com/leanprover-community/batteries"
+# v4.30.0, matching the pinned lean-toolchain (leanprover/lean4:v4.30.0).
+rev = "32dc18cde3684679f3c003de608743b57498c56f"
+
+[[lean_lib]]
+name = "Tl"
+
+[[lean_exe]]
+name = "tl"
+root = "Main"
