@@ -128,4 +128,150 @@ theorem effectiveStatus_labelRemove (s : State) (id : IssueId) (l : Label)
     (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
     (fun j => congrArg (fun r => r.value.getD Status.Open) (labelRemove_status s id l obs j)) i
 
+/-! ## The frame lemma for `ready`
+
+`ready` reads the state through `issues`, `edges`, and the status/priority/defer
+registers, so it too is a congruence over that projection — and the side-channel
+ops fix all of it. We assemble the congruence through `weight`, `isReady`,
+`readyLe`, and `rankSort`, then instantiate for `metaSet`/`labelAdd`/`labelRemove`. -/
+
+/-- A single-key data delta whose register `proj` is `none` leaves every issue's
+    `proj` register unchanged (generalizes `status_mergeSingleton`). -/
+theorem reg_mergeSingleton {V : Type _} [TotalOrd V] (proj : IssueData → Reg V)
+    (hmerge : ∀ a b, proj (IssueData.merge a b) = Reg.merge (proj a) (proj b))
+    (hempty : proj IssueData.empty = none)
+    (sd : AMap IssueId IssueData) (id : IssueId) (D : IssueData) (hD : proj D = none) (j : IssueId) :
+    proj (((AMap.merge IssueData.merge sd (AMap.singleton id D)).find j).getD IssueData.empty)
+      = proj ((sd.find j).getD IssueData.empty) := by
+  rw [AMap.find_merge, AMap.find_singleton]
+  by_cases hj : j = id
+  · rw [if_pos hj]
+    cases sd.find j with
+    | none => rw [optCombine_none_left]; show proj D = proj IssueData.empty; rw [hempty]; exact hD
+    | some d => show proj (IssueData.merge d D) = proj d; rw [hmerge, hD, Reg.merge_none_right]
+  · rw [if_neg hj, optCombine_none_right]
+
+/-! ### Function congruences over `(issues, edges, scalar registers)` -/
+
+theorem dependentsOf_congr {s1 s2 : State} (he : s1.edges = s2.edges) (i : IssueId) :
+    s1.dependentsOf i = s2.dependentsOf i := by
+  simp only [State.dependentsOf, State.presentEdges, he]
+
+theorem blockersOf_congr {s1 s2 : State} (he : s1.edges = s2.edges) (i : IssueId) :
+    s1.blockersOf i = s2.blockersOf i := by
+  simp only [State.blockersOf, State.presentEdges, he]
+
+theorem isEpic_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (i : IssueId) : s1.isEpic i = s2.isEpic i := by
+  simp only [State.isEpic, presentChildren_congr hi he i]
+
+theorem createdAtOf_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (i : IssueId) :
+    s1.createdAtOf i = s2.createdAtOf i := by
+  simp only [State.createdAtOf, hi]
+
+theorem blocksSucc_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges) :
+    s1.blocksSucc = s2.blocksSucc := by
+  funext i
+  have hpred : (fun j => decide (s1.hasIssue j)) = (fun j => decide (s2.hasIssue j)) :=
+    funext (fun j => decide_hasIssue_congr hi j)
+  simp only [State.blocksSucc, dependentsOf_congr he i, hpred]
+
+theorem weight_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (i : IssueId) : s1.weight i = s2.weight i := by
+  have hpi : s1.presentIssues = s2.presentIssues := by simp only [State.presentIssues, hi]
+  simp only [State.weight, State.reachableBlocks, State.reachClosure, blocksSucc_congr hi he, hpi]
+
+theorem effClosed_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf) (b : IssueId) :
+    s1.effClosed b = s2.effClosed b := by
+  unfold State.effClosed; rw [effectiveStatus_congr hi he hstat b]
+
+theorem blockerDischarged_congr {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (he : s1.edges = s2.edges)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf) :
+    s1.blockerDischarged = s2.blockerDischarged := by
+  funext b
+  simp only [State.blockerDischarged, decide_hasIssue_congr hi b, effClosed_congr hi he hstat b]
+
+theorem deferOk_congr {s1 s2 : State}
+    (hdefer : ∀ j, (s1.issueData j).deferUntilOf = (s2.issueData j).deferUntilOf)
+    (i : IssueId) (now : Instant) :
+    State.deferOk (s1.issueData i) now = State.deferOk (s2.issueData i) now := by
+  simp only [State.deferOk, hdefer i]
+
+theorem isReady_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf)
+    (hdefer : ∀ j, (s1.issueData j).deferUntilOf = (s2.issueData j).deferUntilOf)
+    (now : Instant) : s1.isReady now = s2.isReady now := by
+  funext i
+  simp only [State.isReady, decide_hasIssue_congr hi i, hstat i, isEpic_congr hi he i,
+    deferOk_congr hdefer i now, blockersOf_congr he i, blockerDischarged_congr hi he hstat]
+
+theorem readyLe_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (hprio : ∀ j, (s1.issueData j).priorityOf = (s2.issueData j).priorityOf) :
+    s1.readyLe = s2.readyLe := by
+  funext a b
+  simp only [State.readyLe, hprio a, hprio b, weight_congr hi he a, weight_congr hi he b,
+    createdAtOf_congr hi a, createdAtOf_congr hi b]
+
+theorem rankInsert_congr {s1 s2 : State} (hle : s1.readyLe = s2.readyLe) (x : IssueId) :
+    (l : List IssueId) → s1.rankInsert x l = s2.rankInsert x l
+  | [] => rfl
+  | y :: ys => by unfold State.rankInsert; rw [hle, rankInsert_congr hle x ys]
+
+theorem rankSort_congr {s1 s2 : State} (hle : s1.readyLe = s2.readyLe) :
+    (l : List IssueId) → s1.rankSort l = s2.rankSort l
+  | [] => rfl
+  | x :: xs => by
+    unfold State.rankSort
+    rw [rankSort_congr hle xs, rankInsert_congr hle x (s2.rankSort xs)]
+
+/-- `ready` is a congruence over `(issues, edges, status, priority, deferUntil)`. -/
+theorem ready_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf)
+    (hprio : ∀ j, (s1.issueData j).priorityOf = (s2.issueData j).priorityOf)
+    (hdefer : ∀ j, (s1.issueData j).deferUntilOf = (s2.issueData j).deferUntilOf)
+    (now : Instant) : s1.ready now = s2.ready now := by
+  have hpi : s1.presentIssues = s2.presentIssues := by simp only [State.presentIssues, hi]
+  unfold State.ready
+  rw [hpi, isReady_congr hi he hstat hdefer now, rankSort_congr (readyLe_congr hi he hprio)]
+
+/-! ### The frame lemma for `ready` (side-channel ops) -/
+
+theorem ready_metaSet (s : State) (id : IssueId) (st : Stamp) (k : String) (v : Option String)
+    (now : Instant) : (apply s (Op.metaSet id st k v)).ready now = s.ready now :=
+  ready_congr (s1 := apply s (Op.metaSet id st k v)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id (Op.metaData st k v) rfl j))
+    (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.metaData st k v) rfl j))
+    (fun j => congrArg (fun r => r.value.getD none)
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.metaData st k v) rfl j))
+    now
+
+theorem ready_labelAdd (s : State) (id : IssueId) (l : Label) (st : Stamp) (now : Instant) :
+    (apply s (Op.labelAdd id l st)).ready now = s.ready now :=
+  ready_congr (s1 := apply s (Op.labelAdd id l st)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id (Op.labelData st l) rfl j))
+    (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.labelData st l) rfl j))
+    (fun j => congrArg (fun r => r.value.getD none)
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelData st l) rfl j))
+    now
+
+theorem ready_labelRemove (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt.FinSet Stamp)
+    (now : Instant) : (apply s (Op.labelRemove id l obs)).ready now = s.ready now :=
+  ready_congr (s1 := apply s (Op.labelRemove id l obs)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+    (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+    (fun j => congrArg (fun r => r.value.getD none)
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+    now
+
 end Tl.Kernel
