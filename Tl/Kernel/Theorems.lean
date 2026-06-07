@@ -149,4 +149,74 @@ theorem fold_le_of_subset {l1 l2 : List Op} (h : ∀ o ∈ l1, o ∈ l2) :
   obtain ⟨o, ho, rfl⟩ := hx
   exact ⟨o, h o ho, rfl⟩
 
+/-! ## Tracker theorems — `ready` characterization and time-monotonicity
+
+The ranked `ready` list is a permutation of the filtered present issues, so its
+membership is exactly the readiness predicate (thm 4); and since `now` enters
+`ready` only through the monotone defer conjunct, the passage of time never
+un-readies an item (thm 9). -/
+
+/-- Ranked insertion permutes (only reorders). -/
+theorem rankInsert_perm (s : State) (x : IssueId) :
+    (l : List IssueId) → (State.rankInsert s x l).Perm (x :: l)
+  | [] => List.Perm.refl _
+  | y :: ys => by
+    unfold State.rankInsert
+    split
+    · exact List.Perm.refl _
+    · exact (List.Perm.cons y (rankInsert_perm s x ys)).trans (List.Perm.swap x y ys)
+
+/-- The ranked sort is a permutation of its input — it filters nothing. -/
+theorem rankSort_perm (s : State) : (l : List IssueId) → (State.rankSort s l).Perm l
+  | [] => List.Perm.refl _
+  | x :: xs => by
+    unfold State.rankSort
+    exact (rankInsert_perm s x (State.rankSort s xs)).trans (List.Perm.cons x (rankSort_perm s xs))
+
+theorem mem_rankSort (s : State) (x : IssueId) (l : List IssueId) :
+    x ∈ State.rankSort s l ↔ x ∈ l := (rankSort_perm s l).mem_iff
+
+/-- `presentIssues` is exactly the materialized issues. -/
+theorem mem_presentIssues (s : State) (i : IssueId) : i ∈ s.presentIssues ↔ s.hasIssue i :=
+  OrSet.mem_presentElements s.issues i
+
+/-- **Thm 4** (ready soundness + completeness): `i ∈ ready s now` iff `i` is a
+    materialized issue satisfying the readiness predicate — every blocker
+    discharged (closed by effective status, or dangling and inert), `open`,
+    non-epic, non-deferred (ADR-0004 thm 4, ADR-0003 §5, ADR-0010). The ranked
+    list filters nothing, so the queue's membership is exactly readiness. -/
+theorem mem_ready_iff (s : State) (now : Instant) (i : IssueId) :
+    i ∈ s.ready now ↔ i ∈ s.presentIssues ∧ s.isReady now i = true := by
+  unfold State.ready
+  rw [mem_rankSort, List.mem_filter]
+
+/-- The defer conjunct is monotone in `now`: a non-deferred-at-`now` item stays
+    non-deferred at any later `now'`. -/
+theorem deferOk_mono {d : IssueData} {now now' : Instant} (h : now ≤ now') :
+    State.deferOk d now = true → State.deferOk d now' = true := by
+  unfold State.deferOk
+  cases hd : d.deferUntilOf with
+  | none => exact fun _ => rfl
+  | some t =>
+    intro ht
+    rw [decide_eq_true_iff] at ht ⊢
+    exact Nat.le_trans ht h
+
+/-- Readiness is monotone in `now` (only the defer conjunct depends on `now`). -/
+theorem isReady_mono (s : State) {now now' : Instant} (h : now ≤ now') (i : IssueId) :
+    s.isReady now i = true → s.isReady now' i = true := by
+  unfold State.isReady
+  intro hr
+  simp only [Bool.and_eq_true] at hr ⊢
+  obtain ⟨⟨⟨⟨ha, hb⟩, hc⟩, hdef⟩, he⟩ := hr
+  exact ⟨⟨⟨⟨ha, hb⟩, hc⟩, deferOk_mono h hdef⟩, he⟩
+
+/-- **Thm 9** (ready time-monotonicity): the passage of time alone never removes a
+    workable item — a deferred task only ever resurfaces (ADR-0010, ADR-0004 thm 9).
+    The defer-dual of close-monotonicity. -/
+theorem ready_time_mono (s : State) {now now' : Instant} (h : now ≤ now') {i : IssueId}
+    (hi : i ∈ s.ready now) : i ∈ s.ready now' := by
+  rw [mem_ready_iff] at hi ⊢
+  exact ⟨hi.1, isReady_mono s h i hi.2⟩
+
 end Tl.Kernel
