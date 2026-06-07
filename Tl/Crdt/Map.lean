@@ -277,6 +277,9 @@ variable {K : Type u} {V : Type v} [TotalOrd K]
 /-- The empty map. -/
 def empty : AMap K V := ⟨[], trivial⟩
 
+/-- The single-entry map `{k ↦ v}`. -/
+def singleton (k : K) (v : V) : AMap K V := ⟨[(k, v)], ⟨nofun, trivial⟩⟩
+
 /-- Look up a key. -/
 def find (m : AMap K V) (k : K) : Option V := AssocList.lookup k m.toList
 
