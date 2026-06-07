@@ -320,6 +320,12 @@ def singleton (k : K) (v : V) : AMap K V := ⟨[(k, v)], ⟨nofun, trivial⟩⟩
 /-- Look up a key. -/
 def find (m : AMap K V) (k : K) : Option V := AssocList.lookup k m.toList
 
+@[simp] theorem find_singleton (k j : K) (v : V) :
+    (singleton k v).find j = if j = k then some v else none := by
+  show AssocList.lookup j [(k, v)] = _
+  unfold AssocList.lookup
+  rfl
+
 /-- The keys, in sorted order — the finite, duplicate-free enumeration the OR-Set
     and the tracker layer iterate over. -/
 def keys (m : AMap K V) : List K := m.toList.map Prod.fst
