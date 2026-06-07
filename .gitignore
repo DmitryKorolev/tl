@@ -1,0 +1,19 @@
+# Lean / Lake build artifacts
+/.lake/
+/build/
+*.olean
+*.ilean
+*.trace
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+.idea/
+.vscode/
+
+# tl self-contains: it keeps all state under a self-ignored `.tl/`
+# (`.tl/.gitignore` = `*`) and syncs via the `refs/tl/log` ref, never tracked
+# files — so nothing tl-related needs ignoring here (ADR-0001).
