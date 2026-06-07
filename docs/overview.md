@@ -1,9 +1,13 @@
 # Overview — what tl proves, tests, and trusts
 
-> Design phase. This is the *intended* claim table: what the verified
-> core will prove, what tests will cover, and what is trusted at the
-> boundary. Nothing here is implemented yet; treat each "proved" row as a
-> theorem to be written, not a theorem that exists.
+> Implementation underway. This is the claim table: what the verified core
+> proves, what tests cover, and what is trusted at the boundary. The kernel
+> (`Tl/Crdt/`, `Tl/Kernel/`) is fully defined and total, and a first tranche of
+> theorems is proved; the **Proof status** subsection below records, per row,
+> what is *proved* versus what is a *tracked residual* (defined-and-total but
+> with its soundness/completeness proof still outstanding — decomposed and
+> recorded here per AGENTS.md Definition-of-Done #5, never downgraded to a test).
+> The tested I/O shell (`Tl/Format`, `Tl/Clock`, `Tl/Cli`, …) is not yet built.
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -28,6 +32,54 @@ carried assumption (the Trusted section below) — never a vibe.
 | CvRDT inflation / monotonicity | `s ≤ apply s o` (each op only moves up the lattice) ⇒ `ops ⊆ ops' → fold ops ≤ fold ops'` (a merge never loses information); with fold-dup-insensitivity, the full state-CvRDT pair. Op-granular: `apply (apply s o) o = apply s o` (at-least-once delivery safe) | 0002, 0004 |
 | `ready` time-monotonicity | `now ≤ now' → ready s now ⊆ ready s now'` — time alone never un-readies an item (the defer-dual of close-monotonicity) | 0010, 0004 |
 | `why` / `unblocks` correctness | `why s i` = exactly the transitive *unclosed* `blocks`-blockers of `i`; `unblocks s i` = exactly the set closing `i` newly readies; total on cyclic/dangling (same reach⁺ machinery as the weight key) | 0003, 0004 |
+
+### Proof status (current)
+
+What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
+`#print axioms`-clean (only `propext` / `Classical.choice` / `Quot.sound`):
+
+- **Thm 1 — join-semilattice.** `State.merge_comm/assoc/idem` over the whole
+  product, composed from the per-layer laws (`AMap`, `FinSet`, `Reg`/`MetaMap`,
+  `OrSet`, `IssueData`). `AMap.ext` is axiom-free.
+- **Thm 2 — order/duplicate insensitivity.** `fold_eq_of_mem_iff` (same op-set ⇒
+  identical state — strong eventual convergence), `fold_perm`, `fold_append_self`.
+- **Thm 3 — invariant preservation.** `invariant_apply` (valid status is
+  type-level; the enum/`Fin 5` make illegal values unrepresentable).
+- **Thm 4 — `ready` soundness + completeness.** `mem_ready_iff`: membership in the
+  ranked queue is exactly the readiness predicate (`rankSort_perm` shows the sort
+  filters nothing). *Totality* is discharged by `ready`/`effectiveStatus`/`weight`/
+  `cycles` being total Lean definitions (fuel / bounded `iterateN`), no `sorry`.
+- **Thm 8 — CvRDT inflation + idempotent re-delivery.** `le_apply`,
+  `fold_le_of_subset`, and `apply_idem`.
+- **Thm 9 — `ready` time-monotonicity.** `ready_time_mono` (via `deferOk_mono`).
+
+**Tracked residuals** — defined and total in the kernel, soundness/completeness
+proof still outstanding (decomposed below; *not* downgraded to tests, per
+Definition-of-Done #5):
+
+- **Epic rollup correctness (ADR-0003).** `effectiveStatus` is defined and total
+  (fuel-bounded over the parent graph, `Rollup.lean`); the residual is the
+  *fuel-adequacy* lemma — on an acyclic parent graph the present-issue-count fuel
+  is enough that the rollup equals the spec (Done iff all children closed,
+  manual-cancel precedence), and a parent cycle provably falls back to not-done.
+- **Thm 5 — honest liveness / deadlock-freedom.** The `≺` relation and its
+  diagnostic are defined (`Cycles.precSucc`/`precCycles`); the residual is the
+  one-directional theorem (acyclic `≺` over a live working set ⇒ a `≺`-minimal
+  ready leaf).
+- **Thm 6 — cycle-diagnostic correctness.** `cycles`/`precCycles` are defined and
+  total; the residual is that `reachClosure` computes exact transitive
+  reachability (the saturation-in-`|nodes|`-steps lemma) and hence that the
+  reported SCCs are exactly the cyclic ones.
+- **Thm 7 — close-monotonicity.** `close` is a `setFields` op; the residual is
+  `ready (apply s close) ⊇ ready s \ {i}` and the ancestor-rollup-monotonicity
+  lemma it carries.
+- **Thm 10 — `why` / `unblocks` correctness.** Both are defined and total
+  (`Ready.lean`); the residual is soundness/completeness, sharing the
+  `reachClosure`-saturation lemma with thm 6.
+- **Frame lemma.** The side-channel ops' deltas (`metaSet`/`labelAdd`/
+  `labelRemove`/`relate`) leave the issue/edge OR-Sets and the status/defer
+  registers untouched (mergewith-`none`/`empty` identities); the residual is the
+  `effectiveStatus`/`ready` congruence over that preserved projection.
 
 Reserved (proved when its feature is built). *Compaction preserves the
 fold* — `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-closed
