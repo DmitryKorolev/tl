@@ -22,3 +22,4 @@ import Tl.Kernel.CloseMono
 import Tl.Kernel.Reach
 
 -- Tested I/O shell
+import Tl.Clock.Hlc
