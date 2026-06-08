@@ -85,6 +85,10 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),
   and two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`).
   Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
+- **`unblocks` soundness** (`Tl/Kernel/Unblocks.lean`). `unblocks_not_ready`: every
+  reported issue is not-yet-ready. `unblocks_sound`: each reported `j ≠ i` becomes
+  ready once the close discharges `i` (the cancel stamp wins LWW). Completeness is the
+  one remaining residual (conditional on no epic-ancestor blocker; see below).
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
@@ -125,10 +129,14 @@ Definition-of-Done #5):
   — i.e. exactly one witness per cyclic SCC. Instantiated for the real diagnostics
   (`mem_flatten_cycles_iff` / `cycles_same_witness_iff` and the `precCycles` pair) via
   the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas. *(b)* `unblocks`
-  soundness/completeness (the constructive witness side of close-monotonicity, thm 7)
-  remains — and is subtle: soundness needs the close stamp to win LWW (the cancel
-  actually discharges `i`) and excludes the self-block edge case, so it carries
-  hypotheses rather than being an unconditional `↔`.
+  **soundness now proved** (`Tl/Kernel/Unblocks.lean`): `unblocks_not_ready` (every
+  reported issue is genuinely not-yet-ready, unconditional) and `unblocks_sound` (each
+  reported `j ≠ i` becomes ready once closing `i` discharges it — i.e. the cancel stamp
+  wins LWW, `(apply s (cancelOp i st)).effClosed i`). Both hypotheses are necessary
+  (a stamp that loses leaves `i` open; a self-blocking `i` cannot ready itself).
+  *Completeness* (`newly ready ⇒ reported`) is the residual remainder: it fails when a
+  *different* blocker of `j` is an epic ancestor of `i` that rolls up to done as `i`
+  closes, so it holds only under a no-epic-ancestor-blocker side condition.
 - **Frame lemma (`unrelate` discharge only).** The `relate` add case is now fully
   proved (above), and the `edgeRemove` boundary theorem is proved. What remains is
   *not* a kernel theorem: an `edgeRemove` tombstones the observed add-tags
