@@ -149,7 +149,8 @@ def withClosed (s : State) (i : IssueId) : State :=
     (`mem_unblocks_iff`): it captures indirect unblocks via epic rollup, which a
     "directly blocked only by `i`" test would miss. -/
 def unblocks (s : State) (now : Instant) (i : IssueId) : List IssueId :=
-  ((s.withClosed i).ready now).filter (fun j => decide (j ∉ s.ready now))
+  let readyNow := s.ready now
+  ((s.withClosed i).ready now).filter (fun j => decide (j ∉ readyNow))
 
 end State
 
