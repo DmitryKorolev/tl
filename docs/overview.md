@@ -80,6 +80,11 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   epic that is not manually cancelled is `Done` iff every present child is effectively
   closed (`effectiveStatus_epic`), via fuel-irrelevance above the descendant count
   (`effStatusAux_stable`, strong induction on the descendant-closure cardinality).
+- **SCC-witness enumeration** (`Tl/Kernel/SccProps.lean`). `sccWitnesses` partitions the
+  cyclic nodes by SCC exactly: `sameSCC` is an equivalence on present nodes, the
+  witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),
+  and two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`).
+  Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
@@ -112,11 +117,18 @@ Definition-of-Done #5):
   not manually cancelled, is Done iff every present child is effectively closed). A parent
   *cycle* still exhausts the fuel and falls back to the stored status (`dep cycles` reports
   it); the acyclic theorem is the positive correctness statement.
-- **Thm 6/10 — SCC-witness enumeration & `unblocks`.** The cycle/why *detection*
-  predicates are proved (above); the residuals are (a) that `sccWitnesses` returns
-  exactly one witness per cyclic SCC (the grouping correctness, over the proved
-  `onCycle`/`reachClosure` characterizations) and (b) `unblocks` soundness/
-  completeness (the constructive witness side of close-monotonicity, thm 7).
+- **Thm 6/10 — SCC-witness enumeration & `unblocks`.** *(a) now proved* in
+  `Tl/Kernel/SccProps.lean`: `sameSCC` is an equivalence on present nodes
+  (`sameSCC_refl/symm/trans`, via the `reachClosure` characterization), the witnesses
+  cover exactly the cyclic present nodes (`mem_flatten_sccWitnesses_iff`), and two
+  cyclic nodes share a witness iff they are `sameSCC` (`sccWitnesses_same_witness_iff`)
+  — i.e. exactly one witness per cyclic SCC. Instantiated for the real diagnostics
+  (`mem_flatten_cycles_iff` / `cycles_same_witness_iff` and the `precCycles` pair) via
+  the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas. *(b)* `unblocks`
+  soundness/completeness (the constructive witness side of close-monotonicity, thm 7)
+  remains — and is subtle: soundness needs the close stamp to win LWW (the cancel
+  actually discharges `i`) and excludes the self-block edge case, so it carries
+  hypotheses rather than being an unconditional `↔`.
 - **Frame lemma (`unrelate` discharge only).** The `relate` add case is now fully
   proved (above), and the `edgeRemove` boundary theorem is proved. What remains is
   *not* a kernel theorem: an `edgeRemove` tombstones the observed add-tags
