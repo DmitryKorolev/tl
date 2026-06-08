@@ -121,6 +121,52 @@ theorem merge_empty_left (s : OrSet α) : merge empty s = s :=
 theorem merge_empty_right (s : OrSet α) : merge s empty = s :=
   ext (AMap.merge_empty_right _ s.adds) (FinSet.union_empty_right s.removed)
 
+/-- Frame workhorse (ADR-0003 §side-channels): merging in a single-element *add*
+    `{e0 ↦ st}` and then filtering the present elements by a predicate `P` that
+    *rejects* `e0` leaves the filtered list unchanged. An add at `e0` only adds the
+    tag `st` to `e0` (presence of every other element is untouched) and may add the
+    key `e0` (dropped by `P`); `removed` is unchanged. This is what makes a `related`
+    edge add invisible to the `Blocks`/`Parent`-filtered edge views. -/
+theorem presentElements_mergeAdd_filter (se : OrSet α) (e0 : α) (st : Stamp)
+    {P : α → Bool} (hP : P e0 = false) :
+    ((merge se (singletonAdd e0 st)).presentElements).filter P
+      = (se.presentElements).filter P := by
+  -- `removed` is untouched, and tags are untouched away from `e0`
+  have hrem : (merge se (singletonAdd e0 st)).removed = se.removed := by
+    show FinSet.union se.removed FinSet.empty = se.removed
+    exact FinSet.union_empty_right se.removed
+  have hpres : ∀ a, a ≠ e0 →
+      decide (Present (merge se (singletonAdd e0 st)) a) = decide (Present se a) := by
+    intro a ha
+    have hfind : (merge se (singletonAdd e0 st)).adds.find a = se.adds.find a := by
+      show AMap.find (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))) a
+        = se.adds.find a
+      rw [AMap.find_merge, AMap.find_singleton, if_neg ha, optCombine_none_right]
+    have htag : (merge se (singletonAdd e0 st)).tagsOf a = se.tagsOf a := by
+      unfold tagsOf; rw [hfind]
+    have hiff : Present (merge se (singletonAdd e0 st)) a ↔ Present se a := by
+      unfold Present; rw [htag, hrem]
+    simp only [hiff]
+  -- collapse the double filter, normalise the redex via `show`, swap list then predicate
+  unfold presentElements
+  rw [List.filter_filter, List.filter_filter]
+  show List.filter (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a))
+        (merge se (singletonAdd e0 st)).elements
+     = List.filter (fun a => P a && decide (Present se a)) se.elements
+  rw [show (merge se (singletonAdd e0 st)).elements
+        = (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))).keys from rfl,
+    AMap.keys_merge_singleton_filter se.adds e0 (FinSet.singleton st)
+      (show (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a)) e0 = false by
+        show (P e0 && decide (Present (merge se (singletonAdd e0 st)) e0)) = false
+        rw [hP, Bool.false_and])]
+  show se.elements.filter (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a))
+     = se.elements.filter (fun a => P a && decide (Present se a))
+  apply List.filter_congr
+  intro a _
+  by_cases ha : a = e0
+  · subst ha; rw [hP, Bool.false_and, Bool.false_and]
+  · rw [hpres a ha]
+
 end OrSet
 
 end Tl.Crdt

@@ -298,6 +298,39 @@ theorem sorted_map_fst_nodup : {l : List (K × V)} → Sorted l → (l.map Prod.
     obtain ⟨q, hq, hqk⟩ := hmem
     exact absurd hqk.symm (ne_of_lt (hlb q hq))
 
+/-- Filtering the keys of `insertWith f e0 v l` by a predicate that *rejects* `e0`
+    yields the same list as filtering `l`'s keys: `insertWith` either merges into an
+    existing `e0` entry (keys unchanged) or inserts `e0` (dropped by the filter),
+    and touches no other key's position. The frame-lemma workhorse for a `related`
+    edge add — it changes the edge OR-Set's add-map only at the `related` key. -/
+theorem mapfst_insertWith_filter {f : V → V → V} {e0 : K} {v : V} {P : K → Bool}
+    (hP : P e0 = false) : (l : List (K × V)) →
+    ((insertWith f e0 v l).map Prod.fst).filter P = (l.map Prod.fst).filter P
+  | [] => by
+    show (List.map Prod.fst [(e0, v)]).filter P = (List.map Prod.fst ([] : List (K × V))).filter P
+    rw [List.map_cons, List.map_nil,
+      List.filter_cons_of_neg (a := Prod.fst (e0, v))
+        (show ¬ P e0 = true by rw [hP]; exact Bool.false_ne_true)]
+  | p :: ps => by
+    unfold insertWith
+    by_cases h1 : lt e0 p.1
+    · rw [if_pos h1, List.map_cons,
+        List.filter_cons_of_neg (a := Prod.fst (e0, v))
+          (show ¬ P e0 = true by rw [hP]; exact Bool.false_ne_true)]
+    · rw [if_neg h1]
+      by_cases h2 : e0 = p.1
+      · rw [if_pos h2, List.map_cons, List.map_cons,
+          List.filter_cons_of_neg (a := Prod.fst (e0, f p.2 v))
+            (show ¬ P e0 = true by rw [hP]; exact Bool.false_ne_true),
+          List.filter_cons_of_neg (a := Prod.fst p)
+            (show ¬ P p.1 = true by rw [← h2, hP]; exact Bool.false_ne_true)]
+      · rw [if_neg h2, List.map_cons, List.map_cons]
+        by_cases h3 : P p.1 = true
+        · rw [List.filter_cons_of_pos (a := Prod.fst p) h3,
+            List.filter_cons_of_pos (a := Prod.fst p) h3, mapfst_insertWith_filter hP ps]
+        · rw [List.filter_cons_of_neg (a := Prod.fst p) h3,
+            List.filter_cons_of_neg (a := Prod.fst p) h3, mapfst_insertWith_filter hP ps]
+
 end AssocList
 
 /-! ## `AMap` — a canonical finite map -/
@@ -357,6 +390,16 @@ theorem ext {m1 m2 : AMap K V} (h : ∀ k, m1.find k = m2.find k) : m1 = m2 := b
 theorem find_merge (f : V → V → V) (m1 m2 : AMap K V) (k : K) :
     (merge f m1 m2).find k = optCombine f (m1.find k) (m2.find k) :=
   AssocList.lookup_merge m1.sorted m2.sorted k
+
+/-- Merging a single-key map `{e0 ↦ v}` into `m` and filtering the keys by a
+    predicate that *rejects* `e0` leaves the filtered key list unchanged — the frame
+    workhorse for a `related` edge add (lifts `AssocList.mapfst_insertWith_filter`). -/
+theorem keys_merge_singleton_filter {f : V → V → V} (m : AMap K V) (e0 : K) (v : V)
+    {P : K → Bool} (hP : P e0 = false) :
+    ((merge f m (singleton e0 v)).keys).filter P = (m.keys).filter P := by
+  show ((AssocList.insertWith f e0 v m.toList).map Prod.fst).filter P
+     = (m.toList.map Prod.fst).filter P
+  exact AssocList.mapfst_insertWith_filter hP m.toList
 
 theorem merge_comm {f : V → V → V} (hf : ∀ a b, f a b = f b a) (m1 m2 : AMap K V) :
     merge f m1 m2 = merge f m2 m1 := by
