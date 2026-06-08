@@ -3,6 +3,7 @@
 Builds as the `tltest` executable; exits non-zero on any failed assertion.
 -/
 import Tests.HlcTests
+import Tests.CrockfordTests
 
 open Tl.Tests
 
@@ -10,5 +11,7 @@ def main : IO UInt32 :=
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
-    ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp)
+    ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp),
+    ("Crockford base32 & replica id", crockfordTests),
+    ("Crockford round-trip (seeded property)", crockfordRoundtripProp)
   ]

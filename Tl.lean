@@ -23,3 +23,6 @@ import Tl.Kernel.Reach
 
 -- Tested I/O shell
 import Tl.Clock.Hlc
+import Tl.Clock.Replica
+import Tl.Format.Crockford
+import Tl.Cli.Init
