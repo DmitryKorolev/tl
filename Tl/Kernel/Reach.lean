@@ -287,4 +287,45 @@ theorem onCycle_precSucc_iff (s : State) (v : IssueId) :
       ∃ b ∈ s.precSucc v, Relation.ReflTransGen (StepRel s.precSucc) b v :=
   onCycle_iff (precSucc_subset_present s) v
 
+/-! ## Thm 5 — honest liveness (the stated direction) -/
+
+/-- No live blocker ⇒ every blocker is discharged. -/
+theorem all_discharged_of_liveBlockers_nil (s : State) (i : IssueId)
+    (h : s.liveBlockersSucc i = []) : (s.blockersOf i).all (s.blockerDischarged ·) = true := by
+  unfold State.liveBlockersSucc at h
+  rw [List.all_eq_true]
+  intro b hb
+  have hp : (decide (s.hasIssue b) && !s.effClosed b) = false := by
+    cases hpred : (decide (s.hasIssue b) && !s.effClosed b) with
+    | false => rfl
+    | true =>
+      exfalso
+      have hmem : b ∈ (s.blockersOf i).filter (fun b => decide (s.hasIssue b) && !s.effClosed b) :=
+        List.mem_filter.mpr ⟨hb, hpred⟩
+      rw [h] at hmem; exact nomatch hmem
+  have key : s.blockerDischarged b = !(decide (s.hasIssue b) && !s.effClosed b) := by
+    unfold State.blockerDischarged; rw [Bool.not_and, Bool.not_not]
+  rw [key, hp]; rfl
+
+/-- **Thm 5** (honest liveness, the stated direction): an `open`, non-epic,
+    non-deferred, materialized issue with no `≺`-predecessor is ready (ADR-0004
+    thm 5). For a non-epic, `≺`-predecessors are exactly its live `blocks`-blockers,
+    so "no `≺`-predecessor" is "every blocker discharged" — hence ready. The
+    contrapositive — a stuck live set forces a `≺`-cycle — is the `precCycles`
+    diagnostic (`onCycle_precSucc_iff`). -/
+theorem liveness (s : State) (now : Instant) (i : IssueId)
+    (hopen : (s.issueData i).statusOf = Status.Open) (hepic : s.isEpic i = false)
+    (hdefer : State.deferOk (s.issueData i) now = true) (hpres : s.hasIssue i)
+    (hnopred : s.precSucc i = []) : s.isReady now i = true := by
+  have hlb : s.liveBlockersSucc i = [] := by
+    unfold State.precSucc at hnopred
+    cases hlbc : s.liveBlockersSucc i with
+    | nil => rfl
+    | cons a as => rw [hlbc] at hnopred; exact nomatch hnopred
+  unfold State.isReady
+  rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true]
+  refine ⟨⟨⟨⟨decide_eq_true_iff.mpr hpres, decide_eq_true_iff.mpr hopen⟩, ?_⟩, hdefer⟩,
+    all_discharged_of_liveBlockers_nil s i hlb⟩
+  rw [hepic]; rfl
+
 end Tl.Kernel
