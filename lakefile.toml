@@ -1,6 +1,10 @@
 name = "tl"
 version = "0.1.0"
-defaultTargets = ["tl"]
+# `lake build` (no target) must verify the proofs (AGENTS.md / CI gate), so the
+# default set is the verified kernel lib `Tl`, the `Tests` sources, and both exes —
+# NOT just the Stage-0 `tl` binary (which imports only the Mathlib-free shell and
+# would leave `Tl/Kernel/*` uncompiled).
+defaultTargets = ["Tl", "Tests", "tl", "tltest"]
 # Proof/test discipline: batteries (std4) only — no Mathlib (ADR-0009).
 # Tactics restricted to explicit calc/cases/simp-only; avoid omega/decide/aesop
 # as closers. Pins are immutable commits, not branches/tags (ADR-0009).

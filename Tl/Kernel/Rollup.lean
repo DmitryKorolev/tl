@@ -9,10 +9,15 @@ status.
 
 Totality on cyclic/dangling parent graphs (ADR-0003 §3 / ADR-0004) is via
 fuel-bounded recursion: the fuel is the present-issue count, which bounds any
-acyclic parent chain, so the rollup is exact on acyclic graphs; a parent *cycle*
-exhausts the fuel and falls back to the stored status — and since an epic cannot
-be stored-Done, a cycle-trapped epic falls back to not-done (reported by `dep
-cycles`, never silently wrong). Dangling children are filtered out as inert
+acyclic parent chain, so the rollup is exact on acyclic graphs (proved:
+`effectiveStatus_epic`, `RollupAcyclic.lean`). A parent *cycle* exhausts the fuel
+and falls back to the **stored status**: the CLI's status guard keeps a well-formed
+epic from ever being stored `Done` (so in practice a cycle-trapped epic reads
+not-done), but that guard is a *local courtesy* — a concurrent merge can store
+`Done` on an epic (ADR-0002: cross-entity rules are reported, not enforced), in
+which case the cyclic fallback reads `Done`. This is best-effort, not a guarantee;
+the cycle is always reported by `dep cycles`, so it is never *silently* wrong.
+Dangling children are filtered out as inert
 (ADR-0003 §5). The recursion only ever descends the `parent` graph and never calls
 back into `ready`/`blockers`, so `ready`'s totality composes from this one.
 -/

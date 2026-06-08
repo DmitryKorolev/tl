@@ -5,7 +5,9 @@ Creates the gitignored `.tl/`, writes the `*` self-ignore (so `tl` never touches
 the repo's own `.gitignore`/`.gitattributes`), mints the replica-id, and seeds the
 clock. The `refs/tl/log` refspec + auto-sync (Stage 3) and the generated
 `.tl/README.md` + discovery pointer (Stage 2) are deliberately not here. `init` is
-idempotent and does not require a git repo. Tested I/O shell (ADR-0004).
+idempotent and does not require a git repo. Tested-shell tier (ADR-0004), but its own
+IO test (temp-dir idempotency + replica/clock/gitignore file checks) is **pending** —
+to land with the Stage-1 CLI test buildout.
 -/
 import Tl.Clock.Replica
 import Tl.Clock.Hlc

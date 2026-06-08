@@ -44,8 +44,12 @@ def Record.render (r : Record) : String :=
   let payload := r.fields.map (fun (k, v) => kv k v)
   "{" ++ String.intercalate "," (env ++ payload) ++ "}"
 
-/-- Parse a JSONL line back to the model (fail-closed on a missing/ill-typed
-    envelope field; ADR-0008 §corruption). -/
+/-- Parse a JSONL line back to the model. Fail-closed on a missing/ill-typed
+    *required* envelope field — `v, op, hlc, replica, nonce`, the ordering/identity/
+    dispatch core (ADR-0008 §corruption). `actor` is the deliberate exception: it is
+    optional *provenance* (who wrote the op), not load-bearing for the fold, so a
+    missing or non-string `actor` is read leniently as `none` rather than rejecting
+    the whole record. -/
 def Record.parse (s : String) : Except String Record := do
   let j ← Json.parse s
   let getStr (k : String) : Except String String := do (← j.getObjVal? k).getStr?
@@ -54,6 +58,7 @@ def Record.parse (s : String) : Except String Record := do
   let hlc ← getStr "hlc"
   let replica ← getStr "replica"
   let nonce ← getStr "nonce"
+  -- optional provenance (see the parse docstring): lenient, never fail-closed
   let actor : Option String :=
     match j.getObjVal? "actor" with
     | .ok (Json.str a) => some a

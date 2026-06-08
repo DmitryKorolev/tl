@@ -25,7 +25,7 @@ carried assumption (the Trusted section below) — never a vibe.
 | `ready` soundness + completeness | `i ∈ ready s now ↔ open ∧ ¬epic ∧ (deferUntil).all (·≤now) ∧ every blocker's effectiveStatus ∈ {done,cancelled}` (epic blockers discharge by rollup, not stored status) | 0004, 0003, 0010 |
 | Totality on cyclic/dangling graphs | `ready` / `apply` / `effectiveStatus` / cycle detection total with no acyclicity precondition; dangling edges inert | 0003, 0004 |
 | Honest liveness (deadlock-freedom) | one-directional: an open non-epic non-deferred issue with all blockers closed ⇒ `ready` non-empty; a stuck live working set ⇒ a cycle in the readiness-dependency relation `≺` (blocks edges + epic-rollup-on-open-children; pure or mixed-kind) — the only tool-pathological stall | 0003, 0004 |
-| Cycle diagnostic correctness | `cycles s kind` = one canonical simple-cycle witness per cyclic SCC of that kind; `cycles s` also reports readiness-deadlock `≺`-cycles (mixed blocks+parent) so a stuck live set is never undiagnosed (exactly the cyclic SCCs + `≺`-cycles; polynomial, total) | 0003, 0004 |
+| Cycle diagnostic correctness | `cycles s kind` = one **node-set** witness per cyclic SCC of that kind (the SCC's members, sorted — *not* a single simple-cycle path), proved exactly one witness per SCC (`sccWitnesses_same_witness_iff`); `cycles s` also reports readiness-deadlock `≺`-cycles (mixed blocks+parent) so a stuck live set is never undiagnosed (exactly the cyclic SCCs + `≺`-cycles; polynomial, total) | 0003, 0004 |
 | Epic rollup | unless manually cancelled, `effectiveStatus e = done ↔ all children closed`; cancel takes precedence; total incl. parent-cycles | 0003 |
 | Invariant preservation | one `apply` preserves valid-status; inherited by every `Op` (endpoint-existence & acyclicity deliberately not invariants — tolerated at read time) | 0004 |
 | Close-monotonicity | a single `close` op only unblocks: `ready (close s i) ⊇ ready s \ {i}`; `--cascade` is several such ops, each monotonic, so the composition is too | 0004 |
@@ -115,6 +115,13 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
 proof still outstanding (decomposed below; *not* downgraded to tests, per
 Definition-of-Done #5):
 
+- **Ready-queue sortedness (ADR-0004 thm 4).** `ready`'s *determinism* — equal state +
+  `now` ⇒ equal ranked list, so replicas agree — holds for free (`rankSort` is a pure
+  function; `rankSort_perm`/`mem_rankSort` give the permutation/membership facts the
+  convergence and `mem_ready_iff` proofs use). What is **not yet proved** is that
+  `rankSort`'s output is actually *sorted* by `readyLe`: decomposes into `readyLe`
+  totality (clean — Nat/`Fin`/`TotalOrd String` lex) + insertion-sort sortedness of
+  `rankInsert`/`rankSort`. Provable; recorded here rather than left implicit.
 - ~~**Epic rollup correctness (ADR-0003).**~~ **Now proved.** The unconditional
   branches are in `Tl/Kernel/RollupSpec.lean` (`effStatusAux_cancelled` — manual-cancel
   precedence; `effStatusAux_nonEpic` — non-epic equals stored status; `effStatusAux_fuel_congr`
@@ -162,7 +169,7 @@ ADR-0008).
 | Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008) |
 | beads import fidelity | differential test vs `.beads` fixtures (0005) |
 | HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases (0007); real durable monotonic persistence remains Trusted below |
-| encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. Tested by cross-checking string compare against the `Stamp` order on sampled triples (0007/0008) |
+| encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. **Test pending** — the encodings (`Hlc.toHex`, `toCrockford`) are built, but the sampled string-compare-vs-`Stamp`-order cross-check is not yet in the runner (0007/0008) |
 | CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008) |
 | ref sync transport | `refs/tl/log` plumbing (read/write), segment materialization, the complete-line union merge, push-rejection retry, no-upstream, and auto-sync error handling; the local-first leg + read-time ref-OID refresh for same-machine worktree sharing (0001/0016) |
 | "superseded by …" signal | shell compares the converged winning `assignee` vs this replica's own latest `claim` op (0013); replica-relative, not a kernel property |

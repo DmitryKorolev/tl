@@ -96,8 +96,12 @@ def createdAtOf (s : State) (i : IssueId) : Nat :=
   | h :: t => t.foldl Nat.min h
 
 /-- The ranking order (`a` ranks before `b`): priority ↑, then weight ↓, then
-    createdAt ↑, then the unique id ↑ — a total order, so the queue is
-    reproducible across replicas (ADR-0004 thm 4). -/
+    createdAt ↑, then the unique id ↑ — a total order. The queue is reproducible
+    across replicas because `rankSort` is a deterministic *function* (so equal states
+    give equal output — `rankSort_perm`/`mem_rankSort` pin membership); that its output
+    is actually *sorted* by `readyLe` (`readyLe`-totality + insertion-sort sortedness)
+    is provable but not yet proved — a tracked residual (overview Proof status).
+    (ADR-0004 thm 4.) -/
 def readyLe (s : State) (a b : IssueId) : Bool :=
   let pa := (s.issueData a).priorityOf.val
   let pb := (s.issueData b).priorityOf.val
