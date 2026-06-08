@@ -25,4 +25,5 @@ import Tl.Kernel.Reach
 import Tl.Clock.Hlc
 import Tl.Clock.Replica
 import Tl.Format.Crockford
+import Tl.Format.Record
 import Tl.Cli.Init
