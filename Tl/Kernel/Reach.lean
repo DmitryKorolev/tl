@@ -328,4 +328,62 @@ theorem liveness (s : State) (now : Instant) (i : IssueId)
     all_discharged_of_liveBlockers_nil s i hlb⟩
   rw [hepic]; rfl
 
+/-! ## Thm 5 — deadlock existence (the contrapositive)
+
+A *stuck* live set — a nonempty node set in which every member waits on a member
+(has a successor inside it) — must contain a cycle. So an empty `ready` over a
+nonempty live working set is always *diagnosed* by `precCycles`. Pigeonhole: a
+chosen-successor function iterated past the set's size repeats a node. -/
+
+theorem exists_onCycle_of_all_succ {s : State} {succ : IssueId → List IssueId}
+    (hpres : ∀ x, succ x ⊆ s.presentIssues) {S : List IssueId}
+    (hsucc : ∀ x ∈ S, ∃ y ∈ S, y ∈ succ x) {v0 : IssueId} (hv0 : v0 ∈ S) :
+    ∃ v ∈ S, s.onCycle succ v = true := by
+  classical
+  let f : IssueId → IssueId := fun x => if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x
+  have hfS : ∀ x ∈ S, f x ∈ S := fun x hx => by
+    show (if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x) ∈ S
+    rw [dif_pos (hsucc x hx)]; exact (hsucc x hx).choose_spec.1
+  have hfsucc : ∀ x ∈ S, f x ∈ succ x := fun x hx => by
+    show (if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x) ∈ succ x
+    rw [dif_pos (hsucc x hx)]; exact (hsucc x hx).choose_spec.2
+  have horbit : ∀ k, f^[k] v0 ∈ S := by
+    intro k
+    induction k with
+    | zero => exact hv0
+    | succ k ih => rw [Function.iterate_succ_apply']; exact hfS _ ih
+  have hreach : ∀ a m, Relation.ReflTransGen (StepRel succ) (f^[a] v0) (f^[a + m] v0) := by
+    intro a m
+    induction m with
+    | zero => exact .refl
+    | succ m ih =>
+      have hstep : f^[a + m + 1] v0 ∈ succ (f^[a + m] v0) := by
+        rw [Function.iterate_succ_apply']; exact hfsucc _ (horbit (a + m))
+      exact ih.tail hstep
+  have hcard : (S.toFinset).card < (Finset.range (S.length + 1)).card := by
+    rw [Finset.card_range]
+    exact Nat.lt_succ_of_le (List.toFinset_card_le S)
+  obtain ⟨x, _, y, _, hxy, hgxy⟩ := Finset.exists_ne_map_eq_of_card_lt_of_maps_to hcard
+    (f := fun k : Nat => f^[k] v0)
+    (fun k _ => List.mem_toFinset.mpr (horbit k))
+  obtain ⟨a, b, hab, heq⟩ : ∃ a b, a < b ∧ f^[a] v0 = f^[b] v0 := by
+    rcases Nat.lt_or_ge x y with h | h
+    · exact ⟨x, y, h, hgxy⟩
+    · exact ⟨y, x, lt_of_le_of_ne h (Ne.symm hxy), hgxy.symm⟩
+  refine ⟨f^[a] v0, horbit a, ?_⟩
+  rw [onCycle_iff hpres]
+  refine ⟨f^[a + 1] v0, ?_, ?_⟩
+  · rw [Function.iterate_succ_apply']; exact hfsucc _ (horbit a)
+  · have hreach' := hreach (a + 1) (b - (a + 1))
+    rw [Nat.add_sub_cancel' hab] at hreach'
+    exact heq.symm ▸ hreach'
+
+/-- **Thm 5** (deadlock existence): a stuck live working set `S` — every member
+    has a `≺`-successor in `S` — contains a `≺`-cycle, so it is diagnosed by
+    `precCycles` (ADR-0004 thm 5). The honest converse of `liveness`. -/
+theorem deadlock_exists (s : State) {S : List IssueId}
+    (hstuck : ∀ x ∈ S, ∃ y ∈ S, y ∈ s.precSucc x) {v0 : IssueId} (hv0 : v0 ∈ S) :
+    ∃ v ∈ S, s.onCycle s.precSucc v = true :=
+  exists_onCycle_of_all_succ (precSucc_subset_present s) hstuck hv0
+
 end Tl.Kernel
