@@ -274,4 +274,207 @@ theorem ready_labelRemove (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt.
       (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
     now
 
+/-! ## View-based congruences (for ops that change `edges` but not the filtered views)
+
+The congruences above key on `s1.edges = s2.edges`, which a `relate`/`unrelate`
+breaks. But `effectiveStatus`/`ready` read edges *only* through the `Blocks`/`Parent`
+views `childrenOf`/`blockersOf`/`dependentsOf`; these weaker congruences key on those
+view equalities directly, so a `related` edge change (which fixes the views) still
+goes through. -/
+
+theorem presentChildren_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j) (j : IssueId) :
+    s1.presentChildren j = s2.presentChildren j := by
+  have hpred : (fun c => decide (s1.hasIssue c)) = (fun c => decide (s2.hasIssue c)) :=
+    funext (fun c => decide_hasIssue_congr hi c)
+  simp only [State.presentChildren, hchild j, hpred]
+
+theorem effectiveStatus_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j)
+    (hst : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf)
+    (i : IssueId) : s1.effectiveStatus i = s2.effectiveStatus i := by
+  have hpi : s1.presentIssues = s2.presentIssues := by simp only [State.presentIssues, hi]
+  unfold State.effectiveStatus
+  rw [hpi]
+  exact effStatusAux_congr (presentChildren_congr_view hi hchild) hst _ i
+
+theorem isEpic_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j) (i : IssueId) :
+    s1.isEpic i = s2.isEpic i := by
+  simp only [State.isEpic, presentChildren_congr_view hi hchild i]
+
+theorem blocksSucc_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hdep : ∀ j, s1.dependentsOf j = s2.dependentsOf j) : s1.blocksSucc = s2.blocksSucc := by
+  funext i
+  have hpred : (fun j => decide (s1.hasIssue j)) = (fun j => decide (s2.hasIssue j)) :=
+    funext (fun j => decide_hasIssue_congr hi j)
+  simp only [State.blocksSucc, hdep i, hpred]
+
+theorem weight_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hdep : ∀ j, s1.dependentsOf j = s2.dependentsOf j) (i : IssueId) :
+    s1.weight i = s2.weight i := by
+  have hpi : s1.presentIssues = s2.presentIssues := by simp only [State.presentIssues, hi]
+  simp only [State.weight, State.reachableBlocks, State.reachClosure,
+    blocksSucc_congr_view hi hdep, hpi]
+
+theorem effClosed_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf) (b : IssueId) :
+    s1.effClosed b = s2.effClosed b := by
+  unfold State.effClosed; rw [effectiveStatus_congr_view hi hchild hstat b]
+
+theorem blockerDischarged_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf) :
+    s1.blockerDischarged = s2.blockerDischarged := by
+  funext b
+  simp only [State.blockerDischarged, decide_hasIssue_congr hi b,
+    effClosed_congr_view hi hchild hstat b]
+
+theorem isReady_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j)
+    (hblock : ∀ j, s1.blockersOf j = s2.blockersOf j)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf)
+    (hdefer : ∀ j, (s1.issueData j).deferUntilOf = (s2.issueData j).deferUntilOf)
+    (now : Instant) : s1.isReady now = s2.isReady now := by
+  funext i
+  simp only [State.isReady, decide_hasIssue_congr hi i, hstat i, isEpic_congr_view hi hchild i,
+    deferOk_congr hdefer i now, hblock i, blockerDischarged_congr_view hi hchild hstat]
+
+theorem readyLe_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hdep : ∀ j, s1.dependentsOf j = s2.dependentsOf j)
+    (hprio : ∀ j, (s1.issueData j).priorityOf = (s2.issueData j).priorityOf) :
+    s1.readyLe = s2.readyLe := by
+  funext a b
+  simp only [State.readyLe, hprio a, hprio b, weight_congr_view hi hdep a,
+    weight_congr_view hi hdep b, createdAtOf_congr hi a, createdAtOf_congr hi b]
+
+/-- `ready` keyed on the `Blocks`/`Parent` views rather than full `edges` equality. -/
+theorem ready_congr_view {s1 s2 : State} (hi : s1.issues = s2.issues)
+    (hchild : ∀ j, s1.childrenOf j = s2.childrenOf j)
+    (hblock : ∀ j, s1.blockersOf j = s2.blockersOf j)
+    (hdep : ∀ j, s1.dependentsOf j = s2.dependentsOf j)
+    (hstat : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf)
+    (hprio : ∀ j, (s1.issueData j).priorityOf = (s2.issueData j).priorityOf)
+    (hdefer : ∀ j, (s1.issueData j).deferUntilOf = (s2.issueData j).deferUntilOf)
+    (now : Instant) : s1.ready now = s2.ready now := by
+  have hpi : s1.presentIssues = s2.presentIssues := by simp only [State.presentIssues, hi]
+  unfold State.ready
+  rw [hpi, isReady_congr_view hi hchild hblock hstat hdefer now,
+    rankSort_congr (readyLe_congr_view hi hdep hprio)]
+
+/-! ## The frame lemma for a `related` edge add (ADR-0003)
+
+`Op.edgeAdd (i,j,Related)` merges one `Related` element into the edge OR-Set. Every
+view `effectiveStatus`/`ready` read (`childrenOf`/`blockersOf`/`dependentsOf`) filters
+edges to `Blocks`/`Parent`, so the added `Related` element is dropped — the views, and
+hence `effectiveStatus`/`ready`, are fixed; issues and every register are fixed too
+(empty issue/data delta). So a `relate` is invisible to the verified core.
+
+The `unrelate` (`edgeRemove`) counterpart tombstones the observed tags *globally* (the
+delta ignores the edge kind), so it is frame-preserving only when those tags spare
+every present `Blocks`/`Parent` edge — which for a well-formed unrelate follows from
+add-tag/stamp uniqueness (overview Trusted, tier-3), not from the kernel. It is hence
+correctly a carried assumption, not a theorem; `ready_edgeRemove_of_undisturbed` below
+states the exact in-kernel boundary. -/
+
+private theorem decide_related_false (k : EdgeKind) (hk : EdgeKind.Related ≠ k)
+    {q : Prop} [Decidable q] : decide (EdgeKind.Related = k ∧ q) = false :=
+  decide_eq_false_iff_not.mpr (fun h => hk h.1)
+
+/-- A `related` edge add leaves the edge set's present list fixed under any filter
+    that rejects the added `Related` element (lifts the OR-Set add workhorse). -/
+theorem presentEdges_relate_filter (s : State) (i0 j0 : IssueId) (st : Stamp)
+    {P : Edge → Bool} (hP : P (i0, j0, EdgeKind.Related) = false) :
+    ((apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).presentEdges).filter P
+      = (s.presentEdges).filter P :=
+  OrSet.presentElements_mergeAdd_filter s.edges (i0, j0, EdgeKind.Related) st hP
+
+theorem childrenOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).childrenOf i = s.childrenOf i := by
+  unfold State.childrenOf
+  rw [presentEdges_relate_filter s i0 j0 st
+    (P := fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+    (decide_related_false EdgeKind.Parent (fun h => EdgeKind.noConfusion h))]
+
+theorem blockersOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).blockersOf i = s.blockersOf i := by
+  unfold State.blockersOf
+  rw [presentEdges_relate_filter s i0 j0 st
+    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
+    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+
+theorem dependentsOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).dependentsOf i = s.dependentsOf i := by
+  unfold State.dependentsOf
+  rw [presentEdges_relate_filter s i0 j0 st
+    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
+    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+
+theorem issues_relate (s : State) (i0 j0 : IssueId) (st : Stamp) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).issues = s.issues :=
+  OrSet.merge_empty_right s.issues
+
+theorem issueData_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (j : IssueId) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).issueData j = s.issueData j := by
+  unfold State.issueData
+  rw [show (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).data = s.data from
+    AMap.merge_empty_right IssueData.merge s.data]
+
+/-- **Frame lemma, `relate` case (ADR-0003).** A `related` edge add changes neither
+    `effectiveStatus` … -/
+theorem effectiveStatus_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).effectiveStatus i = s.effectiveStatus i :=
+  effectiveStatus_congr_view (issues_relate s i0 j0 st) (childrenOf_relate s i0 j0 st)
+    (fun j => congrArg IssueData.statusOf (issueData_relate s i0 j0 st j)) i
+
+/-- … **nor `ready`.** Completes the frame lemma for every side-channel write. -/
+theorem ready_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (now : Instant) :
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).ready now = s.ready now :=
+  ready_congr_view (issues_relate s i0 j0 st) (childrenOf_relate s i0 j0 st)
+    (blockersOf_relate s i0 j0 st) (dependentsOf_relate s i0 j0 st)
+    (fun j => congrArg IssueData.statusOf (issueData_relate s i0 j0 st j))
+    (fun j => congrArg IssueData.priorityOf (issueData_relate s i0 j0 st j))
+    (fun j => congrArg IssueData.deferUntilOf (issueData_relate s i0 j0 st j)) now
+
+/-! ## The `edgeRemove` (`unrelate` / `dep remove`) boundary
+
+An `edgeRemove` has empty issue/data deltas (issues and registers are fixed) but
+tombstones the observed tags *globally*: it can only *lose* present edges, never gain
+them, and the delta does not see the edge's kind. So whether it preserves the verified
+core is *exactly* whether it leaves the `Blocks`/`Parent` views fixed. We state that
+honest boundary: given the view-preservation hypotheses, `effectiveStatus`/`ready` are
+fixed. Discharging those hypotheses for a *related* removal (obs = that edge's own
+tags) rests on add-tag/stamp uniqueness (overview Trusted, tier-3); a *blocks* removal
+is *meant* to break them (that is `dep remove`). -/
+
+theorem issues_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) :
+    (apply s (Op.edgeRemove e obs)).issues = s.issues :=
+  OrSet.merge_empty_right s.issues
+
+theorem issueData_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) (j : IssueId) :
+    (apply s (Op.edgeRemove e obs)).issueData j = s.issueData j := by
+  unfold State.issueData
+  rw [show (apply s (Op.edgeRemove e obs)).data = s.data from
+    AMap.merge_empty_right IssueData.merge s.data]
+
+/-- An `edgeRemove` that leaves `childrenOf` fixed leaves `effectiveStatus` fixed. -/
+theorem effectiveStatus_edgeRemove_of_undisturbed (s : State) (e : Edge) (obs : FinSet Stamp)
+    (i : IssueId) (hchild : ∀ j, (apply s (Op.edgeRemove e obs)).childrenOf j = s.childrenOf j) :
+    (apply s (Op.edgeRemove e obs)).effectiveStatus i = s.effectiveStatus i :=
+  effectiveStatus_congr_view (issues_edgeRemove s e obs) hchild
+    (fun j => congrArg IssueData.statusOf (issueData_edgeRemove s e obs j)) i
+
+/-- An `edgeRemove` that leaves all three `Blocks`/`Parent` views fixed leaves `ready`
+    fixed — the precise in-kernel boundary for `unrelate` / `dep remove`. -/
+theorem ready_edgeRemove_of_undisturbed (s : State) (e : Edge) (obs : FinSet Stamp) (now : Instant)
+    (hchild : ∀ j, (apply s (Op.edgeRemove e obs)).childrenOf j = s.childrenOf j)
+    (hblock : ∀ j, (apply s (Op.edgeRemove e obs)).blockersOf j = s.blockersOf j)
+    (hdep : ∀ j, (apply s (Op.edgeRemove e obs)).dependentsOf j = s.dependentsOf j) :
+    (apply s (Op.edgeRemove e obs)).ready now = s.ready now :=
+  ready_congr_view (issues_edgeRemove s e obs) hchild hblock hdep
+    (fun j => congrArg IssueData.statusOf (issueData_edgeRemove s e obs j))
+    (fun j => congrArg IssueData.priorityOf (issueData_edgeRemove s e obs j))
+    (fun j => congrArg IssueData.deferUntilOf (issueData_edgeRemove s e obs j)) now
+
 end Tl.Kernel

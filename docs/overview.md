@@ -76,7 +76,18 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
   side-channel writes change neither (`effectiveStatus_*`, `ready_*`). The
-  `related`-edge and `actor` cases remain (actor is not even a kernel `Op` field).
+  `relate` (`related` `edgeAdd`) case is now proved **unconditionally**
+  (`effectiveStatus_relate`, `ready_relate`): a second family of congruences keyed
+  on the `Blocks`/`Parent` *views* (`childrenOf`/`blockersOf`/`dependentsOf`) rather
+  than full `edges` equality (`*_congr_view`), discharged by an OR-Set add/key-filter
+  workhorse (`OrSet.presentElements_mergeAdd_filter`) showing that adding a `Related`
+  element is invisible to any `Blocks`/`Parent` filter. The `unrelate` (`edgeRemove`)
+  case has its exact in-kernel boundary stated and proved
+  (`effectiveStatus_edgeRemove_of_undisturbed`, `ready_edgeRemove_of_undisturbed`):
+  an `edgeRemove` fixes `ready` iff it leaves those three views fixed — the only
+  residual is *discharging* that for a related removal, which is a tier-3 carried
+  assumption (below), not a kernel obligation. The `actor` case is not a kernel `Op`
+  field at all.
 
 **Tracked residuals** — defined and total in the kernel, soundness/completeness
 proof still outstanding (decomposed below; *not* downgraded to tests, per
@@ -92,12 +103,15 @@ Definition-of-Done #5):
   exactly one witness per cyclic SCC (the grouping correctness, over the proved
   `onCycle`/`reachClosure` characterizations) and (b) `unblocks` soundness/
   completeness (the constructive witness side of close-monotonicity, thm 7).
-- **Frame lemma (`relate`/`unrelate` case).** The data side-channels are proved
-  (above); the residual is the `related`-edge case — a `related` `edgeAdd`/
-  `edgeRemove` changes the edge OR-Set, but `blockersOf`/`childrenOf` filter to
-  `Blocks`/`Parent`, so the filtered views (and hence `ready`/`effectiveStatus`)
-  are unchanged — which needs a lemma that an OR-Set add/remove of a `related`
-  element leaves the `Blocks`/`Parent`-filtered present-edge list fixed.
+- **Frame lemma (`unrelate` discharge only).** The `relate` add case is now fully
+  proved (above), and the `edgeRemove` boundary theorem is proved. What remains is
+  *not* a kernel theorem: an `edgeRemove` tombstones the observed add-tags
+  **globally** (the delta does not see the edge kind — `unrelate (i,j,Related)` and
+  `dep remove (i,j,Blocks)` have the *same* delta), so it preserves the
+  `Blocks`/`Parent` views only when those tags spare every present `Blocks`/`Parent`
+  edge. For a well-formed `unrelate` (obs = that `related` edge's own tags) this
+  follows from add-tag/stamp uniqueness — a **tier-3 carried assumption** (Trusted
+  section), correctly *not* a `sorry`/`axiom` and not a forced theorem.
 
 Reserved (proved when its feature is built). *Compaction preserves the
 fold* — `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-closed
@@ -128,7 +142,7 @@ total even then, so this guards segment-ownership, not convergence, ADR-0007);
 the deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
-SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007); HLC monotonic persistence;
+SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness, which is what lets a well-formed `unrelate` tombstone only its own `related` edge and so discharges the `edgeRemove` frame boundary (`ready_edgeRemove_of_undisturbed`) for a related removal; HLC monotonic persistence;
 git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,
