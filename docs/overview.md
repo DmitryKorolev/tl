@@ -66,11 +66,11 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   `effStatusAux_mono` (a status moving toward closed moves any ancestor epic's
   rollup only toward done) is proved by induction on the rollup fuel; the
   `--as done` case is the same argument restricted to non-epics.
-- **Thm 5 — honest liveness** (`Tl/Kernel/Reach.lean`, stated direction).
-  `liveness`: an open, non-epic, non-deferred, materialized issue with no
-  `≺`-predecessor is ready — for a non-epic, "no `≺`-predecessor" is "every
-  blocker discharged". The contrapositive (a stuck live set forces a `≺`-cycle) is
-  the `precCycles` detection `onCycle_precSucc_iff`.
+- **Thm 5 — honest liveness** (`Tl/Kernel/Reach.lean`, both directions). `liveness`:
+  an open, non-epic, non-deferred, materialized issue with no `≺`-predecessor is
+  ready. `deadlock_exists`: a *stuck* nonempty live set (every member has a
+  `≺`-successor inside it) contains a `≺`-cycle, so `precCycles` always diagnoses
+  it (pigeonhole on iterates of a chosen-successor function).
 - **Thm 9 — `ready` time-monotonicity.** `ready_time_mono` (via `deferOk_mono`).
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
@@ -87,11 +87,6 @@ Definition-of-Done #5):
   *fuel-adequacy* lemma — on an acyclic parent graph the present-issue-count fuel
   is enough that the rollup equals the spec (Done iff all children closed,
   manual-cancel precedence), and a parent cycle provably falls back to not-done.
-- **Thm 5 — deadlock *existence*.** The stated liveness direction and the
-  `≺`-cycle detection are proved (above); the residual is the existential
-  contrapositive — that a *stuck* nonempty live set (every member has a live
-  `≺`-predecessor within it) actually *contains* a `≺`-cycle (a finite-graph
-  "every node has an in-set successor ⇒ a cycle exists" argument).
 - **Thm 6/10 — SCC-witness enumeration & `unblocks`.** The cycle/why *detection*
   predicates are proved (above); the residuals are (a) that `sccWitnesses` returns
   exactly one witness per cyclic SCC (the grouping correctness, over the proved
