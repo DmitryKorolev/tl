@@ -209,4 +209,23 @@ theorem mem_reachClosure_iff {succ : IssueId → List IssueId} {U seed : List Is
   rintro ⟨s, hs, hsa⟩
   exact reachable_mem_reachClosure hsU hU s hs hsa
 
+/-! ## Thm 10 — `why` correctness -/
+
+/-- Live blockers are present issues. -/
+theorem liveBlockersSucc_subset_present (s : State) (x : IssueId) :
+    s.liveBlockersSucc x ⊆ s.presentIssues := by
+  intro b hb
+  unfold State.liveBlockersSucc at hb
+  rw [List.mem_filter, Bool.and_eq_true] at hb
+  exact (OrSet.mem_presentElements s.issues b).mpr (of_decide_eq_true hb.2.1)
+
+/-- **Thm 10** (`why` correctness): `j ∈ why s i` iff `j` is reachable from a direct
+    live blocker of `i` through live blockers — i.e. `j` is a transitive *unclosed*
+    `blocks`-blocker of `i` (ADR-0004 thm 10). Total on cyclic/dangling graphs. -/
+theorem mem_why_iff (s : State) (i j : IssueId) :
+    j ∈ s.why i ↔
+      ∃ b ∈ s.liveBlockersSucc i, Relation.ReflTransGen (StepRel s.liveBlockersSucc) b j :=
+  mem_reachClosure_iff (liveBlockersSucc_subset_present s i)
+    (fun x _ => liveBlockersSucc_subset_present s x)
+
 end Tl.Kernel
