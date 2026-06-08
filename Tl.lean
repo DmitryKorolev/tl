@@ -19,5 +19,6 @@ import Tl.Kernel.Cycles
 import Tl.Kernel.Theorems
 import Tl.Kernel.Frame
 import Tl.Kernel.CloseMono
+import Tl.Kernel.Reach
 
 -- Tested I/O shell
