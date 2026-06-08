@@ -7,7 +7,9 @@
 > what is *proved* versus what is a *tracked residual* (defined-and-total but
 > with its soundness/completeness proof still outstanding — decomposed and
 > recorded here per AGENTS.md Definition-of-Done #5, never downgraded to a test).
-> The tested I/O shell (`Tl/Format`, `Tl/Clock`, `Tl/Cli`, …) is not yet built.
+> The tested I/O shell is under construction: `Tl/Clock` (HLC, replica id),
+> `Tl/Format` (Crockford base32, JSONL record round-trip), and `Tl/Cli/Init`
+> ship with their tests (`Tests/`); `Tl/Sync` and `Tl/Import` are not yet built.
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -72,6 +74,12 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   `≺`-successor inside it) contains a `≺`-cycle, so `precCycles` always diagnoses
   it (pigeonhole on iterates of a chosen-successor function).
 - **Thm 9 — `ready` time-monotonicity.** `ready_time_mono` (via `deferOk_mono`).
+- **Epic-rollup correctness** (`Tl/Kernel/RollupSpec.lean`, `Tl/Kernel/RollupAcyclic.lean`).
+  `effectiveStatus` meets its ADR-0003 spec: manual-cancel precedence and non-epic =
+  stored status unconditionally; and, on an acyclic parent graph (`ParentAcyclic`), an
+  epic that is not manually cancelled is `Done` iff every present child is effectively
+  closed (`effectiveStatus_epic`), via fuel-irrelevance above the descendant count
+  (`effStatusAux_stable`, strong induction on the descendant-closure cardinality).
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
@@ -93,11 +101,17 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
 proof still outstanding (decomposed below; *not* downgraded to tests, per
 Definition-of-Done #5):
 
-- **Epic rollup correctness (ADR-0003).** `effectiveStatus` is defined and total
-  (fuel-bounded over the parent graph, `Rollup.lean`); the residual is the
-  *fuel-adequacy* lemma — on an acyclic parent graph the present-issue-count fuel
-  is enough that the rollup equals the spec (Done iff all children closed,
-  manual-cancel precedence), and a parent cycle provably falls back to not-done.
+- ~~**Epic rollup correctness (ADR-0003).**~~ **Now proved.** The unconditional
+  branches are in `Tl/Kernel/RollupSpec.lean` (`effStatusAux_cancelled` — manual-cancel
+  precedence; `effStatusAux_nonEpic` — non-epic equals stored status; `effStatusAux_fuel_congr`
+  — one-step fuel congruence). The fuel-adequacy step is in `Tl/Kernel/RollupAcyclic.lean`:
+  on an acyclic parent graph (`ParentAcyclic` — no present child reaches its own parent)
+  the rollup is fuel-irrelevant above an issue's descendant count (`effStatusAux_stable`,
+  by strong induction on the descendant-closure cardinality — a child's descendant set is
+  a strict subset of its parent's), so `effectiveStatus_epic` gives the full spec (an epic,
+  not manually cancelled, is Done iff every present child is effectively closed). A parent
+  *cycle* still exhausts the fuel and falls back to the stored status (`dep cycles` reports
+  it); the acyclic theorem is the positive correctness statement.
 - **Thm 6/10 — SCC-witness enumeration & `unblocks`.** The cycle/why *detection*
   predicates are proved (above); the residuals are (a) that `sccWitnesses` returns
   exactly one witness per cyclic SCC (the grouping correctness, over the proved
