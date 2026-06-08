@@ -51,6 +51,16 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   `cycles` being total Lean definitions (fuel / bounded `iterateN`), no `sorry`.
 - **Thm 8 — CvRDT inflation + idempotent re-delivery.** `le_apply`,
   `fold_le_of_subset`, and `apply_idem`.
+- **Thm 6 — cycle-diagnostic correctness** (`Tl/Kernel/Reach.lean`).
+  `onCycle_kindSucc_iff` / `onCycle_precSucc_iff`: a node is flagged on a (kind-`k`
+  structural, or `≺` readiness-deadlock) cycle iff a successor reaches it back.
+  Both ride on `mem_reachClosure_iff` — that `reachClosure` computes the exact
+  transitive closure (soundness `batteries`-only; completeness is the Mathlib
+  finite-graph saturation argument, ADR-0009 note). `kindSucc` now filters dangling
+  targets (ADR-0003 §5), keeping reachability present-bounded.
+- **Thm 10 — `why` correctness** (`Tl/Kernel/Reach.lean`). `mem_why_iff`: `j ∈ why
+  s i` iff `j` is reachable from a direct live blocker through live blockers —
+  exactly the transitive *unclosed* blockers. Total on cyclic/dangling.
 - **Thm 7 — close-monotonicity** (`Tl/Kernel/CloseMono.lean`, cancel case).
   `close_cancel_monotone`: closing `i` never removes another ready item. The crux
   `effStatusAux_mono` (a status moving toward closed moves any ancestor epic's
@@ -72,17 +82,16 @@ Definition-of-Done #5):
   *fuel-adequacy* lemma — on an acyclic parent graph the present-issue-count fuel
   is enough that the rollup equals the spec (Done iff all children closed,
   manual-cancel precedence), and a parent cycle provably falls back to not-done.
-- **Thm 5 — honest liveness / deadlock-freedom.** The `≺` relation and its
-  diagnostic are defined (`Cycles.precSucc`/`precCycles`); the residual is the
-  one-directional theorem (acyclic `≺` over a live working set ⇒ a `≺`-minimal
-  ready leaf).
-- **Thm 6 — cycle-diagnostic correctness.** `cycles`/`precCycles` are defined and
-  total; the residual is that `reachClosure` computes exact transitive
-  reachability (the saturation-in-`|nodes|`-steps lemma) and hence that the
-  reported SCCs are exactly the cyclic ones.
-- **Thm 10 — `why` / `unblocks` correctness.** Both are defined and total
-  (`Ready.lean`); the residual is soundness/completeness, sharing the
-  `reachClosure`-saturation lemma with thm 6.
+- **Thm 5 — honest liveness / deadlock-freedom.** The `≺`-cycle *detection* is now
+  proved (`onCycle_precSucc_iff`); the residual is the one-directional liveness
+  theorem itself — that an acyclic `≺` over the live working set always exposes a
+  `≺`-minimal, fully-dischargeable open non-epic leaf (a finite-acyclic-relation
+  has-a-minimal-element argument, now feasible with Mathlib).
+- **Thm 6/10 — SCC-witness enumeration & `unblocks`.** The cycle/why *detection*
+  predicates are proved (above); the residuals are (a) that `sccWitnesses` returns
+  exactly one witness per cyclic SCC (the grouping correctness, over the proved
+  `onCycle`/`reachClosure` characterizations) and (b) `unblocks` soundness/
+  completeness (the constructive witness side of close-monotonicity, thm 7).
 - **Frame lemma (`relate`/`unrelate` case).** The data side-channels are proved
   (above); the residual is the `related`-edge case — a `related` `edgeAdd`/
   `edgeRemove` changes the edge OR-Set, but `blockersOf`/`childrenOf` filter to
