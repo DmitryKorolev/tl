@@ -131,20 +131,25 @@ def liveBlockersSucc (s : State) (i : IssueId) : List IssueId :=
 def why (s : State) (i : IssueId) : List IssueId :=
   reachClosure (liveBlockersSucc s) s.presentIssues.length (s.liveBlockersSucc i)
 
-/-- Would `j` become ready if `i` were closed: `j` open/non-epic/non-deferred and
-    every blocker of `j` other than `i` already discharged. -/
-def wouldReadyOnClose (s : State) (now : Instant) (i j : IssueId) : Bool :=
-  decide (s.hasIssue j)
-  && decide ((s.issueData j).statusOf = Status.Open)
-  && !s.isEpic j
-  && deferOk (s.issueData j) now
-  && (s.blockersOf j).all (fun b => decide (b = i) || s.blockerDischarged b)
+/-- The state `s` with issue `i`'s materialized status forced to `Cancelled` — the
+    *exact* "what if `i` were closed" projection (ADR-0004 thm 10). It overrides only
+    `i`'s status register (`statusOf i` reads only the register value, so the stamp is
+    irrelevant — a read-only projection, never merged into the CRDT fold), leaving
+    issues, edges, and every other register identical. Manual-cancel precedence makes
+    `effectiveStatus i = Cancelled` regardless of whether `i` is an epic, so this
+    captures the close's *full* effect — including the rollup ripple through any epic
+    ancestor of `i` — which a local "blocked only by `i`" check cannot. -/
+def withClosed (s : State) (i : IssueId) : State :=
+  let closed : IssueData := { s.issueData i with status := Reg.write ⟨0, 0, 0⟩ Status.Cancelled }
+  { s with data := s.data.insert i closed }
 
-/-- `unblocks s now i`: the issues that closing `i` would newly make ready (ADR-0004
-    thm 10) — `i`'s live dependents that are blocked only by `i`. -/
+/-- `unblocks s now i`: exactly the issues that closing `i` newly makes ready (ADR-0004
+    thm 10) — the set difference `ready (withClosed s i) \ ready s`. Defined as the true
+    diff (not a local heuristic), so soundness *and* completeness are unconditional
+    (`mem_unblocks_iff`): it captures indirect unblocks via epic rollup, which a
+    "directly blocked only by `i`" test would miss. -/
 def unblocks (s : State) (now : Instant) (i : IssueId) : List IssueId :=
-  s.presentIssues.filter (fun j =>
-    decide (i ∈ s.blockersOf j) && !s.isReady now j && s.wouldReadyOnClose now i j)
+  ((s.withClosed i).ready now).filter (fun j => decide (j ∉ s.ready now))
 
 end State
 

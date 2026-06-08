@@ -359,6 +359,21 @@ def find (m : AMap K V) (k : K) : Option V := AssocList.lookup k m.toList
   unfold AssocList.lookup
   rfl
 
+/-- Replace (or add) the value at `k`, preserving the canonical sort. Unlike `merge`,
+    this *overrides* the existing entry rather than joining it — used for read-only
+    state projections (the `unblocks` force-closed diagnostic), never the CRDT fold. -/
+def insert (m : AMap K V) (k : K) (v : V) : AMap K V :=
+  ⟨AssocList.insertWith (fun _ n => n) k v m.toList, AssocList.sorted_insertWith m.sorted⟩
+
+@[simp] theorem find_insert (m : AMap K V) (k j : K) (v : V) :
+    (m.insert k v).find j = if j = k then some v else m.find j := by
+  unfold AMap.insert AMap.find
+  by_cases h : j = k
+  · subst h
+    rw [if_pos rfl, AssocList.lookup_insertWith_self m.sorted]
+    cases AssocList.lookup j m.toList <;> rfl
+  · rw [if_neg h, AssocList.lookup_insertWith_ne h v m.toList]
+
 /-- The keys, in sorted order — the finite, duplicate-free enumeration the OR-Set
     and the tracker layer iterate over. -/
 def keys (m : AMap K V) : List K := m.toList.map Prod.fst

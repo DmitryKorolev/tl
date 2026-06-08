@@ -238,14 +238,40 @@ Robustness additions (reuse existing machinery — 8 strengthens the lattice lay
    fixed state `now ≤ now' → ready s now ⊆ ready s now'`. The passage of time alone
    never removes a workable item — a deferred task only ever resurfaces. The
    defer-dual of close-monotonicity (theorem 7).
-10. `why` / `unblocks` correctness. Both are kernel functions computed by the
-    same finite-visited-set `blocks`-reachability recursion as the critical-path
-    weight (theorem 4) and cycle detection (theorem 6), hence total on
-    cyclic/dangling graphs. Soundness + completeness: `j ∈ why s i ↔ j` is
-    `blocks`-reachable from `i` with `¬ closed (effectiveStatus s j)` (the
-    transitive *unclosed* blockers); `j ∈ unblocks s i ↔` closing `i` newly readies
-    `j` — the constructive witness side of close-monotonicity (theorem 7). Agents
-    act on these, so they are proved, not shell-tested (AGENTS.md tier 1).
+10. `why` / `unblocks` correctness. Both are total kernel diagnostics; agents act
+    on them, so they are proved, not shell-tested (AGENTS.md tier 1).
+
+    `why s i` is computed by the same finite-visited-set `blocks`-reachability
+    recursion as the critical-path weight (theorem 4) and cycle detection
+    (theorem 6), hence total on cyclic/dangling graphs. Soundness + completeness:
+    `j ∈ why s i ↔ j` is `blocks`-reachable from `i` through *live* (present,
+    unclosed) blockers — the transitive *unclosed* blockers of `i`.
+
+    `unblocks s i` is the issues that closing `i` newly makes ready. It is **defined
+    as the exact set difference** `ready (withClosed s i) \ ready s`, where
+    `withClosed s i` is `s` with `i`'s materialized status forced to `Cancelled` —
+    the *full* effect of closing `i`, including the epic-rollup ripple. Soundness
+    *and* completeness are then **unconditional** and definitional
+    (`mem_unblocks_iff`): `j ∈ unblocks s i ↔ j ∈ ready (withClosed s i) ∧ j ∉ ready s`.
+    `ready_withClosed_eq_cancel` grounds the projection in the real op — the
+    force-closed state agrees with `apply s (cancelOp i st)` on `ready` whenever that
+    close actually takes effect (its stamp wins LWW), so `withClosed` is exactly
+    "what if `i` were closed", not an approximation.
+
+    *Why a local definition would be incomplete (the epic-ripple gap).* An earlier
+    formulation listed `j` only when every blocker of `j` was *either `i` itself or
+    already discharged* — a cheap, local check. But "unblocking" is **non-local**:
+    closing `i` can discharge a *different* blocker of `j` by rolling up an epic
+    ancestor of `i`. Concretely — epic `E` has children `i` (open) and `k` (done),
+    and `E` blocks `j`; since `i` is open, `effectiveStatus E = Open`, so `j` is
+    blocked and not ready. Closing `i` makes all of `E`'s children closed, so `E`
+    rolls up to `Done`, discharging `E` and readying `j`. Yet `i` is **not** a direct
+    blocker of `j` (`E` is), so the local check would never list `j` — it under-reports.
+    This is unavoidable structurally: a CRDT merge can always produce an epic that
+    blocks something and has `i` as a child (cross-entity rules are *reported, never
+    enforced* — ADR-0002), so the gap cannot be *prevented*; the fix is to *define*
+    `unblocks` as the exact ready-diff, which re-derives readiness in the closed world
+    and so captures the ripple by construction.
 
 This is the whole spec: the convergence theorems (1–2, with the inflation
 strengthening 8) and the tracker theorems (3–7 and 9–10), plus the rollup / frame

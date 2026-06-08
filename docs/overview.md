@@ -33,7 +33,7 @@ carried assumption (the Trusted section below) — never a vibe.
 | frame lemma | `relate`/`unrelate`, any `meta` write, any `labels` write, and the per-op `actor` provenance field change neither `ready` nor rollup (the side-channels stay out of the verified core) | 0003, 0008, 0013 |
 | CvRDT inflation / monotonicity | `s ≤ apply s o` (each op only moves up the lattice) ⇒ `ops ⊆ ops' → fold ops ≤ fold ops'` (a merge never loses information); with fold-dup-insensitivity, the full state-CvRDT pair. Op-granular: `apply (apply s o) o = apply s o` (at-least-once delivery safe) | 0002, 0004 |
 | `ready` time-monotonicity | `now ≤ now' → ready s now ⊆ ready s now'` — time alone never un-readies an item (the defer-dual of close-monotonicity) | 0010, 0004 |
-| `why` / `unblocks` correctness | `why s i` = exactly the transitive *unclosed* `blocks`-blockers of `i`; `unblocks s i` = exactly the set closing `i` newly readies; total on cyclic/dangling (same reach⁺ machinery as the weight key) | 0003, 0004 |
+| `why` / `unblocks` correctness | `why s i` = exactly the transitive *unclosed* `blocks`-blockers of `i` (reach⁺ machinery, total on cyclic/dangling); `unblocks s i` = exactly the set closing `i` newly readies, *defined* as the ready-set diff `ready (withClosed s i) \ ready s` so soundness+completeness are unconditional (captures the epic-rollup ripple) | 0003, 0004 |
 
 ### Proof status (current)
 
@@ -85,10 +85,15 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),
   and two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`).
   Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
-- **`unblocks` soundness** (`Tl/Kernel/Unblocks.lean`). `unblocks_not_ready`: every
-  reported issue is not-yet-ready. `unblocks_sound`: each reported `j ≠ i` becomes
-  ready once the close discharges `i` (the cancel stamp wins LWW). Completeness is the
-  one remaining residual (conditional on no epic-ancestor blocker; see below).
+- **`unblocks` correctness — exact & unconditional** (`Tl/Kernel/Unblocks.lean`).
+  `unblocks` is *defined* as the ready-set diff `ready (withClosed s i) \ ready s`
+  (`withClosed` forces `i`'s status to `Cancelled`, the full close effect incl. the
+  epic-rollup ripple), so `mem_unblocks_iff` gives soundness *and* completeness with no
+  side condition: `j ∈ unblocks s i ↔ j ∈ ready (withClosed s i) ∧ j ∉ ready s`.
+  `ready_withClosed_eq_cancel` grounds the projection in the real op (it agrees with
+  `apply s (cancelOp i st)` on `ready` when the close wins LWW), giving the operational
+  `mem_unblocks_iff_cancel`. (This replaced an earlier *local* `unblocks` that
+  under-reported indirect unblocks through an epic ancestor — ADR-0004 thm 10.)
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
@@ -121,22 +126,19 @@ Definition-of-Done #5):
   not manually cancelled, is Done iff every present child is effectively closed). A parent
   *cycle* still exhausts the fuel and falls back to the stored status (`dep cycles` reports
   it); the acyclic theorem is the positive correctness statement.
-- **Thm 6/10 — SCC-witness enumeration & `unblocks`.** *(a) now proved* in
+- ~~**Thm 6/10 — SCC-witness enumeration & `unblocks`.**~~ **Now proved.** *(a)*
   `Tl/Kernel/SccProps.lean`: `sameSCC` is an equivalence on present nodes
   (`sameSCC_refl/symm/trans`, via the `reachClosure` characterization), the witnesses
   cover exactly the cyclic present nodes (`mem_flatten_sccWitnesses_iff`), and two
   cyclic nodes share a witness iff they are `sameSCC` (`sccWitnesses_same_witness_iff`)
   — i.e. exactly one witness per cyclic SCC. Instantiated for the real diagnostics
   (`mem_flatten_cycles_iff` / `cycles_same_witness_iff` and the `precCycles` pair) via
-  the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas. *(b)* `unblocks`
-  **soundness now proved** (`Tl/Kernel/Unblocks.lean`): `unblocks_not_ready` (every
-  reported issue is genuinely not-yet-ready, unconditional) and `unblocks_sound` (each
-  reported `j ≠ i` becomes ready once closing `i` discharges it — i.e. the cancel stamp
-  wins LWW, `(apply s (cancelOp i st)).effClosed i`). Both hypotheses are necessary
-  (a stamp that loses leaves `i` open; a self-blocking `i` cannot ready itself).
-  *Completeness* (`newly ready ⇒ reported`) is the residual remainder: it fails when a
-  *different* blocker of `j` is an epic ancestor of `i` that rolls up to done as `i`
-  closes, so it holds only under a no-epic-ancestor-blocker side condition.
+  the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas. *(b)* `unblocks` is now
+  **exact and unconditional** (`Tl/Kernel/Unblocks.lean`): redefined as the ready-set
+  diff `ready (withClosed s i) \ ready s`, so `mem_unblocks_iff` is soundness *and*
+  completeness with no side condition (the force-closed projection captures the
+  epic-rollup ripple a local check missed), and `ready_withClosed_eq_cancel` /
+  `mem_unblocks_iff_cancel` ground it in the real `cancelOp` when the close wins LWW.
 - **Frame lemma (`unrelate` discharge only).** The `relate` add case is now fully
   proved (above), and the `edgeRemove` boundary theorem is proved. What remains is
   *not* a kernel theorem: an `edgeRemove` tombstones the observed add-tags
