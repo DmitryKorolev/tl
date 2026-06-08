@@ -24,6 +24,7 @@ import Tl.Kernel.Reach
 import Tl.Kernel.RollupAcyclic
 import Tl.Kernel.SccProps
 import Tl.Kernel.Unblocks
+import Tl.Kernel.Ranking
 
 -- Tested I/O shell
 import Tl.Clock.Hlc

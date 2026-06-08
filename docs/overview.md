@@ -115,13 +115,13 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
 proof still outstanding (decomposed below; *not* downgraded to tests, per
 Definition-of-Done #5):
 
-- **Ready-queue sortedness (ADR-0004 thm 4).** `ready`'s *determinism* — equal state +
-  `now` ⇒ equal ranked list, so replicas agree — holds for free (`rankSort` is a pure
-  function; `rankSort_perm`/`mem_rankSort` give the permutation/membership facts the
-  convergence and `mem_ready_iff` proofs use). What is **not yet proved** is that
-  `rankSort`'s output is actually *sorted* by `readyLe`: decomposes into `readyLe`
-  totality (clean — Nat/`Fin`/`TotalOrd String` lex) + insertion-sort sortedness of
-  `rankInsert`/`rankSort`. Provable; recorded here rather than left implicit.
+- ~~**Ready-queue sortedness (ADR-0004 thm 4).**~~ **Now proved** (`Tl/Kernel/Ranking.lean`).
+  Beyond determinism (free — `rankSort` is a pure function), `ready_sorted` shows the
+  queue is genuinely `readyLe`-sorted (`List.Pairwise`): `readyLe` is a total order
+  (`readyLe_total` + `readyLe_trans`, the lexicographic cascade priority↑/weight↓/
+  createdAt↑/`id`, via a per-level characterization), and insertion sort produces a
+  sorted list (`rankInsert_sorted`/`rankSort_sorted`, reusing `rankInsert_perm` for
+  membership). Mathlib-free.
 - ~~**Epic rollup correctness (ADR-0003).**~~ **Now proved.** The unconditional
   branches are in `Tl/Kernel/RollupSpec.lean` (`effStatusAux_cancelled` — manual-cancel
   precedence; `effStatusAux_nonEpic` — non-epic equals stored status; `effStatusAux_fuel_congr`
