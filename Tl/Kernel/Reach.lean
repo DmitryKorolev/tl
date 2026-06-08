@@ -10,7 +10,7 @@ which rests on Mathlib's `Finset` cardinality and `Relation.ReflTransGen`.
 
 Soundness (everything in `reachClosure` is genuinely reachable) needs no Mathlib.
 -/
-import Tl.Kernel.Ready
+import Tl.Kernel.Cycles
 import Mathlib.Logic.Relation
 import Mathlib.Data.List.Basic
 import Mathlib.Data.List.Dedup
@@ -227,5 +227,64 @@ theorem mem_why_iff (s : State) (i j : IssueId) :
       ∃ b ∈ s.liveBlockersSucc i, Relation.ReflTransGen (StepRel s.liveBlockersSucc) b j :=
   mem_reachClosure_iff (liveBlockersSucc_subset_present s i)
     (fun x _ => liveBlockersSucc_subset_present s x)
+
+/-! ## Thm 6 — cycle-detection correctness -/
+
+/-- A node is flagged on a cycle iff one of its successors reaches it back —
+    exactly "on a cycle" — whenever `succ` stays within `presentIssues` (so the
+    diagnostic's fuel is sufficient). -/
+theorem onCycle_iff {s : State} {succ : IssueId → List IssueId}
+    (hpres : ∀ x, succ x ⊆ s.presentIssues) (v : IssueId) :
+    s.onCycle succ v = true ↔ ∃ b ∈ succ v, Relation.ReflTransGen (StepRel succ) b v := by
+  unfold State.onCycle
+  rw [decide_eq_true_iff]
+  exact mem_reachClosure_iff (hpres v) (fun x _ => hpres x)
+
+theorem kindSucc_subset_present (s : State) (k : EdgeKind) (x : IssueId) :
+    s.kindSucc k x ⊆ s.presentIssues := by
+  intro j hj
+  unfold State.kindSucc at hj
+  rw [List.mem_filter] at hj
+  exact (OrSet.mem_presentElements s.issues j).mpr (of_decide_eq_true hj.2)
+
+theorem presentChildren_subset_present (s : State) (x : IssueId) :
+    s.presentChildren x ⊆ s.presentIssues := by
+  intro c hc
+  unfold State.presentChildren at hc
+  rw [List.mem_filter] at hc
+  exact (OrSet.mem_presentElements s.issues c).mpr (of_decide_eq_true hc.2)
+
+theorem liveChildrenSucc_subset_present (s : State) (x : IssueId) :
+    s.liveChildrenSucc x ⊆ s.presentIssues := by
+  intro c hc
+  unfold State.liveChildrenSucc at hc
+  rw [List.mem_filter] at hc
+  exact presentChildren_subset_present s x hc.1
+
+theorem precSucc_subset_present (s : State) (x : IssueId) :
+    s.precSucc x ⊆ s.presentIssues := by
+  intro b hb
+  unfold State.precSucc at hb
+  rw [List.mem_append] at hb
+  rcases hb with hb | hb
+  · exact liveBlockersSucc_subset_present s x hb
+  · split at hb
+    · exact liveChildrenSucc_subset_present s x hb
+    · exact nomatch hb
+
+/-- **Thm 6** (structural cycle detection): a node is on a kind-`k` cycle iff a
+    kind-`k` successor reaches it back (ADR-0004 thm 6). Total on arbitrary graphs. -/
+theorem onCycle_kindSucc_iff (s : State) (k : EdgeKind) (v : IssueId) :
+    s.onCycle (s.kindSucc k) v = true ↔
+      ∃ b ∈ s.kindSucc k v, Relation.ReflTransGen (StepRel (s.kindSucc k)) b v :=
+  onCycle_iff (kindSucc_subset_present s k) v
+
+/-- **Thm 5/6** (readiness-deadlock detection): a node is on a `≺`-cycle iff a `≺`
+    successor (a live blocker, or — for an epic — a live child) reaches it back. So
+    a stuck live working set is detected (ADR-0004 thm 5/6). -/
+theorem onCycle_precSucc_iff (s : State) (v : IssueId) :
+    s.onCycle s.precSucc v = true ↔
+      ∃ b ∈ s.precSucc v, Relation.ReflTransGen (StepRel s.precSucc) b v :=
+  onCycle_iff (precSucc_subset_present s) v
 
 end Tl.Kernel

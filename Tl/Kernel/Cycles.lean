@@ -53,9 +53,13 @@ def sccWitnesses (s : State) (succ : IssueId → List IssueId) : List (List Issu
 
 /-! ### Per-kind structural cycles (ADR-0003 §2, ADR-0004 thm 6) -/
 
-/-- Successors over outgoing kind-`k` edges (`from = i`). -/
+/-- Successors over outgoing kind-`k` edges (`from = i`), restricted to *present*
+    targets — a dangling endpoint is inert (ADR-0003 §5), so a "cycle" through a
+    non-existent issue is not a cycle among issues. This keeps the reachable node
+    set within `presentIssues`, so the diagnostic's fuel is provably sufficient. -/
 def kindSucc (s : State) (k : EdgeKind) (i : IssueId) : List IssueId :=
-  (s.presentEdges.filter (fun e => decide (e.2.2 = k ∧ e.1 = i))).map (·.2.1)
+  ((s.presentEdges.filter (fun e => decide (e.2.2 = k ∧ e.1 = i))).map (·.2.1)).filter
+    (fun j => decide (s.hasIssue j))
 
 /-- The cyclic SCCs of the kind-`k` edge graph (one node-set witness each). A
     `blocks` cycle is mutual blocking; a `parent` cycle is an epic that is its own
