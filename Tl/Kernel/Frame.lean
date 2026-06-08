@@ -26,7 +26,7 @@ theorem effStatusAux_congr {s1 s2 : State}
     (hpc : ∀ j, s1.presentChildren j = s2.presentChildren j)
     (hst : ∀ j, (s1.issueData j).statusOf = (s2.issueData j).statusOf) :
     (fuel : Nat) → (i : IssueId) → s1.effStatusAux fuel i = s2.effStatusAux fuel i
-  | 0, i => hst i
+  | 0, i => by unfold State.effStatusAux; rw [hst i, hpc i]
   | fuel + 1, i => by
     have hlam : (fun c => Status.closed (s1.effStatusAux fuel c))
               = (fun c => Status.closed (s2.effStatusAux fuel c)) :=

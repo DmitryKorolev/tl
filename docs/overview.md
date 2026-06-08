@@ -26,7 +26,7 @@ carried assumption (the Trusted section below) — never a vibe.
 | Totality on cyclic/dangling graphs | `ready` / `apply` / `effectiveStatus` / cycle detection total with no acyclicity precondition; dangling edges inert | 0003, 0004 |
 | Honest liveness (deadlock-freedom) | one-directional: an open non-epic non-deferred issue with all blockers closed ⇒ `ready` non-empty; a stuck live working set ⇒ a cycle in the readiness-dependency relation `≺` (blocks edges + epic-rollup-on-open-children; pure or mixed-kind) — the only tool-pathological stall | 0003, 0004 |
 | Cycle diagnostic correctness | `cycles s kind` = one **node-set** witness per cyclic SCC of that kind (the SCC's members, sorted — *not* a single simple-cycle path), proved exactly one witness per SCC (`sccWitnesses_same_witness_iff`); `cycles s` also reports readiness-deadlock `≺`-cycles (mixed blocks+parent) so a stuck live set is never undiagnosed (exactly the cyclic SCCs + `≺`-cycles; polynomial, total) | 0003, 0004 |
-| Epic rollup | unless manually cancelled, `effectiveStatus e = done ↔ all children closed`; cancel takes precedence; total incl. parent-cycles | 0003 |
+| Epic rollup | unless manually cancelled, `effectiveStatus e = done ↔ all children closed`; cancel takes precedence; total incl. parent-cycles — a cycle-trapped epic falls back *conservatively* to not-done (`Open`, never its stored status / merge-injected `Done`; `effStatusAux_epic_zero_ne_done`), matching ADR-0003 | 0003 |
 | Invariant preservation | one `apply` preserves valid-status; inherited by every `Op` (endpoint-existence & acyclicity deliberately not invariants — tolerated at read time) | 0004 |
 | Close-monotonicity | a single `close` op only unblocks: `ready (close s i) ⊇ ready s \ {i}`; `--cascade` is several such ops, each monotonic, so the composition is too | 0004 |
 | Ready ordering is total | rank ends in the unique `id` ⇒ the `ready` order is unique and deterministic given the same state and `now` (a stable ranked queue to choose from; no atomic take-the-top); the critical-path-weight key is a total function on cyclic graphs | 0004 |
@@ -131,8 +131,10 @@ Definition-of-Done #5):
   by strong induction on the descendant-closure cardinality — a child's descendant set is
   a strict subset of its parent's), so `effectiveStatus_epic` gives the full spec (an epic,
   not manually cancelled, is Done iff every present child is effectively closed). A parent
-  *cycle* still exhausts the fuel and falls back to the stored status (`dep cycles` reports
-  it); the acyclic theorem is the positive correctness statement.
+  *cycle* exhausts the fuel and falls back *conservatively* (matching ADR-0003): a manual
+  `Cancelled` is honoured, a non-epic reads its stored status, and an epic falls back to
+  `Open` — never its (possibly merge-injected `Done`) stored status (`effStatusAux_epic_zero_ne_done`),
+  so a cycle-trapped epic never spuriously discharges a blocker; `dep cycles` also reports it.
 - ~~**Thm 6/10 — SCC-witness enumeration & `unblocks`.**~~ **Now proved.** *(a)*
   `Tl/Kernel/SccProps.lean`: `sameSCC` is an equivalence on present nodes
   (`sameSCC_refl/symm/trans`, via the `reachClosure` characterization), the witnesses

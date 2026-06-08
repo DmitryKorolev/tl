@@ -31,7 +31,7 @@ namespace State
 theorem effStatusAux_cancelled (s : State) (i : IssueId)
     (h : (s.issueData i).statusOf = Status.Cancelled) :
     (fuel : Nat) → s.effStatusAux fuel i = Status.Cancelled
-  | 0 => h
+  | 0 => by unfold State.effStatusAux; rw [if_pos h]
   | _ + 1 => by unfold State.effStatusAux; rw [if_pos h]
 
 /-- Manual cancel takes precedence over the rollup (ADR-0003 §3). -/
@@ -45,7 +45,18 @@ theorem effectiveStatus_cancelled (s : State) (i : IssueId)
 /-- An issue with no present children rolls up to its stored status, at every fuel. -/
 theorem effStatusAux_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) :
     (fuel : Nat) → s.effStatusAux fuel i = (s.issueData i).statusOf
-  | 0 => rfl
+  | 0 => by
+    have hempty : (s.presentChildren i).isEmpty = true := by
+      cases hb : (s.presentChildren i).isEmpty with
+      | true => rfl
+      | false => unfold State.isEpic at h; rw [hb, Bool.not_false] at h; exact Bool.noConfusion h
+    unfold State.effStatusAux
+    by_cases hc : (s.issueData i).statusOf = Status.Cancelled
+    · rw [if_pos hc, hc]
+    · rw [if_neg hc]
+      show (if (s.presentChildren i).isEmpty then (s.issueData i).statusOf else Status.Open)
+            = (s.issueData i).statusOf
+      rw [hempty, if_pos rfl]
   | _ + 1 => by
     have hempty : (s.presentChildren i).isEmpty = true := by
       cases hb : (s.presentChildren i).isEmpty with
@@ -64,6 +75,24 @@ theorem effStatusAux_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) 
 theorem effectiveStatus_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) :
     s.effectiveStatus i = (s.issueData i).statusOf :=
   effStatusAux_nonEpic s i h _
+
+/-- **Conservative fuel-exhaustion guarantee (ADR-0003 §3).** An epic at exhausted fuel
+    (only reachable on a parent *cycle*) never rolls up to `Done` — it falls back to
+    `Cancelled` (manual cancel) or `Open`, never its possibly merge-injected stored
+    `Done`. Since a child read as non-closed makes its parent's rollup non-`Done` too,
+    this propagates: a cycle-trapped epic can never spuriously read `Done` and so never
+    spuriously discharges a blocker. -/
+theorem effStatusAux_epic_zero_ne_done (s : State) (i : IssueId) (h : s.isEpic i = true) :
+    s.effStatusAux 0 i ≠ Status.Done := by
+  have hne : (s.presentChildren i).isEmpty = false := by
+    cases hb : (s.presentChildren i).isEmpty with
+    | false => rfl
+    | true => unfold State.isEpic at h; rw [hb, Bool.not_true] at h; exact Bool.noConfusion h
+  unfold State.effStatusAux
+  by_cases hc : (s.issueData i).statusOf = Status.Cancelled
+  · rw [if_pos hc]; exact fun heq => Status.noConfusion heq
+  · rw [if_neg hc, hne, if_neg Bool.false_ne_true]
+    exact fun heq => Status.noConfusion heq
 
 /-! ## One-step fuel congruence (unconditional)
 

@@ -10,14 +10,15 @@ status.
 Totality on cyclic/dangling parent graphs (ADR-0003 §3 / ADR-0004) is via
 fuel-bounded recursion: the fuel is the present-issue count, which bounds any
 acyclic parent chain, so the rollup is exact on acyclic graphs (proved:
-`effectiveStatus_epic`, `RollupAcyclic.lean`). A parent *cycle* exhausts the fuel
-and falls back to the **stored status**: the CLI's status guard keeps a well-formed
-epic from ever being stored `Done` (so in practice a cycle-trapped epic reads
-not-done), but that guard is a *local courtesy* — a concurrent merge can store
-`Done` on an epic (ADR-0002: cross-entity rules are reported, not enforced), in
-which case the cyclic fallback reads `Done`. This is best-effort, not a guarantee;
-the cycle is always reported by `dep cycles`, so it is never *silently* wrong.
-Dangling children are filtered out as inert
+`effectiveStatus_epic`, `RollupAcyclic.lean`). A parent *cycle* exhausts the fuel; at
+exhaustion (fuel 0) the fallback is **conservative**: a manual `Cancelled` is honoured
+(a deliberate close), a *non-epic* reads its stored status, and an *epic* falls back to
+`Open` — **never** to its stored status, which a merge could have set to `Done`
+(ADR-0002: cross-entity rules are reported, not enforced, so the CLI's status guard is
+no merge invariant). `effStatusAux_epic_zero_ne_done`: an epic at fuel 0 is never
+`Done`; since a non-closed child makes its parent non-`Done` too, a cycle-trapped epic
+can never spuriously read `Done` or discharge a blocker. The cycle is also reported by
+`dep cycles`. Dangling children are filtered out as inert
 (ADR-0003 §5). The recursion only ever descends the `parent` graph and never calls
 back into `ready`/`blockers`, so `ready`'s totality composes from this one.
 -/
@@ -38,9 +39,19 @@ def presentChildren (s : State) (i : IssueId) : List IssueId :=
     excluded from `ready` and governed by rollup. -/
 def isEpic (s : State) (i : IssueId) : Bool := !(s.presentChildren i).isEmpty
 
-/-- Fuel-bounded rollup recursion (ADR-0003 §3); see the module header. -/
+/-- Fuel-bounded rollup recursion (ADR-0003 §3); see the module header. At fuel 0
+    (only reachable when the fuel — the present-issue count — is exhausted, i.e. on a
+    parent *cycle*) an epic falls back *conservatively* to `Open`, never to its stored
+    status: a merge can inject `Done` onto an epic (status legality is a courtesy guard,
+    not a merge invariant — ADR-0002), and the rollup must never let a cycle-trapped
+    epic read `Done` and so spuriously discharge blockers. A manual `Cancelled` still
+    takes precedence (a deliberate close, always honoured); a non-epic still reads its
+    stored status. -/
 def effStatusAux (s : State) : Nat → IssueId → Status
-  | 0, i => (s.issueData i).statusOf
+  | 0, i =>
+    if (s.issueData i).statusOf = Status.Cancelled then Status.Cancelled
+    else if (s.presentChildren i).isEmpty then (s.issueData i).statusOf
+    else Status.Open
   | fuel + 1, i =>
     if (s.issueData i).statusOf = Status.Cancelled then Status.Cancelled
     else

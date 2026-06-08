@@ -90,7 +90,20 @@ theorem effStatusAux_mono {s s' : State}
       (s'.issueData k).statusOf = Status.Cancelled) :
     (fuel : Nat) → (b : IssueId) →
     Status.closed (s.effStatusAux fuel b) = true → Status.closed (s'.effStatusAux fuel b) = true
-  | 0, b => hmono b
+  | 0, b => by
+    intro hcl
+    simp only [State.effStatusAux] at hcl ⊢
+    by_cases hB : (s.issueData b).statusOf = Status.Cancelled
+    · rw [if_pos (hcanc b hB)]; rfl
+    · rw [if_neg hB] at hcl
+      by_cases hB' : (s'.issueData b).statusOf = Status.Cancelled
+      · rw [if_pos hB']; rfl
+      · rw [if_neg hB', hpc b]
+        by_cases hemp : (s.presentChildren b).isEmpty = true
+        · rw [if_pos hemp] at hcl ⊢; exact hmono b hcl
+        · rw [if_neg hemp] at hcl
+          simp only [Status.closed] at hcl
+          exact Bool.noConfusion hcl
   | fuel + 1, b => by
     intro hcl
     simp only [State.effStatusAux] at hcl ⊢
