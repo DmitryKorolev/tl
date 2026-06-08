@@ -40,6 +40,28 @@ change, taken *only* if a proof genuinely needs it (e.g. nontrivial algebra)
 and recorded (a superseding note here). It is not banned — it is not the
 default.
 
+### Superseding note (Mathlib adopted, scoped) — 2026
+
+Mathlib is now a pinned dependency (`mathlib4 @ v4.30.0`, matching the
+toolchain), taken under the escape hatch above for a genuine need: the
+remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
+correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
+fuel-adequacy (ADR-0003) — all rest on finite-graph **reachability and
+cardinality** arguments (transitive-closure saturation, "shortest path ≤
+node-count" / pigeonhole, well-foundedness of the readiness relation on a finite
+set). These are exactly the `Finset` / `Relation.ReflTransGen` cardinality facts
+Mathlib makes routine and that are disproportionately painful to rebuild by hand
+over `List` with `batteries` alone.
+
+Scope discipline preserved: the dependency is confined to the proof files that
+need it. The whole CRDT layer (`Tl/Crdt/*`) and the kernel's *definitions* and
+already-proved convergence/frame/close theorems (`State`/`Op`/`Apply`/`Rollup`/
+`Ready`/`Cycles`/`Theorems`/`Frame`/`CloseMono`) remain Mathlib-free and continue
+to build fast off `batteries`; only the reachability-correctness proof modules
+`import Mathlib`. The tactic discipline (explicit `calc`/`cases`/named lemmas;
+avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
+used for its *lemmas*, not to license heavy automation.
+
 ## Toolchain and test harness (pinned)
 
 - Pinned toolchain. A committed `lean-toolchain` pins an exact
