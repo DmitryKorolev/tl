@@ -35,9 +35,11 @@ an optional slug gives a memorable display handle without becoming identity.
   concatenated — `replica-id`(13) ++ `hlc`(16 hex) ++ `nonce`(26) — unambiguous by
   fixed width, no delimiter (the import preimage below is the one exception).
   SHA-256 is ubiquitous; minting is one hash per `create`, not a hot path. The
-  canonical stored id is the full 16 chars and is read back as data, never
-  re-derived on read (re-hashing happens only at mint time); the display prefix
-  below is convenience over it, never a separate identity.
+  canonical stored id is the bare 16-char hash — no `tl-` on disk, in the
+  preimage, or in the merge/OR-Set key — read back as data, never re-derived on
+  read (re-hashing happens only at mint time). The `tl-` is a display/reference
+  affix only: added on render, stripped on parse, never a separate identity (see
+  *Resolution* below).
 - Collision policy. At 80 bits the birthday probability is ~4e-13 even at
   10⁶ issues, so issue-id uniqueness is a carried assumption (overview.md
   Trusted) rather than a code path — there is no cross-replica collision
@@ -48,6 +50,17 @@ an optional slug gives a memorable display handle without becoming identity.
   within the project (git-short-hash ergonomics); commands accept any unambiguous
   prefix, case-folded. Encoding: Crockford base32 (`0-9a-z` minus `i l o u`),
   lowercase, case-insensitive — typo-resistant (no `0/o`, `1/l`) and 5 bits/char.
+- Resolution — the id↔slug discriminator. The `tl-` prefix is **reserved**: a
+  positional token that begins with `tl-` is an id (strip it, then resolve as a
+  full id or an unambiguous id-prefix, normalized on input exactly as the
+  *Encoding* above dictates — ASCII-case-folded and Crockford symbol-aliased
+  (`o`→`0`, `i`/`l`→`1`), so a typo'd id still resolves on the read path, not only
+  at mint); a token that does **not** begin with `tl-` is a slug. The two languages are thus unconditionally
+  disjoint and the resolver never guesses from content — the one cost is that a
+  bare hash must carry its `tl-` to resolve as an id (a slug is never matched
+  against the id space). `>1` match within a space → `ambiguous-id` (ADR-0008),
+  whose message names the full `tl-…` form. The `ext:<system>` source id is a
+  separate colon-keyed lookup (ADR-0005), not part of this positional grammar.
 - Import-seed ids are the one exception to the random triple:
   `tl-<crockford32(SHA-256("import:" ++ source-tag ++ ":" ++ source-id))[0..80 bits]>` —
   hashed from the *source* id so re-import is byte-stable, keeping the source
@@ -65,6 +78,15 @@ slug anywhere an id is, *if it resolves unambiguously*; it is mutable, may be
 absent, may collide (then `tl` asks for the id). It is never the merge key —
 the OR-Set key and every endpoint stay the flat hash id, so a slug change breaks
 nothing.
+
+The slug grammar is kebab-case `^[a-z0-9]+(-[a-z0-9]+)*$` — lowercase ASCII
+letters and digits, single internal hyphens, no leading/trailing/double hyphen,
+max 64 chars, ASCII-case-folded on input. **Digits are allowed** (`oauth2`,
+`utf8`, `sha256` survive): the reserved `tl-` prefix — not the charset — is what
+separates slugs from ids, so forbidding digits would protect nothing while
+merging distinct terms (`sha256`/`sha3` → `sha`). Crockford symbol-aliasing is
+**not** applied to slugs — they are author intent, not transcribed entropy, so
+`s0` ≠ `so`. A slug may not begin with `tl-` (the reserved id prefix).
 
 ### The nonce
 
@@ -168,6 +190,17 @@ component.
 
 - Sequential counter / dotted hierarchical ids. Rejected: coordination,
   concurrent collision, renumbering-breaks-references.
+- Colon id form `tl:<hash>`, or a configurable per-project prefix. Rejected:
+  `:` is already a structural separator across the data model — metadata keys
+  (`ext:beads`, `type:bug`, `waiting:*`, ADR-0002) and the import-id preimage
+  `import:<tag>:<id>` (ADR-0005) — so `tl:q7rk`
+  reads as a sibling of `ext:beads` and collides with the `ext:*` source-id
+  resolution path; it also loses on git-native ergonomics (`<ref>:<path>`, scp
+  `host:path`), URI-scheme/markdown parsing, and terminal word-selection. The
+  hyphen `tl-` gives the same "prefix is separable" signal at no cost. A
+  *configurable* prefix falls with it: it reintroduces content-based id↔slug
+  ambiguity and fragments the single greppable, lint-anchorable id shape, for a
+  customization of low value to an agent-first tracker.
 - Full UUIDs. Merge cleanly but long; the short hash gives the same property
   with better ergonomics.
 - Content hash of fields. Rejected: collides for identical content; the

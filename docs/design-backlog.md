@@ -47,13 +47,6 @@ Kernel theorems still to decide whether to commit to:
   a fresh tag — not a 2P-set), so the `dep remove`/`unrelate` guarantee is a
   theorem rather than a consequence left implicit in the join laws (ADR-0002/0004).
 
-## Identity & clocks
-
-- id / slug / prefix resolution [low] — is the `tl-` prefix
-  required/optional/stripped? case-folding and Crockford symbol-aliasing
-  (`o→0`, `i/l→1`) on input? precedence across {full id, id-prefix, slug, `ext:*`
-  source id}? Return `ambiguous-id` on >1 match (ADR-0007).
-
 ## CLI surface (before CLI freeze)
 
 - `--json` `data` shapes for `log` / `stats` / `doctor` / the `dep` utilities

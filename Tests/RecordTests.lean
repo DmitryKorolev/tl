@@ -8,11 +8,13 @@ import Tests.Harness
 
 open Tl.Format Tl.Tests
 
-/-- A canonical line: envelope in fixed order, payload keys lexicographic. -/
+/-- A canonical line: envelope in fixed order, payload keys lexicographic. The
+    `id` is the bare 16-char Crockford hash — the `tl-` prefix is display/reference
+    only and is never stored on the wire (ADR-0007 §Issue IDs). -/
 def canonicalLine : String :=
   "{\"v\":1,\"op\":\"create\",\"hlc\":\"0000000000000001\"," ++
   "\"replica\":\"2kxvmkxsa89vq\",\"nonce\":\"0000000000000000000000000a\"," ++
-  "\"actor\":\"alice\",\"id\":\"tl-000000000000abcd\",\"priority\":2}"
+  "\"actor\":\"alice\",\"id\":\"000000000000abcd\",\"priority\":2}"
 
 /-- A line with `actor: null` and an unknown (future) field. -/
 def unknownLine : String :=
