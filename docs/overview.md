@@ -7,9 +7,11 @@
 > what is *proved* versus what is a *tracked residual* (defined-and-total but
 > with its soundness/completeness proof still outstanding — decomposed and
 > recorded here per AGENTS.md Definition-of-Done #5, never downgraded to a test).
-> The tested I/O shell is under construction: `Tl/Clock` (HLC, replica id),
-> `Tl/Format` (Crockford base32, JSONL record round-trip), and `Tl/Cli/Init`
-> ship with their tests (`Tests/`); `Tl/Sync` and `Tl/Import` are not yet built.
+> The tested I/O shell is under construction: `Tl/Clock` (HLC, replica id) and
+> `Tl/Format` (Crockford base32, the JSONL record envelope) ship with their
+> tests (`Tests/`); `Tl/Cli/Init` is built but its own IO test is **pending**
+> (due with the Stage-1 CLI test buildout); the record↔Op codec, `Tl/Store`,
+> `Tl/Sync`, and `Tl/Import` are not yet built.
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -168,7 +170,7 @@ ADR-0008).
 
 | Claim | How |
 |---|---|
-| Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008) |
+| Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008). **Covered today for the envelope `Record` model** (`Tests/RecordTests.lean`); the record↔Op codec layer and its round-trip corpus land with Stage 1 |
 | beads import fidelity | differential test vs `.beads` fixtures (0005) |
 | HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases (0007); real durable monotonic persistence remains Trusted below |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. **Test pending** — the encodings (`Hlc.toHex`, `toCrockford`) are built, but the sampled string-compare-vs-`Stamp`-order cross-check is not yet in the runner (0007/0008) |

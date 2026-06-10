@@ -1,19 +1,24 @@
-# Codebase map (intended layout)
+# Codebase map
 
-> Implementation has not started; this is the target structure, not a
-> description of existing code. The line that matters: the verified
-> kernel has no I/O, and everything that touches the world is a separate,
-> tested shell.
+> Stage 0 is built: the verified kernel (`Tl/Crdt/`, `Tl/Kernel/`) and the
+> first tested-shell pieces (`Tl/Format/`, `Tl/Clock/`, `Tl/Cli/Init`). Entries
+> marked *(planned — Stage N)* do not exist yet; for those this map is the
+> module-layout contract, not a description of code. The line that matters:
+> the verified kernel has no I/O, and everything that touches the world is a
+> separate, tested shell.
 
 ```
 Tl.lean                 -- root module; imports everything below
 
-Tl/Crdt/                -- generic CRDT pieces (verified)
-  OrSet.lean            --   observed-remove set + join laws
+Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
+                        -- assoc/idem — are proved per structure in each file,
+                        -- there is no separate Join.lean)
+  Order.lean            --   TotalOrd + the Stamp triple (hlc, replica, nonce)
+  Map.lean              --   sorted assoc map (AMap) + FinSet, with join laws
   Lww.lean              --   LWW register; key is the TRIPLE (HLC, replica, nonce)
                         --   (ADR-0002/0007; wire encodings ADR-0007/0008 — 16-hex HLC, 13/26-char Crockford);
                         --   lifted pointwise over a key map = the `meta` CRDT
-  Join.lean             --   commutativity / associativity / idempotence
+  OrSet.lean            --   observed-remove set + join laws
 
 Tl/Kernel/              -- the verified core (NO I/O)
   State.lean            --   issues OR-Set, edges OR-Set, per-issue field maps,
@@ -21,7 +26,7 @@ Tl/Kernel/              -- the verified core (NO I/O)
   Op.lean               --   the Op inductive; SEVEN deltas (create, setFields,
                         --   metaSet, edgeAdd, edgeRemove, labelAdd, labelRemove) —
                         --   readable CLI verbs map onto these in the shell (ADR-0008)
-  Apply.lean            --   apply : State → Op → State  (total reducer)
+  Apply.lean            --   apply : State → Op → State  (total reducer + fold)
   Ready.lean            --   ready : State → Now → List Id  (total on cyclic AND
                         --   dangling graphs; blocker discharged iff its
                         --   effectiveStatus is done|cancelled — epics by rollup);
@@ -29,48 +34,94 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   why/unblocks = transitive unclosed blockers / freed-set
                         --   (same reach⁺ machinery; total, proved — ADR-0004 thm 10)
   Cycles.lean           --   per-kind cycle detection (well-founded recursion);
-                        --   one canonical simple-cycle witness per cyclic SCC;
+                        --   one canonical witness per cyclic SCC = the SCC's
+                        --   sorted NODE SET (ADR-0004 thm 6; proved in SccProps);
                         --   ALSO readiness-deadlock ≺-cycles (mixed blocks+parent,
                         --   ADR-0004 thm 5/6) so no stuck live set is undiagnosed
   Rollup.lean           --   effectiveStatus; reads epic's STORED status first
                         --   (manual-cancel precedence), else derives from children
+  RollupSpec.lean       --   rollup meets its ADR-0003 spec (unconditional branches)
+  RollupAcyclic.lean    --   rollup fuel-adequacy on acyclic parent graphs
   Invariant.lean        --   Invariant = valid status enum ONLY; endpoint-existence
                         --   and acyclicity deliberately excluded (tolerated at read)
   Theorems.lean         --   convergence + tracker theorems (ADR-0004/0003);
                         --   liveness is one-directional deadlock-freedom, not a biconditional
+  Frame.lean            --   frame lemmas: meta/labels/relate move neither ready nor rollup
+  CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
+  Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
+                        --   the kernel's only Mathlib imports live here, ADR-0009)
+  SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
+  Unblocks.lean         --   unblocks = the ready-set diff; exact and unconditional
+  Ranking.lean          --   ready-queue ranking; the queue is proved sorted
 
-Tl/Format/              -- I/O shell: on-disk log (tested)
-  Record.lean           --   JSONL record <-> Op; preserve-unknown
-  Version.lean          --   format version policy; snapshot record
+Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
+  Crockford.lean        --   Crockford base32 codec (ids, replica, nonce; ADR-0007)
+  Record.lean           --   JSONL record envelope: parse/render, preserve-unknown,
+                        --   canonical key order (built); the record↔Op codec —
+                        --   whose parsed model carries the wire verb, Stamp,
+                        --   actor, and unknown bag ALONGSIDE the kernel Op (a
+                        --   bare Op cannot round-trip) — lands with Stage 1
+  Version.lean          --   format version policy; snapshot record (planned — Stage 1)
+
+Tl/Hash/                -- pure hashing for identity minting (planned — Stage 1)
+  Sha256.lean           --   FIPS 180-4 transcription returning the FULL 32-byte
+                        --   digest; consumers slice (ids take the leftmost 80
+                        --   bits, import widths differ — ADR-0007/0018); CAVP-tested
+
+Tl/Store/               -- I/O shell: local persistence (planned — Stage 1)
+  Paths.lean            --   the .tl/ layout + discovery glue (ADR-0001 §3, ADR-0012)
+  Lock.lean             --   the mutation lock and the locked critical section:
+                        --   acquire → mint-HLC → append → fsync → persist clock
+                        --   → release (ADR-0015 §1)
+  Segment.lean          --   segment append/enumerate/read; torn-tail skip and
+                        --   segment-scoped fail-closed (ADR-0008 §corruption, ADR-0015 §5)
+  Materialize.lean      --   records → ops → fold into kernel State
+                        --   (Tl/Sync composes Store primitives — own-segment
+                        --   snapshot under lock, atomic foreign-cache replace —
+                        --   rather than owning segment I/O)
+  Sys.lean              --   bindings to the native shim (ffi/tlsys.c): no-follow
+                        --   open/read/write, fsync, fd lock, OS entropy, ownership
+                        --   check — mechanism only; OS primitives the toolchain
+                        --   lacks or does not guarantee, nothing else (ADR-0019)
 
 Tl/Clock/               -- I/O shell: ordering/identity (tested)
-  Hlc.lean              --   hybrid logical clock
-  Replica.lean          --   replica-id minting + persistence
+  Hlc.lean              --   hybrid logical clock: pure update rules + hex codec
+                        --   (built; file persistence wiring lands with the Store)
+  Replica.lean          --   replica-id mint + validation (built; ditto persistence)
 
-Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
+Tl/Sync/                -- I/O shell: refs/tl/log transport (planned — Stage 3)
   Ref.lean              --   read/write refs/tl/log via git plumbing (no branch/index)
   Merge.lean            --   per-segment complete-line set union (the CRDT join)
   Sync.lean             --   fetch / merge / push; push-rejection retry; no-upstream;
                         --   auto-sync; doctor's ref/segment health checks
 
-Tl/Import/              -- I/O shell: one-shot beads import (tested)
+Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean
 
-Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
-  Main.lean
+Tl/Cli/                 -- I/O shell: command dispatch + JSON output
+  Init.lean             --   tl init (built; its own IO test is pending — due
+                        --   with the Stage-1 CLI test buildout)
+  Main.lean             --   verb dispatch + the --json envelope (planned —
+                        --   Stage 1; the root Main.lean stays the thin exe entry)
 
-Tests/                  -- outside-TCB checks
-  Roundtrip.lean        --   parse ∘ render = id
-  Differential.lean     --   import matches source-format fixtures
-  Property.lean         --   sampled cross-check that the COMPILED kernel
-                        --   matches its proved spec (regression net over the
-                        --   executable; NOT a substitute for the Tl/Kernel +
-                        --   Tl/Crdt theorems)
+Tests/                  -- outside-TCB checks, run via `lake exe tltest`
+  Harness.lean          --   assertion + seeded-generator harness (built)
+  CrockfordTests.lean   --   encode/decode round-trips (built)
+  HlcTests.lean         --   HLC update rules + hex codec branches (built)
+  RecordTests.lean      --   envelope round-trip + canonical order (built)
+  Main.lean             --   tltest entry point (built)
+  --                    -- planned (Stage 1+): the record↔Op codec round-trip
+  --                    -- corpus; store adversity tests (crash fragments,
+  --                    -- hostile lines, lock contention); the encoding
+  --                    -- order-preservation cross-check (wire-string order =
+  --                    -- decoded Stamp order); the compiled-kernel-vs-spec
+  --                    -- property cross-check; differential import (Stage 3)
 ```
 
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Format`,
-`Tl/Clock`, `Tl/Sync`, `Tl/Import`, `Tl/Cli` are the tested TCB shell.
+`Tl/Store`, `Tl/Clock`, `Tl/Sync`, `Tl/Import`, `Tl/Cli` are the tested shell
+outside it.
 
 ## Cross-cutting invariants (load-bearing across modules & ADRs)
 

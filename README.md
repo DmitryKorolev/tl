@@ -7,17 +7,20 @@ can I work on right now, and is the dependency graph sane?"* — and proves
 that answer correct. It is deliberately small: the commands that drive an
 agent's work loop, and nothing else.
 
-> Status: design phase. The design is captured in
-> [docs/vision.md](docs/vision.md) and the [ADRs](docs/adr/); implementation
-> has not started. Commands and install instructions below describe the
+> Status: Stage 0 is built — the verified kernel (the CRDT join laws and the
+> `ready`/cycles/rollup theorems) plus the first shell pieces (HLC + replica
+> id, Crockford base32, the JSONL record envelope, a minimal `tl init`).
+> Stage 1 — the MVP work loop (record↔Op codec → store → clock/id wiring →
+> CLI verbs) — is next; see [docs/vision.md](docs/vision.md) §Staged
+> implementation. Commands and install instructions below describe the full
 > intended tool and are marked *planned*.
 
 ## Why
 
-- Verified core, by design. The dependency graph, the ready-work
-  computation, cycle detection, and epic rollup are to be proved correct in
-  Lean 4 — not just tested. (Design phase: each "proved" row is a theorem yet to
-  be written — see the honest claim table in [docs/overview.md](docs/overview.md).)
+- Verified core. The dependency graph, the ready-work computation, cycle
+  detection, and epic rollup are proved correct in Lean 4 — not just tested
+  (the honest claim table — proved vs tested vs trusted, including the tracked
+  residuals — is [docs/overview.md](docs/overview.md)).
 - Git-native, conflict-free. State is an append-only op-log; git
   transports it and a CRDT fold reconciles it, so concurrent agents merge
   without conflicts or lost updates — no server, no database daemon.

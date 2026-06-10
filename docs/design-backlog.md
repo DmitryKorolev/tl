@@ -6,10 +6,14 @@ amended) or by graduating into an implementation task when its stage starts.
 Decisions already made are recorded in their ADRs (and git history); this lists
 only what is still open.
 
-Status: Stage 0 (kernel) is unblocked and ADR-0014 is Accepted. Everything
-below is stage-gated (decide when building that surface) or a forever-contract
-surface that freezes on first implementation; the *candidate-ADR* items are worth
-settling before/early.
+Status: Stage 0 (kernel + the first shell pieces) is built; Stage 1 (the MVP
+work loop) is next. Items Stage 1 touches — `duplicate-of` semantics (via
+`close --as duplicate`) and doctor's check inventory — graduate into stage-1
+decisions per the rule above (the stage-1 `--json` shapes and the 0.x
+stability horizon already landed in ADR-0020 / ADR-0008). Everything else
+below remains stage-gated (decide when building that surface) or a
+forever-contract surface that freezes on first implementation; the
+*candidate-ADR* items are worth settling before/early.
 
 ## Candidate ADRs (settle before/early in implementation)
 
@@ -49,9 +53,11 @@ Kernel theorems still to decide whether to commit to:
 
 ## CLI surface (before CLI freeze)
 
-- `--json` `data` shapes for `log` / `stats` / `doctor` / the `dep` utilities
-  [low] — unpinned; pin them (especially `tl log`, whose `--since` cursor depends
-  on it) or freeze-on-first-implementation.
+- `--json` `data` shapes for `log` / `stats` and the later `dep` utilities
+  (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
+  `dep cycles`, `why`) are now pinned in ADR-0020; the rest pin when built,
+  following its conventions (`tl log` especially, whose `--since` cursor
+  depends on it).
 - A future `tl log --since <hlc>` cursor needs a version vector, not a scalar
   HLC [low] — `observe-remote` advances only the local clock, so a late-synced op
   from a lagging replica keeps an HLC *below* another replica's watermark; a scalar
@@ -76,12 +82,6 @@ Kernel theorems still to decide whether to commit to:
   *compaction preserves the fold*, `fold ops = snapshot(F) ⊕ fold(ops above F)` for
   a causally-closed frontier (ADR-0004/0008) — which whichever placement is chosen
   must discharge.
-- Forever-compat contracts vs a `0.x` product version [low] — ADR-0008 calls
-  the log format "a permanent compatibility surface" and the `--json` schema
-  "additive-only," but the product is SemVer `0.1.0` (ADR-0006), where `0.x`
-  conventionally permits breaking changes. Decide whether the additive-only/forever
-  promises bind during `0.x` dev or only from `1.0` (log `v=1` and JSON
-  `schemaVersion=1` are pinned; product `0.1.0` is pinned) — ADR-0008 / ADR-0006.
 
 ## Sync, discovery & local concurrency
 

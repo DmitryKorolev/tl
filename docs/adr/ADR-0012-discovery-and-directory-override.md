@@ -49,15 +49,19 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   mistyped path is the silent surprise the project avoids. `tl import` is the
   one exception — it may implicitly `init`, because the user explicitly asked
   to seed a repo (ADR-0005).
-- Replica-id absent but state present (a fresh clone — `.tl/local/` is
-  gitignored and does not travel): the first write auto-mints a new
-  replica-id. A clone *is* a new replica and must have its own id (ADR-0007).
+- Replica-id absent but state present (a byte-copied `.tl/` or a damaged
+  `local/` — note a fresh *clone* starts with no `.tl/` at all, since the whole
+  directory is gitignored and does not travel): the first write auto-mints a
+  new replica-id. A copied working tree *is* a new replica and must have its
+  own id (ADR-0007).
 - One `.tl` per root. Nested `.tl/` directories are not a supported layout;
   discovery stops at the first found.
 - Worktrees and submodules. A linked worktree or a submodule is its own
   repository boundary: discovery stops at its root, so it gets its own `.tl/`
   (or a clear not-found) rather than binding the parent's. A fresh worktree
-  self-heals its replica-id on first write, like a clone. Linked worktrees *share*
+  starts with no `.tl/` (untracked files are not checked out) and gets its own
+  via `init`; a byte-copied `.tl/` self-heals its replica-id on first write, as
+  above. Linked worktrees *share*
   state through the common `.git`'s `refs/tl/log` plus local-first sync — no remote
   needed on one machine ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md)).
 
