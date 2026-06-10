@@ -85,7 +85,9 @@ repo with a remote (sharing the ref needs git). Placement: inside a git repo,
 `init` creates `.tl/` at the enclosing repository's toplevel regardless of the
 invoking subdirectory — matching the ADR-0012 discovery boundary, so a
 subdirectory invocation can never mint the unsupported nested-`.tl` layout;
-outside any repo it uses the cwd; `--dir` overrides both (ADR-0012).
+outside any repo it uses the cwd; `--dir` overrides both (ADR-0012). Toplevel
+placement lands with the Stage-1 discovery wiring (ADR-0012); the Stage-0
+minimal `init` is cwd-relative.
 
 Staging (vision §Staged implementation). `tl init` grows across stages — it
 does not ship whole in Stage 0: the Stage 0 core is local (create `.tl/`,

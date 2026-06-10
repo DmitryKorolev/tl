@@ -62,7 +62,9 @@ that reconcile it with the ID scheme (ADR-0007) and the no-auto-init rule
   the user explicitly asked to seed a repo. The refuse-unless-`--force` rule
   (below) still guards a *non-empty existing* log.
 - Deterministic `tl` id from the source id. The seed id is
-  `tl-<crockford32(SHA-256("import:" ++ source-tag ++ ":" ++ source-id))[0..80 bits]>` (`source-tag` = `beads`, the `:` delimiter and charset pinned in ADR-0007)
+  `tl-<crockford32(SHA-256("import:" ++ source-tag ++ ":" ++ source-id))[0..80 bits]>` (`source-tag` = `beads`, the `:` delimiter and charset pinned in ADR-0007;
+  `[0..N bits]` = the leftmost N bits of the digest — slice direction pinned
+  in ADR-0018)
   — derived from the source id, not from `(replica-id, HLC, nonce)` (same
   function/width as ADR-0007). This keeps ids flat and stable across
   re-imports (genuine idempotence) while preserving the source id in the

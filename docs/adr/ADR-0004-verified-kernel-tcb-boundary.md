@@ -48,7 +48,10 @@ A pure core with no I/O:
 - `fold : List Op → State` — materialization, `List.foldl apply ∅`.
 - `ready : State → Now → List IssueId` — total, cycle-aware (`Now` injected,
   ADR-0010).
-- `cycles : State → List Cycle` — the cycle diagnostic.
+- `cycles : State → EdgeKind → List (List IssueId)` — the per-kind cycle
+  diagnostic (one sorted node-set witness per cyclic SCC, theorem 6);
+  `precCycles : State → List (List IssueId)` reports the `≺`
+  readiness-deadlock cycles.
 
 #### Theorems
 

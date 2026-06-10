@@ -148,7 +148,10 @@ CSPRNG, not a code path.
   write) — Crockford base32 of 8 random bytes (64 bits) from a CSPRNG (the same source as the nonce): a fixed 13 lowercase
   chars — the 64-bit value right-aligned with the single spare high bit zero
   (plain big-endian base-32: the same leading-zero convention as the 16-hex HLC
-  and the ULID-style nonce, so a valid replica-id's first char is `0`–`f`).
+  and the ULID-style nonce, so a valid replica-id's first char is `0`–`f`;
+  validation rejects a first char above `f` as out of range — the Stage-0
+  `Replica.valid` checks width/charset only and is strengthened with the
+  Stage-1 wiring).
   Stored in `.tl/local/replica`,
   gitignored (the whole `.tl/` is, ADR-0001): a shared replica-id collapses
   the LWW tie-break and per-segment ownership.

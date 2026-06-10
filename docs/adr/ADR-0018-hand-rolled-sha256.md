@@ -12,7 +12,8 @@ the import-seed id (`"import:" ++ source-tag ++ ":" ++ source-id`, 80 bits),
 the import replica-id (`"import-replica:" ++ …`, 64 bits), and the source
 fingerprint (a full digest of the canonical sorted source manifest); the
 design-backlog's import-nonce candidate takes a 128-bit slice of the same
-hash *function* over its own `"import-nonce:"` preimage. Lean core and Std
+hash *function* over its own `"import-nonce:"` preimage (ADR-0005's remaining
+record-level hashes reuse the same `Sha256.digest`). Lean core and Std
 ship only non-cryptographic 64-bit hashing (the `Hashable` machinery; even
 Lake's content-addressed build traces are a `UInt64` with a standing "use a
 secure hash" TODO); batteries has none; Mathlib — already in the closure via

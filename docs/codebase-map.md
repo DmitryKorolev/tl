@@ -33,7 +33,8 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   critical-path weight = |reach⁺ over blocks| (total);
                         --   why/unblocks = transitive unclosed blockers / freed-set
                         --   (same reach⁺ machinery; total, proved — ADR-0004 thm 10)
-  Cycles.lean           --   per-kind cycle detection (well-founded recursion);
+  Cycles.lean           --   per-kind cycle detection (bounded reachClosure
+                        --   iteration — total, no well-founded obligation);
                         --   one canonical witness per cyclic SCC = the SCC's
                         --   sorted NODE SET (ADR-0004 thm 6; proved in SccProps);
                         --   ALSO readiness-deadlock ≺-cycles (mixed blocks+parent,
@@ -87,7 +88,9 @@ Tl/Store/               -- I/O shell: local persistence (planned — Stage 1)
 Tl/Clock/               -- I/O shell: ordering/identity (tested)
   Hlc.lean              --   hybrid logical clock: pure update rules + hex codec
                         --   (built; file persistence wiring lands with the Store)
-  Replica.lean          --   replica-id mint + validation (built; ditto persistence)
+  Replica.lean          --   replica-id mint + validation (built; ditto persistence;
+                        --   known defect: mint uses non-CSPRNG IO.rand until the
+                        --   ADR-0019 entropy lands)
 
 Tl/Sync/                -- I/O shell: refs/tl/log transport (planned — Stage 3)
   Ref.lean              --   read/write refs/tl/log via git plumbing (no branch/index)
@@ -99,8 +102,10 @@ Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3
   Beads.lean
 
 Tl/Cli/                 -- I/O shell: command dispatch + JSON output
-  Init.lean             --   tl init (built; its own IO test is pending — due
-                        --   with the Stage-1 CLI test buildout)
+  Init.lean             --   tl init (built — cwd-relative; toplevel placement
+                        --   lands with Stage-1 discovery, ADR-0001 §4; its own
+                        --   IO test is pending — due with the Stage-1 CLI test
+                        --   buildout)
   Main.lean             --   verb dispatch + the --json envelope (planned —
                         --   Stage 1; the root Main.lean stays the thin exe entry)
 
@@ -120,8 +125,8 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
 
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Format`,
-`Tl/Store`, `Tl/Clock`, `Tl/Sync`, `Tl/Import`, `Tl/Cli` are the tested shell
-outside it.
+`Tl/Hash`, `Tl/Store`, `Tl/Clock`, `Tl/Sync`, `Tl/Import`, `Tl/Cli` are the
+tested shell outside it.
 
 ## Cross-cutting invariants (load-bearing across modules & ADRs)
 

@@ -14,8 +14,11 @@ proves it meets its intended spec. Three branches of the spec are *unconditional
 The remaining branch (an epic that is not cancelled is `Done` iff every present child
 is effectively closed) is *exact only when the parent descent is acyclic*, since the
 fuel must outlast the longest descending chain; on a parent cycle the fuel is spent
-and the rollup falls back to the stored status (never silently wrong — `dep cycles`
-reports it). That fuel-adequacy step is the tracked residual (overview Proof status).
+and the rollup falls back *conservatively*: a manual `Cancelled` is honoured, a
+non-epic reads its stored status, and an epic falls back to `Open` — never its
+(possibly merge-injected `Done`) stored status (`effStatusAux_epic_zero_ne_done`),
+so a cycle-trapped epic cannot spuriously discharge a blocker; `dep cycles` reports
+the cycle. The fuel-adequacy step on acyclic graphs is proved in `RollupAcyclic.lean`.
 -/
 import Tl.Kernel.Rollup
 

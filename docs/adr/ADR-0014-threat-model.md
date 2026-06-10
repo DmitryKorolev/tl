@@ -58,7 +58,8 @@ the boundary.
 
 ### T1. Indirect prompt injection via task content — the central threat
 
-Content fields (`title`, `description`, `notes`, `labels`, `assignee`, `slug`),
+Content fields (`title`, `description`, `notes`, `labels`, `assignee`, `slug`,
+`meta` keys and values),
 authored on any replica or adopted by import, are surfaced verbatim to LLM
 agents through the read commands (`tl ready` / `tl show` / `tl list`) and their
 `--json` output (ADR-0011 §2). An attacker who can
@@ -86,19 +87,22 @@ folded/imported content as untrusted data, never instructions:
   `provenance` *does* vary and is the graded-trust hook.)
   Nothing is auto-injected — `tl` ships no SessionStart hook (ADR-0011), so
   task content enters an agent's context *only when the agent explicitly runs a
-  read*. There is no unbidden-content path to fence around; the fence and the
-  byte-sanitization below apply wherever content is surfaced. The skill
+  read*. There is no unbidden-content path to fence around; the byte-sanitization
+  below applies wherever content is surfaced, and the fence wherever content
+  is rendered for humans. The skill
   (ADR-0011 §4) teaches that task content is data.
 - The I/O shell strips C0/C1 control characters, ANSI escapes, and
   zero-width/bidi characters and bounds each field (per-field truncation
-  with disclosure — no silent caps; full text still available via `tl show`) on
+  with disclosure — no silent caps; list views truncate aggressively while
+  `tl show` renders each field up to the pinned bounds below — bytes beyond a
+  bound survive only in the log) on
   both render paths. `--json` always goes through a real JSON encoder
   (covered by `parse ∘ render = id` plus an explicit control-char test).
   The concrete sanitization spec, pinned (revisable during 0.x, ADR-0008
   §Stability horizon):
-  - *Single-line fields* — `title`, `assignee`, `slug`, each label, each
-    `meta` key and value: bounded at **1 KiB** each; **all** control
-    characters stripped.
+  - *Single-line fields* — `title`, `assignee`, `slug`, the rendered `actor`
+    (`createdBy` projection), each label, each `meta` key and value: bounded
+    at **1 KiB** each; **all** control characters stripped.
   - *Multi-line fields* — `description`, `notes`: bounded at **64 KiB**;
     LF and TAB are the only control characters retained.
   - *Both classes*: ANSI escape sequences (CSI/OSC), zero-width codepoints

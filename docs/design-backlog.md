@@ -8,9 +8,9 @@ only what is still open.
 
 Status: Stage 0 (kernel + the first shell pieces) is built; Stage 1 (the MVP
 work loop) is next. Items Stage 1 touches — `duplicate-of` semantics (via
-`close --as duplicate`) and doctor's check inventory — graduate into stage-1
-decisions per the rule above (the stage-1 `--json` shapes and the 0.x
-stability horizon already landed in ADR-0020 / ADR-0008). Everything else
+`close --as duplicate`) — graduate into stage-1 decisions per the rule above
+(the stage-1 `--json` shapes incl. doctor's check inventory, and the 0.x
+stability horizon, already landed in ADR-0020 / ADR-0008). Everything else
 below remains stage-gated (decide when building that surface) or a
 forever-contract surface that freezes on first implementation; the
 *candidate-ADR* items are worth settling before/early.
@@ -40,8 +40,9 @@ forever-contract surface that freezes on first implementation; the
 
 Kernel theorems still to decide whether to commit to:
 
-- Cycle-breaking progress / termination [low] — prove that removing one edge
-  from any witness `cycles s k` reports strictly reduces the cyclic-SCC set, so the
+- Cycle-breaking progress / termination [low] — prove that removing one
+  kind-`k` edge between members of any SCC witness `cycles s k` reports
+  strictly reduces the cyclic-SCC set, so the
   `dep cycles → dep remove` loop reaches an acyclic kind-`k` graph in ≤ (#SCCs)
   steps. Makes the diagnostic's advice provably *terminating*, not just correct
   (ADR-0004).

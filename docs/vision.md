@@ -133,7 +133,7 @@ Work loop
 | `tl init [--stealth]` | create the (gitignored) `.tl/`, mint the replica-id, and (in a git repo) wire up sharing; `--stealth` = local-only, zero repo-visible trace. Grows across stages (ADR-0001 §4 / ADR-0012) |
 | `tl import <path> [--force]` | one-shot migration from an existing tracker's data; refuses existing task state (local `.tl/log/` segments or a local/remote `refs/tl/log`) without `--force` (ADR-0005) |
 | `tl sync` | publish/receive task state: fetch + union-merge + push the `refs/tl/log` ref (ADR-0001) — the transport, since `tl` never commits to your branch |
-| `tl claim <id> [--sync] [--verify]` / `tl update <id> --claim` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (`why`-style blockers, deferred until, epic, closed/in-progress). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
+| `tl claim <id> [--sync] [--verify]` / `tl update <id> --claim` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
 | `tl update <id> [--assignee] [-p] [--slug] [--parent …] …` | field edits via flags (lifecycle status uses `claim`/`close`/`reopen`); `--parent` reparents — an edge write (ADR-0003/0008) |
 | `tl edit <id>` | open title/description/notes in `$EDITOR` |
 | `tl close <id> --as done\|cancelled\|duplicate [--of <id>] [--cascade]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); `--cascade` cancels an epic's open children (ADR-0003) |
@@ -166,7 +166,7 @@ Read / visibility
 | `tl doctor` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints; `refs/tl/log` sync status joins once sharing lands (ADR-0011/0001) |
 | `tl help [<cmd>]` / `tl <cmd> --help` | human help: top-level overview or per-command usage |
 | `tl help [<cmd>] --json` | the same grammar machine-readably, for agent introspection (ADR-0011) |
-| `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` also reports log/JSON schema versions and build provenance (ADR-0006/0008) |
+| `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` also reports log/JSON schema versions, plus build provenance once the release pipeline exists (ADR-0006/0008/0020) |
 | `tl --licenses` | print bundled third-party license notices and link-time dependency attribution (ADR-0006) |
 
 `dep remove` / `unrelate` are first-class, not afterthoughts: they are the
@@ -448,6 +448,9 @@ exactly the thing to resist.)
 - ADR-0015 — Local concurrency and filesystem safety
 - ADR-0016 — Same-machine sharing: worktrees and local-first sync
 - ADR-0017 — Human-facing CLI: output format and editing
+- ADR-0018 — Hand-rolled SHA-256 (pure Lean)
+- ADR-0019 — Native primitives shim, and the FFI policy
+- ADR-0020 — `--json` data shapes (the stage-1 surface)
 
 ## Open questions (for iteration)
 

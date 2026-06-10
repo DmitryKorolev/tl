@@ -15,7 +15,7 @@ ADR-0015 pins behaviors the pinned toolchain (Lean 4 v4.30.0) cannot express:
   in core.
 - **No-follow opens** (§6, the ADR-0014 T4 symlink defense). `Handle.mk`
   maps its closed `Mode` enum onto fixed `open(2)` flag sets (`writeNew` =
-  `O_CREAT|O_TRUNC|O_EXCL`, `append` = `O_APPEND`, `O_CLOEXEC` always) — so
+  `O_CREAT|O_TRUNC|O_EXCL`, `append` = `O_CREAT|O_APPEND`, `O_CLOEXEC` always) — so
   plain exclusive creation *is* expressible, but no mode adds `O_NOFOLLOW`,
   none combines EXCL/APPEND without truncation, and there are no
   dirfd-relative opens. The workaround — `lstat`, then open — is exactly the
@@ -53,7 +53,8 @@ existing because a specific ADR-pinned behavior requires it:
   the final path component, and §6 refuses a symlink at *any* `.tl`
   component — so the directory chain is walked component-by-component via
   `openat(…, O_NOFOLLOW)`, hardened where available by
-  `openat2(RESOLVE_NO_SYMLINKS)` on Linux and `O_NOFOLLOW_ANY` on Darwin.
+  `openat2(RESOLVE_NO_SYMLINKS)` on Linux and `O_NOFOLLOW_ANY` on Darwin
+  (reparse-point refusal is the Win32 analog).
 - `readAll fd` / `writeAll fd bytes` — segment and clock I/O on the shim's
   own fds (§5 reads are `.tl` opens too, so they ride the same discipline).
 - `sync fd` — `fsync`; `F_FULLFSYNC` on Darwin (where plain `fsync` stops at
@@ -67,7 +68,7 @@ existing because a specific ADR-pinned behavior requires it:
   `BCryptGenRandom` on Win32), discharging ADR-0007's replica/nonce
   requirement with a contract core does not promise.
 - `ownedByCaller fd` — the §6 ownership check, computed in C (owner uid vs
-  caller euid; reparse-point flag on Win32).
+  caller euid; the Win32 owner-SID analog is Tier-2 best-effort per §7).
 - `close fd`.
 
 The §6 *policy* — the `.tl` path discipline, what to refuse, the error codes

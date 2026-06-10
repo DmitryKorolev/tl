@@ -60,7 +60,10 @@ already-proved convergence/frame/close theorems (`State`/`Op`/`Apply`/`Rollup`/
 to build fast off `batteries`; only the reachability-correctness proof modules
 `import Mathlib`. The tactic discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
-used for its *lemmas*, not to license heavy automation.
+used for its *lemmas*, not to license heavy automation. (One adjacent note:
+the Lake config itself migrates `lakefile.toml` → `lakefile.lean` when the
+ADR-0019 native shim lands — custom targets are Lean-DSL-only; the pin policy
+here is unaffected.)
 
 ## Toolchain and test harness (pinned)
 

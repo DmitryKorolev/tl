@@ -110,7 +110,9 @@ distinct from the on-disk log `v` and the `--json` `schemaVersion` (ADR-0008).
 A product minor/patch release may leave both schemas unchanged; a log or JSON
 breaking change bumps its own schema even if the product version also changes.
 `tl version --json` reports all three numbers plus the git commit / build
-provenance digest for the running binary.
+provenance digest for the running binary (the provenance digest joins the
+payload additively once the release pipeline that produces it exists —
+ADR-0020 pins the stage-1 shape without it).
 
 ### Release integrity and provenance
 

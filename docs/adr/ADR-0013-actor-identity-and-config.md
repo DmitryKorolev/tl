@@ -75,7 +75,8 @@ on the outcome rather than parsing text.
 `tl` has no bespoke config file. All settings come from environment
 variables, git config, and command flags — `TL_ACTOR`, `TL_DIR`,
 `$VISUAL`/`$EDITOR`, `NO_COLOR`, the `--color`/`--glyphs`/`--plain` output
-surface (a forever-stable CLI contract like `--json`; `NO_COLOR` and a non-TTY
+surface (a CLI contract as stable as `--json` — additive-only from 1.0,
+ADR-0008 §Stability horizon; `NO_COLOR` and a non-TTY
 both force `--color=never`), and per-command flags. This matches the
 "small, no daemon, no config server" ethos (ADR-0012 already rejected a
 global store for *state*; this extends it to *settings*).

@@ -44,8 +44,10 @@ Ship three things, smallest-surface-first.
   schemaVersion contract). The catalog the enum covers includes at least: no
   `.tl` project found (ADR-0012); an ambiguous id/slug/prefix; a malformed
   log line; an unknown (newer) log format version — fail-closed at *segment*
-  granularity: the offending segment is refused whole and loudly disclosed
-  while the remaining segments still fold (ADR-0008); a corrupt/unreadable `local/clock` or
+  granularity: the offending segment is refused whole and loudly disclosed;
+  a refused *foreign* segment is not a command error (the read succeeds and
+  folds the rest), while the replica's *own* — or every — segment refused
+  fails the read (ADR-0008); a corrupt/unreadable `local/clock` or
   `local/replica`; `no-upstream`; and `not-claimable`. Each maps to a distinct
   stable `code` and exit code, not a generic failure — the boundary handles bad
   input totally rather than excusing it. Each error's `message` is
@@ -95,7 +97,7 @@ is rehomed onto these two commands rather than carried by a bundled snapshot:
 Untrusted content stays explicit. Any command that emits issue objects
 (`ready`, `show`, `list`) carries per-issue `provenance`
 (`{source, createdBy, replica}`, ADR-0003), and every free-form content field
-(`title`/`description`/`notes`/`labels`/`assignee`/`slug`) is replica- or
+(`title`/`description`/`notes`/`labels`/`assignee`/`slug`/`meta`) is replica- or
 import-authored data, not instructions (ADR-0014 T1). Because nothing is
 auto-injected, an agent only ever ingests this content by *explicitly running
 a read* — there is no packaged payload pushed at it on waking, and so no

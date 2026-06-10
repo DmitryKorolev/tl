@@ -36,7 +36,8 @@ Used by `ready` and flat `list` output:
   common, so inlining them would drown the signal. See them via `show`, `--json`
   (`labels`), or `list --label type:bug`.
 - `<title>` is the only variable-width field; it truncates to the terminal
-  width with `…` (full text via `show` / `--json`).
+  width with `…` (untruncated-to-width via `show` / `--json`; field-level
+  render bounds per ADR-0014).
 - No parent suffix. `ready` is a flat ranked queue (priority →
   critical-path → createdAt → id, ADR-0004) and excludes epics, so a child's epic
   is never adjacent and can't be tree-indented here; the parent is in `--json`
@@ -88,7 +89,9 @@ A header line (`<glyph> <id> · <title>   [<prio> · <STATUS>]`), then provenanc
 (assignee, the derived epic marker, created/updated, close reason) and the issue's
 `labels` (including any `type:*`), then `DESCRIPTION` and `NOTES` blocks, then the
 relationships inline (blockers, dependents, parent, related) — with children
-rendered as a tree (§2).
+rendered as a tree (§2). The `DESCRIPTION`/`NOTES` blocks are where ADR-0014's
+untrusted-content fence appears in human output; one-line list/ready rows rely
+on byte-sanitization plus width truncation rather than a per-row fence.
 
 ### 5. `stats`
 
@@ -105,7 +108,8 @@ Don't conflate them:
 
 So a color-capable terminal that can't render the glyphs still gets color, and a
 plain pipe gets neither — the two never move together. (This `--color`/`--glyphs`
-surface is a forever-stable CLI contract like `--json`; `NO_COLOR` per ADR-0013.)
+surface is a CLI contract as stable as `--json` — additive-only from 1.0,
+ADR-0008 §Stability horizon; `NO_COLOR` per ADR-0013.)
 
 ### 7. Color semantics (what is colored)
 
@@ -208,5 +212,6 @@ painful as `--description "…"`. So:
 - Open `$EDITOR` by default on `tl create "<title>"`. Rejected: a surprise
   editor in a TTY breaks quick-start and agents; the editor is opt-in
   (`--edit` / no title), and the machine path is flags/stdin.
-- Leave it in `vision.md` prose. Rejected: it is a forever-stable presentation
-  contract that deserves an owning ADR, keeping vision navigable.
+- Leave it in `vision.md` prose. Rejected: it is a presentation contract
+  pinned for 1.0 stability (ADR-0008 §Stability horizon) that deserves an
+  owning ADR, keeping vision navigable.

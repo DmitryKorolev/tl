@@ -191,7 +191,8 @@ canonical shape:
   `won`, the winner on `superseded`. An existing target that is not in
   `ready s now` is refused before writing as the `not-claimable` error
   (ADR-0008), with structured reasons: closed, already `in_progress` / claimed,
-  epic, deferred-until, or the `why`-style unclosed blocker set. A nonexistent id
+  epic, deferred-until, or the direct unclosed blocker set (`tl why` gives the
+  transitive set — ADR-0020). A nonexistent id
   stays `not-found`. See ADR-0013.
 
 `ready`/`list`/`stats`/`why` reuse these same names — defining the shape

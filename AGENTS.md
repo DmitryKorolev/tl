@@ -79,12 +79,14 @@ CI gates (mirror these locally before declaring done):
 
 ## Proof guidance
 
-- **Dependencies: `batteries` (std4), not Mathlib** — see
-  [ADR-0009](docs/adr/ADR-0009-proof-dependencies.md). Model collections
+- **Dependencies: `batteries` (std4) by default; Mathlib only under the
+  recorded ADR-0009 escape hatch**, scoped to the reachability/cardinality
+  proof modules (`Tl/Kernel/Reach.lean` and its dependents) — see
+  [ADR-0009](docs/adr/ADR-0009-proof-dependencies.md); do not widen its scope
+  without recording it. In the base CRDT/kernel layers: model collections
   over `List` (no `Finset`); prove the CRDT join laws (commutativity /
   associativity / idempotence) directly rather than via Mathlib's lattice
-  typeclasses. Adding Mathlib is a deliberate, recorded exception, not a
-  default.
+  typeclasses.
 - **Avoid `omega`, `decide`, `aesop`, and bare `simp` as proof closers.**
   They produce opaque terms the next agent can't maintain. Prefer explicit
   `calc`, `cases`/`match`, named lemmas, and `simp only [...]` with an
@@ -146,7 +148,8 @@ commit or push when asked; if on the default branch, branch first.
 
 See [docs/codebase-map.md](docs/codebase-map.md). In short: `Tl/Kernel/`
 (verified core, no I/O), `Tl/Crdt/` (OR-Set, LWW, join laws), and the tested
-I/O shell — `Tl/Format/`, `Tl/Clock/`, `Tl/Sync/`, `Tl/Import/`, `Tl/Cli/` — with
+shell — `Tl/Format/`, `Tl/Hash/` (pure, tested), `Tl/Store/`, `Tl/Clock/`,
+`Tl/Sync/`, `Tl/Import/`, `Tl/Cli/` — with
 `Tl.lean` as the root and `Tests/` alongside.
 
 ## Definition of done

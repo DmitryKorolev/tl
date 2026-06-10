@@ -217,7 +217,9 @@ both with a stated policy:
   `doctor` finding. A read that refuses the replica's *own* segment — or
   every segment — fails (`ok: false`, `malformed-line` / `unknown-version`):
   answering from nothing would be a silently wrong fold (an empty board is an
-  answer, not a disclosure).
+  answer, not a disclosure). `tl doctor` is the one exemption — reporting
+  refused segments is its job, so an own-segment refusal is a `fail` check
+  inside an `ok: true` response (ADR-0020).
 
 ### The `--json` output is a versioned stability contract
 

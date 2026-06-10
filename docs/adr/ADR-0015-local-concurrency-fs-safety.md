@@ -77,7 +77,9 @@ leaves the reader on its opened inode. A reader folds each segment to its last
 LF; a non-LF-terminated trailing fragment is an uncommitted write, skipped
 silently (not corruption). A *complete* (LF-terminated) line that fails to
 parse, or an unknown `op`/version, is the segment-scoped fail-closed case
-(ADR-0008 §corruption): refuse that one segment, fold the rest, disclose it.
+(ADR-0008 §corruption): refuse that one segment, fold the rest, disclose it
+(command-level outcome — foreign segment: the read succeeds; own/every
+segment: it fails — ADR-0008 §corruption).
 Cross-segment skew is harmless — the fold is order/dup-insensitive (ADR-0004), so
 a reader always sees *some* valid converged state, at worst a moment stale.
 

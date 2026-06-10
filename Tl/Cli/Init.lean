@@ -3,8 +3,10 @@
 
 Creates the gitignored `.tl/`, writes the `*` self-ignore (so `tl` never touches
 the repo's own `.gitignore`/`.gitattributes`), mints the replica-id, and seeds the
-clock. The `refs/tl/log` refspec + auto-sync (Stage 3) and the generated
-`.tl/README.md` + discovery pointer (Stage 2) are deliberately not here. `init` is
+clock. The `refs/tl/log` refspec + auto-sync (Stage 3), the generated
+`.tl/README.md` + discovery pointer (Stage 2), and repo-toplevel placement +
+`--dir` (Stage 1, with the discovery wiring — ADR-0001 §4; this Stage-0 init is
+cwd-relative) are deliberately not here. `init` is
 idempotent and does not require a git repo. Tested-shell tier (ADR-0004), but its own
 IO test (temp-dir idempotency + replica/clock/gitignore file checks) is **pending** —
 to land with the Stage-1 CLI test buildout.

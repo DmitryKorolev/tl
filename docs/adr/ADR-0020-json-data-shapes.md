@@ -23,7 +23,9 @@ be revised with a `schemaVersion` bump — they are pinned here as the intended
   are camelCase (ADR-0003/0008).
 - **Omit-empty**: an optional field with no value is absent, not `null`.
   (Wire records distinguish null-vs-absent for *writes*, ADR-0002; the read
-  projection has no clear-vs-unset distinction to preserve.)
+  projection has no clear-vs-unset distinction to preserve.) Two exceptions
+  stay `|null` as ADR-0003 pins them: `provenance.createdBy` and
+  `claim.currentAssignee`.
 - **Ids render in display form** — `tl-` prefixed (ADR-0007: the prefix is
   added on render, and error messages already name the full `tl-…` form).
 - **Timestamps** are ISO-8601 UTC with millisecond precision (the HLC's
@@ -31,7 +33,9 @@ be revised with a `schemaVersion` bump — they are pinned here as the intended
   `2026-06-10T16:58:55.296Z`.
 - **List-like payloads** are `{ "count": <total matches>, "items": [...] }`
   with `items` capped by `--limit` (vision: truncation is disclosed, never
-  silent). Ranked order (`ready`) is the array order.
+  silent). Ranked order (`ready`) is the array order. When the rows are not
+  issue objects the array key is the domain noun (`cycles`, `checks`) — same
+  count-plus-capped-rows discipline.
 - **Mutating verbs echo the issue**: the full post-mutation issue object
   (ADR-0003) is the `data`, so an agent never needs a follow-up `show`.
   A command that emits several records (ADR-0008 composites) echoes the
@@ -50,7 +54,7 @@ edge flags, `dependencies` reflects the edges just written:
 { "schemaVersion": 1, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "title": "Write the parser",
   "status": "open", "effectiveStatus": "open", "priority": 2,
-  "isEpic": false, "ready": true, "blocked": false, "deferred": false,
+  "isEpic": false, "ready": false, "blocked": true, "deferred": false,
   "createdAt": "2026-06-10T16:58:55.296Z", "updatedAt": "2026-06-10T16:58:55.296Z",
   "dependencies": [
     { "type": "blocks", "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha" }
@@ -104,15 +108,14 @@ A target that is not in `ready s now` is refused before writing with the
   "message": "tl-9f3cq7rkv2m8e4ha is blocked by 1 open issue — run `tl why tl-9f3cq7rkv2m8e4ha`, or claim something from `tl ready`",
   "id": "tl-9f3cq7rkv2m8e4ha",
   "reasons": {
-    "status": "open",
     "blockedBy": ["tl-kz8w2n4jp7e9h3vt"]
   }
 } }
 ```
 
 `reasons` carries only the clauses that apply, omit-empty: `status` (closed /
-already `in_progress`), `assignee` (current holder), `epic: true`,
-`deferredUntil`, `blockedBy` (direct unclosed blockers; `why` gives the
+already `in_progress`), `assignee` (current holder), `isEpic: true`,
+`deferUntil`, `blockedBy` (direct unclosed blockers; `why` gives the
 transitive set).
 
 **`tl close <id> --as … --json`** — echo, plus the proved freed set:
@@ -127,6 +130,9 @@ transitive set).
 `unblocked` is the kernel's `unblocks` set (ADR-0004 thm 10) — what an agent
 wants in hand immediately after closing. `--cascade` echoes the root epic and
 lists every closed id in an additional `closed: [ids]` array.
+
+**`tl update <id> … --json`** — the updated issue (the mutating-verb echo
+convention, exactly as `create`; no additional fields).
 
 **`tl dep add / dep remove --json`** — a relationship ack in the pinned edge
 orientation (`from` blocks `to`; for `parent`, `from` is the parent —
@@ -157,7 +163,7 @@ enough context to act on each:
 } }
 ```
 
-(`deferredUntil` appears when defer is a reason; a ready issue answers
+(`deferUntil` appears when defer is a reason; a ready issue answers
 `"ready": true` with no reason fields.)
 
 **`tl dep cycles --json`** — the node-set witness per cyclic SCC (ADR-0004
@@ -186,8 +192,8 @@ answer — pinned here so agents and CI branch on content, not exit code):
     { "name": "replica", "status": "ok", "replica": "chp14mvsxr027" },
     { "name": "clock", "status": "ok" },
     { "name": "log", "status": "warn",
-      "message": "segment x9k2mvq8rrt04 refused: malformed line 41 — its owning replica repairs or re-syncs it; other segments folded",
-      "segment": "x9k2mvq8rrt04" },
+      "message": "segment c9k2mvq8rrt04 refused: malformed line 41 — its owning replica repairs or re-syncs it; other segments folded",
+      "segment": "c9k2mvq8rrt04" },
     { "name": "graph", "status": "fail", "cycles": 1, "multiParent": 0, "danglingEdges": 2 }
   ]
 } }
@@ -204,7 +210,9 @@ diagnostics, stale claims); checks are added additively.
 { "schemaVersion": 1, "ok": true, "data": { "version": "0.1.0", "logFormat": 1 } }
 ```
 
-(`"created": false` on an idempotent re-run.)
+(`"created": false` on an idempotent re-run. The ADR-0006 build-provenance
+digest joins `version`'s payload as an additive field once the release
+pipeline that produces it exists — deferred, not dropped.)
 
 **Error context fields** (extending ADR-0008's pinned codes with their named
 context, same additive-only discipline): `not-claimable` → `id`, `reasons`

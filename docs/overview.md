@@ -2,16 +2,16 @@
 
 > Implementation underway. This is the claim table: what the verified core
 > proves, what tests cover, and what is trusted at the boundary. The kernel
-> (`Tl/Crdt/`, `Tl/Kernel/`) is fully defined and total, and a first tranche of
-> theorems is proved; the **Proof status** subsection below records, per row,
-> what is *proved* versus what is a *tracked residual* (defined-and-total but
-> with its soundness/completeness proof still outstanding — decomposed and
-> recorded here per AGENTS.md Definition-of-Done #5, never downgraded to a test).
+> (`Tl/Crdt/`, `Tl/Kernel/`) is fully defined and total, and the stated theorem
+> set is proved; the **Proof status** subsection below records each theorem
+> (and the closed-residual history — the one remaining discharge is carried as
+> a tier-3 assumption, never downgraded to a test, per AGENTS.md
+> Definition-of-Done #5).
 > The tested I/O shell is under construction: `Tl/Clock` (HLC, replica id) and
 > `Tl/Format` (Crockford base32, the JSONL record envelope) ship with their
 > tests (`Tests/`); `Tl/Cli/Init` is built but its own IO test is **pending**
-> (due with the Stage-1 CLI test buildout); the record↔Op codec, `Tl/Store`,
-> `Tl/Sync`, and `Tl/Import` are not yet built.
+> (due with the Stage-1 CLI test buildout); the record↔Op codec, `Tl/Hash`,
+> `Tl/Store`, `Tl/Sync`, and `Tl/Import` are not yet built.
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -173,6 +173,8 @@ ADR-0008).
 | Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008). **Covered today for the envelope `Record` model** (`Tests/RecordTests.lean`); the record↔Op codec layer and its round-trip corpus land with Stage 1 |
 | beads import fidelity | differential test vs `.beads` fixtures (0005) |
 | HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases (0007); real durable monotonic persistence remains Trusted below |
+| SHA-256 / id mint | NIST CAVP short-message vectors + padding-boundary lengths (0/1/55/56/63/64/65 bytes, multi-block) + one worked end-to-end `(replica, hlc, nonce)` → digest → leftmost-80-bits → 16-char-id vector (0018); import-path vectors ride the differential fixtures (0005) |
+| native shim (fsync, no-follow open, fd lock, entropy) | per-branch tests: symlink refusal at final and intermediate components, `O_EXCL` collision, append+sync round-trips, lock contention, hostile fixtures at the Store layer (0019/0015) |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. **Test pending** — the encodings (`Hlc.toHex`, `toCrockford`) are built, but the sampled string-compare-vs-`Stamp`-order cross-check is not yet in the runner (0007/0008) |
 | CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008) |
 | ref sync transport | `refs/tl/log` plumbing (read/write), segment materialization, the complete-line union merge, push-rejection retry, no-upstream, and auto-sync error handling; the local-first leg + read-time ref-OID refresh for same-machine worktree sharing (0001/0016) |
@@ -185,7 +187,11 @@ but neither proved in-kernel nor fully testable (AGENTS.md tier 3). Any such
 property must be listed here explicitly, never relied on silently. Current
 entries: replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
-total even then, so this guards segment-ownership, not convergence, ADR-0007);
+total even then, so this guards segment-ownership, not convergence, ADR-0007 —
+**known defect**: the built `Replica.mint` still draws from the
+non-cryptographic `IO.rand`, so until the ADR-0019 shim's `entropy` lands in
+Stage 1, replica-id uniqueness rests on weaker entropy than this bound
+assumes);
 the deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
@@ -204,8 +210,9 @@ reject a write, so any party git lets push the ref is a trusted writer; any
 reader sees all state and history); supply-chain integrity rests on the
 release/signing identity and the Lean TCB (reproducibility binds binary→source,
 not source→correctness); and agent-side prompt-injection resistance is the
-consuming harness's job — `tl` labels content untrusted, sanitizes bytes, bounds
-size, and discloses provenance, but cannot guarantee an LLM resists fenced data.
+consuming harness's job — `tl` fences content in human output, sanitizes bytes,
+bounds size, and discloses provenance (untrusted-ness is stated in the schema
+docs and skill, ADR-0014/0020), but cannot guarantee an LLM resists fenced data.
 
 Local filesystem (ADR-0015). `O_APPEND` / `FILE_APPEND_DATA` write-atomicity
 and working advisory locks are assumed on the local filesystem; a `.tl/`
