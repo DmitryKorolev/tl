@@ -30,3 +30,6 @@ not reference task-tracker IDs.
 | 0015 | [Local concurrency and filesystem safety](ADR-0015-local-concurrency-fs-safety.md) |
 | 0016 | [Same-machine sharing: worktrees and local-first sync](ADR-0016-worktree-sharing-local-first-sync.md) |
 | 0017 | [Human-facing CLI: output format and editing](ADR-0017-human-cli-output-and-editing.md) |
+| 0018 | [Hand-rolled SHA-256 (pure Lean)](ADR-0018-hand-rolled-sha256.md) |
+| 0019 | [Native primitives shim, and the FFI policy](ADR-0019-native-shim-ffi-policy.md) |
+| 0020 | [`--json` data shapes (the stage-1 surface)](ADR-0020-json-data-shapes.md) |
