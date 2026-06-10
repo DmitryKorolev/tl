@@ -211,6 +211,14 @@ both with a stated policy:
   converges normally. Reader-side handling of torn vs malformed lines is pinned
   in ADR-0015 §5.
 
+  The command-level outcome follows the same availability logic: a read that
+  refuses a *foreign* segment still succeeds (`ok: true`) — it folds the
+  remaining segments, discloses the refusal on stderr, and surfaces it as a
+  `doctor` finding. A read that refuses the replica's *own* segment — or
+  every segment — fails (`ok: false`, `malformed-line` / `unknown-version`):
+  answering from nothing would be a silently wrong fold (an empty board is an
+  answer, not a disclosure).
+
 ### The `--json` output is a versioned stability contract
 
 The on-disk log is not the only forever-compat surface — for an agent-facing

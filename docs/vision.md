@@ -268,9 +268,11 @@ each stage shippable and testable on its own:
   here; only the epic/critical-path *ergonomics* are Stage 2.)
 - Stage 1 — the MVP work loop. `create` (with inline `--blocked-by` /
   `--blocks` / `--parent` / `--related`), `ready`, ready-only `claim`,
-  `close --as`, `dep add/remove`, `why`, `dep cycles`, `show`, `list`,
-  a minimal `doctor` (local clock/replica/log health + graph diagnostics;
-  remote sync depth grows in Stage 3), and `--json` everywhere. This is the
+  `close --as`, a minimal `update` (non-lifecycle scalars —
+  title/priority/description/notes; the `--claim` alias and `--parent`
+  reparenting are Stage 2), `dep add/remove`, `why`, `dep cycles`, `show`,
+  `list`, a minimal `doctor` (local clock/replica/log health + graph
+  diagnostics; remote sync depth grows in Stage 3), and `--json` everywhere. This is the
   whole thesis — *"what can I work on, and is the graph sane"* — and is enough
   for an agent (or several on one machine, sharing the local log) to run
   autonomously. (That "one machine" case is a

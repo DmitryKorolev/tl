@@ -94,6 +94,19 @@ folded/imported content as untrusted data, never instructions:
   with disclosure — no silent caps; full text still available via `tl show`) on
   both render paths. `--json` always goes through a real JSON encoder
   (covered by `parse ∘ render = id` plus an explicit control-char test).
+  The concrete sanitization spec, pinned (revisable during 0.x, ADR-0008
+  §Stability horizon):
+  - *Single-line fields* — `title`, `assignee`, `slug`, each label, each
+    `meta` key and value: bounded at **1 KiB** each; **all** control
+    characters stripped.
+  - *Multi-line fields* — `description`, `notes`: bounded at **64 KiB**;
+    LF and TAB are the only control characters retained.
+  - *Both classes*: ANSI escape sequences (CSI/OSC), zero-width codepoints
+    (ZWSP, ZWNJ, ZWJ, BOM), and bidi-control codepoints are stripped;
+    truncation is disclosed inline at the cut point.
+  - These are *render* bounds at the consumption boundary, not storage
+    bounds — a CRDT cannot reject a write, so the log keeps what was
+    written; every reader applies the same bounds on output.
 - Residual (carried assumption): the final injection defense lives in the
   *consuming agent's harness*. `tl` cannot enforce it — a CRDT cannot reject
   content, and an LLM may follow even fenced data. `tl`'s job is to fence,
