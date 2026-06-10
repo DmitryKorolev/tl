@@ -188,19 +188,20 @@ Tracker layer (over materialized state):
    definitional reason — work the `in_progress` blocker, wait out the defer —
    not a deadlock.
 6. Cycle-diagnostic correctness. Per kind `k ∈ {blocks, parent}`,
-   `cycles s k` returns one canonical simple-cycle witness for each
+   `cycles s k` returns one canonical witness for each
    strongly-connected component of the kind-`k` edge graph that contains a
-   cycle (canonical = the lexicographically-least simple cycle, by id-sequence,
-   through the SCC's least-`id` node — so it is a deterministic *pure function
-   of the state*, identical on replicas with the same state; dedup is by the
-   SCC partition). Correctness: `cycles s k` lists a witness for exactly
+   cycle (canonical = the SCC's **node set, sorted by `id`** — a deterministic
+   *pure function of the state*, identical on replicas with the same state;
+   dedup is by the SCC partition, proved `sccWitnesses_same_witness_iff`). Correctness: `cycles s k` lists a witness for exactly
    the cyclic SCCs of kind `k` — every cyclic SCC reported, no acyclic part —
    the decidable, polynomial, total statement. (Enumerating *all* simple cycles
-   is exponential and unnecessary: one witness per SCC is what an agent needs
-   to break it with `dep remove`; `dep path` walks a full cycle on demand.)
+   is exponential and unnecessary — and a canonical simple-*path* witness would
+   buy lex-least-walk canonicality proofs for no contractual gain: the sorted
+   node set is what an agent needs to break the knot with `dep remove`;
+   `dep path` walks an ordered cycle on demand.)
    `cycles s` additionally reports `≺`-cycles — the *readiness deadlocks*
    of theorem 5, which may be pure-`blocks` or mixed blocks+parent-rollup —
-   reported as one canonical witness per cyclic SCC of `≺` (same least-id-rooted
+   reported as one canonical witness per cyclic SCC of `≺` (same sorted-node-set
    rule, a pure function of state), so `dep cycles` never says "no cycles"
    while the live set is stuck. A mixed
    `≺`-cycle is broken by removing one of its `blocks` edges or by

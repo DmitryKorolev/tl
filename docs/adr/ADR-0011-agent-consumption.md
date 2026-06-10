@@ -43,8 +43,9 @@ Ship three things, smallest-surface-first.
   enum are pinned in ADR-0008 (co-located with the `--json`
   schemaVersion contract). The catalog the enum covers includes at least: no
   `.tl` project found (ADR-0012); an ambiguous id/slug/prefix; a malformed
-  log line; an unknown (newer) log format version — fail-closed, never a
-  partial fold (ADR-0008); a corrupt/unreadable `local/clock` or
+  log line; an unknown (newer) log format version — fail-closed at *segment*
+  granularity: the offending segment is refused whole and loudly disclosed
+  while the remaining segments still fold (ADR-0008); a corrupt/unreadable `local/clock` or
   `local/replica`; `no-upstream`; and `not-claimable`. Each maps to a distinct
   stable `code` and exit code, not a generic failure — the boundary handles bad
   input totally rather than excusing it. Each error's `message` is
@@ -195,8 +196,9 @@ plain `create` + link.
   no hook-pushed-content path. ADR-0014 (T1) is updated to match: its
   mitigation no longer leans on the SessionStart hook or a hook-safe summary
   schema (both removed); the surfaced-content vector is now just the explicit reads
-  (`ready`/`show`/`list`), which fence and byte-sanitize content and mark it
-  untrusted wherever it appears.
+  (`ready`/`show`/`list`), which fence and byte-sanitize content and disclose
+  per-issue provenance; that content is untrusted is documented in the schema
+  contract and the skill (ADR-0014), not stamped on each payload.
 - No orchestration. This is consumption ergonomics, *not* a workflow
   engine — `tl` exposes its state cleanly and stops there; dispatching,
   supervising, and sequencing agents remain out of scope (vision non-goals).

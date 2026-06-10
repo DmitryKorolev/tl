@@ -180,9 +180,9 @@ canonical shape:
   `actor` (ADR-0008/0013); since every op carries its `actor`, per-field /
   `updatedBy` authorship is a clean future additive projection.
   All free-form content (`title`/`description`/`notes`/`labels`/`assignee`/`slug`)
-  is untrusted data; the standing `contentTrust` marker and the render-time
-  sanitization/fencing of these fields are defined at the consumption boundary
-  (ADR-0011 / ADR-0014), not in the kernel.
+  is untrusted data; the render-time sanitization/fencing of these fields — and
+  the schema-level statement that content is untrusted — are defined at the
+  consumption boundary (ADR-0011 / ADR-0014), not in the kernel.
 - Claim outcome (on `show` and the `claim` / `update --claim` verbs):
   `claim: { "outcome": "won"|"superseded", "currentAssignee": <assignee>|null }`
   — an `ok: true` data outcome, *not* an error, when a ready-only claim write

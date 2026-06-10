@@ -29,8 +29,10 @@ an optional slug gives a memorable display handle without becoming identity.
   collision, and bakes the parent into the id so reparenting breaks references.
   Hierarchy is `parent` edges, ADR-0003, rendered at display time.)
 - Hash function, preimage, and canonical length are pinned (they fix the
-  OR-Set key and the round-trip target, ADR-0008): the id is the low 80 bits
-  of SHA-256 of the preimage, Crockford-base32 = 16 characters after
+  OR-Set key and the round-trip target, ADR-0008): the id is the leftmost 80
+  bits — the first 10 digest bytes, the NIST truncation convention; slice
+  direction pinned in ADR-0018 — of SHA-256 of the preimage, read as a
+  big-endian integer, Crockford-base32 = 16 characters after
   `tl-`. The native preimage is the three canonical fixed-width strings
   concatenated — `replica-id`(13) ++ `hlc`(16 hex) ++ `nonce`(26) — unambiguous by
   fixed width, no delimiter (the import preimage below is the one exception).
@@ -96,7 +98,9 @@ the record envelope (ADR-0008). Three load-bearing roles, pinned once here:
 `(HLC, replica-id, nonce)` — writes sharing a `(HLC, replica-id)` can tie on the
 first two; (c) the OR-Set add-tag (ADR-0002/0008). All depend on per-op randomness.
 It is pinned like the issue id: 128 random bits from a CSPRNG, Crockford
-base32 (26 chars). The only collision that matters is two ops sharing the *same*
+base32 (26 chars — which hold 130 bits: the value is right-aligned with the two
+spare high bits zero, the ULID layout, so a valid nonce's first char is
+`0`–`7`). The only collision that matters is two ops sharing the *same*
 `(HLC, replica-id)`. On the normal local path the mutation lock (ADR-0015)
 serializes same-working-copy writes so the HLC strictly advances and they never
 tie; a residual tie is confined to off-path cases — a duplicated replica-id (a
@@ -142,7 +146,10 @@ CSPRNG, not a code path.
 
 - A replica-id is minted once per working copy (on `init` or first
   write) — Crockford base32 of 8 random bytes (64 bits) from a CSPRNG (the same source as the nonce): a fixed 13 lowercase
-  chars, low bit zero-padded. Stored in `.tl/local/replica`,
+  chars — the 64-bit value right-aligned with the single spare high bit zero
+  (plain big-endian base-32: the same leading-zero convention as the 16-hex HLC
+  and the ULID-style nonce, so a valid replica-id's first char is `0`–`f`).
+  Stored in `.tl/local/replica`,
   gitignored (the whole `.tl/` is, ADR-0001): a shared replica-id collapses
   the LWW tie-break and per-segment ownership.
 - It is used three ways: part of the LWW tie-break, the op `replica` field, and

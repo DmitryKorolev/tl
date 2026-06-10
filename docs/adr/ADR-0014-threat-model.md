@@ -72,10 +72,18 @@ other agents' actions*.
 Stance: mitigate at the consumption boundary; residual carried. Treat all
 folded/imported content as untrusted data, never instructions:
 
-- The read commands (`tl ready` / `tl show` / `tl list`, and their
-  `--json`) emit content fields inside an explicit untrusted-data fence with a
-  top-level `contentTrust: "untrusted"` marker and per-issue provenance
-  (authoring actor/replica; `source: "imported"` for imported issues).
+- The read commands (`tl ready` / `tl show` / `tl list`) render content
+  fields inside an explicit untrusted-data fence in human output, and emit
+  per-issue provenance (authoring actor/replica; `source: "imported"` for
+  imported issues) in `--json`. That all free-form content is untrusted data
+  is stated once, in the contracts that persist — the documented `--json`
+  schema (ADR-0020 / `help --json`), the skill, and this ADR — not stamped on
+  every payload. (An earlier draft carried a constant per-response
+  `contentTrust: "untrusted"` marker; dropped: a field that can never vary —
+  a CRDT cannot reject a write, so no content is ever certifiably trusted —
+  carries no information a consumer could branch on, and would freeze as
+  permanent payload noise under the additive-only rule. Per-issue
+  `provenance` *does* vary and is the graded-trust hook.)
   Nothing is auto-injected — `tl` ships no SessionStart hook (ADR-0011), so
   task content enters an agent's context *only when the agent explicitly runs a
   read*. There is no unbidden-content path to fence around; the fence and the
@@ -88,7 +96,7 @@ folded/imported content as untrusted data, never instructions:
   (covered by `parse ∘ render = id` plus an explicit control-char test).
 - Residual (carried assumption): the final injection defense lives in the
   *consuming agent's harness*. `tl` cannot enforce it — a CRDT cannot reject
-  content, and an LLM may follow even fenced data. `tl`'s job is to label,
+  content, and an LLM may follow even fenced data. `tl`'s job is to fence,
   sanitize bytes, bound size, and disclose provenance; not to guarantee the
   agent resists. This is precisely why trusted workflow guidance lives in the
   skill and repo docs, never inline with task data (ADR-0011): trusted guidance

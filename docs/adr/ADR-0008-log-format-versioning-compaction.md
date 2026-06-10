@@ -53,8 +53,13 @@ so it is deferred, but the format must leave room for it now.
 The parsed model is a typed `Op` plus an `unknown` bag holding any
 unrecognized JSON fields verbatim (so additive evolution never loses data). A
 single canonical render is pinned: UTF-8, LF; envelope keys in the fixed
-order `v, op, hlc, replica, nonce, actor`, then payload keys lexicographically, then the
-`unknown` keys (lexicographically); no insignificant whitespace; an explicit
+order `v, op, hlc, replica, nonce, actor`, then **all** remaining keys — payload
+and unknown alike — in one lexicographic order. (A payload-then-unknown grouping
+would make the canonical bytes depend on which keys the *reader's* version
+recognizes — an additively-added field is payload to a new reader but unknown to
+an old one, both valid v1 readers — so the same record would canonicalize
+differently across readers; the single order keeps rewrites byte-stable across
+versions.) No insignificant whitespace; an explicit
 clear is JSON `null` (distinct from an absent key, ADR-0002); `hlc` / `id` /
 add-tags in their pinned encodings (ADR-0007). The round-trip law is therefore
 stated over the model, not raw text: `parse (render m) = m` for any model
@@ -154,6 +159,20 @@ Stability rules follow from the verb/delta split:
   under-folds.
 - This keeps the forever-compat surface managed by exactly two rules:
   *monotonic `v` + preserve-unknown*.
+
+#### Stability horizon: the forever promises bind from 1.0
+
+The permanence language above — and the additive-only `--json` rule below —
+binds from product **1.0** (SemVer 0.x conventionally permits breaks, ADR-0006,
+and committing to a stable JSON this early would freeze shapes before real
+usage has tested them). During 0.x both surfaces may still change
+incompatibly, but never silently: a JSON break bumps `schemaVersion`, a log
+break bumps `v` (the fail-closed rules above apply unchanged), and every break
+is disclosed in release notes with a migration path for the log (at minimum
+export → re-import). 1.0 then freezes whatever `v` / `schemaVersion` it ships;
+from that point the forever rules hold unconditionally. Like any ADR this is
+revisable — and note the asymmetry: moving the freeze *earlier* is always
+cheap, while unfreezing after adoption would strand real replicas' logs.
 
 ### Corruption and partial-write policy (the parse layer)
 
