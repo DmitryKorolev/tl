@@ -124,7 +124,12 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   scoped fail-closed with --skip-bad disclosures
                         --   (incl. the record/segment owner check — a record
                         --   stamped by another replica is a malformed line);
-                        --   line-scoped max-HLC scan (the clock reseed)
+                        --   line-scoped max-HLC scan (the clock reseed); the
+                        --   HLC skew window (ADR-0007) — a FOREIGN op dated
+                        --   beyond now+W is deferred from the fold AND maxHlc
+                        --   (own exempt), so a future HLC neither wins LWW nor
+                        --   inflates the reseed (passes `now` only on the
+                        --   read/write path; pure-fold default off)
                         --   (Tl/Sync composes Store primitives — own-segment
                         --   snapshot under lock, atomic foreign-cache replace —
                         --   rather than owning segment I/O)

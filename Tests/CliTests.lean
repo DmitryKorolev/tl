@@ -461,8 +461,10 @@ GARBAGE
   let dir3 ← freshDir
   let target ← mkIssue dir3 "Contested"
   let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--assignee", "carol"]
-  let farFuture := 0x7000000000000000
-  let foreignClaim := foreignLine (.claim target "eve") farFuture "2zzzzzzzzzzzz" "eve"
+  -- a sibling's concurrent claim, later than ours but WITHIN the skew window
+  -- (ADR-0007: a far-future HLC would be deferred, not treated as "later")
+  let laterHlc := ((← nowMs) + 60000) * 2 ^ 16
+  let foreignClaim := foreignLine (.claim target "eve") laterHlc "2zzzzzzzzzzzz" "eve"
   IO.FS.writeFile (System.FilePath.mk dir3 / "log" / "2zzzzzzzzzzzz.jsonl")
     (foreignClaim ++ "
 ")
@@ -541,7 +543,8 @@ def cliConsistencyTests : IO (List Outcome) := do
   -- the LWW state in BOTH directions (the bare-hlc comparison bug class)
   let a ← mkIssue dir "TieA"
   let b ← mkIssue dir "TieB"
-  let h := 0x6000000000000000
+  -- later than the local creates, within the skew window (ADR-0007)
+  let h := ((← nowMs) + 60000) * 2 ^ 16
   let log := System.FilePath.mk dir / "log"
   IO.FS.writeFile (log / "1zzzzzzzzzzzz.jsonl")
     (foreignLine (.close a .Done) h "1zzzzzzzzzzzz" "eve" 1 ++ "\n"
@@ -670,9 +673,11 @@ def cliReviewBatchTests : IO (List Outcome) := do
   -- a foreign segment reopens the blocker at a far-future stamp
   let realReplica5 := (← IO.FS.readFile (System.FilePath.mk dir5 / "local" / "replica")).trimAscii.toString
   let _ := realReplica5
+  -- the reopen is later than the local close, within the skew window (ADR-0007)
+  let reopenHlc := ((← nowMs) + 60000) * 2 ^ 16
   IO.FS.writeFile (System.FilePath.mk dir5 / "log" / "2zzzzzzzzzzzz.jsonl")
     (foreignLine (.create blkr { title := some "blocker" }) 0x10 "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
-      ++ foreignLine (.reopen blkr) 0x7000000000000000 "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+      ++ foreignLine (.reopen blkr) reopenHlc "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
   o := o ++
     [← expectData "a superseded close echoes consistently (not closed, nothing freed)"
       ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--assignee", "t"]
@@ -885,11 +890,47 @@ def cliRefreshRefusalTests : IO (List Outcome) := do
     | .error e => { name := "all-foreign-refused read succeeds", passed := false, msg := s!"read failed with {e.code.wire}: {e.message}" })]
   return o
 
+/-- Clock-skew surfacing (ADR-0007): a far-future foreign op is deferred — a
+    read discloses it (held-back note) and `doctor`'s clockSkew check warns. -/
+def cliDoctorSkewTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let beyond := ((← nowMs) + 2 * skewWindowMs) * 2 ^ 16  -- well past the 1h window
+  IO.FS.createDirAll (System.FilePath.mk dir / "log")
+  IO.FS.writeFile (System.FilePath.mk dir / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbccccdddd" { title := some "from the future" })
+       beyond "2zzzzzzzzzzzz" "eve" ++ "\n")
+  -- a read folds nothing (the future op is deferred) and discloses it
+  let listed ← run' ["list", "--dir", dir, "--json"]
+  o := o ++ [(match listed with
+    | .ok out => check "a read defers the future op (count 0) and discloses it"
+        (jNat out.data "count" == some 0
+          && out.notes.any (fun n => (n.splitOn "held back").length > 1))
+        (out.data.compress ++ " notes=" ++ String.intercalate "|" out.notes)
+    | .error e => { name := "read discloses deferred op", passed := false, msg := e.message })]
+  -- doctor's clockSkew check warns, naming the deferred count, and reports the
+  -- real lead (over deferred ops too — maxHlc alone would understate it)
+  o := o ++ [← expectData "doctor warns on clock skew with the real ahead-of-now lead"
+    ["doctor", "--json", "--dir", dir]
+    (fun j => (jArr j "checks").any (fun c =>
+      jStr c "name" == some "clockSkew" && jStr c "status" == some "warn"
+        && (jNat c "deferredOps").getD 0 ≥ 1
+        && (jNat c "clockLeadMs").getD 0 ≥ skewWindowMs))]
+  -- a WRITE against the deferred foreign op discloses it too (not only reads)
+  let wrote ← run' ["create", "local work", "--dir", dir, "--assignee", "t"]
+  o := o ++ [(match wrote with
+    | .ok out => check "a write whose guard fold dropped a deferred op discloses it"
+        (out.notes.any (fun n => (n.splitOn "held back").length > 1))
+        (String.intercalate "|" out.notes)
+    | .error e => { name := "write discloses deferred", passed := false, msg := e.message })]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
-    ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests) ++ (← cliBinaryTests)
+    ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

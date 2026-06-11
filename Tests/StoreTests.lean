@@ -172,13 +172,16 @@ def storeAdversityTests : IO (List Outcome) := do
           (loaded.refused.isEmpty && loaded.skipped == [(foreignId, 2)]
             && loaded.state.presentIssues.length == 1)    -- reopen of a dangling id adds no issue
           s!"skipped={loaded.skipped}")]
-  -- clock recovery: absent file reseeds ABOVE the foreign max (all segments)
+  -- clock recovery: an absent file reseeds from the segments' max — but a
+  -- far-future FOREIGN HLC is deferred (ADR-0007 skew window), so it does NOT
+  -- inflate the reseed toward saturation; the minted clock stays sane (≈ now),
+  -- below the planted 0x7fff… foreign HLC rather than jumping to it.
   IO.FS.removeFile (root / ".tl" / "local" / "clock")
   outcomes := outcomes ++
-    [← expectOk "absent clock reseeds above the all-segments max"
+    [← expectOk "absent-clock reseed defers a far-future foreign HLC (no inflation)"
         (transact d none 1 (buildCreate "post-reseed"))
-        (fun (_, parsed) => check "absent clock reseeds above the all-segments max"
-          (parsed.all (fun p => p.stamp.hlc > 0x7fffffffffff0000))
+        (fun (_, parsed) => check "absent-clock reseed defers a far-future foreign HLC (no inflation)"
+          (!parsed.isEmpty && parsed.all (fun p => p.stamp.hlc < 0x7fffffffffff0000))
           s!"minted {parsed.map (·.stamp.hlc)}")]
   -- corrupt clock fails closed
   IO.FS.writeFile (root / ".tl" / "local" / "clock") "not-a-clock\n"
@@ -245,8 +248,57 @@ def storeLockTests : IO (List Outcome) := do
      check "tornTail is false on empty" (!tornTail ByteArray.empty)]
   return outcomes
 
+/-- A crafted record line for a segment with replica id `stem` (the per-replica
+    owner check requires the stamp's replica to match the segment name). -/
+private def craftLine (op : WireOp) (hlc nonce : Nat) (stem : String) : String :=
+  renderLine { v := supportedVersion, op,
+               stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some "x" }
+
+/-- The HLC skew window (ADR-0007): foreign ops dated beyond `now + W` are
+    deferred (held back from the fold AND from `maxHlc`) until wall-clock catches
+    up; within-window foreign ops fold; the own segment is exempt. Deterministic
+    — `now` is passed explicitly, so the test never depends on the wall clock. -/
+def storeSkewTests : IO (List Outcome) := do
+  let now := 2000000000000                                  -- a fixed "now" in ms (~2033)
+  let ownId := fixedReplica
+  let foreignId := "1zzzzzzzzzzzz"
+  let withinHlc := (now + 60000) * 2 ^ 16                   -- 1 min ahead: within W
+  let futureHlc := (now + skewWindowMs + 60000) * 2 ^ 16    -- just past W: deferred
+  let ownFutureHlc := (now + skewWindowMs + 120000) * 2 ^ 16 -- own, far future: exempt
+  let foreignSeg : SegmentData := { replicaId := foreignId, bytes :=
+    (craftLine (.create "aaaabbbbccccdddd" { title := some "near" }) withinHlc 1 foreignId ++ "\n"
+      ++ craftLine (.create "1111222233334444" { title := some "future" }) futureHlc 2 foreignId ++ "\n").toUTF8 }
+  let ownSeg : SegmentData := { replicaId := ownId, bytes :=
+    (craftLine (.create "ffff0000ffff0000" { title := some "ownfuture" }) ownFutureHlc 1 ownId ++ "\n").toUTF8 }
+  let loaded := materialize [ownSeg, foreignSeg] false (some now) (some ownId)
+  let off := materialize [ownSeg, foreignSeg]
+  -- own-id UNKNOWN: nothing is deferred (we cannot tell a segment from our own)
+  let ownUnknown := materialize [foreignSeg] false (some now) none
+  -- a refused segment (future-dated line 1, malformed line 2) must report ONLY
+  -- its refusal — not also "held back, appears later" for the future line
+  let refusedSeg : SegmentData := { replicaId := foreignId, bytes :=
+    (craftLine (.create "1111222233334444" { title := some "future" }) futureHlc 1 foreignId ++ "\n"
+      ++ "GARBAGE NOT JSON\n").toUTF8 }
+  let refusedDec := decodeSegment refusedSeg false (some (now + skewWindowMs))
+  return [
+    check "a far-future foreign op is deferred (recorded, not folded)"
+      (loaded.deferred == [(foreignId, 2)]) s!"deferred={loaded.deferred}",
+    check "deferral keeps the future op out of the fold (within + own fold, future does not)"
+      (loaded.state.presentIssues.length == 2) s!"present={loaded.state.presentIssues.length}",
+    check "a deferred foreign HLC does not inflate maxHlc; the exempt own-future one does"
+      (loaded.maxHlc == ownFutureHlc) s!"maxHlc={loaded.maxHlc} ownFuture={ownFutureHlc}",
+    check "the deferred op's lead is recorded (maxDeferredHlc) for doctor"
+      (loaded.maxDeferredHlc == futureHlc) s!"maxDeferred={loaded.maxDeferredHlc} future={futureHlc}",
+    check "with the skew check off (no now) all three fold and nothing defers"
+      (off.state.presentIssues.length == 3 && off.deferred.isEmpty),
+    check "own-id unknown ⇒ nothing deferred (never risk deferring our own op)"
+      (ownUnknown.deferred.isEmpty) s!"deferred={ownUnknown.deferred}",
+    check "a refused segment reports ONLY its refusal, never a held-back disclosure"
+      (refusedDec.refusal.isSome && refusedDec.deferred.isEmpty && refusedDec.maxDeferred == 0)
+      s!"refusal={refusedDec.refusal.isSome} deferred={refusedDec.deferred}"]
+
 def storeTests : IO (List Outcome) := do
   return (← storeDiscoveryTests) ++ (← storeWriteTests)
-    ++ (← storeAdversityTests) ++ (← storeLockTests)
+    ++ (← storeAdversityTests) ++ (← storeLockTests) ++ (← storeSkewTests)
 
 end Tl.Tests

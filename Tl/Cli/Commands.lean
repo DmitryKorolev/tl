@@ -42,9 +42,18 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let d ← discover dirOverride
   let replica ← loadReplica d
   let _ ← Tl.Sync.refreshFromRef d (replica.map (·.id))
-  let loaded ← readState d skipBad
   let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
+  -- skew-check foreign segments against `now` (ADR-0007): a future-dated
+  -- foreign op is deferred from the fold until local time catches up
+  let loaded ← readState d skipBad (some now) (replica.map (·.id))
   return { dirs := d, loaded, now, replica }
+
+/-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
+    write paths so neither silently drops a future-dated op (ADR-0008
+    loud-not-silent — a fold computed without some ops always says so). The op
+    is not lost; it folds once local wall-clock passes its HLC. -/
+def deferredNote (rid : String) (n : Nat) : String :=
+  s!"segment {rid}.jsonl line {n}: held back — its HLC is beyond the clock-skew window ({rid}'s clock is ahead of yours); it folds once local time catches up — run `tl doctor`"
 
 /-- The ADR-0008 command-level refusal policy for reads: a refused *own*
     segment fails the command; foreign refusals are disclosed on stderr and the
@@ -66,15 +75,18 @@ def cleanReadNotes (v : View) : TlM (List String) := do
       s!"segment {r.replicaId}.jsonl refused (line {r.line}): folded the others; its owner repairs or re-syncs it")
     ++ v.loaded.warnings ++ v.loaded.skipped.map (fun (rid, n) =>
       s!"--skip-bad: dropped segment {rid}.jsonl line {n}")
+    ++ v.loaded.deferred.map (fun (rid, n) => deferredNote rid n)
 
-/-- The disclosure notes a write surfaces (ADR-0008: loud, never silent):
-    a refused foreign segment means the guards and echo were computed from a
-    fold that dropped its ops. (An own-segment refusal already failed the
-    transact.) -/
+/-- The disclosure notes a write surfaces (ADR-0008: loud, never silent): a
+    refused foreign segment OR a skew-deferred future op means the guards and
+    echo were computed from a fold that dropped those ops. (An own-segment
+    refusal already failed the transact.) Mirrors `cleanReadNotes`' drop
+    categories so neither path silently omits a dropped op. -/
 def writeNotes (ctx : TxContext) : List String :=
   ctx.loaded.refused.map (fun r =>
     s!"segment {r.replicaId}.jsonl refused (line {r.line}): this write was checked against a fold without it; its owner repairs or re-syncs it")
   ++ ctx.loaded.warnings
+  ++ ctx.loaded.deferred.map (fun (rid, n) => deferredNote rid n)
 
 /-- The post-write view: the pre-state plus the appended records. -/
 def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
@@ -547,12 +559,13 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       pure (Json.mkObj [("name", Json.str "clock"), ("status", Json.str "fail"),
                         ("message", Json.str e.message)], true)
   let own ← try loadReplica d catch _ => pure none
-  -- doctor reports store damage instead of dying on it (the exemption)
-  let (loaded, loadFail) ← try
-      pure (← readState d, none)
-    catch e =>
-      pure (materialize [], some e)
   let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
+  -- doctor reports store damage instead of dying on it (the exemption); the
+  -- skew check runs here too, so deferred foreign ops surface as clockSkew
+  let (loaded, loadFail) ← try
+      pure (← readState d false (some now) (own.map (·.id)), none)
+    catch e =>
+      pure (materialize [] false (some now) (own.map (·.id)), some e)
   let v : View := { dirs := d, loaded, now, replica := own }
   let s := v.state
   let logRows := loaded.refused.map (fun r =>
@@ -598,7 +611,22 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
      ("count", jnum stale.length)]
     ++ (if stale.isEmpty then [] else
         [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow]
+  -- clock skew (ADR-0007): foreign ops dated beyond the window are deferred
+  -- (held back) until wall-clock catches up — never fatal (convergent and
+  -- self-healing), but a sign a peer's clock is ahead. The lead is over BOTH
+  -- accepted and deferred ops (a deferred op is absent from maxHlc, so reading
+  -- maxHlc alone would understate a far-ahead peer). Also warn near the bound.
+  let leadMs := (max loaded.maxHlc loaded.maxDeferredHlc) / 2 ^ 16 - now  -- Nat sub: 0 if behind now
+  let nearBound := leadMs > skewWindowMs * 9 / 10
+  let skewSegs := (loaded.deferred.map (·.1)).eraseDups
+  let skewRow := (Json.mkObj <|
+    [("name", Json.str "clockSkew"),
+     ("status", Json.str (if !loaded.deferred.isEmpty || nearBound then "warn" else "ok")),
+     ("deferredOps", jnum loaded.deferred.length),
+     ("clockLeadMs", jnum leadMs)]
+    ++ (if skewSegs.isEmpty then [] else
+        [("segments", Json.arr (skewSegs.map Json.str).toArray)]), false)
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),

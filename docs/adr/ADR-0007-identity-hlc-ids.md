@@ -167,13 +167,91 @@ CSPRNG, not a code path.
   clear saturation — the reseed re-derives the same near-max value from the
   segments — so the message names the range exhaustion (in practice a wildly
   wrong system clock, or a near-max HLC a broken/hostile writer put in the
-  log) instead of suggesting deletion; and on observe-remote, an incoming HLC whose
-  `physical` exceeds a sanity bound — `max(now(), last) +` a fixed skew window,
-  capped at the 48-bit max — fails the parse-validity check, so that segment
-  is refused at segment granularity (the fail-closed path of ADR-0008 §corruption
-  / ADR-0015 §5), never silently folded into a wrong order. Natural
-  (non-adversarial) overflow is ~8800 years out; this guards a hostile or broken
-  remote clock (ADR-0014 T2).
+  log) instead of suggesting deletion; and at fold time an incoming **foreign**
+  op whose HLC `physical` exceeds a sanity bound — `now() +` a fixed skew window,
+  capped at the 48-bit max — is **deferred** (held back from the fold *and* from
+  the clock-reseed max), never silently folded into a wrong order and never used
+  to drag the local clock forward. Natural (non-adversarial) overflow is ~8800
+  years out; this guards a hostile or broken remote clock (ADR-0014 T2). See the
+  amendment below for the value of the window, the deferral granularity, and the
+  `doctor` surfacing.
+
+#### Amendment (2026-06-11) — skew-window: value, line-granularity deferral, doctor
+
+With the local-first leg and read-time refresh ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md))
+now folding *foreign* segments on the ordinary read and write paths, the skew
+bound is pinned to its built form:
+
+- **Window `W = 24 hours`** (`Tl.Store.skewWindowMs`). tl's clocks are
+  heterogeneous and uncontrolled (laptops, CI, suspended VMs) and writes are
+  human/agent-paced, so the window is deliberately *generous*. The two failure
+  modes are asymmetric: a window **too small** defers an honest sibling's ops
+  (a visibility regression for the very sharing the refresh exists to provide —
+  the dangerous direction, since it breaks honest replicas), while a window
+  **too large** only weakens the guard against a broken/hostile clock
+  (fail-open: future-dated ops slip in and can win LWW or march the 48-bit
+  `physical` toward saturation). Because losing/withholding an honest write is
+  worse than failing to catch a dishonest one, we bias loose. 24h is chosen to
+  exceed the worst plausible *honest* skew: the comparison is on **UTC epoch
+  milliseconds**, so it is immune to DST and civil time (no spring-forward
+  discontinuity, and NTP steps / leap seconds are sub-second) — but a machine
+  misconfigured to treat **local time as UTC** is off by its timezone offset,
+  up to ~14h, and 24h tolerates that without deferring it. (>24h ahead is then
+  treated as a broken clock: deferred and flagged by `doctor`.) This is the
+  opposite regime from a tight-NTP cluster (e.g. a 500 ms max-offset): tl trades
+  linearizability for convergence and cannot assume synchronized clocks. The
+  value tunes only timeliness vs LWW exposure — **convergence safety is
+  independent of W** (deferral is monotone in `now`, so it is eventual; the
+  reserved theorem below states this).
+
+- **Deferral at *line* granularity — not whole-segment refusal, not clamping.**
+  A single future-dated op is held back (excluded from the fold *and* from the
+  reseed `maxHlc`); the rest of its segment folds normally. It becomes visible
+  on any replica once that replica's wall-clock passes `hlc − W`, so the result
+  is *eventually consistent* — no op is lost and no replica diverges. Clamping
+  the timestamp to `now` is rejected: it is a per-replica decision that would
+  make the converged state replica-dependent, breaking the CRDT join. (This
+  refines the earlier "refused at segment granularity" wording: line-granularity
+  deferral preserves an honest-but-skewed replica's *other* ops and self-heals,
+  where a whole-segment refusal would hide all of them until manual repair.)
+
+- **Own segment exempt.** A replica's own ops are authoritative and feed its
+  monotonicity floor, so only *foreign* ops are skew-checked. The check needs
+  `now` and the own replica id, threaded into `materialize` — shell only; the
+  kernel `fold` stays a pure function of the op set it is handed (ADR-0004).
+
+- **`doctor` surfaces it.** A `clockSkew` check *warns* — never fails, since
+  skew is convergent and self-healing — when ops are currently deferred (a
+  peer's clock is ahead; it names the count and segments) or when the maximum
+  HLC (over accepted *and* deferred ops — a deferred op is absent from the
+  accepted max, so reading that alone would understate a far-ahead peer) leads
+  `now` by more than 90% of the window. This is the observability half of
+  ADR-0008's loud-not-silent discipline for a withheld read.
+
+- **Interaction with the absent-clock reseed (orphan recovery).** The reseed
+  (`max(maxHlc over segments, now)`) floors above all segments' *within-window*
+  writes, so the byte-copied / auto-mint orphan (past writes under the old
+  replica id, ADR-0012) is still covered in the normal case. But a *future-dated*
+  orphan — a wrong-clock copy whose old-id segment is > now+W ahead — is
+  skew-deferred from `maxHlc`, so the reseed stays at ~now rather than honoring
+  the future timestamp. This is intentional and convergence-safe: the
+  freshly-minted replica id begins its own monotonic sequence (it is a *distinct*
+  replica, so per-replica HLC monotonicity is not violated — that remains
+  Trusted), and the only effect is that the copy's new writes lose LWW to the
+  future-dated orphan until wall-clock catches up (eventual), **without
+  propagating the inflation onward**. Refines this ADR's earlier "reseed above
+  the all-segments max" to "above the within-window max."
+
+- **Reserved theorem (convergence-safety).** That deferral is *eventual* — never
+  permanent divergence — is the load-bearing safety claim, and it is provable,
+  not just tested: admission `withinSkew(hlc, now) := hlc/2^16 ≤ now + W` is
+  monotone in `now`, so the admitted op-set only grows as clocks advance; for
+  `now ≥ maxPhysical(ops)` the filter is the identity, and the existing kernel
+  theorem `fold_eq_of_mem_iff` (equal op *sets* → equal state) then gives
+  convergence. Crucially this holds for **any** `W` and **regardless of clock
+  accuracy** — a wrong clock changes *when* an op appears, never the eventual
+  state. To be discharged as a Lean theorem (tracked); until then it is an
+  explicit reserved obligation, not a `sorry`/`axiom`.
 
 ### Replica identity
 
