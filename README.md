@@ -12,7 +12,7 @@ agent's work loop, and nothing else.
 > record↔Op codec, the store (discovery, segments, the locked write path),
 > clock/id wiring, and the stage-1 CLI verbs (`init`, `create`, `ready`,
 > `claim`, `close`, `update`, `dep add/remove`, `why`, `dep cycles`, `show`,
-> `list`, `doctor`, `version`) with `--json` everywhere. Stage 2 (ergonomics)
+> `list`, `doctor`, `version`, plus `help`) with `--json` everywhere. Stage 2 (ergonomics)
 > and Stage 3 (import + the `refs/tl/log` sync transport) are next; see
 > [docs/vision.md](docs/vision.md) §Staged implementation. Install
 > instructions below describe the full intended tool and are marked

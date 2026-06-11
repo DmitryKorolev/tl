@@ -6,8 +6,8 @@ amended) or by graduating into an implementation task when its stage starts.
 Decisions already made are recorded in their ADRs (and git history); this lists
 only what is still open.
 
-Status: Stage 0 (kernel + the first shell pieces) is built; Stage 1 (the MVP
-work loop) is next. The items Stage 1 touched have graduated: `duplicate-of`
+Status: Stages 0 and 1 are built (the verified kernel and the MVP work
+loop); Stage 2 (ergonomics) is next. The items Stage 1 touched have graduated: `duplicate-of`
 semantics, the write-time guard inventory + idempotent re-close, the
 `not-closeable` / `unsafe-path` error codes, the canonical string-escaping
 spec (all ADR-0008, with ADR-0003/0015/0020 cross-refs), and clock-file
@@ -52,13 +52,13 @@ Kernel theorems still to decide whether to commit to:
 
 ## CLI surface (before CLI freeze)
 
-- `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020),
-  but the input surface is not: flag spellings for the status / assignee /
-  priority / text facets, text-match semantics (substring vs word, case
-  folding, which fields), and the default status scope of a bare `tl list`
-  (all issues, or open-only with closed behind a flag?). 0.x-revisable, but a
-  week-one choice on a stage-1 verb — pin before/early in the `list` build
-  (vision / ADR-0020).
+- `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020)
+  and Stage 1 shipped the deliberate interim input surface: a bare list is
+  all issues, oldest first, with `--limit` (default 10, `0` = all) and no
+  facet flags. Still open: the facet flag spellings (status / assignee /
+  priority / text), text-match semantics (substring vs word, case folding,
+  which fields), and whether a bare list later narrows to open-only — a
+  0.x-revisable change to the shipped default (vision / ADR-0020).
 - `--json` `data` shapes for `log` / `stats` / `help` and the later `dep`
   utilities
   (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
@@ -159,9 +159,13 @@ Kernel theorems still to decide whether to commit to:
 
 ## Build & proof infra
 
-- Compiled-kernel-vs-spec property cross-check [low] — a named CI gate with no
-  pinned mechanism; specify the two artifacts compared, the input corpus,
-  determinism (fixed seed), and which theorems are sampled (ADR-0004 / a test ADR).
+- Compiled-kernel-vs-spec property cross-check [low] — the mechanism now
+  exists (`Tests/CrossTests.lean`: fixed-seed random op multisets; fold
+  order/dup-insensitivity, join laws, ready soundness+sortedness,
+  unblocks = ready-diff, rollup totality, all against the compiled
+  functions); the residual is recording that shape — corpus, seeds, sampled
+  theorems — in an ADR so the gate is contractual rather than incidental
+  (ADR-0004 / a test ADR).
 - "No task-ID leakage" lint pattern/scope [low] — pin the regex and excluded
   paths (`docs/`, `Tests/.../fixtures/`, the importer's `ext:beads`) — AGENTS.md /
   a lint spec.

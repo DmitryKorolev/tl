@@ -153,14 +153,18 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   timestamps), fold-time provenance, dependencies +
                         --   canonical parent, the provenance trust block
                         --   (ADR-0003/0020)
+  Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-
+                        --   width/bidi stripping; 1 KiB / 64 KiB bounds with
+                        --   disclosed truncation) — applied on BOTH render paths
   Resolve.lean          --   id/slug resolution (tl- discriminator, case-fold +
                         --   symbol aliases, prefix/ambiguity — ADR-0007) and the
                         --   ADR-0013 actor chain
   Commands.lean         --   the stage-1 verbs; write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows
-  Init.lean             --   tl init (idempotent; CSPRNG replica mint; repo-
-                        --   toplevel placement via the dispatch layer; --dir)
+  Init.lean             --   tl init (idempotent on an existing replica;
+                        --   completes a partial .tl; CSPRNG replica mint;
+                        --   repo-toplevel placement lives in Commands.cmdInit)
   Main.lean             --   verb dispatch, arg parsing, streams + exit codes
                         --   (ADR-0008 §--json; the root Main.lean stays the
                         --   thin exe entry)
@@ -182,6 +186,7 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   exit/env tests (TL_DIR, ceiling dirs)
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
+  SanitizeTests.lean    --   one row per ADR-0014 sanitizer class
   Main.lean             --   tltest entry point
 ```
 

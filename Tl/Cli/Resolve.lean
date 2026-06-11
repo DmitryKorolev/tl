@@ -41,7 +41,9 @@ private def notFound (input : String) (what : String) : Tl.Error :=
 
 /-- Resolve a positional issue token against a state (ADR-0007). -/
 def resolveToken (s : State) (tok : String) : Except Tl.Error IssueId :=
-  if tok.startsWith "tl-" then
+  -- the discriminator is case-insensitive like the rest of id input
+  -- (ADR-0007: ids case-fold; a slug can never begin with tl-)
+  if tok.toLower.startsWith "tl-" then
     let pref := normalizeIdToken (tok.drop 3 |>.toString)
     if pref.isEmpty then
       .error (notFound tok "with id")

@@ -13,6 +13,7 @@ import Tests.SysTests
 import Tests.StoreTests
 import Tests.CliTests
 import Tests.CrossTests
+import Tests.SanitizeTests
 
 open Tl.Tests
 
@@ -34,5 +35,6 @@ def main : IO UInt32 := do
     ("Native shim (ADR-0019): no-follow, sync, locks, entropy", sys),
     ("Store: discovery, transact, adversity, locking", store),
     ("CLI contract: verbs, guards, envelope, exit codes", cli),
-    ("Cross-checks: encoding order, compiled kernel vs spec", crossTests)
+    ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
+    ("Render sanitization (ADR-0014)", sanitizeTests)
   ]

@@ -173,14 +173,14 @@ ADR-0008).
 | Claim | How |
 |---|---|
 | Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008). Covered: the envelope `Record` model (`Tests/RecordTests.lean`) and the record↔Op codec — a pinned canonical line per wire verb, the escape-class bytes, one fail-closed row per decoder branch (`Tests/CodecTests.lean`) |
-| beads import fidelity | differential test vs `.beads` fixtures (0005) |
+| beads import fidelity | differential test vs `.beads` fixtures (0005). **Stage 3 — the test lands with the importer** |
 | HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases, and the recovery branches — absent-clock reseed from `max(max HLC over all local segments, now())`, corrupt-clock fail-closed (0007); real durable monotonic persistence remains Trusted below |
 | SHA-256 / id mint | NIST CAVP short-message vectors + padding-boundary lengths (0/1/55/56/63/64/65 bytes, multi-block) + one worked end-to-end `(replica, hlc, nonce)` → digest → leftmost-80-bits → 16-char-id vector (0018); import-path vectors ride the differential fixtures (0005) |
 | native shim (fsync, no-follow open, fd lock, entropy) | per-branch tests: symlink refusal at final and intermediate components, `O_EXCL` collision, append+sync round-trips, lock contention, hostile fixtures at the Store layer (0019/0015) |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. Covered: all pairs of seeded + crafted near-tie triples (`Tests/CrossTests.lean`); the compiled-kernel-vs-spec property cross-check rides the same file (0007/0008, 0004) |
 | CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008) |
-| ref sync transport | `refs/tl/log` plumbing (read/write), segment materialization, the complete-line union merge, push-rejection retry, no-upstream, and auto-sync error handling; the local-first leg + read-time ref-OID refresh for same-machine worktree sharing (0001/0016) |
-| "superseded by …" signal | shell compares the converged winning `assignee` vs this replica's own latest `claim` op (0013); replica-relative, not a kernel property |
+| ref sync transport | `refs/tl/log` plumbing (read/write), segment materialization, the complete-line union merge, push-rejection retry, no-upstream, and auto-sync error handling; the local-first leg + read-time ref-OID refresh for same-machine worktree sharing (0001/0016). **Stage 3 — the tests land with the transport** |
+| "superseded by …" signal | shell compares the converged winning `assignee` vs this replica's own latest `claim` op (0013); replica-relative, not a kernel property. Covered: a foreign claim at a later HLC supersedes the local one (`Tests/CliTests.lean`) |
 
 ## Trusted (carried assumptions)
 

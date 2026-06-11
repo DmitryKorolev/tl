@@ -46,8 +46,10 @@ where
       let arg := if arg == "-p" then "--priority" else arg
       if arg.startsWith "--" then
         let body := (arg.drop 2).toString
+        -- split at the FIRST '=' only: values may contain '='
         match body.splitOn "=" with
-        | [name, value] =>
+        | name :: rest1 :: restN =>
+          let value := String.intercalate "=" (rest1 :: restN)
           if valFlags.contains name then go rest { acc with kvs := acc.kvs ++ [(name, value)] }
           else .error (usageErr s!"unknown or non-value flag --{name}")
         | _ =>
@@ -96,13 +98,16 @@ usage:
   tl why <id>                                the transitive unclosed blockers
   tl dep cycles                              report cycles (blocks/parent/readiness)
   tl show <id>
-  tl list [--limit N]
+  tl list [--limit N]                        all issues, oldest first (default 10; 0 = all)
   tl doctor                                  local health checks
   tl version
   tl help
 
 global: --json (stable envelope on stdout) · --dir <state-dir> (skip discovery)
-        --skip-bad (reads: skip malformed lines, disclosed on stderr)
+        --skip-bad (read commands only: skip malformed log lines, each
+        disclosed on stderr; writes always require an intact own segment)
+        --assignee <name> (write commands: the recorded actor — otherwise
+        TL_ACTOR, then git user.email, then user@host; ADR-0013)
 "
 
 private def actorOf (a : Argv) : TlM String :=
@@ -135,19 +140,19 @@ def runVerb : List String → TlM CmdOut
     | "ready" => do
       let a ← parse ["limit"] []
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
-      cmdReady (a.get? "dir") limit
+      cmdReady (a.get? "dir") limit (a.has "skip-bad")
     | "list" => do
       let a ← parse ["limit"] []
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
-      cmdList (a.get? "dir") limit
+      cmdList (a.get? "dir") limit (a.has "skip-bad")
     | "show" => do
       let a ← parse [] []
       let some tok := a.positionals.head? | throw (usageErr "show needs an issue id")
-      cmdShow (a.get? "dir") tok
+      cmdShow (a.get? "dir") tok (a.has "skip-bad")
     | "why" => do
       let a ← parse [] []
       let some tok := a.positionals.head? | throw (usageErr "why needs an issue id")
-      cmdWhy (a.get? "dir") tok
+      cmdWhy (a.get? "dir") tok (a.has "skip-bad")
     | "claim" => do
       let a ← parse ["assignee"] []
       let some tok := a.positionals.head? | throw (usageErr "claim needs an issue id")
@@ -181,12 +186,16 @@ def runVerb : List String → TlM CmdOut
         | _ => throw (usageErr "dep remove takes <id> <blocked-by>")
       | "cycles" :: rest' => do
         let a ← MonadExcept.ofExcept (parseArgs globalVal globalBool rest')
-        cmdDepCycles (a.get? "dir")
+        cmdDepCycles (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "dep takes add|remove|cycles")
     | "doctor" => do
       let a ← parse [] []
       cmdDoctor (a.get? "dir")
-    | other => throw (usageErr s!"unknown command '{other}'")
+    | other =>
+      if other.startsWith "-" then
+        throw (usageErr s!"flags follow the verb (e.g. `tl ready {other}`); no command named '{other}'")
+      else
+        throw (usageErr s!"unknown command '{other}'")
 
 /-- The executable entry: streams + exit codes (ADR-0008). -/
 def run (args : List String) : IO UInt32 := do

@@ -7,8 +7,8 @@ from OS-CSPRNG entropy (ADR-0019, via the Store), and seeds the clock.
 Idempotent: an existing state directory is left untouched (a re-mint would
 fork identity). The `refs/tl/log` refspec + auto-sync (Stage 3) and the
 generated `.tl/README.md` + discovery pointer (Stage 2) are deliberately not
-here; repo-toplevel placement + `--dir`/`--json` land with the Stage-1 CLI
-dispatch (`Tl/Cli/Main.lean`), which calls `initAt`.
+here; repo-toplevel placement and `--dir`/`--json` live in the command layer
+(`Tl/Cli/Commands.lean`'s `cmdInit`), which calls `initAt`.
 -/
 import Tl.Store.Local
 
@@ -16,15 +16,26 @@ namespace Tl.Cli
 
 open Tl.Store
 
-/-- Initialize the state directory at `path` (creating it). Returns the
-    minted replica, or `created := false` if it already existed. -/
+/-- Initialize the state directory at `path`. Returns the minted replica,
+    or `none` if it was already initialized. Idempotence keys on the
+    replica file, not bare existence: an interrupted or hand-made empty
+    `.tl` is *completed*, never reported as already-done (only an existing
+    replica id must never be re-minted — that would fork identity). -/
 def initAt (path : System.FilePath) : TlM (Option Tl.Clock.Replica) := do
-  if ← liftSys (fun e => .mk' .internal s!"{e}") path.pathExists then
+  let exists_ ← liftSys (fun e => .mk' .internal s!"{e}") path.pathExists
+  if exists_ then
+    unless ← liftSys (fun e => .mk' .internal s!"{e}") path.isDir do
+      throw (.mk' .usage
+        s!"a file named {path} is in the way — remove or rename it, then rerun `tl init`")
+  let dirs := Dirs.ofStatePath path.toString
+  let already ← if exists_ then
+      (do pure (← loadReplica dirs).isSome)
+    else pure false
+  if already then
     return none
   liftSys (fun e => .mk' .internal s!"cannot create {path}: {e}") do
     IO.FS.createDirAll (path / "local")
     IO.FS.writeFile (path / ".gitignore") "*\n"
-  let dirs := Dirs.ofStatePath path.toString
   let replica ← mintReplica dirs
   persistClock dirs Tl.Clock.Hlc.zero
   return some replica

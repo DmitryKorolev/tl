@@ -16,6 +16,7 @@ and `claim.currentAssignee` as the pinned `|null` exceptions.
 import Tl.Store.Lock
 import Tl.Format.Ids
 import Tl.Cli.Envelope
+import Tl.Cli.Sanitize
 import Tl.Kernel.Rollup
 import Tl.Kernel.Ready
 import Tl.Kernel.Cycles
@@ -133,15 +134,15 @@ def dependenciesJson (s : State) (i : IssueId) : Json :=
                 ("to", Json.str (displayId t))])).toArray
 
 private def labelsJson (d : IssueData) : Json :=
-  Json.arr (d.labels.presentElements.map Json.str).toArray
+  Json.arr (d.labels.presentElements.map (Json.str ∘ sanitizeSingle)).toArray
 
 private def metaJson (d : IssueData) : Json :=
   Json.mkObj ((AMap.keys d.metadata).filterMap (fun k =>
     match (d.metadata.find k).bind (·.value) with
     | some (some v) =>
       -- duplicate-of holds an id: render display form when well-formed (ADR-0008)
-      if k == "duplicate-of" && validId v then some (k, Json.str (displayId v))
-      else some (k, Json.str v)
+      if k == "duplicate-of" && validId v then some (sanitizeSingle k, Json.str (displayId v))
+      else some (sanitizeSingle k, Json.str (sanitizeSingle v))
     | _ => none))
 
 /-- The stored `duplicate-of` target (bare), if any. -/
@@ -174,11 +175,11 @@ def issueObj (v : View) (i : IssueId) : Json :=
      ("labels", labelsJson d),
      ("meta", metaJson d),
      ("dependencies", dependenciesJson s i)]
-    ++ optField "title" ((d.title.value).map Json.str)
-    ++ optField "assignee" ((d.assignee.value.getD none).map Json.str)
-    ++ optField "slug" ((d.slug.value.getD none).map Json.str)
-    ++ optField "description" ((d.description.value.getD none).map Json.str)
-    ++ optField "notes" ((d.notes.value.getD none).map Json.str)
+    ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
+    ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
+    ++ optField "slug" ((d.slug.value.getD none).map (Json.str ∘ sanitizeSingle))
+    ++ optField "description" ((d.description.value.getD none).map (Json.str ∘ sanitizeMulti))
+    ++ optField "notes" ((d.notes.value.getD none).map (Json.str ∘ sanitizeMulti))
     ++ optField "deferUntil" ((d.deferUntilOf).map (Json.str ∘ Time.isoOfEpochMs))
     ++ optField "closeResolution"
         ((d.closeResolution.value.getD none).map (Json.str ∘ resolutionWire))
@@ -189,7 +190,7 @@ def issueObj (v : View) (i : IssueId) : Json :=
     ++ optField "claimedAt" (pr.claimedAt.map (Json.str ∘ hlcIso))
     ++ [("provenance", Json.mkObj <|
           [("source", Json.str "native"),
-           ("createdBy", pr.createdBy.elim Json.null Json.str)]
+           ("createdBy", pr.createdBy.elim Json.null (Json.str ∘ sanitizeSingle))]
           ++ optField "replica" (pr.createdReplica.map (Json.str ∘ (toCrockford · 13))))]
 
 /-- The trimmed list/ready row (ADR-0020): selection-driving scalars +
@@ -209,15 +210,15 @@ def issueRow (v : View) (i : IssueId) : Json :=
      ("deferred", Json.bool (deferredOf s v.now i)),
      ("dependencyCount", jnum (s.blockersOf i).length),
      ("dependentCount", jnum (s.dependentsOf i).length)]
-    ++ optField "title" ((d.title.value).map Json.str)
-    ++ optField "assignee" ((d.assignee.value.getD none).map Json.str)
+    ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
+    ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
     ++ optField "updatedAt" (pr.updatedAt.map (Json.str ∘ hlcIso))
 
 /-- One human line per issue (plain stage-1 output). -/
 def issueLine (v : View) (i : IssueId) : String :=
   let d := v.state.issueData i
-  let title := (d.title.value).getD "(untitled)"
+  let title := sanitizeSingle ((d.title.value).getD "(untitled)")
   let flags := String.intercalate ""
     [if v.state.isEpic i then " [epic]" else "",
      if blockedOf v.state i then " [blocked]" else "",

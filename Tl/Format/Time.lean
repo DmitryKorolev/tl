@@ -99,7 +99,12 @@ def epochMsOfIso? (s : String) : Option Nat := do
     let sec ← digits2? [s1, s2]
     let milli ← match rest with
       | ['Z'] => some 0
-      | ['.', a, b, c, 'Z'] => digitsN? [a, b, c]
+      | ['.', a, b, c, 'Z'] =>
+        -- ".000Z" is non-canonical (the canonical form omits a zero
+        -- fraction); rejecting it keeps decode/render symmetric
+        match digitsN? [a, b, c] with
+        | some 0 => none
+        | m => m
       | _ => none
     if 1970 ≤ y && y ≤ 9999 && 1 ≤ mo && mo ≤ 12 && 1 ≤ d && d ≤ daysInMonth y mo
         && h < 24 && mi < 60 && sec < 60 then

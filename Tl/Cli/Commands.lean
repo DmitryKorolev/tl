@@ -43,12 +43,22 @@ def cleanReadNotes (v : View) : TlM (List String) := do
   if let some own := v.replica then
     if let some r := v.loaded.refused.find? (·.replicaId == own.id) then
       throw r.error
-  if !v.loaded.refused.isEmpty && v.loaded.ops.isEmpty then
-    throw (v.loaded.refused.head?.map (·.error) |>.getD (.mk' .internal "every segment refused"))
+  if !v.loaded.refused.isEmpty && v.loaded.refused.length == v.loaded.segmentCount then
+    throw (v.loaded.refused.head?.map (·.error)
+      |>.getD (.mk' .internal "every segment refused — repair or remove the damaged segments under .tl/log/"))
   return v.loaded.refused.map (fun r =>
       s!"segment {r.replicaId}.jsonl refused (line {r.line}): folded the others; its owner repairs or re-syncs it")
     ++ v.loaded.warnings ++ v.loaded.skipped.map (fun (rid, n) =>
       s!"--skip-bad: dropped segment {rid}.jsonl line {n}")
+
+/-- The disclosure notes a write surfaces (ADR-0008: loud, never silent):
+    a refused foreign segment means the guards and echo were computed from a
+    fold that dropped its ops. (An own-segment refusal already failed the
+    transact.) -/
+def writeNotes (ctx : TxContext) : List String :=
+  ctx.loaded.refused.map (fun r =>
+    s!"segment {r.replicaId}.jsonl refused (line {r.line}): this write was checked against a fold without it; its owner repairs or re-syncs it")
+  ++ ctx.loaded.warnings
 
 /-- The post-write view: the pre-state plus the appended records. -/
 def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
@@ -63,8 +73,8 @@ private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :
 
 /-! ## Read verbs -/
 
-def cmdReady (dirOverride : Option String) (limit : Nat) : TlM CmdOut := do
-  let v ← loadView dirOverride
+def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let ranked := v.state.ready v.now
   let capped := if limit == 0 then ranked else ranked.take limit
@@ -77,8 +87,8 @@ def cmdReady (dirOverride : Option String) (limit : Nat) : TlM CmdOut := do
                    else "")
            notes }
 
-def cmdList (dirOverride : Option String) (limit : Nat) : TlM CmdOut := do
-  let v ← loadView dirOverride
+def cmdList (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- bare list: every issue, oldest first (the input-facet grammar is a
   -- recorded backlog decision; bare-and-total is the safe stage-1 surface)
@@ -116,8 +126,8 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
       [("outcome", Json.str (if current == some actor then "won" else "superseded")),
        ("currentAssignee", current.elim Json.null Json.str)])
 
-def cmdShow (dirOverride : Option String) (tok : String) : TlM CmdOut := do
-  let v ← loadView dirOverride
+def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let base := issueObj v i
@@ -126,8 +136,8 @@ def cmdShow (dirOverride : Option String) (tok : String) : TlM CmdOut := do
     | none => base
   return { data, human := issueLine v i, notes }
 
-def cmdWhy (dirOverride : Option String) (tok : String) : TlM CmdOut := do
-  let v ← loadView dirOverride
+def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let s := v.state
@@ -145,13 +155,13 @@ def cmdWhy (dirOverride : Option String) (tok : String) : TlM CmdOut := do
        ("effectiveStatus", Json.str (statusWire (s.effectiveStatus b))),
        ("direct", Json.bool (direct.contains b))]
       ++ (match bd.title.value with
-          | some t => [("title", Json.str t)]
+          | some t => [("title", Json.str (sanitizeSingle t))]
           | none => []))
   let data := Json.mkObj <|
     [("id", Json.str (displayId i)), ("ready", Json.bool false),
      ("status", Json.str (statusWire d.statusOf)),
-     ("isEpic", Json.bool (s.isEpic i)),
-     ("blockedBy", Json.arr rows.toArray)]
+     ("isEpic", Json.bool (s.isEpic i))]
+    ++ (if rows.isEmpty then [] else [("blockedBy", Json.arr rows.toArray)])
     ++ (match d.deferUntilOf with
         | some t => if v.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
         | none => [])
@@ -161,8 +171,8 @@ def cmdWhy (dirOverride : Option String) (tok : String) : TlM CmdOut := do
       String.intercalate "\n" (trans.map (fun b => "  " ++ issueLine v b))
   return { data, human, notes }
 
-def cmdDepCycles (dirOverride : Option String) : TlM CmdOut := do
-  let v ← loadView dirOverride
+def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let s := v.state
   let entry (kind : String) (issues : List IssueId) : Json :=
@@ -214,8 +224,8 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
       match p.op with | .create i _ => some i | _ => none)
     | throw (.mk' .internal "create wrote no create record")
   return { data := issueObj v newId
-           human := s!"Created {displayId newId}  {title}"
-           notes := ctx.loaded.warnings }
+           human := s!"Created {displayId newId}  {sanitizeSingle title}"
+           notes := writeNotes ctx }
 
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
   let d ← discover dirOverride
@@ -249,7 +259,8 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM
   let data := (issueObj v i).setObjVal! "claim" (Json.mkObj
     [("outcome", Json.str (if current == some actor then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
-  return { data, human := s!"Claimed {displayId i} as {actor}" }
+  return { data, human := s!"Claimed {displayId i} as {sanitizeSingle actor}"
+           notes := writeNotes ctx }
 
 def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     (ofTok : Option String) (actor : String) : TlM CmdOut := do
@@ -294,7 +305,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     if parsed.isEmpty then s!"{displayId i} already closed as {asStr} — nothing to do"
     else s!"Closed {displayId i} as {asStr}" ++
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
-  return { data, human }
+  return { data, human, notes := writeNotes ctx }
 
 def cmdUpdate (dirOverride : Option String) (tok : String) (title description notes : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
@@ -311,7 +322,8 @@ def cmdUpdate (dirOverride : Option String) (tok : String) (title description no
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .update ui _ => some ui | _ => none)
     | throw (.mk' .internal "update wrote no record")
-  return { data := issueObj v i, human := s!"Updated {displayId i}" }
+  return { data := issueObj v i, human := s!"Updated {displayId i}"
+           notes := writeNotes ctx }
 
 def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
   let d ← discover dirOverride
@@ -320,15 +332,14 @@ def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String
     let a ← resolveToken s aTok
     let b ← resolveToken s bTok
     .ok [.depAdd (b, a, EdgeKind.Blocks)])
-  let _ := parsed
   let some (f, t, _) := parsed.head?.bind (fun p =>
       match p.op with | .depAdd e => some e | _ => none)
-    | throw (.mk' .internal "dep add wrote no record")
-  let _ := ctx
+    | throw (.mk' .internal "dep add wrote no record — this is a bug in tl; please report it")
   return { data := Json.mkObj
             [("type", Json.str "blocks"), ("from", Json.str (displayId f)),
              ("to", Json.str (displayId t)), ("status", Json.str "added")]
-           human := s!"{displayId t} is now blocked by {displayId f}" }
+           human := s!"{displayId t} is now blocked by {displayId f}"
+           notes := writeNotes ctx }
 
 def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
   let d ← discover dirOverride
@@ -353,7 +364,8 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
              ("to", Json.str (displayId a)), ("status", Json.str status)]
            human :=
              if parsed.isEmpty then s!"{displayId a} was not blocked by {displayId b} — nothing to do"
-             else s!"{displayId a} is no longer blocked by {displayId b}" }
+             else s!"{displayId a} is no longer blocked by {displayId b}"
+           notes := writeNotes ctx }
 
 /-! ## doctor / init / version -/
 
@@ -376,7 +388,11 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       pure (Json.mkObj [("name", Json.str "clock"), ("status", Json.str "fail"),
                         ("message", Json.str e.message)], true)
   let own ← try loadReplica d catch _ => pure none
-  let loaded ← readState d
+  -- doctor reports store damage instead of dying on it (the exemption)
+  let (loaded, loadFail) ← try
+      pure (← readState d, none)
+    catch e =>
+      pure (materialize [], some e)
   let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
   let v : View := { dirs := d, loaded, now, replica := own }
   let s := v.state
@@ -386,9 +402,14 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
                  ("status", Json.str (if isOwn then "fail" else "warn")),
                  ("message", Json.str s!"segment {r.replicaId}.jsonl refused: {r.error.message}"),
                  ("segment", Json.str r.replicaId)], isOwn))
-  let logOk := if loaded.refused.isEmpty then
-      [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "ok")], false)]
-    else logRows
+  let logOk := match loadFail with
+    | some e =>
+      [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "fail"),
+                    ("message", Json.str e.message)], true)]
+    | none =>
+      if loaded.refused.isEmpty then
+        [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "ok")], false)]
+      else logRows
   -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008)
   let structural := s.cycles EdgeKind.Blocks ++ s.cycles EdgeKind.Parent
   let cyc := structural.length
@@ -462,8 +483,12 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
     | none => s!"{target} already initialized — nothing to do (idempotent)"
   return { data, human, notes := note }
 
+/-- The product version (keep in lockstep with lakefile.lean's package
+    version; `tl version` is the single user-facing source). -/
+def productVersion : String := "0.1.0"
+
 def cmdVersion : CmdOut :=
-  { data := Json.mkObj [("version", Json.str "0.1.0"), ("logFormat", jnum supportedVersion)]
-    human := s!"tl 0.1.0 (log format v{supportedVersion})" }
+  { data := Json.mkObj [("version", Json.str productVersion), ("logFormat", jnum supportedVersion)]
+    human := s!"tl {productVersion} (log format v{supportedVersion})" }
 
 end Tl.Cli

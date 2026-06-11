@@ -35,7 +35,6 @@ def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs) : TlM UInt3
   let attempts := timeoutMs / lockPollMs + 1
   let rec loop : Nat → TlM UInt32
     | 0 => do
-      let _ ← (Sys.close fd).toBaseIO
       throw { code := .lockBusy
               message := "another tl process holds the mutation lock — retry shortly; a crashed holder's lock is released by the OS automatically"
               context := [("path", .str (d.tlPath ++ "/local/lock")),
@@ -45,7 +44,11 @@ def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs) : TlM UInt3
         return fd
       liftSys (fun e => .mk' .internal s!"{e}") (IO.sleep lockPollMs.toUInt32)
       loop n
-  loop attempts
+  -- close the fd on EVERY non-success exit (timeout or an unexpected errno)
+  try loop attempts
+  catch e =>
+    let _ ← (Sys.close fd).toBaseIO
+    throw e
 
 /-- Release and close the lock fd (best-effort: the OS would reclaim it). -/
 def releaseLock (fd : UInt32) : TlM Unit := do
@@ -105,7 +108,10 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
         -- the pinned absent-clock reseed (ADR-0007), inside the lock
         pure (unpackHlc (max loaded.maxHlc (now * 2 ^ 16)))
     let ctx : TxContext := { dirs := d, replica, loaded, now }
-    let (stamps, clockN) ← mintStamps ((replica.toNat?).getD 0) clock0 now nStamps
+    let some replicaVal := replica.toNat?
+      | throw (.mk' .internal
+          "replica id failed to decode after validation — this is a bug in tl; please report it")
+    let (stamps, clockN) ← mintStamps replicaVal clock0 now nStamps
     let wireOps ← match build ctx stamps with
       | .ok ws => pure ws
       | .error e => throw e

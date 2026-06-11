@@ -7,7 +7,11 @@ with their pinned context, idempotent re-close, the dep-ack tri-state
 (added/removed/noop), resolution (prefix, alias normalization, ambiguity,
 slug-vs-id), doctor's checks, and the usage errors. Spawned-binary rows
 cover what only a process boundary shows: stdout envelope bytes, exit
-codes, `TL_DIR`, and `GIT_CEILING_DIRECTORIES`.
+codes, `TL_DIR`, and `GIT_CEILING_DIRECTORIES`. The review-driven rows
+(`--skip-bad` wiring, trailing-slash `--dir`, uppercase `TL-` tokens,
+'='-bearing flag values, partial-init completion, render sanitization in
+payloads, write-path refusal disclosures, the superseded claim outcome,
+doctor surviving store damage) each pin a fixed contract bug.
 -/
 import Tl.Cli.Main
 import Tests.Harness
@@ -332,9 +336,132 @@ def cliBinaryTests : IO (List Outcome) := do
      check "a ceiling directory stops discovery" (ceiled.exitCode == 3) ceiled.stdout]
   return o
 
+/-- A canonical foreign-segment line built through the real codec. -/
+private def foreignLine (op : WireOp) (hlc : Nat) (actor : String) : String :=
+  renderLine { v := supportedVersion, op, stamp := ⟨hlc, 1, 1⟩, actor := some actor }
+
+def cliReviewTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- sanitization reaches the payloads (ADR-0014)
+  let dir ← freshDir
+  let esc := String.singleton (Char.ofNat 0x1b)
+  let zwsp := String.singleton (Char.ofNat 0x200B)
+  o := o ++
+    [← expectData "create echo sanitizes the title"
+      ["create", "Red " ++ esc ++ "[31mtext" ++ zwsp ++ "!", "--dir", dir, "--assignee", "t"]
+      (fun j => jStr j "title" == some "Red text!")]
+  -- '=' in flag values, both spellings
+  let a ← mkIssue dir "EqTarget"
+  o := o ++
+    [← expectData "--title=a=b keeps the embedded '='"
+      ["update", "tl-" ++ a, "--dir", dir, "--title=a=b", "--assignee", "t"]
+      (fun j => jStr j "title" == some "a=b"),
+     ← expectData "--title a=b keeps the embedded '=' (two-token form)"
+      ["update", "tl-" ++ a, "--dir", dir, "--title", "x=y", "--assignee", "t"]
+      (fun j => jStr j "title" == some "x=y")]
+  -- uppercase TL- discriminates as an id
+  let upper := "TL-" ++ String.ofList (a.toList.map Char.toUpper)
+  o := o ++
+    [← expectData "uppercase TL- token resolves as an id" ["show", upper, "--dir", dir]
+      (fun j => jStr j "id" == some ("tl-" ++ a))]
+  -- why omits blockedBy when blockers are not the reason (an epic)
+  let epic ← mkIssue dir "Epic"
+  let _ ← mkIssue dir "Child" ["--parent", "tl-" ++ epic]
+  o := o ++
+    [← expectData "why omits an empty blockedBy (omit-empty)"
+      ["why", "tl-" ++ epic, "--dir", dir]
+      (fun j => jBool j "ready" == some false && jBool j "isEpic" == some true
+        && (jGet j "blockedBy").isNone)]
+  -- trailing-slash --dir binds the same state
+  o := o ++
+    [← expectData "trailing-slash --dir binds the same state"
+      ["list", "--dir", dir ++ "/", "--limit", "0"]
+      (fun j => (jNat j "count").getD 0 ≥ 3)]
+  -- partial init: an empty .tl is completed, a file in the way teaches
+  let root2 ← IO.FS.createTempDir
+  IO.FS.createDirAll (root2 / ".tl")
+  o := o ++
+    [← expectData "init completes a partial (empty) .tl"
+      ["init", "--dir", (root2 / ".tl").toString]
+      (fun j => jBool j "created" == some true)]
+  let root3 ← IO.FS.createTempDir
+  IO.FS.writeFile (root3 / ".tl") "not a dir"
+  o := o ++
+    [← expectErr "init over a file named .tl teaches the fix"
+      ["init", "--dir", (root3 / ".tl").toString] .usage]
+  -- a hostile foreign segment: skip-bad folds around it; writes disclose it
+  let dir2 ← freshDir
+  let _ ← mkIssue dir2 "Mine"
+  let foreignOk := foreignLine (.create "aaaabbbbccccdddd" { title := some "Foreign" }) 99 "eve"
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "1zzzzzzzzzzzz.jsonl")
+    (foreignOk ++ "
+GARBAGE
+")
+  o := o ++
+    [← expectData "bare read folds around the refused foreign segment"
+      ["list", "--dir", dir2, "--limit", "0"]
+      (fun j => jNat j "count" == some 1),
+     ← expectData "--skip-bad folds the foreign segment's good lines"
+      ["list", "--dir", dir2, "--limit", "0", "--skip-bad"]
+      (fun j => jNat j "count" == some 2)]
+  -- write verbs disclose the refusal on stderr (CmdOut.notes)
+  let wres ← run' ["create", "another", "--dir", dir2, "--assignee", "t"]
+  o := o ++ [match wres with
+    | .ok out =>
+      check "write verbs disclose the foreign refusal"
+        ((out.notes.any (fun n => (n.splitOn "refused").length > 1)))
+        (String.intercalate "|" out.notes)
+    | .error e =>
+      { name := "write verbs disclose the foreign refusal", passed := false,
+        msg := e.message }]
+  -- own-segment damage: bare read fails, --skip-bad succeeds with disclosure
+  let ownSeg := System.FilePath.mk dir2 / "log"
+  let segs ← ownSeg.readDir
+  for ent in segs do
+    unless ent.fileName == "1zzzzzzzzzzzz.jsonl" do
+      let prev ← IO.FS.readFile ent.path
+      IO.FS.writeFile ent.path ("BROKEN LINE
+" ++ prev)
+  o := o ++
+    [← expectErr "own-segment damage fails the bare read" ["list", "--dir", dir2]
+       .malformedLine,
+     ← expectData "--skip-bad reads through own-segment damage"
+       ["list", "--dir", dir2, "--limit", "0", "--skip-bad"]
+       (fun j => (jNat j "count").getD 0 ≥ 2)]
+  -- superseded claim: a foreign claim at a later HLC wins LWW
+  let dir3 ← freshDir
+  let target ← mkIssue dir3 "Contested"
+  let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--assignee", "carol"]
+  let farFuture := 0x7000000000000000
+  let foreignClaim := foreignLine (.claim target "eve") farFuture "eve"
+  IO.FS.writeFile (System.FilePath.mk dir3 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignClaim ++ "
+")
+  o := o ++
+    [← expectData "a later foreign claim supersedes (replica-relative signal)"
+      ["show", "tl-" ++ target, "--dir", dir3]
+      (fun j => jStr j "assignee" == some "eve"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- doctor survives store damage as a failing check
+  let dir4 ← freshDir
+  let _ ← mkIssue dir4 "Healthy"
+  let log4 := System.FilePath.mk dir4 / "log"
+  let segs4 ← log4.readDir
+  for ent in segs4 do
+    IO.FS.removeFile ent.path
+    let out ← IO.Process.output { cmd := "ln", args := #["-s", "/nonexistent", ent.path.toString] }
+    unless out.exitCode == 0 do throw (IO.userError "ln failed")
+  o := o ++
+    [← expectData "doctor reports a symlinked segment as a failing check"
+      ["doctor", "--dir", dir4]
+      (fun j => jBool j "healthy" == some false
+        && (jArr j "checks").any (fun c =>
+             jStr c "name" == some "log" && jStr c "status" == some "fail"))]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
-    ++ (← cliBinaryTests)
+    ++ (← cliReviewTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

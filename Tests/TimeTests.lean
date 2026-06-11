@@ -50,6 +50,7 @@ def timeRejectTests : List Outcome :=
      ("2026-06-10t12:00:00Z", "lowercase t"),
      ("2026-06-10 12:00:00Z", "space separator"),
      ("2026-06-10T12:00:00+00:00", "numeric offset"),
+     ("2026-06-10T12:00:00.000Z", "zero fraction (non-canonical)"),
      ("2026-06-10T12:00:00.12Z", "two-digit fraction"),
      ("2026-06-10T12:00:00.1234Z", "four-digit fraction"),
      ("2026-6-10T12:00:00Z", "unpadded month"),

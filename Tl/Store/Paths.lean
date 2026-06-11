@@ -111,6 +111,11 @@ def validate (d : Dirs) : TlM Dirs := do
     `init`'s target) into the `(base, rel)` shape: the final component is the
     no-follow `rel`, everything above it the symlink-permitted base. -/
 def Dirs.ofStatePath (path : String) : Dirs :=
+  -- strip trailing separators first: "/a/b/.tl/" must split like "/a/b/.tl"
+  -- (FilePath.fileName is none on a trailing slash, and the fallback would
+  -- treat the absolute path as cwd-relative in the shim walk)
+  let trimmed := String.ofList (path.toList.reverse.dropWhile (· == '/') |>.reverse)
+  let path := if trimmed.isEmpty then path else trimmed
   match (FilePath.mk path).parent, (FilePath.mk path).fileName with
   | some parent, some name =>
     if parent.toString.isEmpty then { base := "", tlRel := name }
@@ -143,7 +148,11 @@ def discover (override : Option String := none) : TlM Dirs := do
         IO.currentDir
       let ceilings ← liftSys (fun e => .mk' .internal s!"environment read failed: {e}")
         (IO.getEnv "GIT_CEILING_DIRECTORIES")
+      -- entries compare textually (like git's), but tolerate a trailing slash
       let ceilingList := (ceilings.getD "").splitOn ":" |>.filter (· ≠ "")
+        |>.map (fun c =>
+          let t := String.ofList (c.toList.reverse.dropWhile (· == '/') |>.reverse)
+          if t.isEmpty then c else t)
       let rec walk (dir : FilePath) (fuel : Nat) : TlM Dirs := do
         match fuel with
         | 0 => throw (noProject "here (search depth exhausted)")

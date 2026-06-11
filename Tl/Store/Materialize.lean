@@ -42,6 +42,10 @@ structure Loaded where
   maxHlc : Nat
   /-- Decode-time disclosures (e.g. the priority clamp), with provenance. -/
   warnings : List String
+  /-- How many segments were read (the all-refused policy compares against
+      `refused.length`, not against an empty fold — an empty project with one
+      refused foreign segment is still an all-refused read). -/
+  segmentCount : Nat
 
 private def enrich (rid : String) (n : Nat) (e : Tl.Error) : Tl.Error :=
   { e with
@@ -97,7 +101,8 @@ def materialize (segs : List SegmentData) (skipBad : Bool := false) : Loaded := 
     maxHlc := max maxHlc segMax
     warnings := warnings ++ warns
   return { state := Tl.Kernel.fold (allOps.map ParsedOp.kernelOp)
-           ops := allOps, refused, skipped, maxHlc, warnings }
+           ops := allOps, refused, skipped, maxHlc, warnings
+           segmentCount := segs.length }
 
 /-- The lock-free read path: enumerate, read, materialize (ADR-0015 §5). -/
 def readState (d : Dirs) (skipBad : Bool := false) : TlM Loaded := do
