@@ -9,10 +9,12 @@ import Tests.ErrorTests
 import Tests.Sha256Tests
 import Tests.TimeTests
 import Tests.CodecTests
+import Tests.SysTests
 
 open Tl.Tests
 
-def main : IO UInt32 :=
+def main : IO UInt32 := do
+  let sys ← sysTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
@@ -23,5 +25,6 @@ def main : IO UInt32 :=
     ("Error codes, exit codes & --json envelope", errorCodeTests ++ envelopeTests),
     ("SHA-256 vectors, padding edges & the mint vector", sha256Tests),
     ("ISO-8601 UTC instant codec", timeTests),
-    ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests)
+    ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests),
+    ("Native shim (ADR-0019): no-follow, sync, locks, entropy", sys)
   ]
