@@ -59,13 +59,12 @@ Kernel theorems still to decide whether to commit to:
   priority / text), text-match semantics (substring vs word, case folding,
   which fields), and whether a bare list later narrows to open-only — a
   0.x-revisable change to the shipped default (vision / ADR-0020).
-- `--json` `data` shapes for `log` / `stats` and the later `dep`
-  utilities
+- `--json` `data` shapes for the later `dep` utilities
   (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
-  `dep cycles`, `why`) are pinned in ADR-0020, and `tl help --json`'s
-  command-schema dump is now pinned and built (ADR-0020, generated from the
-  `Tl/Cli/Grammar` table); the rest pin when built, following its conventions
-  (`tl log` especially, whose `--since` cursor depends on it).
+  `dep cycles`, `why`), `tl help --json`, and now `tl stats` / `tl log` are
+  pinned in ADR-0020 (`help`/`stats`/`log` built); the `dep` utilities pin
+  when built, following its conventions. (`tl log`'s `--since` cursor stays
+  deferred — it needs a version vector, below.)
 - A future `tl log --since <hlc>` cursor needs a version vector, not a scalar
   HLC [low] — `observe-remote` advances only the local clock, so a late-synced op
   from a lagging replica keeps an HLC *below* another replica's watermark; a scalar

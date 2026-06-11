@@ -164,6 +164,23 @@ def runVerb : List String → TlM CmdOut
       MonadExcept.ofExcept (noPositionals a "list")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
       cmdList (a.get? "dir") limit (a.has "skip-bad")
+    | "log" => do
+      let a ← parse "log"
+      let idTok ← match a.positionals with
+        | [] => pure none
+        | [tok] => pure (some tok)
+        | _ => throw (usageErr "log takes at most one issue id")
+      let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
+      cmdLog (a.get? "dir") idTok limit (a.has "skip-bad")
+    | "stats" => do
+      let a ← parse "stats"
+      MonadExcept.ofExcept (noPositionals a "stats")
+      cmdStats (a.get? "dir") (a.has "skip-bad")
+    | "reopen" => do
+      let a ← parse "reopen"
+      let tok ← MonadExcept.ofExcept (onePositional a "reopen" "an issue id")
+      let actor ← actorOf a
+      cmdReopen (a.get? "dir") tok actor
     | "show" => do
       let a ← parse "show"
       let tok ← MonadExcept.ofExcept (onePositional a "show" "an issue id")

@@ -241,6 +241,38 @@ from the same grammar table that drives the parser and the human `tl help`*
 (`Tl/Cli/Grammar.lean`), so it cannot describe a flag the parser rejects or
 omit one it accepts — drift is structurally impossible, not merely tested.
 
+**`tl stats --json`** — board counts (a pure projection):
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "total": 23, "open": 19, "inProgress": 1, "done": 3, "cancelled": 0,
+  "ready": 10, "blocked": 8, "deferred": 0, "cycles": 0 } }
+```
+
+`open`/`inProgress`/`done`/`cancelled` count *stored* status; `ready`/
+`blocked`/`deferred` are the derived views; `cycles` is the cycle-witness
+count (structural per kind plus the non-duplicate readiness deadlocks, as
+`doctor`'s graph check).
+
+**`tl log [<id>] --json`** — the op history, newest first (an HLC-ordered
+projection over the log, ADR-0008); `<id>` filters to ops touching that
+issue. `--limit` caps `entries` (default 10, `0` = all); `count` is the total
+matched. The `--since` cursor is deferred — it needs a version vector, not a
+scalar HLC (backlog) — so this is the full-history (best-effort-capped) view.
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "count": 41,
+  "entries": [
+    { "timestamp": "2026-06-11T01:27:49.277Z", "op": "close",
+      "actor": "carol", "targets": ["tl-ppyg0ekgf91s56e0"] }
+  ] } }
+```
+
+`op` is the wire verb (ADR-0008's closed enum); `actor` is `|null`;
+`targets` is the issue id(s) the op touched (one for scalar/meta/label ops,
+both endpoints for edge ops — the same set `tl log <id>` filters on).
+
 **Error context fields** (extending ADR-0008's pinned codes with their named
 context, same additive-only discipline): `not-claimable` → `id`, `reasons`
 (above); `not-closeable` → `id`, `reasons` (omit-empty: `isEpic: true` with

@@ -703,10 +703,51 @@ def cliReviewBatchTests : IO (List Outcome) := do
       refused.stdout]
   return o
 
+/-- The free read/lifecycle verbs added in the agent-surface batch:
+    reopen, stats, log. -/
+def cliFreeVerbTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let a ← mkIssue dir "Task A" ["-p", "1"]
+  let b ← mkIssue dir "Task B" ["--blocked-by", "tl-" ++ a]
+  -- reopen: a closed issue returns to open and clears the resolution
+  let _ ← run' ["close", "tl-" ++ a, "--dir", dir, "--as", "done", "--assignee", "t"]
+  o := o ++
+    [← expectData "reopen returns a closed issue to open, clearing resolution"
+      ["reopen", "tl-" ++ a, "--dir", dir, "--assignee", "t"]
+      (fun j => jStr j "status" == some "open" && (jStr j "closeResolution").isNone),
+     -- idempotent: reopening an already-open issue is a disclosed no-op
+     ← expectData "reopen of an already-open issue is a no-op"
+       ["reopen", "tl-" ++ a, "--dir", dir, "--assignee", "t"]
+       (fun j => jStr j "status" == some "open")]
+  -- stats: the pinned counts
+  o := o ++
+    [← expectData "stats counts by state + ready/blocked/cycles"
+      ["stats", "--dir", dir]
+      (fun j => jNat j "total" == some 2 && jNat j "open" == some 2
+        && jNat j "ready" == some 1 && jNat j "blocked" == some 1
+        && jNat j "cycles" == some 0)]
+  -- log: newest-first entries, the per-issue filter, the targets array
+  o := o ++
+    [← expectData "log lists ops newest-first with targets"
+      ["log", "--dir", dir, "--limit", "0"]
+      (fun j => (jNat j "count").getD 0 ≥ 4
+        && (match (jArr j "entries").head? with
+            | some e => (jStr e "op").isSome && (jArr e "targets").length ≥ 1
+                && (jStr e "timestamp").isSome
+            | none => false)),
+     ← expectData "log <id> filters to ops touching that issue"
+       ["log", "tl-" ++ b, "--dir", dir, "--limit", "0"]
+       (fun j =>
+         -- B's create + the depAdd that touches B (the close/reopen were on A)
+         (jArr j "entries").all (fun e =>
+           (jArr e "targets").any (fun t => t.getStr?.toOption == some ("tl-" ++ b))))]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
-    ++ (← cliReviewBatchTests) ++ (← cliBinaryTests)
+    ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

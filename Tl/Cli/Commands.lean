@@ -193,6 +193,80 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
              else s!"{rows.length} cycle(s) — break each with `tl dep remove`"
            notes }
 
+/-- The cycle count (structural per kind + the non-duplicate readiness
+    deadlocks), shared with `doctor`'s graph check. -/
+private def cycleCount (s : State) : Nat :=
+  let structural := s.cycles EdgeKind.Blocks ++ s.cycles EdgeKind.Parent
+  structural.length + (s.precCycles.filter (fun w => !structural.contains w)).length
+
+def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let s := v.state
+  let issues := s.presentIssues
+  let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
+  let ready := (s.ready v.now).length
+  let blocked := (issues.filter (blockedOf s)).length
+  let deferred := (issues.filter (deferredOf s v.now)).length
+  let cycles := cycleCount s
+  let openN := byStored .Open
+  let inProg := byStored .InProgress
+  let doneN := byStored .Done
+  let cancelledN := byStored .Cancelled
+  let data := Json.mkObj
+    [("total", jnum issues.length),
+     ("open", jnum openN), ("inProgress", jnum inProg),
+     ("done", jnum doneN), ("cancelled", jnum cancelledN),
+     ("ready", jnum ready), ("blocked", jnum blocked),
+     ("deferred", jnum deferred), ("cycles", jnum cycles)]
+  let human :=
+    s!"{issues.length} issues — open {openN} · in_progress {inProg} · done {doneN} · cancelled {cancelledN}\n"
+      ++ s!"ready {ready} · blocked {blocked} · deferred {deferred} · cycles {cycles}"
+  return { data, human, notes }
+
+/-- The issue ids an op touches (for `tl log`'s per-issue filter and the
+    entry's `targets`): the subject for scalar/meta/label ops, both endpoints
+    for edge ops. -/
+private def opTargets : WireOp → List IssueId
+  | .create id _ | .update id _ | .claim id _ | .close id _ | .reopen id
+  | .defer id _ | .undefer id | .metaSet id _ _
+  | .labelAdd id _ | .labelRemove id _ _ => [id]
+  | .depAdd (f, t, _) | .relate (f, t, _)
+  | .depRemove (f, t, _) _ | .unrelate (f, t, _) _ => [f, t]
+
+/-- `tl log [<id>]`: the op history, newest first (ADR-0008 — an HLC-ordered
+    projection over the log), optionally filtered to ops touching one issue.
+    The `--since` cursor is deferred (it needs a version vector, backlog). -/
+def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
+    (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let filtered ← match idTok with
+    | none => pure v.loaded.ops
+    | some tok =>
+      let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+      pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
+  -- newest first by the full stamp order (deterministic on equal HLCs)
+  let sorted := filtered.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
+  let capped := if limit == 0 then sorted else sorted.take limit
+  let entry (p : ParsedOp) : Json :=
+    Json.mkObj
+      [("timestamp", Json.str (hlcIso p.stamp.hlc)),
+       ("op", Json.str p.op.wire),
+       ("actor", p.actor.elim Json.null (Json.str ∘ sanitizeSingle)),
+       ("targets", Json.arr ((opTargets p.op).map (Json.str ∘ displayId)).toArray)]
+  let line (p : ParsedOp) : String :=
+    s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.getD "—")}  " ++
+      String.intercalate "," ((opTargets p.op).map displayId)
+  return { data := Json.mkObj [("count", jnum filtered.length),
+                               ("entries", Json.arr (capped.map entry).toArray)]
+           human :=
+             if filtered.isEmpty then "no ops"
+             else String.intercalate "\n" (capped.map line)
+               ++ (if capped.length < filtered.length then
+                     s!"\n… {filtered.length - capped.length} older (--limit 0 for all)" else "")
+           notes }
+
 /-! ## Write verbs -/
 
 private def writeNow (v : TxContext) (parsed : List ParsedOp) : View :=
@@ -346,6 +420,22 @@ def cmdUpdate (dirOverride : Option String) (tok : String) (title description no
   return { data := issueObj v i, human := s!"Updated {displayId i}"
            notes := writeNotes ctx }
 
+/-- `tl reopen <id>`: a terminal issue back to `open`, clearing
+    `closeResolution` (ADR-0008's reopen delta). Idempotent — an already-open
+    issue is a no-op that appends nothing (mirroring the re-close rule). -/
+def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
+  let d ← discover dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let i ← resolveToken ctx.loaded.state tok
+    if (ctx.loaded.state.issueData i).statusOf == .Open then .ok []
+    else .ok [.reopen i])
+  let v := writeNow ctx parsed
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  return { data := issueObj v i
+           human := if parsed.isEmpty then s!"{displayId i} is already open"
+                    else s!"Reopened {displayId i}"
+           notes := writeNotes ctx }
+
 def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
   let d ← discover dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
@@ -432,9 +522,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
         [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "ok")], false)]
       else logRows
   -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008)
-  let structural := s.cycles EdgeKind.Blocks ++ s.cycles EdgeKind.Parent
-  let cyc := structural.length
-    + (s.precCycles.filter (fun w => !structural.contains w)).length
+  let cyc := cycleCount s
   let multi := (s.presentIssues.filter (fun i => (s.parentsOf i).length > 1)).length
   let dangling := (s.presentEdges.filter (fun (f, t, k) =>
     (k == EdgeKind.Blocks || k == EdgeKind.Parent)
