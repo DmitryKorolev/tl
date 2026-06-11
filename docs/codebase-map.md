@@ -149,12 +149,20 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
   Ref.lean              --   read/write refs/tl/log via git plumbing (built): the
                         --   tree is root-level <replica-id>.jsonl blobs, commits
                         --   parent-chained, fixed neutral tl identity, CAS
-                        --   update-ref (ADR-0001 §2 in-ref encoding)
+                        --   update-ref (writeRefCas distinguishes a lost CAS
+                        --   race from a real error); blob content is read/written
+                        --   as raw bytes (gitBytes), never a lossy String round-
+                        --   trip (ADR-0001 §2 in-ref encoding)
   Merge.lean            --   per-segment complete-line set union, canonical
                         --   (sorted/deduped) — the CRDT join (built, ADR-0001 §5)
-  Sync.lean             --   fetch / merge / push; push-rejection retry; no-upstream;
-                        --   the local worktree leg; auto-sync (planned — atop
-                        --   Ref + Merge)
+  Local.lean            --   the local-first worktree leg (built, ADR-0016 §1):
+                        --   syncLocal publishes the own segment into the shared
+                        --   ref (CAS-retry) and absorbs siblings into .tl/log/ via
+                        --   atomic rename, never the own segment — `tl sync`'s
+                        --   always-runs leg, zero network
+  Sync.lean             --   the remote fetch / merge / push leg; push-rejection
+                        --   retry; no-upstream; read-time ref-OID refresh; auto-
+                        --   sync (planned — atop Ref + Merge + Local)
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean

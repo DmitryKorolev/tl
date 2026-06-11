@@ -6,6 +6,7 @@ fetch/push) build on these and are tested when they land.
 -/
 import Tl.Sync.Merge
 import Tl.Sync.Ref
+import Tl.Sync.Local
 import Tests.Harness
 
 namespace Tl.Tests
@@ -88,13 +89,86 @@ def syncRefTests : IO (List Outcome) := do
     | .error e => pure s!"refTip error: {e.message}")
   o := o ++ [check "a second sync chains a parent commit (history kept)"
     (chainCount == "2") chainCount]
+  -- a non-UTF-8 segment round-trips byte-for-byte (the union is a byte-level
+  -- line set, ADR-0001 §5 — sync transports raw bytes; a String round-trip
+  -- through git stdin/stdout would panic or mangle these)
+  let raw : ByteArray := ⟨#[0x7b, 0xff, 0xfe, 0x0a]⟩  -- '{', 0xFF, 0xFE, LF
+  let tipNow ← runTl (refTip d)
+  o := o ++ [← do match tipNow with
+    | .ok t =>
+      match ← runTl (do let _ ← writeRef d [⟨"0123456789abf", raw⟩] t; readRef d) with
+      | .ok segs => pure (check "a non-UTF-8 segment round-trips byte-for-byte through the ref"
+          (match segs.find? (·.replicaId == "0123456789abf") with
+           | some s => s.bytes.toList == raw.toList
+           | none => false) "")
+      | .error e => pure { name := "non-UTF-8 round-trip", passed := false, msg := e.message }
+    | .error e => pure { name := "non-UTF-8 round-trip (tip)", passed := false, msg := e.message }]
   -- outside any repo: inGitRepo is false (the no-upstream case the caller maps)
   let bare ← IO.FS.createTempDir
   o := o ++ [check "inGitRepo false outside a repo"
     (!(← inGitRepo { base := bare.toString, tlRel := ".tl" }))]
   return o
 
+/-- Read a file's bytes, `none` if absent. -/
+private def readBytes (p : System.FilePath) : IO (Option ByteArray) := do
+  try pure (some (← IO.FS.readBinFile p)) catch _ => pure none
+
+/-- The local-first leg (ADR-0016 §1): publish own + absorb siblings through
+    the shared `refs/tl/log`, modelled with two state dirs over one repo. -/
+def syncLocalTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- (A) outside any git repo the local leg is a no-op (no shared ref)
+  let nonRepo ← IO.FS.createTempDir
+  o := o ++ [match ← runTl (syncLocal { base := nonRepo.toString, tlRel := ".tl" } none) with
+    | .ok r => check "syncLocal is a no-op (ran=false) outside a git repo" (!r.ran && r.tip == none)
+    | .error e => { name := "syncLocal no-op outside repo", passed := false, msg := e.message }]
+  -- a repo whose refs/tl/log two state dirs share (the two-worktree model)
+  let d ← gitRepo
+  let ridA := (Tl.Clock.Replica.ofNat 1).id
+  let ridB := (Tl.Clock.Replica.ofNat 2).id
+  let logDir := System.FilePath.mk d.base / ".tl" / "log"
+  IO.FS.createDirAll logDir
+  IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n".toUTF8
+  -- (B) first sync publishes A's own segment and creates the ref
+  o := o ++ [match ← runTl (syncLocal d (some ridA)) with
+    | .ok r => check "first syncLocal publishes own + creates the ref"
+        (r.ran && r.published && r.absorbed.isEmpty && r.tip.isSome) (toString (repr r))
+    | .error e => { name := "first syncLocal publishes", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRef d) with
+    | .ok segs => check "the ref holds A's segment after publish"
+        (segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n")) ""
+    | .error e => { name := "ref holds A's segment", passed := false, msg := e.message }]
+  -- (C) a second sync with nothing new does not republish (tip unchanged)
+  let tip1 ← runTl (refTip d)
+  o := o ++ [match ← runTl (syncLocal d (some ridA)), tip1 with
+    | .ok r, .ok t => check "a second syncLocal with nothing new does not republish"
+        (r.ran && !r.published && r.tip == t) (toString (repr r))
+    | _, _ => { name := "second syncLocal no-op", passed := false, msg := "unexpected error" }]
+  -- (D) a sibling B publishes into the shared ref; A's next sync absorbs it
+  let tip2 ← runTl (refTip d)
+  let refNow ← runTl (readRef d)
+  o := o ++ [← do match refNow, tip2 with
+    | .ok rs, .ok t =>
+      match ← runTl (writeRef d (rs ++ [seg ridB "{\"b\":2}\n"]) t) with
+      | .ok _ => pure { name := "a sibling publishes B into the ref", passed := true }
+      | .error e => pure { name := "sibling publishes B", passed := false, msg := e.message }
+    | _, _ => pure { name := "sibling publishes B", passed := false, msg := "setup error" }]
+  o := o ++ [match ← runTl (syncLocal d (some ridA)) with
+    | .ok r => check "syncLocal absorbs only the sibling segment, not its own"
+        (r.ran && r.absorbed == [ridB]) (toString (repr r))
+    | .error e => { name := "syncLocal absorbs sibling", passed := false, msg := e.message }]
+  o := o ++ [match ← readBytes (logDir / s!"{ridB}.jsonl") with
+    | some bytes => check "the sibling segment is materialized into .tl/log/"
+        (String.fromUTF8! bytes == "{\"b\":2}\n") (String.fromUTF8! bytes)
+    | none => { name := "sibling materialized", passed := false, msg := "no file" }]
+  -- A's own segment on disk is never overwritten from the ref
+  o := o ++ [match ← readBytes (logDir / s!"{ridA}.jsonl") with
+    | some bytes => check "A's own segment on disk is never overwritten by sync"
+        (String.fromUTF8! bytes == "{\"a\":1}\n") (String.fromUTF8! bytes)
+    | none => { name := "own segment untouched", passed := false, msg := "no file" }]
+  return o
+
 def syncTests : IO (List Outcome) := do
-  return syncMergeTests ++ (← syncRefTests)
+  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests)
 
 end Tl.Tests

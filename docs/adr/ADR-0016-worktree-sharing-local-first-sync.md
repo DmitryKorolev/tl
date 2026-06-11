@@ -69,6 +69,23 @@ still writes only its own segment, and the ref is (re)built from segments at syn
 time (ADR-0001 §6) — the local leg just also *reads* the shared ref to absorb
 siblings.
 
+**Built form (the local leg).** `tl sync` is implemented (`Tl/Sync/Local.lean`,
+`syncLocal`): publish the own segment into the ref by the canonicalized union +
+compare-and-set, retrying on a lost CAS race; absorb the *other* replicas'
+segments into `.tl/log/` by atomic rename, never the own segment. Because the
+union is canonicalized (ADR-0001 §5), a sync with nothing new is a byte-stable
+no-op — it builds no churn commit. The `--json` `data` is a forever-contract
+shape with one leg-result object per leg, so adding the remote leg never
+restructures it:
+
+```json
+{ "local":  { "ran": true, "published": false, "absorbed": ["<replica-id>"], "tip": "<oid>" },
+  "remote": null }
+```
+
+`local.ran` is false outside a git repo (no shared ref). `remote` is `null`
+until the remote leg lands, when it becomes its own leg-result object.
+
 ### 2. Worktree sharing uses the shared common-`.git` ref
 
 Linked worktrees of a repo share `refs/tl/log` because git keeps it in

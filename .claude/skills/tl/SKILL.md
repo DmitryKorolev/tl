@@ -99,9 +99,20 @@ tl dep remove <A> <B>
   env var (otherwise it falls back to git identity). This is provenance, and
   the actor on a claim becomes the issue's assignee.
 
+## Sharing across worktrees
+
+`tl sync` reconciles your tasks with sibling agents through the shared
+`refs/tl/log` git ref. Its **local leg** is built: run it inside a git repo and
+it publishes your own changes and absorbs siblings'. Agents in *linked
+worktrees of one repo* share with **zero network** — each keeps its own `.tl/`,
+only the ref is common. Run `tl sync` after a batch of writes to publish, and
+before reading if a sibling may have changed things. Outside a git repo it is a
+no-op. The **remote leg** (fetch/push to other clones) and automatic
+read-time / on-write syncing are not built yet — for now, sync is explicit.
+
 ## Not yet available
 
-This build is local/single-checkout. There is **no** `tl sync` (cross-clone
-sharing), nor `tl defer`, `tl label`, `tl log`, `tl unblocks`, or `tl edit`
-yet — don't reach for them. `tl help --json` is always the authoritative list
-of what this binary actually supports.
+There is no `tl defer`, `tl label`, `tl edit`, or `tl dep tree/path/critical`
+yet, and `tl sync` does not yet reach a remote (cross-clone sharing) — don't
+reach for them. `tl help --json` is always the authoritative list of what this
+binary actually supports.

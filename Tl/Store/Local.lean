@@ -47,10 +47,6 @@ private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
     | some "ENOENT" => return none
     | _ => throw (mapSysError rel e)
 
-/-- The absolute path of a `.tl`-relative file (base may be empty = cwd). -/
-private def absOf (d : Dirs) (rel : String) : System.FilePath :=
-  if d.base.isEmpty then System.FilePath.mk rel else System.FilePath.mk d.base / rel
-
 /-- Atomically replace a small `.tl/local` file: write a `.tmp` sibling
     (no-follow), fsync it, then `rename` over the target (ADR-0015 §3 — the
     atomic-replace pattern, so a crash mid-write never leaves a torn
@@ -67,7 +63,7 @@ def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
       Sys.sync fd
     finally
       Sys.close fd
-  liftSys (mapSysError rel) (IO.FS.rename (absOf d tmpRel) (absOf d rel))
+  liftSys (mapSysError rel) (IO.FS.rename (d.absOf tmpRel) (d.absOf rel))
 
 /-- Load `.tl/local/replica`. Absent → `none` (the write path auto-mints,
     ADR-0012); present but not a canonical 13-char id → `corrupt-replica`. -/

@@ -54,6 +54,12 @@ def relSegment (d : Dirs) (replicaId : String) : String :=
     every *open* under it still goes through the no-follow walk). -/
 def logPath (d : Dirs) : FilePath := FilePath.mk (d.tlPath) / "log"
 
+/-- The absolute path of a `.tl`-relative file (base empty = cwd) — for the
+    atomic-replace `rename` (ADR-0015 §3), whose components above the final
+    name are not the shim's concern (the temp open already rode no-follow). -/
+def absOf (d : Dirs) (rel : String) : FilePath :=
+  if d.base.isEmpty then FilePath.mk rel else FilePath.mk d.base / rel
+
 end Dirs
 
 /-- Map a shim failure on a `.tl` open to its structured code: a refused

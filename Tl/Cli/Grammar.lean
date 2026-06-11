@@ -106,6 +106,8 @@ def commandSpecs : List CommandSpec :=
       summary := "the op history, newest first (optionally one issue)", flags := [limitFlag] },
     { command := "stats", positionals := "",
       summary := "counts by state plus ready / blocked / cycles totals" },
+    { command := "sync", positionals := "",
+      summary := "reconcile with siblings via refs/tl/log (local leg; the remote leg is not yet wired)" },
     { command := "doctor", positionals := "",
       summary := "local health checks (replica / clock / log / graph / stale claims)" },
     { command := "version", positionals := "", summary := "the product and log-format versions" },

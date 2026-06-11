@@ -15,6 +15,7 @@ import Tl.Cli.Project
 import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
+import Tl.Sync.Local
 
 namespace Tl.Cli
 
@@ -594,6 +595,33 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
      ("checks", Json.arr (rows.map (·.1)).toArray)]
   let human := (if healthy then "healthy" else "PROBLEMS FOUND") ++
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
+  return { data, human }
+
+/-- `tl sync`: the local-first leg (ADR-0016 §1) — reconcile this replica with
+    its siblings through the shared `refs/tl/log`. The remote `fetch/push` leg
+    is a later increment; the `--json` `data` already carries a `remote` slot
+    (null until then) so the shape does not change when it lands. -/
+def cmdSync (dirOverride : Option String) : TlM CmdOut := do
+  let d ← discover dirOverride
+  let own ← loadReplica d
+  let o ← Tl.Sync.syncLocal d (own.map (·.id))
+  let localLeg : Json :=
+    if o.ran then
+      Json.mkObj
+        [("ran", Json.bool true),
+         ("published", Json.bool o.published),
+         ("absorbed", Json.arr (o.absorbed.map Json.str).toArray),
+         ("tip", o.tip.elim Json.null Json.str)]
+    else Json.mkObj [("ran", Json.bool false)]
+  let data := Json.mkObj [("local", localLeg), ("remote", Json.null)]
+  let human :=
+    if !o.ran then
+      "not a git repository — tl shares through refs/tl/log; run inside a git repo (the remote leg is not yet implemented)"
+    else
+      let pub := if o.published then "published your changes" else "already up to date"
+      let absorbed := if o.absorbed.isEmpty then ""
+                      else s!"; absorbed {o.absorbed.length} sibling segment(s)"
+      s!"Synced (local): {pub}{absorbed}"
   return { data, human }
 
 /-- The committed discovery pointer (ADR-0011 §3): the one line an agent file

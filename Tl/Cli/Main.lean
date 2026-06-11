@@ -225,6 +225,10 @@ def runVerb : List String → TlM CmdOut
         MonadExcept.ofExcept (noPositionals a "dep cycles")
         cmdDepCycles (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "dep takes add|remove|cycles")
+    | "sync" => do
+      let a ← parse "sync"
+      MonadExcept.ofExcept (noPositionals a "sync")
+      cmdSync (a.get? "dir")
     | "doctor" => do
       let a ← parse "doctor"
       MonadExcept.ofExcept (noPositionals a "doctor")

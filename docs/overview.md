@@ -13,7 +13,10 @@
 > (SHA-256), `Tl/Store` (the ADR-0019 native shim + discovery, segments,
 > materialize, the locked write path, clock/replica recovery), `Tl/Clock`,
 > and `Tl/Cli` (the stage-1 verbs with `--json`, dispatch, init incl. its IO
-> tests). `Tl/Sync` and `Tl/Import` are not yet built (Stage 3).
+> tests). `Tl/Sync` is partly built — the `refs/tl/log` plumbing, the
+> complete-line union merge, and the local-first worktree leg (`tl sync`) are
+> done and tested; the remote fetch/push leg, read-time refresh, and auto-sync
+> are not. `Tl/Import` is not yet built (Stage 3).
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -179,7 +182,7 @@ ADR-0008).
 | native shim (fsync, no-follow open, fd lock, entropy) | per-branch tests: symlink refusal at final and intermediate components, `O_EXCL` collision, append+sync round-trips, lock contention, hostile fixtures at the Store layer (0019/0015) |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. Covered: all pairs of seeded + crafted near-tie triples (`Tests/CrossTests.lean`); the compiled-kernel-vs-spec property cross-check rides the same file (0007/0008, 0004) |
 | CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008) |
-| ref sync transport | `refs/tl/log` plumbing (read/write), segment materialization, the complete-line union merge, push-rejection retry, no-upstream, and auto-sync error handling; the local-first leg + read-time ref-OID refresh for same-machine worktree sharing (0001/0016). **Stage 3 — the tests land with the transport** |
+| ref sync transport | **Built + tested** (`Tests/SyncTests.lean`): `refs/tl/log` plumbing (read/write, CAS, parent-chaining, byte-faithful non-UTF-8 blob round-trip), the complete-line union merge, and the local-first worktree leg — `syncLocal` publishes the own segment (CAS-retry, no churn commit when nothing changed) and absorbs siblings into `.tl/log/` via atomic rename, never the own segment; proven end-to-end with two linked worktrees sharing one ref (0001/0016). **Still Stage 3** (tests land with each leg): the remote fetch/push leg, push-rejection retry, no-upstream, read-time ref-OID refresh, and auto-sync error handling |
 | "superseded by …" signal | shell compares the converged winning `assignee` vs this replica's own latest `claim` op (0013); replica-relative, not a kernel property. Covered: a foreign claim at a later HLC supersedes the local one (`Tests/CliTests.lean`) |
 
 ## Trusted (carried assumptions)
