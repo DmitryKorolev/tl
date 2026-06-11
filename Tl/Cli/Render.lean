@@ -146,6 +146,13 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
       (pre ++ st.paint "2" conn ++ styledLine st v c)
         :: treeLines st v c childPre (i :: visited))
 
+/-- A forest (ADR-0017 §2, `list --tree`): each root rendered as its one-line
+    node followed by its subtree. Roots are passed in (issues with no present
+    canonical parent — an orphan or a dangling-parent issue renders at top
+    level). Each subtree is total on cycles via `treeLines`' visited set. -/
+def treeForest (st : Style) (v : View) (roots : List IssueId) : List String :=
+  roots.flatMap (fun r => styledLine st v r :: treeLines st v r "" [])
+
 /-! ## show detail view (ADR-0017 §4) -/
 
 private def fence (st : Style) (label : String) (body : String) : List String :=

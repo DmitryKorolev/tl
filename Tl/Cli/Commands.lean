@@ -97,7 +97,7 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM 
   return { data := listPayload "items" ranked.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 
-def cmdList (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
+def cmdList (dirOverride : Option String) (limit : Nat) (tree : Bool) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- bare list: every issue, oldest first (the input-facet grammar is a
@@ -105,11 +105,26 @@ def cmdList (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM C
   let all := (v.state.presentIssues.map (fun i => (v.state.createdAtOf i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
-  let capped := if limit == 0 then all else all.take limit
   let openN := (all.filter (fun i => (v.state.issueData i).statusOf == .Open)).length
   let inProg := (all.filter (fun i => (v.state.issueData i).statusOf == .InProgress)).length
-  let r := listRender v capped all.length
-    s!"Total: {all.length} issues ({openN} open, {inProg} in progress)" "no issues"
+  let summary := s!"Total: {all.length} issues ({openN} open, {inProg} in progress)"
+  -- the --json data is always the flat items array (the tree is a human
+  -- browse mode only — ADR-0017 §2; a recursive JSON shape isn't pinned)
+  let capped := if limit == 0 then all else all.take limit
+  let s := v.state
+  -- `--tree`: a whole-project forest. Roots = issues with no PRESENT canonical
+  -- parent (an orphan, or a dangling/cycle parent → top level, §2).
+  let r : Style → String :=
+    if tree then
+      let isRoot (i : IssueId) : Bool := match canonicalParent s i with
+        | none => true | some p => !(s.presentIssues.contains p)
+      let roots := all.filter isRoot
+      let cappedRoots := if limit == 0 then roots else roots.take limit
+      fun st =>
+        if roots.isEmpty then (if all.isEmpty then "no issues" else "(no top-level issues)")
+        else String.intercalate "\n" (treeForest st v cappedRoots)
+          ++ "\n" ++ footer st summary cappedRoots.length roots.length
+    else listRender v capped all.length summary "no issues"
   return { data := listPayload "items" all.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 

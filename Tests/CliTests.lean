@@ -795,6 +795,21 @@ def cliRenderTests : IO (List Outcome) := do
        check "show detail lists the blocker relationship"
          ((plain.splitOn "blocked by").length > 1) plain]
   | .error e => o := o ++ [{ name := "show render", passed := false, msg := e.message }]
+  -- list --tree: children nested under their epic (ADR-0017 §2)
+  let dirT ← freshDir
+  let epic ← mkIssue dirT "An epic"
+  let _ ← mkIssue dirT "A child" ["--parent", "tl-" ++ epic]
+  let _ ← mkIssue dirT "An orphan"
+  match ← run' ["list", "--tree", "--dir", dirT, "--limit", "0"] with
+  | .ok out =>
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "list --tree marks the epic" ((plain.splitOn "[epic]").length > 1) plain,
+       check "list --tree indents the child with a connector"
+         ((plain.splitOn "\\-- ").length > 1 || (plain.splitOn "+-- ").length > 1) plain,
+       check "the child line sits below its epic line"
+         (((plain.splitOn "An epic").head?.getD "").length < ((plain.splitOn "A child").head?.getD "").length) plain]
+  | .error e => o := o ++ [{ name := "list --tree", passed := false, msg := e.message }]
   -- spawned: the flag/TTY resolution path (--color=always vs --plain)
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   if ← exe.pathExists then
