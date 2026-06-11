@@ -159,7 +159,9 @@ ahead-of-disk) marker that the next read corrects.
 Because the local leg is free (no network), `tl init` enables auto-sync by
 default when it detects a linked worktree (still opt-in elsewhere, still
 removable — ADR-0001 §4). Promptly publishing a write into the shared ref is what
-makes a sibling's read-refresh see it.
+makes a sibling's read-refresh see it. The *process model* — what it runs
+(the local leg only), synchronous and best-effort, no debounce, the `tl.autosync`
+config — is pinned in [ADR-0021](ADR-0021-auto-sync-process-model.md).
 
 ### 5. Bounds (unchanged in spirit)
 

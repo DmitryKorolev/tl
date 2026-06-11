@@ -33,3 +33,4 @@ not reference task-tracker IDs.
 | 0018 | [Hand-rolled SHA-256 (pure Lean)](ADR-0018-hand-rolled-sha256.md) |
 | 0019 | [Native primitives shim, and the FFI policy](ADR-0019-native-shim-ffi-policy.md) |
 | 0020 | [`--json` data shapes (the stage-1 surface)](ADR-0020-json-data-shapes.md) |
+| 0021 | [Auto-sync: a synchronous, best-effort local-leg publish](ADR-0021-auto-sync-process-model.md) |

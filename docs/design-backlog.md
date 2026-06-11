@@ -100,10 +100,6 @@ Kernel theorems still to decide whether to commit to:
 
 ## Sync, discovery & local concurrency
 
-- Auto-sync process model [med] — the debounce / async process model /
-  failure surface is unpinned (the local/remote leg split + worktree default-on
-  are settled in ADR-0016); pin it (ADR-0001) so overview's "tested auto-sync
-  error handling" has a target.
 - Discovery: bare repos, `.git`-file worktrees, `GIT_DIR`/`GIT_WORK_TREE` [low]
   — discovery for bare repos, `.git`-file worktrees, and
   `GIT_DIR`/`GIT_WORK_TREE` is undefined; delegate to `git rev-parse

@@ -451,6 +451,7 @@ exactly the thing to resist.)
 - ADR-0018 — Hand-rolled SHA-256 (pure Lean)
 - ADR-0019 — Native primitives shim, and the FFI policy
 - ADR-0020 — `--json` data shapes (the stage-1 surface)
+- ADR-0021 — Auto-sync: a synchronous, best-effort local-leg publish
 
 ## Open questions (for iteration)
 
