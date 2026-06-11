@@ -459,9 +459,47 @@ GARBAGE
              jStr c "name" == some "log" && jStr c "status" == some "fail"))]
   return o
 
+/-- The ADR-0017 §8 description precedence on `create`. The stdin leg needs
+    a real process boundary (a pipe), so those rows spawn the binary via
+    `sh -c`. -/
+def cliDescriptionTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  o := o ++
+    [← expectData "create --description sets the body"
+      ["create", "Titled", "--dir", dir, "--assignee", "t",
+       "--description", "line one\nline two"]
+      (fun j => jStr j "description" == some "line one\nline two")]
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  unless ← exe.pathExists do
+    return o ++ [{ name := "binary present for stdin rows", passed := false,
+                   msg := "run `lake build` first" }]
+  let sh (script : String) : IO IO.Process.Output :=
+    IO.Process.output { cmd := "sh", args := #["-c", script] }
+  let q (s : String) : String := "'" ++ s ++ "'"
+  -- piped stdin becomes the description (the §8 second leg)
+  let piped ← sh s!"printf 'from\nstdin' | {q exe.toString} create Piped --dir {q dir} --assignee t --json"
+  o := o ++
+    [check "piped stdin becomes the description"
+      ((piped.stdout.splitOn "\"description\":\"from\\nstdin\"").length == 2)
+      piped.stdout]
+  -- --description wins over piped stdin
+  let both ← sh s!"printf 'ignored' | {q exe.toString} create Both --dir {q dir} --assignee t --description flagged --json"
+  o := o ++
+    [check "--description wins over piped stdin"
+      ((both.stdout.splitOn "\"description\":\"flagged\"").length == 2)
+      both.stdout]
+  -- empty piped stdin leaves the description absent
+  let empty ← sh s!": | {q exe.toString} create Empty --dir {q dir} --assignee t --json"
+  o := o ++
+    [check "empty piped stdin leaves the description absent"
+      ((empty.stdout.splitOn "\"description\"").length == 1)
+      empty.stdout]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
-    ++ (← cliReviewTests) ++ (← cliBinaryTests)
+    ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

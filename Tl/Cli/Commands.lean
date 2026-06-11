@@ -197,7 +197,8 @@ private def writeNow (v : TxContext) (parsed : List ParsedOp) : View :=
   postView v parsed v.now
 
 def cmdCreate (dirOverride : Option String) (title : String) (priority : Option Nat)
-    (actor : String) (blockedBy blocks parents related : List String) : TlM CmdOut := do
+    (description : Option String) (actor : String)
+    (blockedBy blocks parents related : List String) : TlM CmdOut := do
   let edgeCount := blockedBy.length + blocks.length + parents.length + related.length
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
   let d ← discover dirOverride
@@ -218,7 +219,9 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
         ++ rels.map (fun r =>
             .relate (if decide (id ≤ r) then (id, r, EdgeKind.Related)
                      else (r, id, EdgeKind.Related)))
-      .ok (WireOp.create id { title := some title, priority := prio } :: edgeOps))
+      .ok (WireOp.create id
+        { title := some title, priority := prio, description := description.map some }
+        :: edgeOps))
   let v := writeNow ctx parsed
   let some newId := parsed.head?.bind (fun p =>
       match p.op with | .create i _ => some i | _ => none)

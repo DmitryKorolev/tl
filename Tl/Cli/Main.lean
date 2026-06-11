@@ -89,6 +89,7 @@ usage:
   tl init                                    create the state directory (repo toplevel)
   tl create \"<title>\" [--blocked-by <id>]... [--blocks <id>]...
             [--parent <id>]... [--related <id>]... [-p 0-4]
+            [--description <body>]   (or pipe the body on stdin)
   tl ready [--limit N]                       ranked workable items (default 10; 0 = all)
   tl claim <id> [--assignee <name>]          take a ready item (refused otherwise)
   tl close <id> --as done|cancelled|duplicate [--of <id>]
@@ -128,14 +129,29 @@ def runVerb : List String → TlM CmdOut
       let a ← parse [] []
       cmdInit (a.get? "dir")
     | "create" => do
-      let a ← parse ["priority", "blocked-by", "blocks", "parent", "related", "assignee"] []
+      let a ← parse ["priority", "blocked-by", "blocks", "parent", "related",
+                     "assignee", "description"] []
       let some title := a.positionals.head?
         | throw (usageErr "create needs a title")
       unless a.positionals.length == 1 do
         throw (usageErr "create takes exactly one title (quote it)")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
-      cmdCreate (a.get? "dir") title prio actor
+      -- the ADR-0017 §8 description precedence: --description wins; else a
+      -- non-TTY stdin is read to EOF as the body (empty/blank = absent);
+      -- the $EDITOR path is the stage-2 `edit` surface
+      let desc : Option String ← match a.get? "description" with
+        | some d => pure (some d)
+        | none =>
+          liftSys (fun e => .mk' .internal s!"cannot read stdin: {e}") do
+            let stdin ← (IO.getStdin : IO IO.FS.Stream)
+            if ← stdin.isTty then
+              pure none
+            else
+              let body ← stdin.readToEnd
+              let body := if body.endsWith "\n" then (body.dropEnd 1).toString else body
+              pure (if body.trimAscii.toString.isEmpty then none else some body)
+      cmdCreate (a.get? "dir") title prio desc actor
         (a.getAll "blocked-by") (a.getAll "blocks") (a.getAll "parent") (a.getAll "related")
     | "ready" => do
       let a ← parse ["limit"] []
