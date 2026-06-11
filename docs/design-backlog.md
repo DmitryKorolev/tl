@@ -7,7 +7,14 @@ Decisions already made are recorded in their ADRs (and git history); this lists
 only what is still open.
 
 Status: Stages 0 and 1 are built (the verified kernel and the MVP work
-loop); Stage 2 (ergonomics) is next. The items Stage 1 touched have graduated: `duplicate-of`
+loop). Stages 2–3 are **partly built**: the agent surface (skill, `help --json`,
+discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
+`list` open-by-default + `--tree`, and the **full `refs/tl/log` sync transport**
+(local leg, read-time refresh, remote fetch/union/push, and the HLC skew window
+— proved convergence-safe) have landed. Still open: the Stage-2 ergonomics verbs
+(`labels`, `defer`/`undefer`, `dep tree/path/critical`, `edit`), auto-sync
+(Stage 3, blocked on its process-model decision), and beads `import` (Stage 3).
+The items Stage 1 touched have graduated: `duplicate-of`
 semantics, the write-time guard inventory + idempotent re-close, the
 `not-closeable` / `unsafe-path` error codes, the canonical string-escaping
 spec (all ADR-0008, with ADR-0003/0015/0020 cross-refs), and clock-file
