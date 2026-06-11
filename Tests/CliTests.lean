@@ -742,6 +742,15 @@ def cliFreeVerbTests : IO (List Outcome) := do
       (fun j => jNat j "total" == some 2 && jNat j "open" == some 2
         && jNat j "ready" == some 1 && jNat j "blocked" == some 1
         && jNat j "cycles" == some 0)]
+  -- list defaults to open-only; --all includes closed
+  let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
+  o := o ++
+    [← expectData "list hides closed issues by default"
+       ["list", "--dir", dir, "--limit", "0"]
+       (fun j => (jArr j "items").all (fun r => jStr r "id" != some ("tl-" ++ b))),
+     ← expectData "list --all includes closed issues"
+       ["list", "--all", "--dir", dir, "--limit", "0"]
+       (fun j => (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ b)))]
   -- log: newest-first entries, the per-issue filter, the targets array
   o := o ++
     [← expectData "log lists ops newest-first with targets"

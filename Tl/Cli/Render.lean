@@ -132,10 +132,10 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
 /-! ## Children tree (ADR-0017 §2) — total on cyclic/dangling parent graphs -/
 
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
-    (pre : String) (visited : List IssueId) : List String :=
+    (pre : String) (visited : List IssueId) (keep : IssueId → Bool) : List String :=
   if visited.contains i then [pre ++ st.paint "2" "↺ " ++ styledLine st v i]
   else
-    let kids := v.state.presentChildren i
+    let kids := (v.state.presentChildren i).filter keep
     let n := kids.length
     kids.zipIdx.flatMap (fun (c, idx) =>
       let last := idx + 1 == n
@@ -144,14 +144,14 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
       let childPre := pre ++ (if st.glyph == .unicode then (if last then "    " else "│   ")
                               else (if last then "    " else "|   "))
       (pre ++ st.paint "2" conn ++ styledLine st v c)
-        :: treeLines st v c childPre (i :: visited))
+        :: treeLines st v c childPre (i :: visited) keep)
 
 /-- A forest (ADR-0017 §2, `list --tree`): each root rendered as its one-line
     node followed by its subtree. Roots are passed in (issues with no present
     canonical parent — an orphan or a dangling-parent issue renders at top
     level). Each subtree is total on cycles via `treeLines`' visited set. -/
-def treeForest (st : Style) (v : View) (roots : List IssueId) : List String :=
-  roots.flatMap (fun r => styledLine st v r :: treeLines st v r "" [])
+def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String :=
+  roots.flatMap (fun r => styledLine st v r :: treeLines st v r "" [] keep)
 
 /-! ## show detail view (ADR-0017 §4) -/
 
@@ -192,7 +192,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
     | some p => ["parent: " ++ displayId p] | none => []
   let childrenBlock :=
     if (s.presentChildren i).isEmpty then []
-    else st.paint "1" "children:" :: treeLines st v i "  " []
+    else st.paint "1" "children:" :: treeLines st v i "  " [] (fun _ => true)
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
