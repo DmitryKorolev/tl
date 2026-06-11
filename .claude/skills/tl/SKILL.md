@@ -99,27 +99,33 @@ tl dep remove <A> <B>
   env var (otherwise it falls back to git identity). This is provenance, and
   the actor on a claim becomes the issue's assignee.
 
-## Sharing across worktrees
+## Sharing
 
-Agents in *linked worktrees of one repo* share tasks through the shared
-`refs/tl/log` git ref with **zero network** — each keeps its own `.tl/`, only
-the ref is common.
+`tl sync` reconciles your tasks with everyone else through the shared
+`refs/tl/log` git ref. Each working copy keeps its own `.tl/` (own replica,
+clock, segment); only the ref is shared.
 
-- **Reading already absorbs siblings automatically.** Every read (`tl ready`,
-  `list`, `show`, …) does a cheap check of the shared ref and pulls in any
-  sibling's published changes before answering — so you do **not** need to sync
-  before reading.
-- **Publish your own work with `tl sync`.** Your writes become visible to
-  siblings only once you've published them, so run `tl sync` after a batch of
-  writes. (Outside a git repo it is a no-op.)
+- **Reading already absorbs same-machine siblings automatically.** Every read
+  (`tl ready`, `list`, `show`, …) does a cheap check of the shared local ref and
+  pulls in a linked-worktree sibling's published changes before answering — so
+  you do **not** need to sync before reading, on one machine.
+- **`tl sync` publishes and reconciles.** Run it after a batch of writes. It
+  (1) publishes your changes to the shared ref (zero network for worktrees of
+  one repo), then (2) if a git **remote** is configured, fetches it, unions, and
+  pushes — so your tasks travel to other **clones / machines**. Cross-clone
+  visibility is sync-bounded: a teammate sees your change after you push and
+  they sync.
+- `tl sync --json` reports both legs: `data.local` and `data.remote`
+  (`{ran, remote, pushed, pulled}`, or `{ran:false, reason:"no-upstream"}` when
+  no remote is configured — which is fine, you just shared locally).
 
-The **remote leg** (fetch/push to other *clones*) and automatic on-write
-publishing (auto-sync) are not built yet — until then, publishing is the one
-explicit step.
+Two agents on different clones can each claim the same item until a sync
+reconciles them; LWW picks a winner and the loser's `tl show` reports the claim
+was superseded.
 
 ## Not yet available
 
 There is no `tl defer`, `tl label`, `tl edit`, or `tl dep tree/path/critical`
-yet, and `tl sync` does not yet reach a remote (cross-clone sharing) — don't
-reach for them. `tl help --json` is always the authoritative list of what this
-binary actually supports.
+yet, and there is no automatic on-write publishing (auto-sync) — `tl sync` is
+explicit. `tl help --json` is always the authoritative list of what this binary
+actually supports.

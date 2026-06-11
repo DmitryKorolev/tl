@@ -89,33 +89,37 @@ def refTip (d : Dirs) : TlM (Option String) := do
   let o ← (git d ["rev-parse", "--verify", "--quiet", "refs/tl/log"] : IO _)
   if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
 
-/-- The segments stored in `refs/tl/log` (empty when the ref is unset). Reads
-    the commit's tree: one `<replica-id>.jsonl` blob per replica. -/
-def readRef (d : Dirs) : TlM (List SegmentData) := do
-  match ← refTip d with
-  | none => return []
-  | some _ =>
-    let listing ← run d "ls-tree" ["ls-tree", "refs/tl/log"]
-    let entries := listing.splitOn "\n" |>.filter (· ≠ "")
-    entries.filterMapM fun line => do
-      -- "<mode> <type> <oid>\t<name>"
-      match line.splitOn "\t" with
-      | [info, name] =>
-        if name.endsWith ".jsonl" then
-          match info.splitOn " " with
-          | [_, "blob", oid] =>
-            -- the blob is the raw segment bytes (may be non-UTF-8) — read them
-            -- byte-faithfully, never through a String stdout
-            let bytes ← runBytes d "cat-file" ["cat-file", "blob", oid]
-            return some { replicaId := (name.dropEnd 6).toString, bytes }
-          | _ => return none
-        else return none
-      | _ => return none
+/-- The segments stored at `ref` (empty when the ref is unset). Reads the
+    commit's tree: one `<replica-id>.jsonl` blob per replica. -/
+def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) := do
+  let o ← (git d ["rev-parse", "--verify", "--quiet", ref] : IO _)
+  if o.exitCode != 0 then return []
+  let listing ← run d "ls-tree" ["ls-tree", ref]
+  let entries := listing.splitOn "\n" |>.filter (· ≠ "")
+  entries.filterMapM fun line => do
+    -- "<mode> <type> <oid>\t<name>"
+    match line.splitOn "\t" with
+    | [info, name] =>
+      if name.endsWith ".jsonl" then
+        match info.splitOn " " with
+        | [_, "blob", oid] =>
+          -- the blob is the raw segment bytes (may be non-UTF-8) — read them
+          -- byte-faithfully, never through a String stdout
+          let bytes ← runBytes d "cat-file" ["cat-file", "blob", oid]
+          return some { replicaId := (name.dropEnd 6).toString, bytes }
+        | _ => return none
+      else return none
+    | _ => return none
 
-/-- Build the new `refs/tl/log` commit (blob per segment, one tree, a
-    parent-chained commit under the neutral identity) WITHOUT moving the ref —
-    the caller does the compare-and-set `update-ref`. Returns the commit oid. -/
-private def buildCommit (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) :
+/-- The segments stored in the local `refs/tl/log`. -/
+def readRef (d : Dirs) : TlM (List SegmentData) := readRefAt d "refs/tl/log"
+
+/-- Build a `refs/tl/log` commit (blob per segment, one tree, a commit under
+    the neutral identity with `parents`) WITHOUT moving any ref — the caller
+    does the `update-ref` / `push`. Multiple parents let the remote leg make
+    the merge commit descend from BOTH the local and the fetched-remote tip, so
+    the push fast-forwards (ADR-0001 §5). Returns the commit oid. -/
+private def buildCommit (d : Dirs) (segs : List SegmentData) (parents : List String) :
     TlM String := do
   -- a blob per segment (raw bytes via stdin — never String.fromUTF8!, which
   -- panics on a non-UTF-8 segment line; the oid out is plain ASCII hex)
@@ -125,7 +129,7 @@ private def buildCommit (d : Dirs) (segs : List SegmentData) (expectedTip : Opti
     pure s!"100644 blob {oid}\t{s.replicaId}.jsonl"
   let tree ← run d "mktree" ["mktree"] (stdin := String.intercalate "\n" entries)
   let commitArgs := ["commit-tree", tree, "-m", "tl log"]
-    ++ (match expectedTip with | some p => ["-p", p] | none => [])
+    ++ parents.flatMap (fun p => ["-p", p])
   run d "commit-tree" commitArgs (env := fixedIdentity)
 
 /-- The compare-and-set `update-ref` argv: require the ref still be
@@ -139,7 +143,7 @@ private def casArgs (commit : String) (expectedTip : Option String) : List Strin
     not clobbered. Throws on a CAS rejection (a stale tip) like any git
     failure. Returns the new commit oid. -/
 def writeRef (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) : TlM String := do
-  let commit ← buildCommit d segs expectedTip
+  let commit ← buildCommit d segs expectedTip.toList
   let _ ← run d "update-ref" (casArgs commit expectedTip)
   return commit
 
@@ -151,10 +155,72 @@ def writeRef (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) 
     was something else (permissions, a corrupt object store). -/
 def writeRefCas (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) :
     TlM (Option String) := do
-  let commit ← buildCommit d segs expectedTip
+  let commit ← buildCommit d segs expectedTip.toList
   let o ← (git d (casArgs commit expectedTip) : IO _)
   if o.exitCode == 0 then return some commit
   else if (← refTip d) != expectedTip then return none  -- a sibling moved it: retry
   else throw (gitErr "update-ref" o)
+
+/-! ## Remote transport primitives (ADR-0001 §5) — used by `Tl.Sync.Remote` -/
+
+/-- A `git config --get <key>` value, or `none` if unset. -/
+def gitConfig (d : Dirs) (key : String) : TlM (Option String) := do
+  let o ← (git d ["config", "--get", key] : IO _)
+  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
+
+/-- The current branch (`none` on a detached HEAD). -/
+def currentBranch (d : Dirs) : TlM (Option String) := do
+  let o ← (git d ["symbolic-ref", "--short", "-q", "HEAD"] : IO _)
+  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
+
+/-- Does the named remote exist (has a configured URL)? -/
+def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
+  return (← gitConfig d s!"remote.{remote}.url").isSome
+
+/-- Fetch the remote's `refs/tl/log` and return its tip + segments — `(none, [])`
+    when the remote has no `refs/tl/log` yet (a fresh remote). A genuine
+    transport failure (unreachable / auth) throws. The fetched tip is read from
+    the per-worktree `FETCH_HEAD` (no shared scratch ref, so concurrent remote
+    legs in sibling worktrees of one repo don't collide). -/
+def fetchRemoteLog (d : Dirs) (remote : String) : TlM (Option String × List SegmentData) := do
+  -- ls-remote first: empty ⇒ the remote has no tl log (nothing to fetch)
+  let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"]
+  if ls.trimAscii.isEmpty then return (none, [])
+  let _ ← run d "fetch" ["fetch", remote, "refs/tl/log"]  -- records FETCH_HEAD (per-worktree)
+  let o ← (git d ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"] : IO _)
+  if o.exitCode != 0 then return (none, [])
+  return (some o.stdout.trimAscii.toString, ← readRefAt d "FETCH_HEAD")
+
+/-- Build the merge commit (tree = `segs`, parents = `parents`) and compare-and-set
+    the LOCAL `refs/tl/log` to it against `expectedLocalTip`. Returns the oid, or
+    `none` if a concurrent local writer moved the ref (the caller retries — like
+    `writeRefCas`, distinguished from a real failure by re-reading the tip). -/
+def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String)
+    (expectedLocalTip : Option String) : TlM (Option String) := do
+  let commit ← buildCommit d segs parents
+  let o ← (git d (casArgs commit expectedLocalTip) : IO _)
+  if o.exitCode == 0 then return some commit
+  else if (← refTip d) != expectedLocalTip then return none  -- local race: retry
+  else throw (gitErr "update-ref" o)
+
+/-- Push `commit` to the remote's `refs/tl/log`. Returns `true` on success,
+    `false` ONLY on a genuine non-fast-forward race (the caller re-fetches and
+    retries — ADR-0001 §5). Classification uses `--porcelain`'s machine-readable
+    status (`(non-fast-forward)` / `(fetch first)`), NOT a loose stderr scan: a
+    hook/policy decline, a permission denial, or a transport failure is a real
+    error thrown with its reason — never retried into a misleading push-rejected.
+    Pushing the explicit oid (`<commit>:refs/tl/log`) rather than the ref name
+    sends exactly what was just written, immune to a concurrent local move. -/
+def pushRefLog (d : Dirs) (remote : String) (commit : String) : TlM Bool := do
+  let o ← (git d ["push", "--porcelain", remote, s!"{commit}:refs/tl/log"] : IO _)
+  if o.exitCode == 0 then return true
+  -- --porcelain writes per-ref status to STDOUT; only these two reasons are the
+  -- retryable race (a hook decline reads "(... hook declined)", an auth/transport
+  -- failure has no porcelain status line at all)
+  let status := o.stdout
+  if (status.splitOn "non-fast-forward").length > 1 || (status.splitOn "fetch first").length > 1 then
+    return false
+  else throw (.mk' .internal
+    s!"git push to '{remote}' failed (exit {o.exitCode}): {(status ++ o.stderr).trimAscii.toString}")
 
 end Tl.Sync

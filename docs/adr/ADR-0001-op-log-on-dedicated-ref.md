@@ -162,6 +162,27 @@ loser is told ("superseded", ADR-0013). This is the honest cost of a server-less
 instant global visibility would need the excluded daemon. The deterministic
 `ready` order and auto-sync minimise wasted duplicate starts.
 
+**Built form (the remote leg).** Implemented as `Tl/Sync/Remote.lean`
+(`syncRemote`), run by `tl sync` after the local leg. Resolution: `tl.remote`
+git config wins; else the current branch's upstream remote
+(`branch.<b>.remote`); else `origin`; a **detached HEAD** (no current branch)
+has no branch-upstream and so falls through to `origin` (or `tl.remote` if set)
+— and a resolved name without a configured URL is `no-upstream`. The leg
+fetches the remote's `refs/tl/log` into a scratch ref (`ls-remote` first, so a
+remote with no tl log yet is the empty case), unions it with the local ref, and
+builds one merge commit whose parents are **both** the local tip and the
+fetched-remote tip — so it descends from the remote tip and the push
+fast-forwards. The same commit is CAS-`update-ref`'d locally (so the local ref
+gains the remote's content and a future sync agrees) before the push. A
+non-fast-forward rejection (another clone pushed between our fetch and push)
+re-fetches, re-unions and retries **once**, then surfaces `push-rejected`
+(exit 10); a real auth/network failure is distinguished from a rejection and
+thrown as-is rather than misreported. `no-upstream` is **reported, not fatal**
+for plain `tl sync` — the local leg is the success on a remote-less worktree
+(ADR-0016 §1); the exit-11 error is reserved for flows that *require* a remote.
+The `--json` `data` is `{ local: {…}, remote: {ran, remote, pushed, pulled,
+tip} | {ran:false, reason:"no-upstream"} | null }` (null = not a git repo).
+
 ### 6. The local/ref invariant
 
 A mutation appends to this replica's own segment file (`O_APPEND`) and

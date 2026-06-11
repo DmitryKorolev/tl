@@ -176,9 +176,16 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   path O(1) ref-OID trigger (vs the .tl/local/ref-mark)
                         --   that absorbs siblings before a fold — best-effort,
                         --   lock-free, never fails a read
-  Sync.lean             --   the remote fetch / merge / push leg; push-rejection
-                        --   retry; no-upstream; auto-sync (planned — atop Ref +
-                        --   Merge + Local)
+  Remote.lean           --   the remote fetch / union / push leg (built, ADR-0001
+                        --   §5): resolveRemote (tl.remote > branch-upstream >
+                        --   origin; detached-HEAD → origin); syncRemote unions
+                        --   local+remote into a commit parented on BOTH tips (so
+                        --   the push fast-forwards), retries once on a non-ff
+                        --   rejection then push-rejected; no remote → no-upstream
+                        --   (reported, not fatal). `tl sync` = local leg → remote
+                        --   leg → absorb-pulled
+  Sync.lean             --   auto-sync (planned — publish after a write, atop the
+                        --   legs above)
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean

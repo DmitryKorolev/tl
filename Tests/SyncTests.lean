@@ -7,6 +7,7 @@ fetch/push) build on these and are tested when they land.
 import Tl.Sync.Merge
 import Tl.Sync.Ref
 import Tl.Sync.Local
+import Tl.Sync.Remote
 import Tests.Harness
 
 namespace Tl.Tests
@@ -222,7 +223,113 @@ def syncRefreshTests : IO (List Outcome) := do
   let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", logDir.toString] } : IO _)
   return o
 
+/-- A working repo with `origin` pointing at a fresh bare remote. -/
+private def repoWithRemote : IO (Dirs × String) := do
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["init", "--bare", "-q", bare.toString] }
+  let work ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", work.toString, "init", "-q"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", work.toString, "remote", "add", "origin", bare.toString] }
+  return ({ base := work.toString, tlRel := ".tl" }, bare.toString)
+
+private def replicaIds (segs : List SegmentData) : List String :=
+  (segs.map (·.replicaId)).mergeSort (· ≤ ·)
+
+/-- The remote leg (ADR-0001 §5): resolution, fetch → union → push, no-upstream,
+    and non-fast-forward rejection detection + recovery, against a bare remote. -/
+def syncRemoteTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let ridA := (Tl.Clock.Replica.ofNat 1).id
+  let ridC := (Tl.Clock.Replica.ofNat 3).id
+  -- (A) no remote configured → resolveRemote none, syncRemote a reported no-op
+  let dn ← gitRepo
+  o := o ++ [match ← runTl (resolveRemote dn) with
+    | .ok none => { name := "resolveRemote is none with no remote (no-upstream)", passed := true }
+    | _ => { name := "resolveRemote none", passed := false, msg := "expected none" }]
+  o := o ++ [match ← runTl (syncRemote dn) with
+    | .ok r => check "syncRemote is a reported no-op with no remote" (!r.ran && !r.pushed && !r.pulled) (toString (repr r))
+    | .error e => { name := "syncRemote no-upstream", passed := false, msg := e.message }]
+  -- (B) push to a fresh remote: a local ref's segment lands on the bare
+  let (d, bare) ← repoWithRemote
+  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] none)
+  o := o ++ [match ← runTl (syncRemote d) with
+    | .ok r => check "syncRemote pushes the local ref to a fresh remote"
+        (r.ran && r.remote == "origin" && r.pushed) (toString (repr r))
+    | .error e => { name := "syncRemote pushes", passed := false, msg := e.message }]
+  let dBare : Dirs := { base := bare, tlRel := ".tl" }
+  o := o ++ [match ← runTl (readRefAt dBare "refs/tl/log") with
+    | .ok segs => check "the bare remote now carries the pushed segment"
+        (segs.any (fun s => s.replicaId == ridA)) (String.intercalate "," (replicaIds segs))
+    | .error e => { name := "remote carries segment", passed := false, msg := e.message }]
+  -- (C) a second clone pulls it: empty local → syncRemote absorbs the remote
+  let work2 ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", work2.toString, "init", "-q"] } : IO _)
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", work2.toString, "remote", "add", "origin", bare] } : IO _)
+  let d2 : Dirs := { base := work2.toString, tlRel := ".tl" }
+  o := o ++ [match ← runTl (syncRemote d2) with
+    | .ok r => check "a second clone pulls the remote's content"
+        (r.ran && r.pulled && !r.pushed) (toString (repr r))
+    | .error e => { name := "second clone pulls", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRef d2) with
+    | .ok segs => check "the pulled segment is in the second clone's local ref"
+        (segs.any (fun s => s.replicaId == ridA)) (String.intercalate "," (replicaIds segs))
+    | .error e => { name := "pulled into local ref", passed := false, msg := e.message }]
+  -- (D) re-sync with nothing new is a no-op (converged)
+  o := o ++ [match ← runTl (syncRemote d2) with
+    | .ok r => check "a converged re-sync neither pushes nor pulls"
+        (r.ran && !r.pushed && !r.pulled) (toString (repr r))
+    | .error e => { name := "converged re-sync no-op", passed := false, msg := e.message }]
+  -- (E) push-rejection detection: a divergent local ref (not descending from the
+  -- remote tip) is rejected by a raw push; the full leg then recovers by
+  -- fetching + unioning before re-pushing
+  let work3 ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "init", "-q"] } : IO _)
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "remote", "add", "origin", bare] } : IO _)
+  let d3 : Dirs := { base := work3.toString, tlRel := ".tl" }
+  let tip3 ← runTl (writeRef d3 [seg ridC "{\"c\":3}\n"] none)  -- a local ref not descending from the remote
+  let pushed3 ← match tip3 with
+    | .ok t => runTl (pushRefLog d3 "origin" t)
+    | .error e => pure (.error e)
+  o := o ++ [match pushed3 with
+    | .ok false => { name := "pushRefLog detects a non-fast-forward rejection", passed := true }
+    | .ok true => { name := "pushRefLog rejection", passed := false, msg := "unexpectedly accepted a non-ff push" }
+    | .error e => { name := "pushRefLog rejection", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (syncRemote d3) with
+    | .ok r => check "the remote leg recovers from divergence (fetch+union, then push)"
+        (r.ran && r.pushed && r.pulled) (toString (repr r))
+    | .error e => { name := "remote leg recovers", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRefAt dBare "refs/tl/log") with
+    | .ok segs => check "after recovery the remote carries BOTH replicas' segments"
+        (segs.any (·.replicaId == ridA) && segs.any (·.replicaId == ridC))
+        (String.intercalate "," (replicaIds segs))
+    | .error e => { name := "remote has both after recovery", passed := false, msg := e.message }]
+  -- (F) a remote pre-receive hook that declines every push is a POLICY decline,
+  -- not a non-fast-forward race: the leg must NOT retry-then-misreport it as
+  -- push-rejected ("remote moved, retry") — it surfaces the real reason instead
+  let (df, baref) ← repoWithRemote
+  IO.FS.writeFile (System.FilePath.mk baref / "hooks" / "pre-receive") "#!/bin/sh\nexit 1\n"
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["+x", (System.FilePath.mk baref / "hooks" / "pre-receive").toString] } : IO _)
+  let _ ← runTl (writeRef df [seg ridA "{\"a\":1}\n"] none)
+  o := o ++ [match ← runTl (syncRemote df) with
+    | .error e => check "a hook/policy decline surfaces the real error, not a misleading push-rejected"
+        (e.code != .pushRejected && (e.message.splitOn "declined").length > 1)
+        s!"code={e.code.wire} msg={e.message}"
+    | .ok r => { name := "hook decline → real error", passed := false, msg := s!"unexpectedly ok: {repr r}" }]
+  -- (G) a fresh remote + an empty local repo (no ops): nothing to share, so the
+  -- leg pushes NO empty-log churn commit
+  let (de, baree) ← repoWithRemote
+  o := o ++ [match ← runTl (syncRemote de) with
+    | .ok r => check "an empty repo against a fresh remote pushes nothing (no churn)"
+        (r.ran && !r.pushed && !r.pulled) (toString (repr r))
+    | .error e => { name := "empty repo no churn", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (refTip { base := baree, tlRel := ".tl" }) with
+    | .ok none => { name := "the fresh remote still has no refs/tl/log", passed := true }
+    | .ok (some t) => { name := "fresh remote unchanged", passed := false, msg := s!"unexpected ref {t}" }
+    | .error e => { name := "fresh remote unchanged", passed := false, msg := e.message }]
+  return o
+
 def syncTests : IO (List Outcome) := do
-  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests) ++ (← syncRefreshTests)
+  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests)
+    ++ (← syncRefreshTests) ++ (← syncRemoteTests)
 
 end Tl.Tests

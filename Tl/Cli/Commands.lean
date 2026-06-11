@@ -16,6 +16,7 @@ import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
 import Tl.Sync.Local
+import Tl.Sync.Remote
 
 namespace Tl.Cli
 
@@ -644,24 +645,48 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
 def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
   let own ← loadReplica d
-  let o ← Tl.Sync.syncLocal d (own.map (·.id))
+  let ownId := own.map (·.id)
+  -- local-first leg: publish own + absorb same-machine siblings (ADR-0016 §1)
+  let l ← Tl.Sync.syncLocal d ownId
+  -- remote leg (only in a git repo): fetch → union → push (ADR-0001 §5)
+  let r ← if l.ran then Tl.Sync.syncRemote d
+          else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
+  -- after a remote leg that ran, materialize anything it added to the local ref
+  -- onto disk (a second local leg — its publish is a no-op, its absorb is the
+  -- work; run on `ran` not `pulled`, since a retry can under-report `pulled`
+  -- while still having advanced the ref)
+  if r.ran then
+    let _ ← Tl.Sync.syncLocal d ownId
   let localLeg : Json :=
-    if o.ran then
+    if l.ran then
       Json.mkObj
-        [("ran", Json.bool true),
-         ("published", Json.bool o.published),
-         ("absorbed", Json.arr (o.absorbed.map Json.str).toArray),
-         ("tip", o.tip.elim Json.null Json.str)]
+        [("ran", Json.bool true), ("published", Json.bool l.published),
+         ("absorbed", Json.arr (l.absorbed.map Json.str).toArray),
+         ("tip", l.tip.elim Json.null Json.str)]
     else Json.mkObj [("ran", Json.bool false)]
-  let data := Json.mkObj [("local", localLeg), ("remote", Json.null)]
+  let remoteLeg : Json :=
+    if !l.ran then Json.null  -- no git repo ⇒ no transport at all
+    else if r.ran then
+      Json.mkObj
+        [("ran", Json.bool true), ("remote", Json.str r.remote),
+         ("pushed", Json.bool r.pushed), ("pulled", Json.bool r.pulled),
+         ("tip", r.tip.elim Json.null Json.str)]
+    else Json.mkObj [("ran", Json.bool false), ("reason", Json.str "no-upstream")]
+  let data := Json.mkObj [("local", localLeg), ("remote", remoteLeg)]
   let human :=
-    if !o.ran then
-      "not a git repository — tl shares through refs/tl/log; run inside a git repo (the remote leg is not yet implemented)"
+    if !l.ran then
+      "not a git repository — tl shares through refs/tl/log; run inside a git repo"
     else
-      let pub := if o.published then "published your changes" else "already up to date"
-      let absorbed := if o.absorbed.isEmpty then ""
-                      else s!"; absorbed {o.absorbed.length} sibling segment(s)"
-      s!"Synced (local): {pub}{absorbed}"
+      let localPart :=
+        (if l.published then "published your changes" else "already up to date")
+        ++ (if l.absorbed.isEmpty then "" else s!"; absorbed {l.absorbed.length} sibling(s)")
+      let remotePart :=
+        if !r.ran then "; no remote configured (no-upstream) — shared locally only"
+        else
+          let pushed := if r.pushed then "pushed" else "nothing to push"
+          let pulled := if r.pulled then ", pulled remote changes" else ""
+          s!"; remote '{r.remote}': {pushed}{pulled}"
+      s!"Synced: {localPart}{remotePart}"
   return { data, human }
 
 /-- The committed discovery pointer (ADR-0011 §3): the one line an agent file

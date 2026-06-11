@@ -48,6 +48,7 @@ import Tl.Store.Lock
 import Tl.Sync.Merge
 import Tl.Sync.Ref
 import Tl.Sync.Local
+import Tl.Sync.Remote
 import Tl.Cli.Envelope
 import Tl.Cli.Init
 import Tl.Cli.Project

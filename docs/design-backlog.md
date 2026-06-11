@@ -93,19 +93,10 @@ Kernel theorems still to decide whether to commit to:
 
 ## Sync, discovery & local concurrency
 
-- HLC observe-remote skew-window constant [low] — ADR-0007's parse-validity
-  bound on incoming HLCs names "a fixed skew window" with no concrete value;
-  it first fires when foreign segments are validated (Stage-3 sync, ADR-0014
-  T2). Pin the constant (and where doctor reports a near-bound clock) when
-  sync is built (ADR-0007/0008).
 - Auto-sync process model [med] — the debounce / async process model /
   failure surface is unpinned (the local/remote leg split + worktree default-on
   are settled in ADR-0016); pin it (ADR-0001) so overview's "tested auto-sync
   error handling" has a target.
-- Push-remote resolution: the detached-HEAD case [low] — the detached-HEAD /
-  no-branch case (no branch upstream to read) is undefined; define that it falls
-  through to `tl.remote`/`origin` and otherwise `no-upstream`. (ADR-0001 §5 pins the
-  branch-upstream → `origin` → `tl.remote` path.)
 - Discovery: bare repos, `.git`-file worktrees, `GIT_DIR`/`GIT_WORK_TREE` [low]
   — discovery for bare repos, `.git`-file worktrees, and
   `GIT_DIR`/`GIT_WORK_TREE` is undefined; delegate to `git rev-parse
