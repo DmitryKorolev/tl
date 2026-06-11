@@ -7,13 +7,16 @@ can I work on right now, and is the dependency graph sane?"* — and proves
 that answer correct. It is deliberately small: the commands that drive an
 agent's work loop, and nothing else.
 
-> Status: Stage 0 is built — the verified kernel (the CRDT join laws and the
-> `ready`/cycles/rollup theorems) plus the first shell pieces (HLC + replica
-> id, Crockford base32, the JSONL record envelope, a minimal `tl init`).
-> Stage 1 — the MVP work loop (record↔Op codec → store → clock/id wiring →
-> CLI verbs) — is next; see [docs/vision.md](docs/vision.md) §Staged
-> implementation. Commands and install instructions below describe the full
-> intended tool and are marked *planned*.
+> Status: Stages 0 and 1 are built — the verified kernel (the CRDT join laws
+> and the `ready`/cycles/rollup theorems) and the MVP work loop: the
+> record↔Op codec, the store (discovery, segments, the locked write path),
+> clock/id wiring, and the stage-1 CLI verbs (`init`, `create`, `ready`,
+> `claim`, `close`, `update`, `dep add/remove`, `why`, `dep cycles`, `show`,
+> `list`, `doctor`, `version`) with `--json` everywhere. Stage 2 (ergonomics)
+> and Stage 3 (import + the `refs/tl/log` sync transport) are next; see
+> [docs/vision.md](docs/vision.md) §Staged implementation. Install
+> instructions below describe the full intended tool and are marked
+> *planned*; build from source with `lake build` meanwhile.
 
 ## Why
 

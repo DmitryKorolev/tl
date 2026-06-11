@@ -12,6 +12,7 @@ import Tests.CodecTests
 import Tests.SysTests
 import Tests.StoreTests
 import Tests.CliTests
+import Tests.CrossTests
 
 open Tl.Tests
 
@@ -32,5 +33,6 @@ def main : IO UInt32 := do
     ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests),
     ("Native shim (ADR-0019): no-follow, sync, locks, entropy", sys),
     ("Store: discovery, transact, adversity, locking", store),
-    ("CLI contract: verbs, guards, envelope, exit codes", cli)
+    ("CLI contract: verbs, guards, envelope, exit codes", cli),
+    ("Cross-checks: encoding order, compiled kernel vs spec", crossTests)
   ]
