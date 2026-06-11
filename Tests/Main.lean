@@ -11,12 +11,14 @@ import Tests.TimeTests
 import Tests.CodecTests
 import Tests.SysTests
 import Tests.StoreTests
+import Tests.CliTests
 
 open Tl.Tests
 
 def main : IO UInt32 := do
   let sys ← sysTests
   let store ← storeTests
+  let cli ← cliTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
@@ -29,5 +31,6 @@ def main : IO UInt32 := do
     ("ISO-8601 UTC instant codec", timeTests),
     ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests),
     ("Native shim (ADR-0019): no-follow, sync, locks, entropy", sys),
-    ("Store: discovery, transact, adversity, locking", store)
+    ("Store: discovery, transact, adversity, locking", store),
+    ("CLI contract: verbs, guards, envelope, exit codes", cli)
   ]
