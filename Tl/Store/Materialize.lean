@@ -23,10 +23,12 @@ code path.
 import Tl.Store.Segment
 import Tl.Format.Codec
 import Tl.Kernel.Apply
+import Tl.Clock.Skew
 
 namespace Tl.Store
 
 open Tl.Format
+open Tl.Clock.Skew (admittedB)
 
 /-- The clock-skew window (ADR-0007 amendment): a FOREIGN op whose HLC physical
     time is more than this far beyond local wall-clock is *deferred* — held back
@@ -129,8 +131,10 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
     | .ok p =>
       -- a FOREIGN op from beyond the skew window is deferred (ADR-0007): held
       -- back from the fold AND from maxHlc until local time passes it, so it
-      -- can neither win LWW from the future nor inflate the clock reseed
-      if skewBound.any (fun b => p.stamp.hlc / 2 ^ 16 > b) then
+      -- can neither win LWW from the future nor inflate the clock reseed. The
+      -- branch is `¬ admittedB` — the exact predicate `Tl.Clock.Skew` proves
+      -- monotone-in-now (deferral is eventual) and convergence-safe.
+      if skewBound.any (fun b => !admittedB p.stamp.hlc b) then
         deferred := n :: deferred
         maxDeferred := max maxDeferred p.stamp.hlc
       else

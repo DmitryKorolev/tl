@@ -242,16 +242,18 @@ bound is pinned to its built form:
   propagating the inflation onward**. Refines this ADR's earlier "reseed above
   the all-segments max" to "above the within-window max."
 
-- **Reserved theorem (convergence-safety).** That deferral is *eventual* — never
-  permanent divergence — is the load-bearing safety claim, and it is provable,
-  not just tested: admission `withinSkew(hlc, now) := hlc/2^16 ≤ now + W` is
-  monotone in `now`, so the admitted op-set only grows as clocks advance; for
-  `now ≥ maxPhysical(ops)` the filter is the identity, and the existing kernel
-  theorem `fold_eq_of_mem_iff` (equal op *sets* → equal state) then gives
-  convergence. Crucially this holds for **any** `W` and **regardless of clock
-  accuracy** — a wrong clock changes *when* an op appears, never the eventual
-  state. To be discharged as a Lean theorem (tracked); until then it is an
-  explicit reserved obligation, not a `sorry`/`axiom`.
+- **Convergence-safety theorem (proved).** That deferral is *eventual* — never
+  permanent divergence — is the load-bearing safety claim, and it is **proved**
+  in `Tl/Clock/Skew.lean` + `Tl/Clock/SkewConverge.lean` (`#print axioms`-clean),
+  about the *exact* predicate the fold branches on (`admittedB`): admission is
+  monotone in `now` (`admitted_mono_now`), so the admitted op-set only grows as
+  clocks advance; for `now ≥` an op's physical time the filter is the identity
+  (`filter_admittedB_eq_self`), and composing with the kernel's set-insensitive
+  fold (`fold_eq_of_mem_iff`) gives convergence (`skew_converges`). Each result
+  holds for **any** `W` and **regardless of clock accuracy** — a wrong clock
+  changes *when* an op appears, never the eventual state — which is why the
+  window value (and the carried system-clock assumption) bear only on timeliness,
+  not safety.
 
 ### Replica identity
 

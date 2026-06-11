@@ -149,6 +149,14 @@ Tl/Clock/               -- I/O shell: ordering/identity (tested)
                         --   64-bit range); minting + persistence live in
                         --   Tl/Store/Local and draw from the shim's OS CSPRNG
                         --   (ADR-0019)
+  Skew.lean             --   PROVED: the HLC skew-window admission predicate
+                        --   (admittedB, the exact one the fold branches on) +
+                        --   its monotonicity (admitted_mono_now ⇒ deferral is
+                        --   eventual) and filter-identity-past-threshold; pure,
+                        --   kernel-free (ADR-0007 amendment)
+  SkewConverge.lean     --   PROVED: skew_converges — composes Skew's filter-
+                        --   identity with the kernel fold (fold_eq_of_mem_iff)
+                        --   ⇒ replicas converge regardless of clock skew
 
 Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
   Ref.lean              --   read/write refs/tl/log via git plumbing (built): the
