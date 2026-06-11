@@ -28,6 +28,7 @@ import Tl.Kernel.Ranking
 
 -- Tested I/O shell
 import Tl.Error
+import Tl.Hash.Sha256
 import Tl.Clock.Hlc
 import Tl.Clock.Replica
 import Tl.Format.Crockford
