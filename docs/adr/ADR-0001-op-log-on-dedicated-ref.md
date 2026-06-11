@@ -52,6 +52,18 @@ task state is thus fully decoupled from code commits, and is branch-independent
 (switching or merging code branches does not change task state — the behavior a
 tracker wants).
 
+In-ref encoding (decided, built in `Tl/Sync/Ref`): the ref commit's tree
+holds one blob per replica named `<replica-id>.jsonl` at the root — the tree
+*is* the `.tl/log/` contents, no prefix. Commits are **parent-chained** (each
+push's commit parents the prior tip), so a non-fast-forward push is
+detectable (§5) and the ref carries history. The author/committer is a
+**fixed neutral `tl <tl@localhost>`** set via `GIT_*` env, never the user's
+git identity: the acting actor already rides each op's envelope as provenance
+(ADR-0013), so the ref's commit metadata needs none and leaks none. The
+message is a fixed `tl log`. `update-ref` is compare-and-set against the tip
+the merge was based on, so a concurrent writer is never clobbered (§5's
+push-rejection retry builds on this).
+
 ### 3. The `.tl/` layout (entirely gitignored)
 
 ```

@@ -145,11 +145,16 @@ Tl/Clock/               -- I/O shell: ordering/identity (tested)
                         --   Tl/Store/Local and draw from the shim's OS CSPRNG
                         --   (ADR-0019)
 
-Tl/Sync/                -- I/O shell: refs/tl/log transport (planned — Stage 3)
-  Ref.lean              --   read/write refs/tl/log via git plumbing (no branch/index)
-  Merge.lean            --   per-segment complete-line set union (the CRDT join)
+Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
+  Ref.lean              --   read/write refs/tl/log via git plumbing (built): the
+                        --   tree is root-level <replica-id>.jsonl blobs, commits
+                        --   parent-chained, fixed neutral tl identity, CAS
+                        --   update-ref (ADR-0001 §2 in-ref encoding)
+  Merge.lean            --   per-segment complete-line set union, canonical
+                        --   (sorted/deduped) — the CRDT join (built, ADR-0001 §5)
   Sync.lean             --   fetch / merge / push; push-rejection retry; no-upstream;
-                        --   auto-sync; doctor's ref/segment health checks
+                        --   the local worktree leg; auto-sync (planned — atop
+                        --   Ref + Merge)
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean

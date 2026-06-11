@@ -15,6 +15,7 @@ import Tests.CliTests
 import Tests.CrossTests
 import Tests.SanitizeTests
 import Tests.GrammarTests
+import Tests.SyncTests
 
 open Tl.Tests
 
@@ -23,6 +24,7 @@ def main : IO UInt32 := do
   let store ← storeTests
   let cli ← cliTests
   let grammar ← grammarTests
+  let sync ← syncTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
@@ -39,5 +41,6 @@ def main : IO UInt32 := do
     ("CLI contract: verbs, guards, envelope, exit codes", cli),
     ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
     ("Render sanitization (ADR-0014)", sanitizeTests),
-    ("Grammar: tl help --json schema & parser agreement", grammar)
+    ("Grammar: tl help --json schema & parser agreement", grammar),
+    ("Sync core: line-union + refs/tl/log read/write", sync)
   ]

@@ -93,13 +93,6 @@ Kernel theorems still to decide whether to commit to:
 
 ## Sync, discovery & local concurrency
 
-- The in-ref encoding of `refs/tl/log` is undesigned [med] — ADR-0001 names
-  the plumbing (`hash-object`/`mktree`/`commit-tree`/`update-ref`) but nothing
-  pins the tree layout (one blob per segment — at the root, or under a
-  prefix?), whether ref commits chain a parent or are parentless rewrites, or
-  what committer identity/message ref commits carry (a privacy-adjacent choice
-  ADR-0013 does not cover). Needed when Stage-3 sync — or a pulled-forward
-  local-first leg (ADR-0016) — is built (ADR-0001/0013/0016).
 - HLC observe-remote skew-window constant [low] — ADR-0007's parse-validity
   bound on incoming HLCs names "a fixed skew window" with no concrete value;
   it first fires when foreign segments are validated (Stage-3 sync, ADR-0014

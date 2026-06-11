@@ -43,6 +43,8 @@ import Tl.Store.Local
 import Tl.Store.Segment
 import Tl.Store.Materialize
 import Tl.Store.Lock
+import Tl.Sync.Merge
+import Tl.Sync.Ref
 import Tl.Cli.Envelope
 import Tl.Cli.Init
 import Tl.Cli.Project
