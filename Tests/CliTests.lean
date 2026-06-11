@@ -923,6 +923,23 @@ def cliDoctorSkewTests : IO (List Outcome) := do
         (out.notes.any (fun n => (n.splitOn "held back").length > 1))
         (String.intercalate "|" out.notes)
     | .error e => { name := "write discloses deferred", passed := false, msg := e.message })]
+  -- a clock notably ahead but WITHIN the 24h window: its op FOLDS (count 1, not
+  -- deferred) yet doctor still WARNS — the warn threshold is decoupled from the
+  -- deferral window, so a 9h-style TZ misconfig is flagged (not silent)
+  let dir2 ← freshDir
+  let ahead := ((← nowMs) + 2 * skewWarnMs) * 2 ^ 16  -- ~2h ahead: > warn, < window
+  IO.FS.createDirAll (System.FilePath.mk dir2 / "log")
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "bbbbccccddddeeee" { title := some "ahead but folded" })
+       ahead "2zzzzzzzzzzzz" "eve" ++ "\n")
+  o := o ++ [← expectData "a folded-but-notably-ahead clock still warns (not deferred)"
+    ["doctor", "--json", "--dir", dir2]
+    (fun j => (jArr j "checks").any (fun c =>
+      jStr c "name" == some "clockSkew" && jStr c "status" == some "warn"
+        && (jNat c "deferredOps").getD 1 == 0
+        && (jNat c "clockLeadMs").getD 0 > skewWarnMs))]
+  o := o ++ [← expectData "the notably-ahead op folds (it is not hidden)"
+    ["list", "--dir", dir2, "--json"] (fun j => jNat j "count" == some 1)]
   return o
 
 def cliTests : IO (List Outcome) := do

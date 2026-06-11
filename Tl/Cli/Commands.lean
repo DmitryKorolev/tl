@@ -613,15 +613,17 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
         [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)
   -- clock skew (ADR-0007): foreign ops dated beyond the window are deferred
   -- (held back) until wall-clock catches up — never fatal (convergent and
-  -- self-healing), but a sign a peer's clock is ahead. The lead is over BOTH
-  -- accepted and deferred ops (a deferred op is absent from maxHlc, so reading
-  -- maxHlc alone would understate a far-ahead peer). Also warn near the bound.
+  -- self-healing). The lead is over BOTH accepted and deferred ops (a deferred
+  -- op is absent from maxHlc, so reading maxHlc alone would understate a
+  -- far-ahead peer). Warn when an op is deferred OR a clock leads `now` by more
+  -- than the (much smaller) warn threshold — so a notably-ahead-but-folded
+  -- clock (e.g. a 9h TZ misconfig, within the 24h window) is still flagged.
   let leadMs := (max loaded.maxHlc loaded.maxDeferredHlc) / 2 ^ 16 - now  -- Nat sub: 0 if behind now
-  let nearBound := leadMs > skewWindowMs * 9 / 10
+  let notablyAhead := leadMs > skewWarnMs
   let skewSegs := (loaded.deferred.map (·.1)).eraseDups
   let skewRow := (Json.mkObj <|
     [("name", Json.str "clockSkew"),
-     ("status", Json.str (if !loaded.deferred.isEmpty || nearBound then "warn" else "ok")),
+     ("status", Json.str (if !loaded.deferred.isEmpty || notablyAhead then "warn" else "ok")),
      ("deferredOps", jnum loaded.deferred.length),
      ("clockLeadMs", jnum leadMs)]
     ++ (if skewSegs.isEmpty then [] else

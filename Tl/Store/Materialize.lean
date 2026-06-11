@@ -43,6 +43,17 @@ open Tl.Clock.Skew (admittedB)
     is monotone in `now` → eventual); it tunes only timeliness vs LWW exposure. -/
 def skewWindowMs : Nat := 24 * 3600 * 1000
 
+/-- The `doctor` *warn* threshold — distinct from, and much smaller than, the
+    deferral window. Deferral (hiding an op) is deliberately generous (24h, so
+    an honest TZ-misconfigured peer is never hidden), but *warning* should be
+    sensitive: a clock more than ~1h ahead is a real misconfiguration worth
+    surfacing for repair even though its ops still fold (it wins LWW unfairly
+    until wall-clock catches up). So `doctor` flags any clock leading `now` by
+    more than this regardless of whether the op was deferred — which is why a 9h
+    misconfig is reported even though it is within the 24h window. No
+    legitimate (NTP-grade) clock leads by an hour, so this does not flag drift. -/
+def skewWarnMs : Nat := 3600 * 1000
+
 /-- A refused segment: the first bad line (1-based) and its structured error
     (already carrying the ADR-0020 `segment`/`line` context). -/
 structure Refusal where
