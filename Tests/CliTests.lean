@@ -196,6 +196,16 @@ def cliCloseGuardTests : IO (List Outcome) := do
        ["close", "tl-" ++ dupe, "--dir", dir, "--as", "duplicate", "--of", "tl-" ++ canonical,
         "--assignee", "t"]
        (fun j => jStr j "closeResolution" == some "duplicate"),
+     -- deliberately allowed (the pinned `close --as duplicate [--of <id>]`
+     -- surface): a targetless duplicate closes as cancelled/duplicate and
+     -- records NO duplicate-of meta — not an oversight
+     ← (do
+       let loner ← mkIssue dir "Targetless dupe"
+       expectData "targetless --as duplicate is allowed (pinned contract)"
+         ["close", "tl-" ++ loner, "--dir", dir, "--as", "duplicate", "--assignee", "t"]
+         (fun j => jStr j "status" == some "cancelled"
+           && jStr j "closeResolution" == some "duplicate"
+           && ((jGet j "meta").bind (fun m => jStr m "duplicate-of")).isNone)),
      ← expectData "child close completes the epic by rollup"
        (["close", "tl-" ++ child, "--dir", dir, "--as", "done", "--assignee", "t"])
        (fun j => jStr j "status" == some "done")]
