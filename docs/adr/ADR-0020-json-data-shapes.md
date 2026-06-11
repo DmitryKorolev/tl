@@ -216,9 +216,15 @@ pipeline that produces it exists — deferred, not dropped.)
 
 **Error context fields** (extending ADR-0008's pinned codes with their named
 context, same additive-only discipline): `not-claimable` → `id`, `reasons`
-(above); `ambiguous-id` → `input`, `candidates: [ids]`; `not-found` → `input`;
+(above); `not-closeable` → `id`, `reasons` (omit-empty: `isEpic: true` with
+`openChildren: [ids]` for the epic-`done` refusal; `selfDuplicate: true` for a
+`--of` naming its own issue — ADR-0008 §write-time guards); `unsafe-path` →
+`path`, `reason` (`"symlink"` | `"ownership"` — ADR-0015 §6);
+`ambiguous-id` → `input`, `candidates: [ids]`; `not-found` → `input`;
 `malformed-line` / `unknown-version` → `segment`, `line` (when known);
-`lock-busy` → `path`, `timeoutMs`. Every `message` teaches the fix (ADR-0008).
+`lock-busy` → `path`, `timeoutMs`; `corrupt-clock` → `reason`
+(`"unreadable"` | `"saturated"` — the two need different fixes, ADR-0007).
+Every `message` teaches the fix (ADR-0008).
 
 ## Consequences
 

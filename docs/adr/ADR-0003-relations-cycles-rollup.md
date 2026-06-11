@@ -87,7 +87,8 @@ done-ness is not a stored value you guard:
 
 For a non-epic, `effectiveStatus = status`. You cannot manually mark an epic
 done (the CLI refuses `close <epic> --as done` as a local courtesy guard —
-merges can't enforce it, like the cycle check; `--as cancelled` is allowed); it
+the `not-closeable` error, ADR-0008 — merges can't enforce it, like the cycle
+check; `--as cancelled` is allowed); it
 becomes done when its last child closes and reverts if a child
 reopens — so "epic closed only if all tasks closed" holds by construction and
 converges for free. A manual cancel takes precedence (an explicit "abandon

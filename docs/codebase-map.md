@@ -58,11 +58,20 @@ Tl/Kernel/              -- the verified core (NO I/O)
 Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
   Crockford.lean        --   Crockford base32 codec (ids, replica, nonce; ADR-0007)
   Record.lean           --   JSONL record envelope: parse/render, preserve-unknown,
-                        --   canonical key order (built); the record↔Op codec —
-                        --   whose parsed model carries the wire verb, Stamp,
-                        --   actor, and unknown bag ALONGSIDE the kernel Op (a
-                        --   bare Op cannot round-trip) — lands with Stage 1
-  Version.lean          --   format version policy; snapshot record (planned — Stage 1)
+                        --   canonical key order + pinned string escaping
+                        --   (ADR-0008 §canonical form) (built); the record↔Op
+                        --   codec — whose parsed model carries the wire verb,
+                        --   Stamp, actor, and unknown bag ALONGSIDE the kernel
+                        --   Op (a bare Op cannot round-trip) — lands with
+                        --   Stage 1 and covers the FULL v1 verb enum, not just
+                        --   the verbs the stage-1 CLI emits (an unknown-op
+                        --   refusal must mean a foreign kind, not an unbuilt
+                        --   stage-2 verb)
+  Version.lean          --   format version policy — v fail-closed on newer
+                        --   (planned — Stage 1); the snapshot record stays
+                        --   RESERVED: it ships with compaction behind a v bump
+                        --   (ADR-0008), so a v1 reader refuses it as
+                        --   unknown-version — no stage-1 snapshot code
 
 Tl/Hash/                -- pure hashing for identity minting (planned — Stage 1)
   Sha256.lean           --   FIPS 180-4 transcription returning the FULL 32-byte
@@ -87,7 +96,9 @@ Tl/Store/               -- I/O shell: local persistence (planned — Stage 1)
 
 Tl/Clock/               -- I/O shell: ordering/identity (tested)
   Hlc.lean              --   hybrid logical clock: pure update rules + hex codec
-                        --   (built; file persistence wiring lands with the Store)
+                        --   (built; file persistence wiring lands with the Store,
+                        --   incl. the absent-clock reseed from the all-segments
+                        --   max and corrupt-clock fail-closed — ADR-0007 §HLC)
   Replica.lean          --   replica-id mint + validation (built; ditto persistence;
                         --   known defect: mint uses non-CSPRNG IO.rand until the
                         --   ADR-0019 entropy lands)

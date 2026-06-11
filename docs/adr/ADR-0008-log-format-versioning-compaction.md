@@ -61,7 +61,21 @@ an old one, both valid v1 readers — so the same record would canonicalize
 differently across readers; the single order keeps rewrites byte-stable across
 versions.) No insignificant whitespace; an explicit
 clear is JSON `null` (distinct from an absent key, ADR-0002); `hlc` / `id` /
-add-tags in their pinned encodings (ADR-0007). The round-trip law is therefore
+add-tags in their pinned encodings (ADR-0007).
+
+String escaping is pinned, not toolchain-defined — "byte-stable across
+versions" cannot rest on a serializer's unstated choices. Within a canonical
+JSON string: `"` renders as `\"`, `\` as `\\`, U+000A as `\n`, U+000D as `\r`,
+and every other code point below U+0020 as `\u00xx` — four hex digits,
+lowercase (tab is `\u0009`, *not* `\t`). Every other code point — U+007F and
+all non-ASCII included — is raw UTF-8, never `\uXXXX`-escaped; `/` is never
+escaped. (This matches the pinned Lean toolchain's `Json.compress` today, but
+the spec here is normative: the round-trip corpus carries an escape vector per
+class above, so a toolchain change surfaces as a test failure to fix in `tl`'s
+renderer — never a silent move of the canonical bytes.) The *parser* accepts
+all standard JSON escapes; canonicality constrains only `render`.
+
+The round-trip law is therefore
 stated over the model, not raw text: `parse (render m) = m` for any model
 value `m`, and `render (parse l) = l` for an already-canonical line `l`.
 Minted values (`id`, `hlc`, `replica`, `nonce`) are read as data, never
@@ -141,6 +155,50 @@ Stability rules follow from the verb/delta split:
 
   "Exactly one mutation path" (ADR-0004) is about the single kernel reducer,
   not one-record-per-command.
+
+#### Write-time guards, re-close, and `duplicate-of`
+
+Derive-or-report (ADR-0003) bounds what a write may refuse; this pins the
+**complete** stage-1 guard inventory, so no further guard creeps in silently
+(adding one is an ADR amendment, not a local choice):
+
+- `claim` refuses a target not in `ready s now` — `not-claimable`
+  (ADR-0003/0020).
+- `close --as done` on an epic is refused — `not-closeable` (ADR-0003 §3:
+  done-ness rolls up; `--as cancelled` is allowed).
+- `close <id> --as duplicate --of <id>` — a self-duplicate — is refused —
+  `not-closeable`.
+- Nothing else *refuses*. Every other lifecycle write is a plain LWW write:
+  a merge can produce any of those states anyway, so a local guard would only
+  misrepresent the model. (The corpus's courtesy *warnings* — the ADR-0003 §2
+  own-`dep add`-closes-a-cycle warn, the §3 epic-transition surfacing — are
+  not guards: they never refuse, so they are outside this inventory.)
+
+Re-closing a closed issue is an **idempotent no-op**: with the same resolution
+(and, for `duplicate`, the same canonical target) the command succeeds
+(`ok: true`, exit `0`), echoes the issue, and appends **no** record — the
+requested state already holds, and a duplicate write would only add log noise
+and disturb the `closedAt`/`updatedAt` projections. With a *different*
+resolution (or duplicate target) it is a normal resolution change: the
+record(s) append as plain LWW writes (the epic-`done` refusal above still
+applies).
+
+The `duplicate-of` meta value (written by the `close --as duplicate --of`
+composite above) is pinned: `--of` resolves exactly like any id argument —
+full id, unambiguous prefix, or slug, per ADR-0007's resolution — erroring
+`not-found` / `ambiguous-id` as usual, and the **resolved canonical bare id**
+(16 chars, no `tl-`) is what is stored. On output the `--json` `meta`
+projection renders a *well-formed* `duplicate-of` value in `tl-` display form
+— ADR-0020's ids-render-display-form convention, without which an agent that
+reads the bare value and passes it back positionally would have it resolve as
+a *slug* (ADR-0007's grammar) — while a malformed value (a foreign writer's
+garbage) renders as stored. At read time a `duplicate-of` whose
+target is missing, is itself a duplicate (a chain), or names its own issue (a
+self-reference some foreign writer appended — the local guard cannot bind
+others) is tolerated in state, never repaired or flattened: these are the
+value-level analogue of ADR-0003 §5's read-time tolerance (whose edge-inert
+rule does not itself cover `meta` values), and they surface as `doctor`
+graph-hygiene findings (additive checks, ADR-0020) rather than errors.
 
 ### Versioning and evolution
 
@@ -249,7 +307,11 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   `usage`, `internal`, `no-project`, `not-found`, `ambiguous-id`, `force-required`,
   `malformed-line`, `unknown-version`, `corrupt-clock`, `corrupt-replica`,
   `push-rejected`, `no-upstream`, `stealth-mode`, `lock-busy`,
-  `not-claimable` (extend as new conditions arise). The enum
+  `not-claimable`, `not-closeable` (the close refusals — epic-`done`,
+  self-duplicate — see *Write-time guards* above), `unsafe-path` (the
+  ADR-0015 §6 path-hardening refusals: a symlinked `.tl` component, an
+  ownership mismatch, or a `--dir`/`TL_DIR` target failing the same
+  validation; ADR-0014 T4) (extend as new conditions arise). The enum
   obeys the same additive-only
   rule: codes may be *added* within a `schemaVersion`, never renamed or
   removed, so a consumer matching a known code is never broken. Each code
@@ -258,7 +320,8 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   `0` success, `1` internal, `2` usage, then `3` no-project, `4` not-found,
   `5` ambiguous-id, `6` force-required, `7` malformed-line, `8` unknown-version,
   `9` corrupt-clock / corrupt-replica, `10` push-rejected, `11` no-upstream,
-  `12` stealth-mode, `13` lock-busy, `14` not-claimable. `internal` is the
+  `12` stealth-mode, `13` lock-busy, `14` not-claimable, `15` not-closeable,
+  `16` unsafe-path. `internal` is the
   catch-all for an otherwise-unclassified failure; known conditions must use
   their stable code instead of collapsing to `internal`.
 - Streams and usage failures are part of the contract. With `--json`, the

@@ -172,7 +172,7 @@ ADR-0008).
 |---|---|
 | Serialization round-trip | `parse (render m) = m` over the typed-`Op`+`unknown` model (canonical render); `render (parse l) = l` on canonical lines; preserve-unknown (0008). **Covered today for the envelope `Record` model** (`Tests/RecordTests.lean`); the record↔Op codec layer and its round-trip corpus land with Stage 1 |
 | beads import fidelity | differential test vs `.beads` fixtures (0005) |
-| HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases (0007); real durable monotonic persistence remains Trusted below |
+| HLC clock implementation | clock-file parse/render, local-event and observe-remote update rules, backward-clock and overflow cases, and the recovery branches — absent-clock reseed from `max(max HLC over all local segments, now())`, corrupt-clock fail-closed (0007); real durable monotonic persistence remains Trusted below |
 | SHA-256 / id mint | NIST CAVP short-message vectors + padding-boundary lengths (0/1/55/56/63/64/65 bytes, multi-block) + one worked end-to-end `(replica, hlc, nonce)` → digest → leftmost-80-bits → 16-char-id vector (0018); import-path vectors ride the differential fixtures (0005) |
 | native shim (fsync, no-follow open, fd lock, entropy) | per-branch tests: symlink refusal at final and intermediate components, `O_EXCL` collision, append+sync round-trips, lock contention, hostile fixtures at the Store layer (0019/0015) |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. **Test pending** — the encodings (`Hlc.toHex`, `toCrockford`) are built, but the sampled string-compare-vs-`Stamp`-order cross-check is not yet in the runner (0007/0008) |
@@ -195,7 +195,7 @@ assumes);
 the deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
-SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness, which is what lets a well-formed `unrelate` tombstone only its own `related` edge and so discharges the `edgeRemove` frame boundary (`ready_edgeRemove_of_undisturbed`) for a related removal; HLC monotonic persistence;
+SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness, which is what lets a well-formed `unrelate` tombstone only its own `related` edge and so discharges the `edgeRemove` frame boundary (`ready_edgeRemove_of_undisturbed`) for a related removal; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007);
 git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,

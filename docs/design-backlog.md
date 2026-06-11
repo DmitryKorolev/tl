@@ -7,10 +7,13 @@ Decisions already made are recorded in their ADRs (and git history); this lists
 only what is still open.
 
 Status: Stage 0 (kernel + the first shell pieces) is built; Stage 1 (the MVP
-work loop) is next. Items Stage 1 touches — `duplicate-of` semantics (via
-`close --as duplicate`) — graduate into stage-1 decisions per the rule above
-(the stage-1 `--json` shapes incl. doctor's check inventory, and the 0.x
-stability horizon, already landed in ADR-0020 / ADR-0008). Everything else
+work loop) is next. The items Stage 1 touched have graduated: `duplicate-of`
+semantics, the write-time guard inventory + idempotent re-close, the
+`not-closeable` / `unsafe-path` error codes, the canonical string-escaping
+spec (all ADR-0008, with ADR-0003/0015/0020 cross-refs), and clock-file
+recovery + the HLC-saturation code (ADR-0007) landed 2026-06-10, joining the
+stage-1 `--json` shapes and the 0.x stability horizon (ADR-0020 / ADR-0008).
+Everything else
 below remains stage-gated (decide when building that surface) or a
 forever-contract surface that freezes on first implementation; the
 *candidate-ADR* items are worth settling before/early.
@@ -30,11 +33,6 @@ forever-contract surface that freezes on first implementation; the
   absent (reopen is later than the last `claim`), a reopened issue is `open`, not
   `in_progress`, yet still shows an `assignee`. Decide whether `reopen` also clears
   `assignee` (vision/ADR-0008/0013).
-- `duplicate-of` can dangle, self-reference, or chain [low] — it is a free-form
-  meta value; store the canonical full id, refuse self-duplicate (a courtesy
-  guard), tolerate a missing target but surface it via `doctor` — note the
-  edge-inert dangling rule (ADR-0003 §5) does not cover it, since
-  `duplicate-of` is a `meta` value, not an edge (vision / ADR-0003).
 
 ## Proof obligations (theorems to settle)
 
@@ -54,11 +52,20 @@ Kernel theorems still to decide whether to commit to:
 
 ## CLI surface (before CLI freeze)
 
-- `--json` `data` shapes for `log` / `stats` and the later `dep` utilities
+- `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020),
+  but the input surface is not: flag spellings for the status / assignee /
+  priority / text facets, text-match semantics (substring vs word, case
+  folding, which fields), and the default status scope of a bare `tl list`
+  (all issues, or open-only with closed behind a flag?). 0.x-revisable, but a
+  week-one choice on a stage-1 verb — pin before/early in the `list` build
+  (vision / ADR-0020).
+- `--json` `data` shapes for `log` / `stats` / `help` and the later `dep`
+  utilities
   (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
   `dep cycles`, `why`) are now pinned in ADR-0020; the rest pin when built,
   following its conventions (`tl log` especially, whose `--since` cursor
-  depends on it).
+  depends on it; `tl help --json`'s command-schema dump shape is similarly
+  unpinned until built — ADR-0011).
 - A future `tl log --since <hlc>` cursor needs a version vector, not a scalar
   HLC [low] — `observe-remote` advances only the local clock, so a late-synced op
   from a lagging replica keeps an HLC *below* another replica's watermark; a scalar
@@ -86,6 +93,18 @@ Kernel theorems still to decide whether to commit to:
 
 ## Sync, discovery & local concurrency
 
+- The in-ref encoding of `refs/tl/log` is undesigned [med] — ADR-0001 names
+  the plumbing (`hash-object`/`mktree`/`commit-tree`/`update-ref`) but nothing
+  pins the tree layout (one blob per segment — at the root, or under a
+  prefix?), whether ref commits chain a parent or are parentless rewrites, or
+  what committer identity/message ref commits carry (a privacy-adjacent choice
+  ADR-0013 does not cover). Needed when Stage-3 sync — or a pulled-forward
+  local-first leg (ADR-0016) — is built (ADR-0001/0013/0016).
+- HLC observe-remote skew-window constant [low] — ADR-0007's parse-validity
+  bound on incoming HLCs names "a fixed skew window" with no concrete value;
+  it first fires when foreign segments are validated (Stage-3 sync, ADR-0014
+  T2). Pin the constant (and where doctor reports a near-bound clock) when
+  sync is built (ADR-0007/0008).
 - Auto-sync process model [med] — the debounce / async process model /
   failure surface is unpinned (the local/remote leg split + worktree default-on
   are settled in ADR-0016); pin it (ADR-0001) so overview's "tested auto-sync

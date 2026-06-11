@@ -47,7 +47,8 @@ Ship three things, smallest-surface-first.
   granularity: the offending segment is refused whole and loudly disclosed;
   a refused *foreign* segment is not a command error (the read succeeds and
   folds the rest), while the replica's *own* — or every — segment refused
-  fails the read (ADR-0008); a corrupt/unreadable `local/clock` or
+  fails the read (ADR-0008); a corrupt/unreadable — or range-exhausted
+  (saturated, ADR-0007) — `local/clock`, or a corrupt
   `local/replica`; `no-upstream`; and `not-claimable`. Each maps to a distinct
   stable `code` and exit code, not a generic failure — the boundary handles bad
   input totally rather than excusing it. Each error's `message` is

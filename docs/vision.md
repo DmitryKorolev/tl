@@ -163,7 +163,7 @@ Read / visibility
 | `tl label add <id> <label>` / `label remove <id> <label>` / `label list [<id>]` | manage categorical label tags (filter-only; drive nothing) |
 | `tl meta set <id> <key> <value>` / `meta get <id> [<key>]` / `meta clear <id> <key>` / `meta list [<id>]` | manage the opaque metadata side-channel — `ext:<system>` refs, imported fields (ADR-0002/0005); drives nothing |
 | `tl stats` | counts by state, #ready, #blocked, #cycles |
-| `tl doctor` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints; `refs/tl/log` sync status joins once sharing lands (ADR-0011/0001) |
+| `tl doctor` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints, `duplicate-of` hygiene (dangling/self/chained targets, ADR-0008); `refs/tl/log` sync status joins once sharing lands (ADR-0011/0001) |
 | `tl help [<cmd>]` / `tl <cmd> --help` | human help: top-level overview or per-command usage |
 | `tl help [<cmd>] --json` | the same grammar machine-readably, for agent introspection (ADR-0011) |
 | `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` also reports log/JSON schema versions, plus build provenance once the release pipeline exists (ADR-0006/0008/0020) |

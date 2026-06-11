@@ -131,10 +131,43 @@ CSPRNG, not a code path.
   invocation (each `tl` call is a fresh process; a reset would regress
   monotonicity). Wall-clock running backward → `logical` absorbs it (physical
   never decreases); `logical` overflow within one ms → bump `physical`.
+- Recovery: an **absent** `.tl/local/clock` with state present (a damaged
+  `local/`, the corrupt-clock removal below, or the byte-copied case of
+  ADR-0012, where the replica-id auto-mints too) must not reseed from `now()`
+  alone — a wall clock behind this working copy's past writes would mint HLCs
+  *below* ops already in its segments, regressing exactly the monotonicity
+  this file preserves. The clock reseeds to `max(maximum HLC over every
+  segment present in .tl/log/, now())`. All segments, not just the current
+  id's own: in the auto-mint case the working copy's past writes sit in the
+  *old* id's now-orphaned segment, which the freshly minted id does not own —
+  an own-segment-only scan would be vacuous exactly when the reseed matters —
+  and exceeding foreign HLCs is harmless (observe-remote does that on every
+  sync fold). With no segments at all (a fresh `init`, no prior state) it
+  seeds from `now()`. The scan is line-scoped like every reader (ADR-0015
+  §5): it takes the max over the well-formed lines and skips a torn tail or
+  malformed line — a damaged line's HLC is unrecoverable either way, and
+  `now()` still floors the seed. The whole branch — absent-check, scan,
+  seed — is the
+  absent arm of the *read+advance the HLC* step inside the ADR-0015 §1
+  mutation lock, never run before acquisition: racing first-writers must
+  serialize, or the later one would overwrite the earlier's already-advanced
+  clock with a stale seed. A
+  **corrupt/unreadable** clock file is never silently reseeded: it fails closed
+  with `corrupt-clock` (ADR-0008), whose message names the fix — remove
+  `.tl/local/clock` and rerun, routing recovery through the absent-file reseed
+  above. The manual step is deliberate: a silent reseed would mask whatever
+  damaged the file.
 - Range is fail-closed (no wrap). `physical` is bounded by 48 bits and the
   packed value by the 16-hex/64-bit field on which the LWW byte-order rests. A
   `logical`-overflow bump that would push `physical` past 2⁴⁸ saturates and
-  errors rather than wrapping; and on observe-remote, an incoming HLC whose
+  errors rather than wrapping — surfaced as `corrupt-clock` (ADR-0008: the
+  local clock can no longer mint a valid next HLC, the same
+  cannot-proceed-from-this-clock condition), but with `reason: "saturated"`
+  context (ADR-0020) and its *own* message: removing the clock file cannot
+  clear saturation — the reseed re-derives the same near-max value from the
+  segments — so the message names the range exhaustion (in practice a wildly
+  wrong system clock, or a near-max HLC a broken/hostile writer put in the
+  log) instead of suggesting deletion; and on observe-remote, an incoming HLC whose
   `physical` exceeds a sanity bound — `max(now(), last) +` a fixed skew window,
   capped at the 48-bit max — fails the parse-validity check, so that segment
   is refused at segment granularity (the fail-closed path of ADR-0008 §corruption
@@ -189,7 +222,9 @@ component.
   uniqueness and durable HLC monotonic persistence are recorded as carried
   assumptions (overview.md Trusted). The clock/ID implementation is still
   tested — clock-file parse/render, local/remote HLC update rules,
-  backward-clock handling, and overflow — but those tests do not prove the
+  backward-clock handling, overflow, and the recovery branches (absent-clock
+  reseed from the segments' max, corrupt-clock fail-closed) — but those tests
+  do not prove the
   real-world uniqueness/durability assumptions.
 - LWW behaves sanely under skew: causally-ordered edits resolve correctly and
   the log reads in roughly real-time order; only *genuinely concurrent* same-field
