@@ -559,6 +559,25 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
   return { data, human }
 
+/-- The committed discovery pointer (ADR-0011 §3): the one line an agent file
+    carries so any harness surfaces `tl` with zero config. -/
+def discoveryPointer : String :=
+  "task state lives in `tl` (a git-native tracker) — run `tl ready --json` for what to work on and `tl doctor` for health; load the tl skill or `tl help --json` for how to drive it."
+
+/-- The gitignored `.tl/README.md` primer (ADR-0011 §3) for anyone who opens
+    `.tl/` directly. -/
+def readmePrimer : String :=
+  "# tl — task tracker\n\n" ++
+  "This directory holds tl's task state for the project. It is gitignored and\n" ++
+  "managed by tl — do not edit it by hand. State is an append-only op log under\n" ++
+  "`log/`; every read is a fold over it.\n\n" ++
+  "  tl ready                 what to work on now (ranked, unblocked)\n" ++
+  "  tl claim <id>            take a ready item\n" ++
+  "  tl close <id> --as done  finish it\n" ++
+  "  tl why <id>              why something is blocked\n" ++
+  "  tl doctor                project health\n" ++
+  "  tl help                  all commands (tl help --json for the grammar)\n"
+
 def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   -- the override is --dir, else TL_DIR (ADR-0012: the same explicit-state
   -- mechanism, --dir wins) — so `TL_DIR=… tl init && tl create …` binds one
@@ -589,6 +608,22 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   let created ← initAt target
   let dirs := Dirs.ofStatePath target.toString
   let replica ← loadReplica dirs
+  -- write/refresh the gitignored primer (ADR-0011 §3), through the no-follow
+  -- shim like every other .tl write
+  writeLocalFile dirs (dirs.tlRel ++ "/README.md") readmePrimer
+  -- the committed discovery pointer: SUGGEST adding it to a root agent file;
+  -- never auto-edit the user's committed files (no-surprise ethos — ADR-0011
+  -- §3, decision: print, do not write; create no file when none exists)
+  let rootDir := target.parent.getD (System.FilePath.mk ".")
+  let mut existing : List String := []
+  for f in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] do
+    if ← liftSys (fun e => .mk' .internal s!"{e}") (rootDir / f).pathExists then
+      existing := existing ++ [f]
+  let pointerNote :=
+    if existing.isEmpty then
+      s!"to make tl discoverable to agents, add this line to a root agent file (e.g. AGENTS.md):\n    {discoveryPointer}"
+    else
+      s!"to make tl discoverable, add this line to {String.intercalate " / " existing} if not already present:\n    {discoveryPointer}"
   let data := Json.mkObj
     [("root", Json.str target.toString),
      ("replica", (replica.map (·.id)).elim Json.null Json.str),
@@ -596,7 +631,7 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   let human := match created with
     | some r => s!"Initialized tl in {target} (replica {r.id})"
     | none => s!"{target} already initialized — nothing to do (idempotent)"
-  return { data, human, notes := note }
+  return { data, human, notes := note ++ [pointerNote] }
 
 /-- The product version (keep in lockstep with lakefile.lean's package
     version; `tl version` is the single user-facing source). -/

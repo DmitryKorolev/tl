@@ -118,6 +118,14 @@ also generates a local `.tl/README.md` primer (what `tl` is, the core
 verbs, "run `tl ready` / `tl doctor`") for anyone who opens `.tl/` directly —
 but it is gitignored, so the committed pointer is the discovery path.
 
+The "offer" is non-interactive (built for agents / non-TTY): `tl init`
+*prints* the suggested pointer line and which root agent file to add it to,
+and **never auto-edits the user's committed files** — `tl` writes only inside
+the gitignored `.tl/` (no surprise edits to `AGENTS.md` etc.). When no root
+agent file exists it suggests creating one and creates none itself (the
+no-auto-init ethos, ADR-0012). Placing the line stays a one-step human/agent
+action; the primer is written (and refreshed) under `.tl/` on every `init`.
+
 No SessionStart hook. An auto-emitting hook would have to inject either
 full task content (an unbidden untrusted-content path into the agent's
 context — ADR-0014 T1) or a content-stripped summary (a second pinned schema

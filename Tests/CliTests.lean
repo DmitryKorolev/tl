@@ -83,6 +83,21 @@ def cliBasicTests : IO (List Outcome) := do
      check "init wrote the * self-ignore" (gitignore == "*\n"),
      ← expectData "init is idempotent" ["init", "--dir", target]
        (fun j => jBool j "created" == some false)]
+  -- discovery (ADR-0011 §3): init writes the gitignored primer and SUGGESTS
+  -- the committed pointer without editing the user's agent file
+  let root3 ← IO.FS.createTempDir
+  IO.FS.writeFile (root3 / "AGENTS.md") "# proj\n"
+  let initRes ← run' ["init", "--dir", (root3 / ".tl").toString]
+  o := o ++
+    [(match initRes with
+      | .ok out => check "init suggests the discovery pointer in its notes"
+          (out.notes.any (fun n => (n.splitOn "discoverable").length > 1))
+          (String.intercalate "|" out.notes)
+      | .error e => { name := "init suggests the discovery pointer", passed := false, msg := e.message }),
+     check "init wrote the .tl/README.md primer"
+       ((← IO.FS.readFile (root3 / ".tl" / "README.md")).startsWith "# tl"),
+     check "init left a pre-existing AGENTS.md untouched"
+       ((← IO.FS.readFile (root3 / "AGENTS.md")) == "# proj\n")]
   -- create echo (ADR-0020): display id, defaults, provenance, dependencies
   let dir ← freshDir
   o := o ++ [← expectData "create echoes the full issue"
