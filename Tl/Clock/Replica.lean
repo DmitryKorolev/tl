@@ -24,15 +24,19 @@ namespace Replica
 /-- Encode a 64-bit value as a 13-char replica id. -/
 def ofNat (v : Nat) : Replica := ⟨toCrockford v 13⟩
 
-/-- Well-formed: 13 chars, all Crockford-decodable. -/
-def valid (r : Replica) : Bool := r.id.length = 13 && (ofCrockford? r.id).isSome
+/-- Well-formed: exactly 13 *canonical* Crockford chars (no aliasing, no
+    case-folding — the stored form is canonical bytes) holding a 64-bit value
+    (the single spare high bit zero ⇒ first char `0`–`f`, ADR-0007; the
+    Stage-0 width/charset-only check is strengthened here with the Stage-1
+    wiring). -/
+def valid (r : Replica) : Bool :=
+  r.id.length = 13 &&
+    match ofCrockford? r.id with
+    | some v => toCrockford v 13 = r.id && v < 2 ^ 64
+    | none => false
 
 /-- The decoded value (for issue-id derivation / the LWW tie-break). -/
 def toNat? (r : Replica) : Option Nat := ofCrockford? r.id
-
-/-- Mint a fresh replica id from 64 random bits (ADR-0007). -/
-def mint : IO Replica := do
-  return ofNat (← IO.rand 0 (2 ^ 64 - 1))
 
 end Replica
 
