@@ -46,6 +46,11 @@ def relLocal (d : Dirs) : String := d.tlRel ++ "/local"
 def relReplica (d : Dirs) : String := d.tlRel ++ "/local/replica"
 def relClock (d : Dirs) : String := d.tlRel ++ "/local/clock"
 def relLock (d : Dirs) : String := d.tlRel ++ "/local/lock"
+/-- The read-time refresh marker (ADR-0016 §3): the `refs/tl/log` OID whose
+    foreign segments are already materialized into `log/`. Gitignored, local-
+    only, not part of the log format (no `v` bump) — a stale or absent value
+    only forces a re-materialize, never a wrong read. -/
+def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
 def relLog (d : Dirs) : String := d.tlRel ++ "/log"
 def relSegment (d : Dirs) (replicaId : String) : String :=
   d.tlRel ++ "/log/" ++ replicaId ++ ".jsonl"

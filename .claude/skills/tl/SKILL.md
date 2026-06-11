@@ -101,14 +101,21 @@ tl dep remove <A> <B>
 
 ## Sharing across worktrees
 
-`tl sync` reconciles your tasks with sibling agents through the shared
-`refs/tl/log` git ref. Its **local leg** is built: run it inside a git repo and
-it publishes your own changes and absorbs siblings'. Agents in *linked
-worktrees of one repo* share with **zero network** — each keeps its own `.tl/`,
-only the ref is common. Run `tl sync` after a batch of writes to publish, and
-before reading if a sibling may have changed things. Outside a git repo it is a
-no-op. The **remote leg** (fetch/push to other clones) and automatic
-read-time / on-write syncing are not built yet — for now, sync is explicit.
+Agents in *linked worktrees of one repo* share tasks through the shared
+`refs/tl/log` git ref with **zero network** — each keeps its own `.tl/`, only
+the ref is common.
+
+- **Reading already absorbs siblings automatically.** Every read (`tl ready`,
+  `list`, `show`, …) does a cheap check of the shared ref and pulls in any
+  sibling's published changes before answering — so you do **not** need to sync
+  before reading.
+- **Publish your own work with `tl sync`.** Your writes become visible to
+  siblings only once you've published them, so run `tl sync` after a batch of
+  writes. (Outside a git repo it is a no-op.)
+
+The **remote leg** (fetch/push to other *clones*) and automatic on-write
+publishing (auto-sync) are not built yet — until then, publishing is the one
+explicit step.
 
 ## Not yet available
 

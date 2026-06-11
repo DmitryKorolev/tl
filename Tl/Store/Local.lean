@@ -54,7 +54,12 @@ private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
     The temp open is no-follow; `rename` replaces a symlink at the target
     name rather than following it. -/
 def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
-  let tmpRel := rel ++ ".tmp"
+  -- a per-call CSPRNG temp suffix so concurrent lock-free writers never collide
+  -- on one `.tmp` inode (the read-time `ref-mark` refresh writes here without
+  -- the mutation lock — ADR-0016 §3); harmless for the under-lock callers
+  -- (clock/replica), matching `Tl.Sync.writeForeignSegment`'s discipline
+  let entropy ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}") (Sys.entropy 8)
+  let tmpRel := rel ++ "." ++ toCrockford (Sys.natOfBytesBE entropy) 13 ++ ".tmp"
   liftSys (mapSysError tmpRel) do
     let fd ← Sys.openNoFollow d.base tmpRel
       (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate)
@@ -115,6 +120,21 @@ def loadClock (d : Dirs) : TlM (Option Hlc) := do
     section — always after the appended records are fsynced). -/
 def persistClock (d : Dirs) (h : Hlc) : TlM Unit :=
   writeLocalFile d d.relClock (h.toHex ++ "\n")
+
+/-- The ref-refresh marker (ADR-0016 §3): the `refs/tl/log` OID this working
+    copy has already materialized siblings from. Absent (never refreshed) or
+    unreadable → `none`, which makes the next read re-materialize — safe, since
+    the materialized content is a pure function of the ref OID. -/
+def loadRefMark (d : Dirs) : TlM (Option String) := do
+  match ← fileContents d d.relRefMark with
+  | some raw => let s := raw.trimAscii.toString; return (if s.isEmpty then none else some s)
+  | none => return none
+
+/-- Record the ref OID just materialized (atomic-replace like the other
+    `.tl/local` files). The caller decides whether a failure is fatal: a read
+    treats it as best-effort, an explicit `sync` lets it surface. -/
+def storeRefMark (d : Dirs) (oid : String) : TlM Unit :=
+  writeLocalFile d d.relRefMark (oid ++ "\n")
 
 /-- The `corrupt-clock` saturation error (ADR-0007: removing the clock file
     cannot clear range exhaustion — the reseed re-derives the same near-max

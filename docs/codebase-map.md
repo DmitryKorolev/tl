@@ -155,14 +155,17 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   trip (ADR-0001 §2 in-ref encoding)
   Merge.lean            --   per-segment complete-line set union, canonical
                         --   (sorted/deduped) — the CRDT join (built, ADR-0001 §5)
-  Local.lean            --   the local-first worktree leg (built, ADR-0016 §1):
-                        --   syncLocal publishes the own segment into the shared
-                        --   ref (CAS-retry) and absorbs siblings into .tl/log/ via
-                        --   atomic rename, never the own segment — `tl sync`'s
-                        --   always-runs leg, zero network
+  Local.lean            --   the local-first worktree leg + read-time refresh
+                        --   (built, ADR-0016 §1/§3): syncLocal publishes the own
+                        --   segment into the shared ref (CAS-retry) and absorbs
+                        --   siblings into .tl/log/ via atomic rename, never the
+                        --   own segment (`tl sync`); refreshFromRef is the read-
+                        --   path O(1) ref-OID trigger (vs the .tl/local/ref-mark)
+                        --   that absorbs siblings before a fold — best-effort,
+                        --   lock-free, never fails a read
   Sync.lean             --   the remote fetch / merge / push leg; push-rejection
-                        --   retry; no-upstream; read-time ref-OID refresh; auto-
-                        --   sync (planned — atop Ref + Merge + Local)
+                        --   retry; no-upstream; auto-sync (planned — atop Ref +
+                        --   Merge + Local)
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean

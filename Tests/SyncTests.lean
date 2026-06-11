@@ -128,12 +128,17 @@ def syncLocalTests : IO (List Outcome) := do
   let ridB := (Tl.Clock.Replica.ofNat 2).id
   let logDir := System.FilePath.mk d.base / ".tl" / "log"
   IO.FS.createDirAll logDir
+  IO.FS.createDirAll (System.FilePath.mk d.base / ".tl" / "local")  -- for the ref-mark
   IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n".toUTF8
   -- (B) first sync publishes A's own segment and creates the ref
   o := o ++ [match ← runTl (syncLocal d (some ridA)) with
     | .ok r => check "first syncLocal publishes own + creates the ref"
         (r.ran && r.published && r.absorbed.isEmpty && r.tip.isSome) (toString (repr r))
     | .error e => { name := "first syncLocal publishes", passed := false, msg := e.message }]
+  -- sync records the read-mark, so the very next read takes the fast path
+  o := o ++ [match ← runTl (loadRefMark d), ← runTl (refTip d) with
+    | .ok m, .ok t => check "syncLocal records the ref-mark at the reconciled tip" (m == t && m.isSome) s!"mark={m} tip={t}"
+    | _, _ => { name := "syncLocal records the ref-mark", passed := false, msg := "unexpected" }]
   o := o ++ [match ← runTl (readRef d) with
     | .ok segs => check "the ref holds A's segment after publish"
         (segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n")) ""
@@ -168,7 +173,56 @@ def syncLocalTests : IO (List Outcome) := do
     | none => { name := "own segment untouched", passed := false, msg := "no file" }]
   return o
 
+/-- Read-time refresh (ADR-0016 §3): the O(1) trigger, the materialize-on-move,
+    the unchanged-skip, and the best-effort degrade on a read-only FS. -/
+def syncRefreshTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- (A) no ref (here, not even a repo) → a no-op refresh that never fails
+  let nonRepo ← IO.FS.createTempDir
+  o := o ++ [match ← runTl (refreshFromRef { base := nonRepo.toString, tlRel := ".tl" } none) with
+    | .ok r => check "refreshFromRef is a no-op when there is no ref"
+        (!r.refreshed && r.tip == none && r.degraded == none) (toString (repr r))
+    | .error e => { name := "refresh no-op (no ref)", passed := false, msg := e.message }]
+  -- a repo where a sibling has already published a segment into the ref;
+  -- .tl/local must exist (init guarantees it before any read — validate)
+  let d ← gitRepo
+  IO.FS.createDirAll (System.FilePath.mk d.base / ".tl" / "local")
+  let logDir := System.FilePath.mk d.base / ".tl" / "log"
+  let ridB := (Tl.Clock.Replica.ofNat 7).id
+  let ridC := (Tl.Clock.Replica.ofNat 9).id
+  let tipB ← runTl (do let t ← writeRef d [seg ridB "{\"b\":1}\n"] none; pure t)
+  -- (B) the ref moved (no mark yet) → materialize the sibling + write the mark
+  o := o ++ [match ← runTl (refreshFromRef d none) with
+    | .ok r => check "refreshFromRef materializes a sibling when the ref moved"
+        (r.refreshed && r.absorbed == [ridB] && r.degraded == none) (toString (repr r))
+    | .error e => { name := "refresh materializes sibling", passed := false, msg := e.message }]
+  o := o ++ [match ← readBytes (logDir / s!"{ridB}.jsonl") with
+    | some b => check "the refreshed sibling segment is on disk" (String.fromUTF8! b == "{\"b\":1}\n") ""
+    | none => { name := "refreshed sibling on disk", passed := false, msg := "no file" }]
+  o := o ++ [match ← runTl (loadRefMark d), tipB with
+    | .ok m, .ok t => check "the ref-mark records the materialized tip" (m == some t) s!"mark={m} tip={t}"
+    | _, _ => { name := "ref-mark recorded", passed := false, msg := "unexpected" }]
+  -- (C) mark == tip → a second refresh skips (no materialize)
+  o := o ++ [match ← runTl (refreshFromRef d none) with
+    | .ok r => check "refreshFromRef skips when the ref-mark already matches the tip"
+        (!r.refreshed && r.absorbed.isEmpty) (toString (repr r))
+    | .error e => { name := "refresh skips unchanged", passed := false, msg := e.message }]
+  -- (D) the ref moves again, but the log dir is read-only → degrade, never throw.
+  -- Root bypasses directory permissions, so under root we can only assert the
+  -- invariant that always holds (refresh returns, never throws); a normal user
+  -- additionally exercises the degrade branch.
+  let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
+  let isRoot := uid.stdout.trimAscii.toString == "0"
+  let _ ← runTl (do let _ ← writeRef d [seg ridB "{\"b\":1}\n", seg ridC "{\"c\":1}\n"] (← refTip d); pure ())
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["0500", logDir.toString] } : IO _)
+  o := o ++ [match ← runTl (refreshFromRef d none) with
+    | .ok r => check "refreshFromRef never throws when the log dir is read-only (degrades for non-root)"
+        (if isRoot then true else (!r.refreshed && r.degraded.isSome)) (toString (repr r))
+    | .error e => { name := "refresh degrades on read-only FS", passed := false, msg := s!"threw: {e.message}" }]
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", logDir.toString] } : IO _)
+  return o
+
 def syncTests : IO (List Outcome) := do
-  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests)
+  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests) ++ (← syncRefreshTests)
 
 end Tl.Tests

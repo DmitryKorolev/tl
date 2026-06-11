@@ -34,22 +34,32 @@ structure CmdOut where
       plain `human` (which stays the `Style.plain` fallback). -/
   render : Option (Style → String) := none
 
-/-- Load the read view (no lock — ADR-0015 §5). -/
+/-- Load the read view (no lock — ADR-0015 §5). Before folding, run the
+    read-time refresh (ADR-0016 §3): absorb any sibling's published changes
+    from the shared `refs/tl/log` so a worktree sees its siblings without an
+    explicit `tl sync`. Best-effort and lock-free — it never fails the read. -/
 def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View := do
   let d ← discover dirOverride
   let replica ← loadReplica d
+  let _ ← Tl.Sync.refreshFromRef d (replica.map (·.id))
   let loaded ← readState d skipBad
   let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
   return { dirs := d, loaded, now, replica }
 
 /-- The ADR-0008 command-level refusal policy for reads: a refused *own*
-    segment — or every segment — fails the command; foreign refusals are
-    disclosed on stderr and the read succeeds. (`doctor` is exempt.) -/
+    segment fails the command; foreign refusals are disclosed on stderr and the
+    read succeeds (folding the others). The all-refused catch-all only fires
+    when there is *no own replica to anchor a partial read* — with an own
+    replica present (even with no own segment yet), an all-*foreign* refusal is
+    a disclosure, not a failure: read-time refresh (ADR-0016 §3) now routinely
+    materializes sibling segments, so a single bad sibling segment must not
+    take down a worktree whose own state is fine/empty. (`doctor` is exempt.) -/
 def cleanReadNotes (v : View) : TlM (List String) := do
   if let some own := v.replica then
     if let some r := v.loaded.refused.find? (·.replicaId == own.id) then
       throw r.error
-  if !v.loaded.refused.isEmpty && v.loaded.refused.length == v.loaded.segmentCount then
+  if v.replica.isNone && !v.loaded.refused.isEmpty
+      && v.loaded.refused.length == v.loaded.segmentCount then
     throw (v.loaded.refused.head?.map (·.error)
       |>.getD (.mk' .internal "every segment refused — repair or remove the damaged segments under .tl/log/"))
   return v.loaded.refused.map (fun r =>

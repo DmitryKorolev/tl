@@ -42,5 +42,5 @@ def main : IO UInt32 := do
     ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
     ("Render sanitization (ADR-0014)", sanitizeTests),
     ("Grammar: tl help --json schema & parser agreement", grammar),
-    ("Sync core: line-union + refs/tl/log read/write", sync)
+    ("Sync: line-union, ref I/O, local leg + read-time refresh", sync)
   ]

@@ -832,11 +832,64 @@ def cliRenderTests : IO (List Outcome) := do
        check "--plain emits no ANSI on stdout" (!plainOut.contains esc) plainOut]
   return o
 
+/-- Read-time refresh end-to-end (ADR-0016 §3): two state dirs sharing one
+    repo's `refs/tl/log` (the worktree model). A creates + syncs; B *only
+    reads* and still sees A's task — no explicit `tl sync` on B's side. -/
+def cliReadRefreshTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let aDir := (root / ".tl").toString
+  let bDir := (root / ".tlB").toString
+  let _ ← run' ["init", "--dir", aDir]
+  let _ ← run' ["init", "--dir", bDir]
+  let aId ← match ← run' ["create", "shared via read-refresh", "--dir", aDir, "--assignee", "a"] with
+    | .ok out => pure ((jStr out.data "id").getD "")
+    | .error e => throw (IO.userError s!"create failed: {e.message}")
+  let _ ← run' ["sync", "--dir", aDir]  -- A publishes; B never syncs
+  o := o ++ [← expectData "a read absorbs a sibling's published task without an explicit sync"
+    ["list", "--dir", bDir, "--json"]
+    (fun j => jNat j "count" == some 1 && (jArr j "items").any (fun it => jStr it "id" == some aId))]
+  -- the refresh left A's segment + the ref-mark in B's own state dir
+  o := o ++ [check "B's read materialized A's segment into its own .tl/log"
+      ((← (root / ".tlB" / "log").readDir).size == 1),
+    check "B's read wrote the ref-mark"
+      (← (root / ".tlB" / "local" / "ref-mark").pathExists)]
+  -- a second read with the ref unmoved still works (the unchanged-skip path)
+  o := o ++ [← expectData "a second read with nothing new still sees the task"
+    ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 1)]
+  return o
+
+/-- Read-time refresh × the refused-segment policy (ADR-0008 × ADR-0016 §3):
+    refresh now routinely materializes sibling segments, so a single CORRUPT
+    sibling segment must be DISCLOSED, not fail a worktree whose own state is
+    fine/empty — the all-refused throw only fires with no own replica to anchor
+    a partial read. -/
+def cliRefreshRefusalTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let bDir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", bDir]  -- B: own replica minted, no own segment
+  -- a sibling publishes a CORRUPT segment into the shared ref
+  let badRid := (Tl.Clock.Replica.ofNat 13).id
+  let dB : Tl.Store.Dirs := { base := root.toString, tlRel := ".tl" }
+  let _ ← (Tl.Sync.writeRef dB [⟨badRid, "this is not json\n".toUTF8⟩] none).run
+  -- B reads: refresh materializes the corrupt sibling, and the read DISCLOSES
+  -- the foreign refusal and SUCCEEDS (exit 0) rather than failing the command
+  let listed ← run' ["list", "--dir", bDir, "--json"]
+  o := o ++ [(match listed with
+    | .ok out => check "an all-foreign-refused read discloses and succeeds (does not fail)"
+        (jNat out.data "count" == some 0 && out.notes.any (fun n => (n.splitOn "refused").length > 1))
+        (out.data.compress ++ " notes=" ++ String.intercalate "|" out.notes)
+    | .error e => { name := "all-foreign-refused read succeeds", passed := false, msg := s!"read failed with {e.code.wire}: {e.message}" })]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
-    ++ (← cliBinaryTests)
+    ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

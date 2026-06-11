@@ -118,6 +118,42 @@ read skips the refresh and folds what it has (a moment stale), never failing.
 Concurrent readers racing to refresh are safe: the materialized content is a pure
 function of the ref OID, and atomic rename makes last-writer-wins harmless.
 
+**Built form (read-time refresh).** Implemented as `Tl/Sync/Local.refreshFromRef`,
+run by `loadView` before every read fold (not by `doctor`, which stays a pure
+diagnostic, nor by the locked write path). The marker is `.tl/local/ref-mark`
+(gitignored, no `v` bump). The trigger is one `git rev-parse refs/tl/log`
+compared against the mark: equal ⇒ fold the local files, git untouched;
+different ⇒ materialize the changed foreign segments (the §3 atomic-rename
+writeback, reusing `writeForeignSegment`), record the new OID, then fold. The
+whole refresh is best-effort and lock-free — it catches both thrown `Tl.Error`s
+and raw `IO.Error`s (git absent, a read-only FS) and degrades to "fold what is
+on disk," never failing the read; a genuine path-safety/corruption problem is
+still surfaced by the subsequent fold. It does **not** publish — that is the
+local leg (§1) / auto-sync (§4); a sibling's write is visible on the next read
+only once that sibling has published it.
+
+Hardening notes (review-driven): the marker write reuses the atomic-replace
+`writeLocalFile`, which carries a per-call CSPRNG temp suffix so two lock-free
+refreshers in one `.tl/` never collide on a temp inode (matching
+`writeForeignSegment`). The materialize never overwrites the own segment; when
+the own replica id is *unknown* (the `.tl/local/replica` file was removed) it
+will not overwrite *any* existing on-disk segment, only create absent ones, so
+an orphaned own segment's unpublished ops are never clobbered. A worktree whose
+only segments are foreign-and-refused **discloses** rather than fails (the
+all-refused error fires only with no own replica to anchor a partial read —
+ADR-0008 × this §3), so a single bad sibling segment cannot take down a reader.
+
+**Boundary.** The marker keys off the *ref OID*, not the on-disk bytes, so its
+safety ("materialized content is a pure function of the ref OID") assumes the
+gitignored cache under `.tl/log/` is tl-managed and not edited by hand
+(`.tl/README.md` says so). If a foreign cache file is *externally* deleted or
+truncated while the ref stays put, the matching marker pins the read to the
+on-disk content until the ref next moves; `tl sync` re-materializes
+unconditionally (it ignores the marker), and `doctor` can reconcile marker vs
+on-disk. Crash safety is intact regardless: the foreign write is an atomic
+rename and the marker is written *after* it, so a crash leaves a stale (never
+ahead-of-disk) marker that the next read corrects.
+
 ### 4. Auto-sync defaults on for worktrees
 
 Because the local leg is free (no network), `tl init` enables auto-sync by

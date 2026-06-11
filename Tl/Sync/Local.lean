@@ -24,6 +24,7 @@ is a separate increment. Tested I/O shell; no Mathlib.
 -/
 import Tl.Sync.Merge
 import Tl.Sync.Ref
+import Tl.Store.Local
 import Tl.Format.Crockford
 
 namespace Tl.Sync
@@ -82,11 +83,27 @@ private def absorbForeign (d : Dirs) (ownReplica : Option String)
     (localSegs final : List SegmentData) : TlM (List String) := do
   let mut absorbed : List String := []
   for s in final do
-    if ownReplica != some s.replicaId
-       && (segBytesOf localSegs s.replicaId).toList != s.bytes.toList then
+    let onDisk := localSegs.find? (·.replicaId == s.replicaId)
+    -- write a FOREIGN segment whose on-disk copy differs. When our own replica
+    -- id is unknown (the `.tl/local/replica` file was removed), we cannot prove
+    -- a given on-disk segment is not our own authoritative one, so we only
+    -- CREATE absent segments — never clobber an existing file. That protects
+    -- unpublished own ops from being overwritten by the ref's older copy.
+    let mayWrite := match ownReplica with
+      | some own => s.replicaId != own
+      | none => onDisk.isNone
+    if mayWrite && (onDisk.map (·.bytes.toList)).getD [] != s.bytes.toList then
       writeForeignSegment d s.replicaId s.bytes
       absorbed := absorbed ++ [s.replicaId]
   return absorbed
+
+/-- Record the reconciled tip in the read-time refresh marker, best-effort: a
+    marker-write failure must never fail an otherwise-successful sync (the next
+    read just re-materializes). Keeps a read right after `tl sync` on the fast
+    path instead of re-reading the ref it already reconciled. -/
+private def markTip (d : Dirs) : Option String → TlM Unit
+  | some t => try storeRefMark d t catch _ => pure ()
+  | none => pure ()
 
 /-- The bounded CAS-retry: a sibling that moves the ref between our read and
     our `update-ref` costs one re-read, never a clobber. Same-machine worktree
@@ -109,11 +126,13 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
       | none => reconcile d ownReplica localSegs fuel  -- lost the CAS race: retry
       | some newTip =>
         let absorbed ← absorbForeign d ownReplica localSegs merged
+        markTip d (some newTip)
         return { ran := true, published := true, absorbed, tip := some newTip }
     else
       -- `merged`'s foreign content equals the ref's (the local cache is a
       -- subset of the canonicalized ref), so we can absorb without writing it
       let absorbed ← absorbForeign d ownReplica localSegs merged
+      markTip d tip
       return { ran := true, published := false, absorbed, tip }
 
 /-- The local leg: reconcile against `refs/tl/log` (publish own, absorb
@@ -124,5 +143,57 @@ def syncLocal (d : Dirs) (ownReplica : Option String) : TlM LocalOutcome := do
     return { ran := false, published := false, absorbed := [], tip := none }
   let (localSegs, _) ← readSegments d
   reconcile d ownReplica localSegs maxAttempts
+
+/-! ## Read-time refresh (ADR-0016 §3) -/
+
+/-- What a read-time refresh did, for the read echo and the tests. -/
+structure RefreshOutcome where
+  /-- Did the ref move since last time, prompting a materialize? -/
+  refreshed : Bool
+  /-- The foreign replica ids (re)materialized this refresh. -/
+  absorbed : List String
+  /-- The ref OID now reflected in `.tl/log/` (`none` when there is no ref). -/
+  tip : Option String
+  /-- Set when the refresh could not run (no git, read-only FS, a racing
+      refresher): the read still succeeds — a moment stale — and this carries
+      the reason for callers that want to surface it. -/
+  degraded : Option String
+deriving Repr, Inhabited
+
+private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
+  match ← refTip d with  -- the O(1) trigger: one `rev-parse`, no object store
+  | none => return { refreshed := false, absorbed := [], tip := none, degraded := none }
+  | some tip =>
+    if (← loadRefMark d) == some tip then
+      -- unchanged (the common case): fold the local files, git untouched
+      return { refreshed := false, absorbed := [], tip := some tip, degraded := none }
+    -- the ref moved: materialize the changed foreign segments, record the OID
+    let refSegs ← readRef d
+    let (localSegs, _) ← readSegments d
+    let absorbed ← absorbForeign d ownReplica localSegs refSegs
+    storeRefMark d tip
+    return { refreshed := true, absorbed, tip := some tip, degraded := none }
+
+/-- Read-time refresh: before a read folds `.tl/log/`, cheaply detect whether a
+    sibling published to the shared `refs/tl/log` (an O(1) OID compare against
+    the `ref-mark`) and, only if it moved, materialize the changed foreign
+    segments into `.tl/log/` (the atomic-rename writeback, never the own
+    segment). So a worktree sees its siblings without an explicit `tl sync`,
+    while git stays off the steady-state read path (an unchanged ref costs one
+    `rev-parse` + one small file read).
+
+    Entirely best-effort and lock-free: ANY failure — git absent, a read-only
+    filesystem, a concurrent refresher — degrades to "fold what is on disk"
+    and never fails the read (ADR-0016 §3). It catches both thrown `Tl.Error`s
+    and raw `IO.Error`s for that reason. A genuine path-safety / corruption
+    problem is not hidden: the subsequent `readState` fold re-encounters and
+    surfaces it through the normal read policy. -/
+def refreshFromRef (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
+  match ← ((refreshBody d ownReplica).run.toBaseIO : IO _) with
+  | .ok (.ok o) => return o
+  | .ok (.error e) =>
+    return { refreshed := false, absorbed := [], tip := none, degraded := some e.message }
+  | .error ioErr =>
+    return { refreshed := false, absorbed := [], tip := none, degraded := some (toString ioErr) }
 
 end Tl.Sync
