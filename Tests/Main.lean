@@ -5,6 +5,7 @@ Builds as the `tltest` executable; exits non-zero on any failed assertion.
 import Tests.HlcTests
 import Tests.CrockfordTests
 import Tests.RecordTests
+import Tests.ErrorTests
 
 open Tl.Tests
 
@@ -15,5 +16,6 @@ def main : IO UInt32 :=
     ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp),
     ("Crockford base32 & replica id", crockfordTests),
     ("Crockford round-trip (seeded property)", crockfordRoundtripProp),
-    ("JSONL record round-trip & preserve-unknown", recordTests)
+    ("JSONL record round-trip & preserve-unknown", recordTests),
+    ("Error codes, exit codes & --json envelope", errorCodeTests ++ envelopeTests)
   ]

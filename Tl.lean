@@ -27,8 +27,10 @@ import Tl.Kernel.Unblocks
 import Tl.Kernel.Ranking
 
 -- Tested I/O shell
+import Tl.Error
 import Tl.Clock.Hlc
 import Tl.Clock.Replica
 import Tl.Format.Crockford
 import Tl.Format.Record
+import Tl.Cli.Envelope
 import Tl.Cli.Init
