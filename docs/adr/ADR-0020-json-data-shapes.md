@@ -214,6 +214,33 @@ diagnostics, stale claims); checks are added additively.
 digest joins `version`'s payload as an additive field once the release
 pipeline that produces it exists — deferred, not dropped.)
 
+**`tl help --json`** / **`tl help <command> --json`** — the command grammar,
+machine-readable (ADR-0011 §1), for agent introspection. The full dump and a
+single-command/group filter share one shape (an agent parses
+`commands`/`globalFlags` either way):
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "commands": [
+    { "command": "close", "positionals": "<id>",
+      "summary": "finish an issue; any closed status discharges its blockers",
+      "flags": [
+        { "name": "as", "value": true, "repeatable": false, "summary": "done | cancelled | duplicate (required)" }
+      ] }
+  ],
+  "globalFlags": [
+    { "name": "json", "value": false, "repeatable": false, "summary": "…" }
+  ]
+} }
+```
+
+`command` is the full verb (`"dep add"` for subcommands); `positionals` is a
+human template; a flag's `value` marks whether it takes an argument and
+`repeatable` whether a second occurrence is allowed. The schema is *generated
+from the same grammar table that drives the parser and the human `tl help`*
+(`Tl/Cli/Grammar.lean`), so it cannot describe a flag the parser rejects or
+omit one it accepts — drift is structurally impossible, not merely tested.
+
 **Error context fields** (extending ADR-0008's pinned codes with their named
 context, same additive-only discipline): `not-claimable` → `id`, `reasons`
 (above); `not-closeable` → `id`, `reasons` (omit-empty: `isEpic: true` with

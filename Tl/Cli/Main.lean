@@ -10,6 +10,7 @@ pinned code (ADR-0008); notes (foreign-refusal disclosures, clamp warnings)
 never change the exit.
 -/
 import Tl.Cli.Commands
+import Tl.Cli.Grammar
 
 namespace Tl.Cli
 
@@ -35,12 +36,6 @@ end Argv
 private def usageErr (msg : String) : Tl.Error :=
   .mk' .usage (msg ++ " — see `tl help`")
 
-/-- The only repeatable value flags: `create`'s inline-edge flags. Every
-    other value flag is single-valued, so a second occurrence is a `usage`
-    error rather than a silently-dropped token (the same no-silent-drop rule
-    as surplus positionals below). -/
-private def repeatableVal : List String := ["blocked-by", "blocks", "parent", "related"]
-
 /-- Parse flags: `--name value`, `--name=value`, bare `--name` for booleans,
     `-p` as `--priority`. Unknown flags, and a repeated single-value flag,
     are `usage` errors. -/
@@ -48,7 +43,7 @@ def parseArgs (valFlags boolFlags : List String) : List String → Except Tl.Err
   | args => go args {}
 where
   addVal (acc : Argv) (name value : String) : Except Tl.Error Argv :=
-    if (acc.kvs.any (·.1 == name)) && !repeatableVal.contains name then
+    if (acc.kvs.any (·.1 == name)) && !repeatableFlags.contains name then
       .error (usageErr s!"--{name} given more than once (it takes a single value)")
     else .ok { acc with kvs := acc.kvs ++ [(name, value)] }
   go : List String → Argv → Except Tl.Error Argv
@@ -93,35 +88,6 @@ private def priorityFlag (a : Argv) : Except Tl.Error (Option Nat) :=
     | some n => if n ≤ 4 then .ok (some n) else .error (usageErr s!"--priority must be 0-4 (got {v})")
     | none => .error (usageErr s!"--priority must be 0-4 (got '{v}')")
 
-def usageText : String :=
-  "tl — a dependency-aware task tracker for agents
-
-usage:
-  tl init                                    create the state directory (repo toplevel)
-  tl create \"<title>\" [--blocked-by <id>]... [--blocks <id>]...
-            [--parent <id>]... [--related <id>]... [-p 0-4]
-            [--description <body>]   (or pipe the body on stdin)
-  tl ready [--limit N]                       ranked workable items (default 10; 0 = all)
-  tl claim <id> [--assignee <name>]          take a ready item (refused otherwise)
-  tl close <id> --as done|cancelled|duplicate [--of <id>]
-  tl update <id> [--title T] [-p 0-4] [--description D] [--notes N]
-  tl dep add <id> <blocked-by>               <id> is blocked by <blocked-by>
-  tl dep remove <id> <blocked-by>            retract that edge
-  tl why <id>                                the transitive unclosed blockers
-  tl dep cycles                              report cycles (blocks/parent/readiness)
-  tl show <id>
-  tl list [--limit N]                        all issues, oldest first (default 10; 0 = all)
-  tl doctor                                  local health checks
-  tl version
-  tl help
-
-global: --json (stable envelope on stdout) · --dir <state-dir> (skip discovery)
-        --skip-bad (read commands only: skip malformed log lines, each
-        disclosed on stderr; writes always require an intact own segment)
-        --assignee <name> (write commands: the recorded actor — otherwise
-        TL_ACTOR, then git user.email, then user@host; ADR-0013)
-"
-
 private def actorOf (a : Argv) : TlM String :=
   liftSys (fun e => .mk' .internal s!"{e}") (resolveActor (a.get? "assignee"))
 
@@ -139,25 +105,36 @@ private def noPositionals (a : Argv) (verb : String) : Except Tl.Error Unit :=
   if a.positionals.isEmpty then .ok ()
   else .error (usageErr s!"{verb} takes no positional arguments — got {a.positionals.length}")
 
-/-- Build the command outcome for an argv (the verb is the first token). -/
+/-- Build the command outcome for an argv (the verb is the first token).
+    Each arm's accepted flags come from the `Grammar` table via `parse`, so
+    the parser, the human help, and the `--json` schema never drift. -/
 def runVerb : List String → TlM CmdOut
-  | [] => return { data := Json.str usageText, human := usageText }
+  | [] => return { data := helpJson none, human := helpText none }
   | verb :: rest => do
-    let parse (vals bools : List String) : TlM Argv :=
-      MonadExcept.ofExcept (parseArgs (vals ++ globalVal) (bools ++ globalBool) rest)
+    -- the flags this command accepts are looked up from the grammar table,
+    -- not hardcoded here (single source of truth, Tl/Cli/Grammar.lean)
+    let parse (cmd : String) : TlM Argv :=
+      MonadExcept.ofExcept (parseArgs (valFlagsOf cmd ++ globalVal) (boolFlagsOf cmd ++ globalBool) rest)
     match verb with
-    | "help" | "--help" => return { data := Json.str usageText, human := usageText }
+    | "help" | "--help" => do
+      let a ← parse "help"
+      match a.positionals with
+      | [] => return { data := helpJson none, human := helpText none }
+      | [name] =>
+        if (commandsMatching name).isEmpty then
+          throw (usageErr s!"no command '{name}' to describe")
+        else return { data := helpJson (some name), human := helpText (some name) }
+      | _ => throw (usageErr "help takes at most one command name")
     | "version" => do
-      let a ← parse [] []
+      let a ← parse "version"
       MonadExcept.ofExcept (noPositionals a "version")
       return cmdVersion
     | "init" => do
-      let a ← parse [] []
+      let a ← parse "init"
       MonadExcept.ofExcept (noPositionals a "init")
       cmdInit (a.get? "dir")
     | "create" => do
-      let a ← parse ["priority", "blocked-by", "blocks", "parent", "related",
-                     "assignee", "description"] []
+      let a ← parse "create"
       let title ← MonadExcept.ofExcept (onePositional a "create" "title")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
@@ -178,37 +155,37 @@ def runVerb : List String → TlM CmdOut
       cmdCreate (a.get? "dir") title prio desc actor
         (a.getAll "blocked-by") (a.getAll "blocks") (a.getAll "parent") (a.getAll "related")
     | "ready" => do
-      let a ← parse ["limit"] []
+      let a ← parse "ready"
       MonadExcept.ofExcept (noPositionals a "ready")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
       cmdReady (a.get? "dir") limit (a.has "skip-bad")
     | "list" => do
-      let a ← parse ["limit"] []
+      let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
       cmdList (a.get? "dir") limit (a.has "skip-bad")
     | "show" => do
-      let a ← parse [] []
+      let a ← parse "show"
       let tok ← MonadExcept.ofExcept (onePositional a "show" "an issue id")
       cmdShow (a.get? "dir") tok (a.has "skip-bad")
     | "why" => do
-      let a ← parse [] []
+      let a ← parse "why"
       let tok ← MonadExcept.ofExcept (onePositional a "why" "an issue id")
       cmdWhy (a.get? "dir") tok (a.has "skip-bad")
     | "claim" => do
-      let a ← parse ["assignee"] []
+      let a ← parse "claim"
       let tok ← MonadExcept.ofExcept (onePositional a "claim" "an issue id")
       let actor ← actorOf a
       cmdClaim (a.get? "dir") tok actor
     | "close" => do
-      let a ← parse ["as", "of", "assignee"] []
+      let a ← parse "close"
       let tok ← MonadExcept.ofExcept (onePositional a "close" "an issue id")
       let some asStr := a.get? "as"
         | throw (usageErr "close needs --as done|cancelled|duplicate")
       let actor ← actorOf a
       cmdClose (a.get? "dir") tok asStr (a.get? "of") actor
     | "update" => do
-      let a ← parse ["title", "priority", "description", "notes", "assignee"] []
+      let a ← parse "update"
       let tok ← MonadExcept.ofExcept (onePositional a "update" "an issue id")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
@@ -217,22 +194,22 @@ def runVerb : List String → TlM CmdOut
     | "dep" => do
       match rest with
       | "add" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (["assignee"] ++ globalVal) globalBool rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep add" ++ globalVal) (boolFlagsOf "dep add" ++ globalBool) rest')
         match a.positionals with
         | [x, y] => cmdDepAdd (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep add takes <id> <blocked-by>")
       | "remove" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (["assignee"] ++ globalVal) globalBool rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep remove" ++ globalVal) (boolFlagsOf "dep remove" ++ globalBool) rest')
         match a.positionals with
         | [x, y] => cmdDepRemove (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep remove takes <id> <blocked-by>")
       | "cycles" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs globalVal globalBool rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep cycles" ++ globalVal) (boolFlagsOf "dep cycles" ++ globalBool) rest')
         MonadExcept.ofExcept (noPositionals a "dep cycles")
         cmdDepCycles (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "dep takes add|remove|cycles")
     | "doctor" => do
-      let a ← parse [] []
+      let a ← parse "doctor"
       MonadExcept.ofExcept (noPositionals a "doctor")
       cmdDoctor (a.get? "dir")
     | other =>
