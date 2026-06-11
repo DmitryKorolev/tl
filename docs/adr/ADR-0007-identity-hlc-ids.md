@@ -225,14 +225,18 @@ bound is pinned to its built form:
   peer's clock is ahead; it names the count and segments) or when the maximum
   HLC (over accepted *and* deferred ops — a deferred op is absent from the
   accepted max, so reading that alone would understate a far-ahead peer) leads
-  `now` by more than the **warn threshold** (`Tl.Store.skewWarnMs`, ~1h),
+  `now` by more than the **warn threshold** (`Tl.Store.skewWarnMs`, **15min**),
   which is deliberately *decoupled* from — and far smaller than — the 24h
-  deferral window. Deferral (hiding) is generous so honest peers are never
-  hidden; warning (flag-and-fix) is sensitive, so a clock notably ahead but
-  *within* the window (e.g. a 9h timezone-as-UTC misconfig) is still flagged
-  even though its ops fold normally. No NTP-grade clock leads by an hour, so
-  this does not flag drift. This is the observability half of ADR-0008's
-  loud-not-silent discipline for a withheld or unfairly-ordered read.
+  deferral window. Deferral (hiding an op) is functional and so generous;
+  warning is observability-only (a `doctor` note, never hiding or failing), so
+  it is tuned *sensitive* — a false warn costs a note, a missed misconfig costs
+  silent LWW unfairness. 15min because (a) the smallest timezone offsets are
+  ±1h, so the common local-time-as-UTC misconfig leads by ~1h and a 1h
+  threshold would miss it; (b) it ≈ NTP's default panic offset (1000s ≈ 16.7min,
+  where `ntpd` itself refuses to sync); (c) it is far above NTP-grade jitter, so
+  a healthy clock (and any same-machine worktree set, lead ≈ 0) never trips it.
+  This is the observability half of ADR-0008's loud-not-silent discipline for a
+  withheld or unfairly-ordered read.
 
 - **Interaction with the absent-clock reseed (orphan recovery).** The reseed
   (`max(maxHlc over segments, now)`) floors above all segments' *within-window*

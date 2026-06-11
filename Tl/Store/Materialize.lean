@@ -44,15 +44,21 @@ open Tl.Clock.Skew (admittedB)
 def skewWindowMs : Nat := 24 * 3600 * 1000
 
 /-- The `doctor` *warn* threshold — distinct from, and much smaller than, the
-    deferral window. Deferral (hiding an op) is deliberately generous (24h, so
-    an honest TZ-misconfigured peer is never hidden), but *warning* should be
-    sensitive: a clock more than ~1h ahead is a real misconfiguration worth
-    surfacing for repair even though its ops still fold (it wins LWW unfairly
-    until wall-clock catches up). So `doctor` flags any clock leading `now` by
-    more than this regardless of whether the op was deferred — which is why a 9h
-    misconfig is reported even though it is within the 24h window. No
-    legitimate (NTP-grade) clock leads by an hour, so this does not flag drift. -/
-def skewWarnMs : Nat := 3600 * 1000
+    deferral window. Deferral (hiding an op, 24h) is functional, so it is
+    generous (never hide an honest TZ-misconfigured peer). Warning is
+    observability only — it adds a `doctor` note, never hides or fails anything —
+    so it is tuned *sensitive*: a false warn costs a note, a missed misconfig
+    costs silent LWW unfairness (a peer's ops ordering "from the future").
+
+    15 minutes. Rationale: (1) the smallest timezone offsets are ±1h, so the
+    common local-time-as-UTC misconfig leads by ~1h — a 1h threshold would miss
+    it; 15min catches it. (2) ≈ NTP's default "panic" offset (1000s ≈ 16.7min),
+    the point at which `ntpd` itself refuses to sync, treating the clock as
+    pathologically wrong. (3) far above NTP-grade jitter (sub-second), so a
+    healthy clock — and any same-machine worktree set (lead ≈ 0) — never trips
+    it. `doctor` flags any clock leading `now` by more than this regardless of
+    whether the op was deferred. -/
+def skewWarnMs : Nat := 15 * 60 * 1000
 
 /-- A refused segment: the first bad line (1-based) and its structured error
     (already carrying the ADR-0020 `segment`/`line` context). -/
