@@ -942,12 +942,48 @@ def cliDoctorSkewTests : IO (List Outcome) := do
     ["list", "--dir", dir2, "--json"] (fun j => jNat j "count" == some 1)]
   return o
 
+/-- Labels (ADR-0002 OR-Set): add (idempotent), remove (noop when absent),
+    the `label list` vocabulary, and the `tl list --label` facet (AND across
+    repeats). -/
+def cliLabelTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let a ← mkIssue dir "alpha"
+  let b ← mkIssue dir "beta"
+  o := o ++ [← expectData "label add echoes added"
+    ["label", "add", "tl-" ++ a, "feature", "--dir", dir]
+    (fun j => jStr j "status" == some "added" && jStr j "label" == some "feature")]
+  o := o ++ [← expectData "label add is idempotent (noop on a present label)"
+    ["label", "add", "tl-" ++ a, "feature", "--dir", dir] (fun j => jStr j "status" == some "noop")]
+  o := o ++ [← expectErr "an empty label is a usage error"
+    ["label", "add", "tl-" ++ a, "", "--dir", dir] .usage]
+  o := o ++ [← expectData "show reflects the label"
+    ["show", "tl-" ++ a, "--dir", dir]
+    (fun j => (jArr j "labels").any (fun l => l.getStr?.toOption == some "feature"))]
+  let _ ← run' ["label", "add", "tl-" ++ a, "parser", "--dir", dir]
+  let _ ← run' ["label", "add", "tl-" ++ b, "feature", "--dir", dir]
+  o := o ++ [← expectData "label list is the vocabulary with issue counts"
+    ["label", "list", "--dir", dir]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "labels").any (fun r => jStr r "label" == some "feature" && jNat r "count" == some 2)
+      && (jArr j "labels").any (fun r => jStr r "label" == some "parser" && jNat r "count" == some 1))]
+  o := o ++ [← expectData "list --label filters to carriers"
+    ["list", "--label", "feature", "--dir", dir, "--json"] (fun j => jNat j "count" == some 2)]
+  o := o ++ [← expectData "list --label is AND across repeats"
+    ["list", "--label", "feature", "--label", "parser", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1 && (jArr j "items").any (fun it => jStr it "id" == some ("tl-" ++ a)))]
+  o := o ++ [← expectData "label remove echoes removed"
+    ["label", "remove", "tl-" ++ a, "parser", "--dir", dir] (fun j => jStr j "status" == some "removed")]
+  o := o ++ [← expectData "label remove is a noop when the label is absent"
+    ["label", "remove", "tl-" ++ a, "parser", "--dir", dir] (fun j => jStr j "status" == some "noop")]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliBinaryTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

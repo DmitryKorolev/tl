@@ -211,7 +211,9 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Resolve.lean          --   id/slug resolution (tl- discriminator, case-fold +
                         --   symbol aliases, prefix/ambiguity — ADR-0007) and the
                         --   ADR-0013 actor chain
-  Commands.lean         --   the stage-1 verbs; write guards run inside the
+  Commands.lean         --   the stage-1 verbs + the agent-surface/ergonomics
+                        --   verbs (reopen/stats/log, sync, label add/remove/list,
+                        --   list --label facet); write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows
   Init.lean             --   tl init (idempotent on an existing replica;

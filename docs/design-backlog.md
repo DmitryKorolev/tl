@@ -62,11 +62,11 @@ Kernel theorems still to decide whether to commit to:
 - `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020);
   the input surface so far: a bare `list` shows **open issues** oldest-first
   (effectively-closed hidden; `--all` includes closed), with `--limit`
-  (default 10, `0` = all) and `--tree` (ADR-0017 §2 forest). The
-  open-by-default question is now decided (this way) and built. Still open:
-  the facet flag spellings (status / assignee / priority / text) and
-  text-match semantics (substring vs word, case folding, which fields)
-  (vision / ADR-0020).
+  (default 10, `0` = all), `--tree` (ADR-0017 §2 forest), and `--label <l>`
+  (repeatable ⇒ AND; built with labels). The open-by-default question is
+  decided (this way) and built. Still open: the *other* facet flag spellings
+  (status / assignee / priority / text) and text-match semantics (substring vs
+  word, case folding, which fields) (vision / ADR-0020).
 - `--json` `data` shapes for the later `dep` utilities
   (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
   `dep cycles`, `why`), `tl help --json`, and now `tl stats` / `tl log` are

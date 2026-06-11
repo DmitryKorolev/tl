@@ -121,7 +121,8 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM 
   return { data := listPayload "items" ranked.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 
-def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool) : TlM CmdOut := do
+def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
+    (labels : List String) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let s := v.state
@@ -132,6 +133,9 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   let sorted := (s.presentIssues.map (fun i => (s.createdAtOf i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
+  -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
+  let sorted := if labels.isEmpty then sorted
+    else sorted.filter (fun i => labels.all (s.issueData i).labels.presentElements.contains)
   let visible := if showAll then sorted else sorted.filter (fun i => !s.effClosed i)
   let openN := (sorted.filter (fun i => (s.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (s.issueData i).statusOf == .InProgress)).length
@@ -538,6 +542,62 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
              if parsed.isEmpty then s!"{displayId a} was not blocked by {displayId b} — nothing to do"
              else s!"{displayId a} is no longer blocked by {displayId b}"
            notes := writeNotes ctx }
+
+/-! ## label verbs -/
+
+def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
+  if label.trimAscii.isEmpty then
+    throw (.mk' .usage "a label must be non-empty — `tl label add <id> <label>`")
+  let d ← discover dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let i ← resolveToken s tok
+    -- idempotent: an already-present label appends nothing (mirrors re-close)
+    if (s.issueData i).labels.presentElements.contains label then .ok []
+    else .ok [.labelAdd i label])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  let status := if parsed.isEmpty then "noop" else "added"
+  return { data := Json.mkObj
+            [("type", Json.str "label"), ("id", Json.str (displayId i)),
+             ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
+           human := if parsed.isEmpty then s!"{displayId i} already has label '{sanitizeSingle label}'"
+                    else s!"Labeled {displayId i} '{sanitizeSingle label}'"
+           notes := writeNotes ctx }
+
+def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
+  let d ← discover dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let i ← resolveToken s tok
+    let lbls := (s.issueData i).labels
+    -- presence, not raw add-tags: a non-present label has nothing to retract
+    if !lbls.presentElements.contains label then .ok []
+    else .ok [.labelRemove i label (lbls.tagsOf label)])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  let status := if parsed.isEmpty then "noop" else "removed"
+  return { data := Json.mkObj
+            [("type", Json.str "label"), ("id", Json.str (displayId i)),
+             ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
+           human := if parsed.isEmpty then s!"{displayId i} had no label '{sanitizeSingle label}' — nothing to do"
+                    else s!"Unlabeled {displayId i} '{sanitizeSingle label}'"
+           notes := writeNotes ctx }
+
+/-- `tl label list`: the label vocabulary — every present label with how many
+    issues carry it (sorted by name, a deterministic read). -/
+def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let s := v.state
+  let countOf (l : String) : Nat :=
+    (s.presentIssues.filter (fun i => (s.issueData i).labels.presentElements.contains l)).length
+  let labels := (s.presentIssues.flatMap (fun i => (s.issueData i).labels.presentElements))
+    |>.eraseDups |>.mergeSort (· ≤ ·)
+  let rows := labels.map (fun l =>
+    Json.mkObj [("label", Json.str (sanitizeSingle l)), ("count", jnum (countOf l))])
+  return { data := Json.mkObj [("count", jnum labels.length), ("labels", Json.arr rows.toArray)]
+           human := if labels.isEmpty then "no labels"
+                    else String.intercalate "\n" (labels.map (fun l => s!"{sanitizeSingle l}  {countOf l}"))
+           notes }
 
 /-! ## doctor / init / version -/
 

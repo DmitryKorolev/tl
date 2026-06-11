@@ -163,7 +163,7 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
-      cmdList (a.get? "dir") limit (a.has "tree") (a.has "all") (a.has "skip-bad")
+      cmdList (a.get? "dir") limit (a.has "tree") (a.has "all") (a.has "skip-bad") (a.getAll "label")
     | "log" => do
       let a ← parse "log"
       let idTok ← match a.positionals with
@@ -225,6 +225,23 @@ def runVerb : List String → TlM CmdOut
         MonadExcept.ofExcept (noPositionals a "dep cycles")
         cmdDepCycles (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "dep takes add|remove|cycles")
+    | "label" => do
+      match rest with
+      | "add" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label add" ++ globalVal) (boolFlagsOf "label add" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdLabelAdd (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "label add takes <id> <label>")
+      | "remove" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label remove" ++ globalVal) (boolFlagsOf "label remove" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdLabelRemove (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "label remove takes <id> <label>")
+      | "list" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label list" ++ globalVal) (boolFlagsOf "label list" ++ globalBool) rest')
+        MonadExcept.ofExcept (noPositionals a "label list")
+        cmdLabelList (a.get? "dir") (a.has "skip-bad")
+      | _ => throw (usageErr "label takes add|remove|list")
     | "sync" => do
       let a ← parse "sync"
       MonadExcept.ofExcept (noPositionals a "sync")

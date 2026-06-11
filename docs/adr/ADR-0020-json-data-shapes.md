@@ -148,6 +148,28 @@ ADR-0003):
 (`"status": "removed"` for `dep remove`; a remove that observed no live tags
 still succeeds — add-wins semantics — with `"status": "noop"`.)
 
+**`tl label add / label remove --json`** — a label ack in the same shape as the
+relationship ack (`status` ∈ `added` / `removed` / `noop`; an add of a present
+label or a remove of an absent one is the idempotent `noop`):
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "type": "label", "id": "tl-kz8w2n4jp7e9h3vt", "label": "feature", "status": "added"
+} }
+```
+
+**`tl label list --json`** — the label vocabulary: every present label with how
+many issues carry it, sorted by name; `count` is the number of distinct labels.
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "count": 2, "labels": [ { "label": "feature", "count": 3 }, { "label": "parser", "count": 1 } ]
+} }
+```
+
+(`tl list --label <l>` is the issue-facet counterpart — repeatable, AND across
+repeats; its rows are the pinned `list` item shape, unchanged.)
+
 **`tl why <id> --json`** — the not-ready reasons, flat and omit-empty;
 `blockedBy` is the *transitive unclosed* blocker set (ADR-0004 thm 10) with
 enough context to act on each:
