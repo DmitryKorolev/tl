@@ -116,6 +116,27 @@ it into the shared ref via B's (auto-)sync. The local-first leg makes both
 a mutation visible before the writer publishes it (segment-per-mutation,
 ref-at-sync). Fully sandboxed agents reconcile only through the remote leg.
 
+### 6. Build order when sync is implemented (decided)
+
+The two transports share most machinery, so the order is layered, not a
+fork. (1) Build the **shared core first**: `refs/tl/log` read/write via git
+plumbing and the per-segment complete-line union merge — both transports use
+it unchanged. (2) Then the **local-first worktree leg** (this ADR): it needs
+no remote, no auth, no push-rejection/retry, no `no-upstream` — the smallest
+increment that delivers a real milestone (same-machine worktree-per-agent
+sharing) and exercises the shared core end to end. (3) Then the **remote
+fetch/push leg** (ADR-0001 §5): push-rejection retry, `no-upstream`, and the
+auto-sync offer, layered on the now-proven core — this is the leg that makes
+state *travel to other clones*.
+
+Rationale: worktree-first sequences riskiest-code-last (remote transport
+complexity sits atop a core already validated locally) and reaches a working
+sharing milestone earliest; the remote leg, which is what a shareable
+dogfood backlog ultimately wants, reuses every piece below it. For a
+single-agent / single-checkout user neither leg is on the critical path —
+the single checkout already works — so this order costs nothing to defer
+and nothing to resume.
+
 ## Consequences
 
 - Worktree agents coordinate with zero network and near-live visibility. The
