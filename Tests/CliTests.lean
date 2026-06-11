@@ -336,9 +336,13 @@ def cliBinaryTests : IO (List Outcome) := do
      check "a ceiling directory stops discovery" (ceiled.exitCode == 3) ceiled.stdout]
   return o
 
-/-- A canonical foreign-segment line built through the real codec. -/
-private def foreignLine (op : WireOp) (hlc : Nat) (actor : String) : String :=
-  renderLine { v := supportedVersion, op, stamp := ⟨hlc, 1, 1⟩, actor := some actor }
+/-- A canonical line for a crafted segment. The stamp's replica is the
+    segment stem's decoded value — the decode-side owner check (segments are
+    per-replica authored, ADR-0001) refuses anything else. -/
+private def foreignLine (op : WireOp) (hlc : Nat) (stem : String) (actor : String)
+    (nonce : Nat := 1) : String :=
+  renderLine { v := supportedVersion, op,
+               stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some actor }
 
 def cliReviewTests : IO (List Outcome) := do
   let mut o : List Outcome := []
@@ -392,7 +396,7 @@ def cliReviewTests : IO (List Outcome) := do
   -- a hostile foreign segment: skip-bad folds around it; writes disclose it
   let dir2 ← freshDir
   let _ ← mkIssue dir2 "Mine"
-  let foreignOk := foreignLine (.create "aaaabbbbccccdddd" { title := some "Foreign" }) 99 "eve"
+  let foreignOk := foreignLine (.create "aaaabbbbccccdddd" { title := some "Foreign" }) 99 "1zzzzzzzzzzzz" "eve"
   IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "1zzzzzzzzzzzz.jsonl")
     (foreignOk ++ "
 GARBAGE
@@ -433,7 +437,7 @@ GARBAGE
   let target ← mkIssue dir3 "Contested"
   let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--assignee", "carol"]
   let farFuture := 0x7000000000000000
-  let foreignClaim := foreignLine (.claim target "eve") farFuture "eve"
+  let foreignClaim := foreignLine (.claim target "eve") farFuture "2zzzzzzzzzzzz" "eve"
   IO.FS.writeFile (System.FilePath.mk dir3 / "log" / "2zzzzzzzzzzzz.jsonl")
     (foreignClaim ++ "
 ")
@@ -497,9 +501,74 @@ def cliDescriptionTests : IO (List Outcome) := do
       empty.stdout]
   return o
 
+/-- The consistency batch: stamp-ordered provenance ties, mode-scoped
+    `--of`, segment-owner validation, junk stems, hardened enumeration. (The
+    ownership *refusal* itself needs a second uid and stays untestable here;
+    its mechanism rides every open via the shim walk.) -/
+def cliConsistencyTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  -- --of is mode-scoped: only --as duplicate
+  let x ← mkIssue dir "OfGuard"
+  o := o ++ [← expectErr "--of without --as duplicate is usage"
+    ["close", "tl-" ++ x, "--dir", dir, "--as", "done", "--of", "tl-" ++ x] .usage]
+  -- same-HLC cross-replica lifecycle ties: the projection must agree with
+  -- the LWW state in BOTH directions (the bare-hlc comparison bug class)
+  let a ← mkIssue dir "TieA"
+  let b ← mkIssue dir "TieB"
+  let h := 0x6000000000000000
+  let log := System.FilePath.mk dir / "log"
+  IO.FS.writeFile (log / "1zzzzzzzzzzzz.jsonl")
+    (foreignLine (.close a .Done) h "1zzzzzzzzzzzz" "eve" 1 ++ "\n"
+      ++ foreignLine (.reopen b) h "1zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  IO.FS.writeFile (log / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.reopen a) h "2zzzzzzzzzzzz" "mallory" 1 ++ "\n"
+      ++ foreignLine (.close b .Done) h "2zzzzzzzzzzzz" "mallory" 2 ++ "\n")
+  o := o ++
+    [← expectData "same-hlc reopen wins by stamp order: open, no closedAt"
+      ["show", "tl-" ++ a, "--dir", dir]
+      (fun j => jStr j "status" == some "open" && (jStr j "closedAt").isNone),
+     ← expectData "same-hlc close wins by stamp order: done, closedAt present"
+      ["show", "tl-" ++ b, "--dir", dir]
+      (fun j => jStr j "status" == some "done" && (jStr j "closedAt").isSome)]
+  -- a record stamped by another replica refuses its segment
+  let dir2 ← freshDir
+  let _ ← mkIssue dir2 "Mine"
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "1zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbccccdddd" { title := some "smuggled" }) 99
+       "2zzzzzzzzzzzz" "eve" ++ "\n")
+  o := o ++
+    [← expectData "a mis-assembled segment (wrong stamp replica) is refused"
+      ["list", "--dir", dir2, "--limit", "0"]
+      (fun j => jNat j "count" == some 1)]
+  -- junk .jsonl stems are disclosed and never folded
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "not-a-replica.jsonl") "GARBAGE\n"
+  let junkRes ← run' ["list", "--dir", dir2, "--limit", "0"]
+  o := o ++ [match junkRes with
+    | .ok out =>
+      check "junk .jsonl stem is disclosed, not folded"
+        (out.notes.any (fun n => (n.splitOn "not a replica segment").length > 1))
+        (String.intercalate "|" out.notes)
+    | .error e =>
+      { name := "junk .jsonl stem is disclosed, not folded", passed := false,
+        msg := e.message }]
+  -- a symlinked log/ refuses the LISTING (not just the later per-file opens)
+  let dir3 ← freshDir
+  let _ ← mkIssue dir3 "X"
+  let realLog ← IO.FS.createTempDir
+  IO.FS.removeDirAll (System.FilePath.mk dir3 / "log")
+  let ln ← IO.Process.output
+    { cmd := "ln", args := #["-s", realLog.toString, dir3 ++ "/log"] }
+  o := o ++
+    [check "ln -s for the log-dir fixture" (ln.exitCode == 0) ln.stderr,
+     ← expectErr "a symlinked log/ refuses the listing" ["list", "--dir", dir3]
+       .unsafePath]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
-    ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliBinaryTests)
+    ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
+    ++ (← cliBinaryTests)
 
 end Tl.Tests

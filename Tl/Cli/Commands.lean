@@ -112,13 +112,15 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
   let ownVal ← own.toNat?
   let claims := v.loaded.ops.filterMap (fun p =>
     match p.op with
-    | .claim ci actor => if ci == i && p.stamp.replica == ownVal then some (p.stamp.hlc, actor) else none
+    | .claim ci actor => if ci == i && p.stamp.replica == ownVal then some (p.stamp, actor) else none
     | _ => none)
-  let (h, actor) ← claims.foldl (fun acc c =>
+  -- latest own claim by the FULL stamp order (the cross-op comparison rule,
+  -- Tl/Cli/Project.lean §provenance)
+  let (st, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
-    | some m => some (if m.1 ≤ c.1 then c else m)) none
-  let ageMs := v.now - h / 2 ^ 16
+    | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
+  let ageMs := v.now - st.hlc / 2 ^ 16
   if ageMs > 24 * 3600 * 1000 then none
   else
     let current := (v.state.issueData i).assignee.value.getD none
@@ -269,6 +271,10 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     (ofTok : Option String) (actor : String) : TlM CmdOut := do
   let some res := resolutionOfWire? asStr
     | throw (.mk' .usage s!"--as must be done|cancelled|duplicate (got '{asStr}')")
+  -- a mode-scoped flag is usage-checked against its mode: --of names the
+  -- duplicate's canonical issue and means nothing for done/cancelled
+  if ofTok.isSome && res != .Duplicate then
+    throw (.mk' .usage "--of names the canonical issue of a duplicate — it only pairs with --as duplicate")
   let d ← discover dirOverride
   let (ctx, parsed) ← transact d (some actor) 2 (fun ctx _ => do
     let s := ctx.loaded.state

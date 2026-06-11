@@ -13,6 +13,12 @@ parses contributes to `maxHlc` — including lines of a refused segment before
 and after its bad line — because the absent-clock reseed needs the max over
 the working copy's visible past writes, and a refused segment's good lines
 are still past writes.
+
+Container/record consistency is validated here too: segments are
+per-replica authored (ADR-0001), so a record whose stamp replica does not
+encode to its segment's name is a malformed line — it rides the exact same
+refusal/`--skip-bad`/disclosure machinery as a parse failure, never a new
+code path.
 -/
 import Tl.Store.Segment
 import Tl.Format.Codec
@@ -68,7 +74,15 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool) :
       match String.fromUTF8? lineBytes with
       | none => .error (.mk' .malformedLine
           "the line is not valid UTF-8 — repair it or rerun the read with --skip-bad")
-      | some line => decodeLine line
+      | some line =>
+        match decodeLine line with
+        | .ok p =>
+          -- segments are per-replica authored (ADR-0001): a record stamped
+          -- by another replica cannot live in this file
+          if toCrockford p.stamp.replica 13 == sd.replicaId then .ok p
+          else .error (.mk' .malformedLine
+            s!"the record is stamped by replica {toCrockford p.stamp.replica 13} but sits in {sd.replicaId}.jsonl — the segment is mis-assembled; restore it from sync or remove it")
+        | .error e => .error e
     match decoded with
     | .ok p =>
       maxHlc := max maxHlc p.stamp.hlc
@@ -104,8 +118,11 @@ def materialize (segs : List SegmentData) (skipBad : Bool := false) : Loaded := 
            ops := allOps, refused, skipped, maxHlc, warnings
            segmentCount := segs.length }
 
-/-- The lock-free read path: enumerate, read, materialize (ADR-0015 §5). -/
+/-- The lock-free read path: enumerate, read, materialize (ADR-0015 §5);
+    enumeration disclosures (ignored non-segment files) join the warnings. -/
 def readState (d : Dirs) (skipBad : Bool := false) : TlM Loaded := do
-  return materialize (← readSegments d) skipBad
+  let (segs, notes) ← readSegments d
+  let loaded := materialize segs skipBad
+  return { loaded with warnings := notes ++ loaded.warnings }
 
 end Tl.Store

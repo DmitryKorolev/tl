@@ -74,7 +74,11 @@ LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {
 #include <sys/random.h>
 #endif
 
+/* Synthetic token for the ADR-0015 §6 ownership refusal (no errno fits). */
+#define TL_E_NOTOWNED (-9001)
+
 static const char *tl_errno_name(int e) {
+    if (e == TL_E_NOTOWNED) return "ENOTOWNED";
     switch (e) {
     case ELOOP: return "ELOOP";
     case EEXIST: return "EEXIST";
@@ -99,7 +103,9 @@ static const char *tl_errno_name(int e) {
 
 static lean_obj_res tl_sys_err(const char *op, int e) {
     char buf[512];
-    snprintf(buf, sizeof buf, "tlsys:%s:%s: %s", op, tl_errno_name(e), strerror(e));
+    const char *detail =
+        (e == TL_E_NOTOWNED) ? "path component not owned by the caller" : strerror(e);
+    snprintf(buf, sizeof buf, "tlsys:%s:%s: %s", op, tl_errno_name(e), detail);
     return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string(buf)));
 }
 
@@ -111,15 +117,22 @@ static lean_obj_res tl_sys_err(const char *op, int e) {
 #define TL_F_DIRECTORY 16u
 #define TL_F_CREATE 32u
 
+/* The ADR-0015 §6 ownership check, applied to every opened component. */
+static int tl_owned_by_caller(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) return -1;
+    return st.st_uid == geteuid() ? 1 : 0;
+}
+
 /*
- * Open `rel` under the directory `base`, refusing to follow a symlink at ANY
- * `rel` component (ADR-0015 §6): each `rel` directory component is opened
- * with openat(O_NOFOLLOW|O_DIRECTORY), the final component with the caller's
- * flags plus O_NOFOLLOW|O_CLOEXEC. The base itself is opened with NORMAL
- * symlink semantics — the §6 discipline is scoped to the `.tl` components;
- * a repo root reached through a symlinked ancestor (a macOS /var temp dir, a
+ * Open `rel` under the directory `base`, refusing a symlink at ANY `rel`
+ * component (openat(O_NOFOLLOW) per component) AND refusing any component
+ * not owned by the caller (ADR-0015 §6 — the check rides every open, so no
+ * caller can forget it). The base itself keeps NORMAL symlink/ownership
+ * semantics — the §6 discipline is scoped to the `.tl` components; a repo
+ * root reached through a symlinked ancestor (a macOS /var temp dir, a
  * symlinked home) is legitimate. An empty base means the current directory.
- * Returns the fd, or -1 with *err_out set.
+ * Returns the fd, or -1 with *err_out set (TL_E_NOTOWNED for ownership).
  */
 static int tl_open_walk(const char *base, const char *rel, int final_flags, int *err_out) {
     if (rel[0] == '\0') { *err_out = EINVAL; return -1; }
@@ -144,6 +157,13 @@ static int tl_open_walk(const char *base, const char *rel, int final_flags, int 
         int e = errno;
         if (dirfd != AT_FDCWD) close(dirfd);
         if (fd < 0) { *err_out = e; free(dup); return -1; }
+        int owned = tl_owned_by_caller(fd);
+        if (owned != 1) {
+            *err_out = (owned == 0) ? TL_E_NOTOWNED : errno;
+            close(fd);
+            free(dup);
+            return -1;
+        }
         dirfd = fd;
         tok = next;
     }

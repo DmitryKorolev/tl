@@ -14,6 +14,7 @@ writer never appends onto a newline-less tail), then one `O_APPEND` write
 per record line, then fsync. All opens ride the no-follow walk (§6).
 -/
 import Tl.Store.Paths
+import Tl.Clock.Replica
 
 namespace Tl.Store
 
@@ -23,16 +24,29 @@ structure SegmentData where
   bytes : ByteArray
 
 /-- The replica ids with a segment on disk, sorted (deterministic fold and
-    display order; the fold itself is order-insensitive — ADR-0004). -/
-def enumerateSegments (d : Dirs) : TlM (List String) := do
-  let dirPath := d.logPath
-  unless ← liftSys (fun e => .mk' .internal s!"{e}") dirPath.pathExists do
-    return []
+    display order; the fold itself is order-insensitive — ADR-0004), plus a
+    disclosure per ignored `.jsonl` whose stem is not a canonical replica id
+    (segments are per-replica files, ADR-0001 — anything else in `log/` is
+    junk, never silently folded *or* silently dropped). The directory is
+    no-follow/ownership-validated through the shim before listing, so a
+    symlinked or foreign-owned `log/` is refused at the listing itself, not
+    only at the later per-file opens. Non-`.jsonl` names (editor droppings,
+    `.DS_Store`) are OS noise, ignored silently. -/
+def enumerateSegments (d : Dirs) : TlM (List String × List String) := do
+  match ← (Sys.openNoFollow d.base d.relLog Sys.flagDirectory).toBaseIO with
+  | .error e =>
+    match Sys.errnoOf e with
+    | some "ENOENT" => return ([], [])
+    | _ => throw (mapSysError d.relLog e)
+  | .ok fd => liftSys (mapSysError d.relLog) (Sys.close fd)
   let entries ← liftSys (fun e => .mk' .internal s!"cannot list {d.relLog}: {e}")
-    dirPath.readDir
-  let ids := entries.toList.filterMap (fun ent =>
+    d.logPath.readDir
+  let stems := entries.toList.filterMap (fun ent =>
     if ent.fileName.endsWith ".jsonl" then some (ent.fileName.dropEnd 6).toString else none)
-  return ids.mergeSort (fun a b => decide (a ≤ b))
+  let (ids, junk) := stems.partition (fun stem => (Tl.Clock.Replica.mk stem).valid)
+  return (ids.mergeSort (fun a b => decide (a ≤ b)),
+          junk.map (fun stem =>
+            s!"ignored {d.relLog}/{stem}.jsonl: not a replica segment (the name is not a canonical replica id)"))
 
 /-- Read one segment's bytes (a segment that vanished between enumerate and
     read counts as empty — only a concurrent cleanup can cause it). -/
@@ -45,10 +59,12 @@ def readSegment (d : Dirs) (replicaId : String) : TlM ByteArray := do
     | some "ENOENT" => return ByteArray.empty
     | _ => throw (mapSysError rel e)
 
-/-- All segments, in enumeration order. -/
-def readSegments (d : Dirs) : TlM (List SegmentData) := do
-  (← enumerateSegments d).mapM fun rid => do
-    return { replicaId := rid, bytes := ← readSegment d rid }
+/-- All segments, in enumeration order, plus enumeration disclosures. -/
+def readSegments (d : Dirs) : TlM (List SegmentData × List String) := do
+  let (ids, notes) ← enumerateSegments d
+  let segs ← ids.mapM fun rid => do
+    return ({ replicaId := rid, bytes := ← readSegment d rid } : SegmentData)
+  return (segs, notes)
 
 /-- The complete LF-terminated lines (without their LF); a trailing
     fragment without a newline is dropped (ADR-0015 §5). Iterates the bytes

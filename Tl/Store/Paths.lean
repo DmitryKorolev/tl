@@ -70,6 +70,10 @@ def mapSysError (rel : String) (e : IO.Error) : Tl.Error :=
     { code := .unsafePath
       message := s!"refusing {rel}: a path component is not a real directory (a symlink is not followed under .tl) — repair the .tl layout and retry"
       context := [("path", .str rel), ("reason", .str "symlink")] }
+  | some "ENOTOWNED" =>
+    { code := .unsafePath
+      message := s!"refusing {rel}: a path component is not owned by you — chown the .tl tree (or point --dir at your own state)"
+      context := [("path", .str rel), ("reason", .str "ownership")] }
   | _ => .mk' .internal s!"unexpected I/O failure on {rel}: {e}"
 
 /-- Run a shim action, mapping `IO.Error`s to structured errors via `f`. -/
@@ -87,17 +91,14 @@ def noProject (where_ : String) : Tl.Error :=
     initialized (`local/` exists — an empty directory is `no-project`,
     ADR-0012). Returns the validated `Dirs`. -/
 def validate (d : Dirs) : TlM Dirs := do
+  -- the shim's component walk enforces no-follow AND ownership on every
+  -- open (ADR-0015 §6), so validation is just the opens themselves
   let fd ← liftSys (fun e =>
       match Sys.errnoOf e with
       | some "ENOENT" => noProject s!"at {d.tlPath}"
       | _ => mapSysError d.tlRel e)
     (Sys.openNoFollow d.base d.tlRel Sys.flagDirectory)
-  let owned ← liftSys (mapSysError d.tlRel) do
-    try Sys.ownedByCaller fd finally Sys.close fd
-  unless owned do
-    throw { code := .unsafePath
-            message := s!"refusing {d.tlPath}: the state directory is not owned by you — chown it (or point --dir at your own state)"
-            context := [("path", .str d.tlPath), ("reason", .str "ownership")] }
+  liftSys (mapSysError d.tlRel) (Sys.close fd)
   -- initialized ⇔ local/ exists (init always creates it; an empty dir is not a project)
   let localFd ← liftSys (fun e =>
       match Sys.errnoOf e with

@@ -251,7 +251,10 @@ both with a stated policy:
   `--skip-bad` to drop it with disclosure). A writer never appends onto a
   newline-less tail, so a crash can damage at most the one in-flight record.
 - A malformed line mid-segment (a bad manual edit, a botched merge, or a
-  hostile/garbage record another replica pushed) — the parser fails closed by
+  hostile/garbage record another replica pushed) — including a complete,
+  well-formed record whose stamp `replica` does not encode to its segment's
+  file name: segments are per-replica authored (ADR-0001), so a mis-assembled
+  segment is damage of this same class. The parser fails closed by
   default at *segment* granularity: it refuses only the offending segment,
   folds every other segment, and emits a loud diagnostic naming the bad segment
   and its owning replica/actor. An explicit `--skip-bad` (a.k.a. `--repair`)

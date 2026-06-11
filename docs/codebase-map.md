@@ -115,15 +115,22 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   (ADR-0015 §1)
   Segment.lean          --   segment append/enumerate/read; torn-tail skip;
                         --   crash-fragment closing; one O_APPEND write per
-                        --   record + fsync (ADR-0008 §corruption, ADR-0015 §2/§5)
+                        --   record + fsync (ADR-0008 §corruption, ADR-0015
+                        --   §2/§5); enumeration validates log/ through the
+                        --   shim walk before listing and only canonical
+                        --   replica-id stems count as segments (junk .jsonl
+                        --   disclosed, never silently folded or dropped)
   Materialize.lean      --   records → ops → fold into kernel State; segment-
-                        --   scoped fail-closed with --skip-bad disclosures;
+                        --   scoped fail-closed with --skip-bad disclosures
+                        --   (incl. the record/segment owner check — a record
+                        --   stamped by another replica is a malformed line);
                         --   line-scoped max-HLC scan (the clock reseed)
                         --   (Tl/Sync composes Store primitives — own-segment
                         --   snapshot under lock, atomic foreign-cache replace —
                         --   rather than owning segment I/O)
   Sys.lean              --   bindings to the native shim (ffi/tlsys.c): no-follow
-                        --   two-part open (base follows, rel never), read/write,
+                        --   + ownership-checked two-part open (the §6 checks
+                        --   ride EVERY component of every open), read/write,
                         --   fsync (F_FULLFSYNC on Darwin), fd lock, OS entropy,
                         --   ownership check — mechanism only (ADR-0019); compiled
                         --   with the host cc (the bundled clang ships no macOS
@@ -152,7 +159,9 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   the deliberate member order (ADR-0008/0020)
   Project.lean          --   the read View + issue projections: the full object
                         --   and trimmed rows (omit-empty, display ids, forced-ms
-                        --   timestamps), fold-time provenance, dependencies +
+                        --   timestamps), fold-time provenance (cross-op recency
+                        --   compares the FULL Stamp — the LWW order — never the
+                        --   bare HLC), dependencies +
                         --   canonical parent, the provenance trust block
                         --   (ADR-0003/0020)
   Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-

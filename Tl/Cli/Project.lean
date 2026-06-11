@@ -46,51 +46,70 @@ def hlcIso (hlc : Nat) : String :=
   let s := Time.isoOfEpochMs (hlc / 2 ^ 16)
   if s.toList.contains '.' then s else (s.dropEnd 1).toString ++ ".000Z"
 
-/-! ## Fold-time provenance (ADR-0008) -/
+/-! ## Fold-time provenance (ADR-0008)
+
+Rule: every cross-op recency comparison uses the FULL `Stamp` order — the
+LWW order on `(hlc, replica, nonce)` — never the bare HLC. Two replicas can
+write lifecycle ops at the same HLC; the materialized state is decided by
+the full triple, and a projection comparing bare HLCs would disagree with it
+(a closed issue rendered without `closedAt`). Rendered timestamps then take
+the *winning stamp's* HLC. -/
+
+/-- The later of an optional stamp and a new one, by the LWW order. -/
+private def laterStamp : Option Stamp → Stamp → Option Stamp
+  | none, s => some s
+  | some m, s => some (if TotalOrd.le m s then s else m)
 
 structure Prov where
-  createdAt : Option Nat := none
-  updatedAt : Option Nat := none
-  lastClose : Nat := 0
-  lastReopen : Nat := 0
-  lastClaim : Nat := 0
-  createdBy : Option String := none
-  createdReplica : Option Nat := none
+  /-- The earliest `create` (by stamp order) and its actor. -/
+  created : Option (Stamp × Option String) := none
+  updated : Option Stamp := none
+  lastClose : Option Stamp := none
+  lastReopen : Option Stamp := none
+  lastClaim : Option Stamp := none
 
 /-- One pass over the log for one issue's provenance projections. -/
 def provenanceOf (ops : List ParsedOp) (id : IssueId) : Prov := Id.run do
   let mut pr : Prov := {}
   for p in ops do
-    let h := p.stamp.hlc
-    let bump (pr : Prov) : Prov :=
-      { pr with updatedAt := some (max (pr.updatedAt.getD 0) h) }
+    let st := p.stamp
+    let bump (pr : Prov) : Prov := { pr with updated := laterStamp pr.updated st }
     match p.op with
     | .create i _ =>
       if i == id then
-        if pr.createdAt.all (h < ·) then
-          pr := { pr with createdAt := some h, createdBy := p.actor,
-                          createdReplica := some p.stamp.replica }
+        if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c)) then
+          pr := { pr with created := some (st, p.actor) }
         pr := bump pr
     | .update i _ => if i == id then pr := bump pr
     | .claim i _ =>
-      if i == id then pr := { bump pr with lastClaim := max pr.lastClaim h }
+      if i == id then pr := { bump pr with lastClaim := laterStamp pr.lastClaim st }
     | .close i _ =>
-      if i == id then pr := { bump pr with lastClose := max pr.lastClose h }
+      if i == id then pr := { bump pr with lastClose := laterStamp pr.lastClose st }
     | .reopen i =>
-      if i == id then pr := { bump pr with lastReopen := max pr.lastReopen h }
+      if i == id then pr := { bump pr with lastReopen := laterStamp pr.lastReopen st }
     | .defer i _ => if i == id then pr := bump pr
     | .undefer i => if i == id then pr := bump pr
     | _ => pure ()
   return pr
 
-/-- `closedAt` — absent once reopened (ADR-0008). -/
-def Prov.closedAt (pr : Prov) : Option Nat :=
-  if pr.lastClose > pr.lastReopen && pr.lastClose > 0 then some pr.lastClose else none
+def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
+def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
+def Prov.createdBy (pr : Prov) : Option String := pr.created.bind (·.2)
+def Prov.createdReplica (pr : Prov) : Option Nat := pr.created.map (·.1.replica)
 
-/-- `claimedAt` — the latest claim later than any close/reopen (ADR-0008). -/
-def Prov.claimedAt (pr : Prov) : Option Nat :=
-  if pr.lastClaim > max pr.lastClose pr.lastReopen && pr.lastClaim > 0 then
-    some pr.lastClaim
+/-- `closedAt` — absent once reopened (ADR-0008); the close wins exactly when
+    it beats every reopen in the stamp order, mirroring the LWW state. -/
+def Prov.closedAt (pr : Prov) : Option Nat := do
+  let c ← pr.lastClose
+  if pr.lastReopen.all (fun r => decide (TotalOrd.lt r c)) then some c.hlc else none
+
+/-- `claimedAt` — the latest claim later (in stamp order) than any
+    close/reopen (ADR-0008). -/
+def Prov.claimedAt (pr : Prov) : Option Nat := do
+  let c ← pr.lastClaim
+  if pr.lastClose.all (fun x => decide (TotalOrd.lt x c))
+      && pr.lastReopen.all (fun x => decide (TotalOrd.lt x c)) then
+    some c.hlc
   else none
 
 /-! ## Derived booleans (vision §states) -/

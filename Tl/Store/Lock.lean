@@ -97,8 +97,9 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
   let fd ← acquireLock d timeoutMs
   try
     let replica ← loadOrMintReplica d
-    let segs ← readSegments d
-    let loaded := materialize segs
+    let (segs, segNotes) ← readSegments d
+    let loaded0 := materialize segs
+    let loaded := { loaded0 with warnings := segNotes ++ loaded0.warnings }
     -- a refused OWN segment fails the write: guards would run against a
     -- wrong fold, and the segment needs repair anyway (ADR-0008 §corruption)
     if let some r := loaded.refused.find? (·.replicaId == replica.id) then
