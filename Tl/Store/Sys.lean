@@ -74,6 +74,14 @@ opaque ownedByCaller (fd : UInt32) : IO Bool
 @[extern "tl_sys_close"]
 opaque close (fd : UInt32) : IO Unit
 
+/-- Create `rel` under `base` like a no-follow `createDirAll`: each component
+    is created then descended through a no-follow/ownership-checked open, so a
+    symlink planted as any `.tl` component is refused, never followed and
+    created through (ADR-0015 §6). Idempotent. The toolchain exposes no
+    no-follow `mkdir`, hence this shim entry. -/
+@[extern "tl_sys_mkdir"]
+opaque mkdirNoFollow (base : @&String) (rel : @&String) : IO Unit
+
 /-- A whole byte buffer as a big-endian `Nat` (entropy → numeric ids); a
     plain list fold, so no index can panic. Callers check the buffer length
     (the width *is* the contract — 8 entropy bytes are a 64-bit id). -/

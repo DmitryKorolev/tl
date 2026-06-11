@@ -149,11 +149,18 @@ def discover (override : Option String := none) : TlM Dirs := do
         IO.currentDir
       let ceilings ← liftSys (fun e => .mk' .internal s!"environment read failed: {e}")
         (IO.getEnv "GIT_CEILING_DIRECTORIES")
-      -- entries compare textually (like git's), but tolerate a trailing slash
-      let ceilingList := (ceilings.getD "").splitOn ":" |>.filter (· ≠ "")
-        |>.map (fun c =>
-          let t := String.ofList (c.toList.reverse.dropWhile (· == '/') |>.reverse)
-          if t.isEmpty then c else t)
+      -- canonicalize each ceiling entry like git does (realpath), so a
+      -- logical/symlinked entry still matches the canonical walk dirs
+      -- (`IO.currentDir` is already canonical, and `.parent` keeps it so);
+      -- an entry that does not resolve falls back to its trailing-slash-
+      -- trimmed text.
+      let rawCeilings := (ceilings.getD "").splitOn ":" |>.filter (· ≠ "")
+      let ceilingList ← rawCeilings.mapM fun (c : String) => do
+        match ← (IO.FS.realPath (FilePath.mk c)).toBaseIO with
+        | .ok p => pure p.toString
+        | .error _ =>
+          pure (let t := String.ofList (c.toList.reverse.dropWhile (· == '/') |>.reverse)
+                if t.isEmpty then c else t)
       let rec walk (dir : FilePath) (fuel : Nat) : TlM Dirs := do
         match fuel with
         | 0 => throw (noProject "here (search depth exhausted)")

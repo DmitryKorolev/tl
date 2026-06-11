@@ -105,10 +105,23 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
     if let some r := loaded.refused.find? (·.replicaId == replica.id) then
       throw r.error
     let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
+    -- the max HLC the OWN segment already carries — the floor every minted
+    -- stamp must clear so this replica's new writes always beat its past
+    -- ones (ADR-0007 monotonicity). Decoding the own segment is bounded; the
+    -- 4th component of decodeSegment is its line-scoped max HLC.
+    let ownMax : Nat := match segs.find? (·.replicaId == replica.id) with
+      | some sd => let (_, _, _, m, _) := decodeSegment sd true; m
+      | none => 0
     let clock0 ← match ← loadClock d with
-      | some h => pure h
+      -- a present clock can be STALE — a crash in the §1 window after
+      -- append+fsync but before persist-clock leaves it below the segment,
+      -- and a stray `init` can zero it — so floor it by the own-segment max
+      -- regardless; localEvent then advances past `now` as usual.
+      | some h => pure (unpackHlc (max h.pack ownMax))
       | none =>
-        -- the pinned absent-clock reseed (ADR-0007), inside the lock
+        -- the pinned absent-clock reseed (ADR-0007): max over ALL segments
+        -- (covers the byte-copied orphan whose past writes are under the old
+        -- replica id) and now, inside the lock
         pure (unpackHlc (max loaded.maxHlc (now * 2 ^ 16)))
     let ctx : TxContext := { dirs := d, replica, loaded, now }
     let some replicaVal := replica.toNat?

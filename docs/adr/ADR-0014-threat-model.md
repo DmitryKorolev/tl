@@ -101,8 +101,15 @@ folded/imported content as untrusted data, never instructions:
   The concrete sanitization spec, pinned (revisable during 0.x, ADR-0008
   §Stability horizon):
   - *Single-line fields* — `title`, `assignee`, `slug`, the rendered `actor`
-    (`createdBy` projection), each label, each `meta` key and value: bounded
-    at **1 KiB** each; **all** control characters stripped.
+    (`createdBy` projection), each label, each `meta` value: bounded
+    at **1 KiB** each; **all** control characters stripped. A `meta` *key* is
+    the one carve-out: on the `--json` path it is **escaped, not stripped**
+    (emitted as-is, the encoder neutralizing control bytes), because stripping
+    two distinct stored keys to the same output key would silently collapse
+    them in the JSON object — silent data loss the no-silent-caps rule
+    forbids. Stage-1 human output renders no `meta` map, so there is no
+    human-path key exposure; if a later stage renders meta for humans, its
+    key display strips like any single-line field.
   - *Multi-line fields* — `description`, `notes`: bounded at **64 KiB**;
     LF and TAB are the only control characters retained.
   - *Both classes*: ANSI escape sequences (CSI/OSC), zero-width codepoints

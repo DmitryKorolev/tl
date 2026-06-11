@@ -92,8 +92,11 @@ def tornTail (bytes : ByteArray) : Bool :=
     one `O_APPEND` write per record (§2), fsync (§2; F_FULLFSYNC on Darwin). -/
 def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
     (closeFragment : Bool) : TlM Unit := do
-  liftSys (fun e => .mk' .internal s!"cannot create {d.relLog}: {e}")
-    (IO.FS.createDirAll d.logPath)
+  -- create .tl/log through the no-follow shim mkdir (a planted
+  -- `.tl/log -> /elsewhere` symlink is refused, never followed and created
+  -- through — ADR-0015 §6; init makes only .tl/local, so the first write is
+  -- what creates log/)
+  liftSys (mapSysError d.relLog) (Sys.mkdirNoFollow d.base d.relLog)
   let rel := d.relSegment replicaId
   liftSys (mapSysError rel) do
     let fd ← Sys.openNoFollow d.base rel (Sys.flagCreate ||| Sys.flagAppend)

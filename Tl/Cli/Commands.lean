@@ -308,10 +308,22 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   let v := writeNow ctx parsed
   -- the echo target: re-resolve against the post view (parsed may be empty)
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
-  let freed := (ctx.loaded.state.unblocks ctx.now i).map (Json.str ∘ displayId)
+  -- compute the echo from the POST-fold state, not the assumed result: a
+  -- concurrent later-stamped foreign claim/reopen can outrank this close in
+  -- LWW, so the issue may not actually be closed. `unblocked` is the proved
+  -- freed set over the post state, and the message reports what really held.
+  let actuallyClosed := (v.state.issueData i).statusOf.closed
+  -- `unblocks` is the ready-diff `ready (withClosed s i) \ ready s`, so it is
+  -- computed on the PRE-state (where i is still open — on the post-state the
+  -- diff is empty). Report it only when the close actually took effect: a
+  -- superseded close frees nothing.
+  let freed := if actuallyClosed then (ctx.loaded.state.unblocks ctx.now i).map (Json.str ∘ displayId)
+               else []
   let data := (issueObj v i).setObjVal! "unblocked" (Json.arr freed.toArray)
   let human :=
     if parsed.isEmpty then s!"{displayId i} already closed as {asStr} — nothing to do"
+    else if !actuallyClosed then
+      s!"close of {displayId i} was superseded by a later concurrent write — it is {statusWire (v.state.issueData i).statusOf}; rerun if still intended"
     else s!"Closed {displayId i} as {asStr}" ++
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
   return { data, human, notes := writeNotes ctx }
@@ -460,9 +472,15 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
   return { data, human }
 
 def cmdInit (dirOverride : Option String) : TlM CmdOut := do
-  -- placement (ADR-0001 §4): --dir wins; else the enclosing repo's toplevel;
-  -- outside any repo, the cwd (with a local-only note)
-  let (target, note) ← match dirOverride with
+  -- the override is --dir, else TL_DIR (ADR-0012: the same explicit-state
+  -- mechanism, --dir wins) — so `TL_DIR=… tl init && tl create …` binds one
+  -- directory, not two
+  let override : Option String ← match dirOverride with
+    | some p => pure (some p)
+    | none => liftSys (fun e => .mk' .internal s!"environment read failed: {e}") (IO.getEnv "TL_DIR")
+  -- placement (ADR-0001 §4): the override wins; else the enclosing repo's
+  -- toplevel; outside any repo, the cwd (with a local-only note)
+  let (target, note) ← match override with
     | some p => pure (System.FilePath.mk p, ([] : List String))
     | none =>
       let cwd ← liftSys (fun e => .mk' .internal s!"{e}") IO.currentDir

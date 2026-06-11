@@ -33,11 +33,23 @@ def initAt (path : System.FilePath) : TlM (Option Tl.Clock.Replica) := do
     else pure false
   if already then
     return none
-  liftSys (fun e => .mk' .internal s!"cannot create {path}: {e}") do
-    IO.FS.createDirAll (path / "local")
-    IO.FS.writeFile (path / ".gitignore") "*\n"
+  -- create `.tl` and `.tl/local` through the no-follow shim mkdir: a planted
+  -- `.tl -> /evil` (or `.tl/local` symlink) is refused, never created
+  -- through (ADR-0015 §6) — the stdlib createDirAll would follow it
+  liftSys (mapSysError dirs.relLocal) (Sys.mkdirNoFollow dirs.base dirs.relLocal)
+  -- the self-ignore is a `.tl` write, so it rides the same no-follow walk
+  writeLocalFile dirs (dirs.tlRel ++ "/.gitignore") "*\n"
   let replica ← mintReplica dirs
-  persistClock dirs Tl.Clock.Hlc.zero
+  -- seed the clock only when ABSENT: completing a partial init must never
+  -- truncate an existing clock to zero (that would skip the transact
+  -- absent-arm reseed and regress monotonicity — ADR-0007). A present clock
+  -- (valid OR corrupt) is left for the user/transact; transact floors a
+  -- present clock by the segment max anyway, and a corrupt one keeps its
+  -- remove-and-rerun recovery.
+  let clockState : Except Tl.Error (Option Tl.Clock.Hlc) ← (loadClock dirs).run
+  match clockState with
+  | .ok none => persistClock dirs Tl.Clock.Hlc.zero
+  | _ => pure ()
   return some replica
 
 /-- The bare `tl init` entry (cwd-relative; the dispatch layer adds toplevel

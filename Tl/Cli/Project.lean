@@ -156,12 +156,18 @@ private def labelsJson (d : IssueData) : Json :=
   Json.arr (d.labels.presentElements.map (Json.str ∘ sanitizeSingle)).toArray
 
 private def metaJson (d : IssueData) : Json :=
+  -- Meta KEYS are emitted as-is (not control-stripped): the `--json` encoder
+  -- escapes control bytes safely, and stripping keys would silently collapse
+  -- two distinct stored keys that differ only in control chars into one
+  -- mkObj member — silent data loss the loud-never-silent rule forbids
+  -- (ADR-0014, amended: keys are escaped-not-stripped on the JSON path; the
+  -- human path does not render meta in stage 1). VALUES are still sanitized.
   Json.mkObj ((AMap.keys d.metadata).filterMap (fun k =>
     match (d.metadata.find k).bind (·.value) with
     | some (some v) =>
       -- duplicate-of holds an id: render display form when well-formed (ADR-0008)
-      if k == "duplicate-of" && validId v then some (sanitizeSingle k, Json.str (displayId v))
-      else some (sanitizeSingle k, Json.str (sanitizeSingle v))
+      if k == "duplicate-of" && validId v then some (k, Json.str (displayId v))
+      else some (k, Json.str (sanitizeSingle v))
     | _ => none))
 
 /-- The stored `duplicate-of` target (bare), if any. -/

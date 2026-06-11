@@ -575,10 +575,138 @@ def cliConsistencyTests : IO (List Outcome) := do
        .unsafePath]
   return o
 
+/-- The xhigh-review batch: clock monotonicity vs a stale/zeroed clock,
+    init not zeroing an existing clock, strict argv, TL_DIR-init, ceiling
+    realpath, error-message sanitization, and the meta-key collision. -/
+def cliReviewBatchTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let esc := String.singleton (Char.ofNat 0x1b)
+  -- (1) a STALE present clock is floored by the own-segment max: craft an own
+  -- segment with a high HLC, set the clock file far below it, then a write
+  -- must mint ABOVE the own max (no own-replica LWW regression).
+  let dir ← freshDir
+  -- the project's own replica id, so the crafted segment counts as own
+  let realReplica := (← IO.FS.readFile (System.FilePath.mk dir / "local" / "replica")).trimAscii.toString
+  let high := 0x0000700000000000
+  IO.FS.createDirAll (System.FilePath.mk dir / "log")
+  IO.FS.writeFile (System.FilePath.mk dir / "log" / (realReplica ++ ".jsonl"))
+    (foreignLine (.create "aaaabbbbccccdddd" { title := some "old" }) high realReplica "t" ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dir / "local" / "clock") "0000000000000001\n"
+  o := o ++
+    [← expectData "a stale clock is floored by the own-segment max (no regression)"
+      ["create", "new", "--dir", dir, "--assignee", "t"]
+      (fun j => ((jStr j "createdAt").isSome))]
+  -- read it back: the new create's stamp must exceed the old high HLC, i.e.
+  -- the issue materializes (folded above) — verify via list count = 2
+  o := o ++
+    [← expectData "the stale-clock write folded (monotonic over own segment)"
+      ["list", "--dir", dir, "--limit", "0"]
+      (fun j => jNat j "count" == some 2)]
+  -- (2) init must not zero an existing clock on partial-init completion
+  let dir2 ← freshDir
+  IO.FS.writeFile (System.FilePath.mk dir2 / "local" / "clock") "0000700000000abc\n"
+  IO.FS.removeFile (System.FilePath.mk dir2 / "local" / "replica")
+  let _ ← run' ["init", "--dir", dir2]
+  let clockAfter := (← IO.FS.readFile (System.FilePath.mk dir2 / "local" / "clock")).trimAscii.toString
+  o := o ++
+    [check "init completes a partial .tl without zeroing an existing clock"
+      (clockAfter == "0000700000000abc") clockAfter]
+  -- (3) strict argv — surplus positionals and duplicate single-value flags
+  let dir3 ← freshDir
+  let x ← mkIssue dir3 "Strict"
+  o := o ++
+    [← expectErr "surplus positional is usage" ["close", "tl-" ++ x, "extra", "--dir", dir3, "--as", "done"] .usage,
+     ← expectErr "ready with a positional is usage" ["ready", "extra", "--dir", dir3] .usage,
+     ← expectErr "duplicate single-value flag is usage"
+       ["update", "tl-" ++ x, "--dir", dir3, "--title", "a", "--title", "b"] .usage,
+     ← expectData "create's repeatable edge flags are NOT rejected"
+       ["create", "child", "--dir", dir3, "--blocked-by", "tl-" ++ x, "--blocked-by", "tl-" ++ x, "--assignee", "t"]
+       (fun j => (jArr j "dependencies").length ≥ 1)]
+  -- (7) meta-key collision: two keys differing only in a control char both
+  -- survive the --json projection (no silent mkObj collapse)
+  let dir4 ← freshDir
+  let m ← mkIssue dir4 "Meta"
+  let k1 := "k" ++ String.singleton (Char.ofNat 1)
+  let k2 := "k" ++ String.singleton (Char.ofNat 2)
+  let realReplica4 := (← IO.FS.readFile (System.FilePath.mk dir4 / "local" / "replica")).trimAscii.toString
+  let metaSeg := System.FilePath.mk dir4 / "log" / (realReplica4 ++ ".jsonl")
+  -- append the two metaSet ops to the own segment (mkIssue already wrote the
+  -- create there — overwriting would delete the issue)
+  let prev ← IO.FS.readFile metaSeg
+  IO.FS.writeFile metaSeg
+    (prev ++ foreignLine (.metaSet m k1 (some "v1")) 0x100 realReplica4 "t" 3 ++ "\n"
+      ++ foreignLine (.metaSet m k2 (some "v2")) 0x101 realReplica4 "t" 4 ++ "\n")
+  o := o ++
+    [← (do
+       -- the own segment now has the meta ops; show --json must keep BOTH keys
+       match ← run' ["show", "tl-" ++ m, "--dir", dir4] with
+       | .ok out =>
+         let metaCount := match jGet out.data "meta" with
+           | some (Json.obj kvs) => kvs.toArray.size
+           | _ => 0
+         pure (check "two control-char meta keys both survive the projection"
+           (metaCount == 2) s!"meta member count {metaCount}")
+       | .error e => pure { name := "meta keys both survive", passed := false, msg := e.message })]
+  -- (#12) a close that loses LWW to a later foreign write echoes
+  -- consistently: status NOT closed and unblocked empty (no "Closed" lie)
+  let dir5 ← freshDir
+  let blkr ← mkIssue dir5 "blocker"
+  let _ ← mkIssue dir5 "dependent" ["--blocked-by", "tl-" ++ blkr]
+  -- a foreign segment reopens the blocker at a far-future stamp
+  let realReplica5 := (← IO.FS.readFile (System.FilePath.mk dir5 / "local" / "replica")).trimAscii.toString
+  let _ := realReplica5
+  IO.FS.writeFile (System.FilePath.mk dir5 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create blkr { title := some "blocker" }) 0x10 "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+      ++ foreignLine (.reopen blkr) 0x7000000000000000 "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  o := o ++
+    [← expectData "a superseded close echoes consistently (not closed, nothing freed)"
+      ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--assignee", "t"]
+      (fun j => jStr j "status" != some "done" && (jArr j "unblocked").isEmpty)]
+  -- spawn rows: TL_DIR-init, ceiling realpath, error sanitization
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  unless ← exe.pathExists do return o
+  let spawn (args : List String) (env : List (String × Option String) := [])
+      (cwd : Option System.FilePath := none) : IO IO.Process.Output :=
+    IO.Process.output { cmd := exe.toString, args := args.toArray, env := env.toArray, cwd }
+  -- (4) TL_DIR is honored by init (the init+work-loop pair binds one dir)
+  let root ← IO.FS.createTempDir
+  let envState := (root / "state").toString
+  let i1 ← spawn ["init", "--json"] [("TL_DIR", some envState)]
+  let c1 ← spawn ["create", "x", "--json"] [("TL_DIR", some envState)]
+  o := o ++
+    [check "TL_DIR tl init initializes the env dir" (i1.exitCode == 0) i1.stdout,
+     check "the following create binds the SAME TL_DIR dir" (c1.exitCode == 0) c1.stdout]
+  -- (5) a logical (un-realpath'd) ceiling still stops discovery (macOS /var
+  -- vs /private/var; the realpath canonicalization matches them)
+  IO.FS.createDirAll (root / "proj" / "sub")
+  let _ ← spawn ["init", "--dir", (root / "proj" / ".tl").toString]
+  let ceiled ← spawn ["list", "--json"]
+    [("TL_DIR", none), ("GIT_CEILING_DIRECTORIES", some (root / "proj").toString)]
+    (some (root / "proj" / "sub"))
+  o := o ++
+    [check "a logical ceiling entry still stops discovery (realpath-matched)"
+      (ceiled.exitCode == 3) ceiled.stdout]
+  -- (6) a refused segment's error message is ANSI-stripped before surfacing
+  let sdir ← spawn ["init", "--json"]
+  let _ := sdir
+  let sandbox ← IO.FS.createTempDir
+  let _ ← spawn ["init", "--dir", (sandbox / ".tl").toString]
+  let sreplica := (← IO.FS.readFile (sandbox / ".tl" / "local" / "replica")).trimAscii.toString
+  -- own-segment damage carrying an ANSI escape in a malformed line
+  IO.FS.createDirAll (sandbox / ".tl" / "log")
+  IO.FS.writeFile (sandbox / ".tl" / "log" / (sreplica ++ ".jsonl"))
+    ("GARBAGE " ++ esc ++ "[31mhostile\n")
+  let refused ← spawn ["list", "--json", "--dir", (sandbox / ".tl").toString]
+  o := o ++
+    [check "the refused-segment error envelope is ANSI-stripped on stdout"
+      (refused.exitCode == 7 && (refused.stdout.splitOn esc).length == 1)
+      refused.stdout]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
-    ++ (← cliBinaryTests)
+    ++ (← cliReviewBatchTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

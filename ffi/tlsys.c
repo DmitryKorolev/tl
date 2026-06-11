@@ -61,6 +61,9 @@ LEAN_EXPORT lean_obj_res tl_sys_owned_by_caller(uint32_t fd, lean_obj_arg w) {
 LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("close");
 }
+LEAN_EXPORT lean_obj_res tl_sys_mkdir(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
+    (void)base; (void)rel; (void)w; return tl_sys_unsupported("mkdir");
+}
 
 #else /* POSIX */
 
@@ -189,6 +192,50 @@ LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, ui
     int fd = tl_open_walk(lean_string_cstr(base), lean_string_cstr(rel), final_flags, &err);
     if (fd < 0) return tl_sys_err("open", err);
     return lean_io_result_mk_ok(lean_box_uint32((uint32_t)fd));
+}
+
+/*
+ * Create `rel` (a path of components) under `base`, like a no-follow
+ * createDirAll: each component is mkdirat'd (EEXIST tolerated) then opened
+ * with openat(O_NOFOLLOW|O_DIRECTORY) and ownership-checked before descending
+ * — so a symlink planted as any component (e.g. `.tl/log -> /elsewhere`) is
+ * refused (ELOOP / TL_E_NOTOWNED), never followed and created through
+ * (ADR-0015 §6). Idempotent. Returns unit.
+ */
+LEAN_EXPORT lean_obj_res tl_sys_mkdir(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
+    (void)w;
+    const char *base_c = lean_string_cstr(base);
+    char *dup = strdup(lean_string_cstr(rel));
+    if (!dup) return tl_sys_err("mkdir", ENOMEM);
+    int dirfd = AT_FDCWD;
+    if (base_c[0] != '\0') {
+        dirfd = open(base_c, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dirfd < 0) { int e = errno; free(dup); return tl_sys_err("mkdir", e); }
+    }
+    char *save = NULL;
+    for (char *tok = strtok_r(dup, "/", &save); tok; tok = strtok_r(NULL, "/", &save)) {
+        if (mkdirat(dirfd, tok, 0755) != 0 && errno != EEXIST) {
+            int e = errno;
+            if (dirfd != AT_FDCWD) close(dirfd);
+            free(dup);
+            return tl_sys_err("mkdir", e);
+        }
+        int fd = openat(dirfd, tok, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int e = errno;
+        if (dirfd != AT_FDCWD) close(dirfd);
+        if (fd < 0) { free(dup); return tl_sys_err("mkdir", e); }
+        int owned = tl_owned_by_caller(fd);
+        if (owned != 1) {
+            int oe = (owned == 0) ? TL_E_NOTOWNED : errno;
+            close(fd);
+            free(dup);
+            return tl_sys_err("mkdir", oe);
+        }
+        dirfd = fd;
+    }
+    if (dirfd != AT_FDCWD) close(dirfd);
+    free(dup);
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res tl_sys_read_all(uint32_t fd, lean_obj_arg w) {
