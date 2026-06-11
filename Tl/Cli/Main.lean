@@ -71,8 +71,8 @@ where
       else
         go rest { acc with positionals := acc.positionals ++ [arg] }
 
-private def globalVal : List String := ["dir"]
-private def globalBool : List String := ["json", "skip-bad"]
+private def globalVal : List String := ["dir", "color", "glyphs"]
+private def globalBool : List String := ["json", "skip-bad", "plain"]
 
 private def natFlag (a : Argv) (k : String) (default : Nat) : Except Tl.Error Nat :=
   match a.get? k with
@@ -255,14 +255,16 @@ private def sanitizeError (e : Tl.Error) : Tl.Error :=
 /-- The executable entry: streams + exit codes (ADR-0008). -/
 def run (args : List String) : IO UInt32 := do
   let jsonMode := args.contains "--json"
+  let style ← Style.resolve args
   match ← (runVerb args).run with
   | .ok out =>
     for note in out.notes do
       IO.eprintln s!"tl: {sanitizeSingle note}"
     if jsonMode then
       IO.println (okEnvelope out.data)
-    else if !out.human.isEmpty then
-      IO.println out.human
+    else
+      let human := (out.render.map (· style)).getD out.human
+      if !human.isEmpty then IO.println human
     return 0
   | .error e =>
     let e := sanitizeError e

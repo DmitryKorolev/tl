@@ -12,6 +12,7 @@ written; the pinned guard inventory (ADR-0008 §write-time guards) is exactly
 duplicate, the same canonical target) appends nothing and succeeds.
 -/
 import Tl.Cli.Project
+import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
 
@@ -27,6 +28,10 @@ structure CmdOut where
   data : Json
   human : String
   notes : List String := []
+  /-- Style-parameterized human rendering (ADR-0017). When present, `run`
+      resolves the `Style` from flags/env/TTY and uses this instead of the
+      plain `human` (which stays the `Style.plain` fallback). -/
+  render : Option (Style → String) := none
 
 /-- Load the read view (no lock — ADR-0015 §5). -/
 def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View := do
@@ -73,19 +78,24 @@ private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :
 
 /-! ## Read verbs -/
 
+/-- The styled one-line listing + footer (ADR-0017 §1/§3), shared by ready
+    and list. `summary` is the footer's one-line; `total` drives the
+    truncation disclosure. -/
+private def listRender (v : View) (rows : List IssueId) (total : Nat) (summary empty : String)
+    : Style → String := fun st =>
+  if rows.isEmpty && total == 0 then empty
+  else String.intercalate "\n" (rows.map (styledLine st v))
+    ++ "\n" ++ footer st summary rows.length total
+
 def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let ranked := v.state.ready v.now
   let capped := if limit == 0 then ranked else ranked.take limit
+  let r := listRender v capped ranked.length
+    s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready"
   return { data := listPayload "items" ranked.length (capped.map (issueRow v))
-           human :=
-             if ranked.isEmpty then "nothing is ready"
-             else String.intercalate "\n" (capped.map (issueLine v))
-               ++ (if capped.length < ranked.length then
-                     s!"\n… {ranked.length - capped.length} more (--limit 0 for all)"
-                   else "")
-           notes }
+           human := r Style.plain, render := some r, notes }
 
 def cmdList (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
@@ -96,14 +106,12 @@ def cmdList (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM C
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
   let capped := if limit == 0 then all else all.take limit
+  let openN := (all.filter (fun i => (v.state.issueData i).statusOf == .Open)).length
+  let inProg := (all.filter (fun i => (v.state.issueData i).statusOf == .InProgress)).length
+  let r := listRender v capped all.length
+    s!"Total: {all.length} issues ({openN} open, {inProg} in progress)" "no issues"
   return { data := listPayload "items" all.length (capped.map (issueRow v))
-           human :=
-             if all.isEmpty then "no issues"
-             else String.intercalate "\n" (capped.map (issueLine v))
-               ++ (if capped.length < all.length then
-                     s!"\n… {all.length - capped.length} more (--limit 0 for all)"
-                   else "")
-           notes }
+           human := r Style.plain, render := some r, notes }
 
 /-- The `show` claim block: meaningful when this replica claimed recently
     (the ADR-0013 24h staleness default bounds "recent"). -/
@@ -136,7 +144,8 @@ def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM 
   let data := match claimBlock v i with
     | some cb => base.setObjVal! "claim" cb
     | none => base
-  return { data, human := issueLine v i, notes }
+  let r : Style → String := fun st => styledShow st v i
+  return { data, human := r Style.plain, render := some r, notes }
 
 def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
@@ -219,10 +228,15 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
      ("done", jnum doneN), ("cancelled", jnum cancelledN),
      ("ready", jnum ready), ("blocked", jnum blocked),
      ("deferred", jnum deferred), ("cycles", jnum cycles)]
-  let human :=
-    s!"{issues.length} issues — open {openN} · in_progress {inProg} · done {doneN} · cancelled {cancelledN}\n"
-      ++ s!"ready {ready} · blocked {blocked} · deferred {deferred} · cycles {cycles}"
-  return { data, human, notes }
+  -- a small labelled block (§5); each state's count in its status color (§7)
+  let r : Style → String := fun st =>
+    let c (ds : DState) (n : Nat) : String := st.paint ds.colorCode s!"{ds.word} {n}"
+    s!"{issues.length} issues\n"
+      ++ "  " ++ String.intercalate " · " [c .ready openN, c .inProgress inProg, c .done doneN, c .cancelled cancelledN] ++ "\n"
+      ++ "  " ++ String.intercalate " · "
+           [st.paint "1" s!"ready {ready}", c .blocked blocked, c .deferred deferred,
+            (if cycles > 0 then st.paint "31" s!"cycles {cycles}" else s!"cycles {cycles}")]
+  return { data, human := r Style.plain, render := some r, notes }
 
 /-- The issue ids an op touches (for `tl log`'s per-issue filter and the
     entry's `targets`): the subject for scalar/meta/label ops, both endpoints

@@ -46,6 +46,7 @@ import Tl.Store.Lock
 import Tl.Cli.Envelope
 import Tl.Cli.Init
 import Tl.Cli.Project
+import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Grammar
 import Tl.Cli.Commands

@@ -167,6 +167,11 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-
                         --   width/bidi stripping; 1 KiB / 64 KiB bounds with
                         --   disclosed truncation) — applied on BOTH render paths
+  Render.lean           --   human rendering (ADR-0017): the Style surfaces
+                        --   (--color/--glyphs/--plain, NO_COLOR, TTY), the
+                        --   one-line glyph/color format, the show detail view
+                        --   + children tree (total on cyclic parent graphs),
+                        --   footer/legend, stats block — never on the --json path
   Resolve.lean          --   id/slug resolution (tl- discriminator, case-fold +
                         --   symbol aliases, prefix/ambiguity — ADR-0007) and the
                         --   ADR-0013 actor chain

@@ -759,10 +759,60 @@ def cliFreeVerbTests : IO (List Outcome) := do
            (jArr e "targets").any (fun t => t.getStr?.toOption == some ("tl-" ++ b))))]
   return o
 
+/-- The ADR-0017 rich human rendering: glyphs, per-token color, the show
+    detail view, the footer/legend, and the independent color/glyph/plain
+    surfaces. Drives each cmd's `render` closure with explicit styles (the
+    in-process path), plus a spawned color/plain check (the flag/TTY
+    resolution path). -/
+def cliRenderTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let esc := Char.ofNat 27
+  let dir ← freshDir
+  let a ← mkIssue dir "Render me" ["-p", "0"]
+  -- ready: one-line format styled vs plain
+  match ← run' ["ready", "--dir", dir] with
+  | .ok out =>
+    let colored := (out.render.map (· ⟨.on, .unicode⟩)).getD ""
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "ready emits ANSI under color=on" (colored.contains esc) "no ESC",
+       check "ready is ANSI-free under plain" (!plain.contains esc) plain,
+       check "ready uses a unicode glyph under glyphs=unicode" (colored.contains '○') colored,
+       check "ready uses an ascii glyph under plain" (plain.contains 'o') plain,
+       check "ready footer carries summary + legend"
+         (((plain.splitOn "Ready:").length > 1) && ((plain.splitOn "in_progress").length > 1)) plain]
+  | .error e => o := o ++ [{ name := "ready render", passed := false, msg := e.message }]
+  -- show: the detail view (multi-line, status word, relationships), not the one-liner
+  let b ← mkIssue dir "Blocked one" ["--blocked-by", "tl-" ++ a, "--description", "the body here"]
+  match ← run' ["show", "tl-" ++ b, "--dir", dir] with
+  | .ok out =>
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "show detail is multi-line (a detail view, not the one-liner)"
+         ((plain.splitOn "\n").length > 2) plain,
+       check "show detail renders the DESCRIPTION fence"
+         ((plain.splitOn "DESCRIPTION").length > 1) plain,
+       check "show detail lists the blocker relationship"
+         ((plain.splitOn "blocked by").length > 1) plain]
+  | .error e => o := o ++ [{ name := "show render", passed := false, msg := e.message }]
+  -- spawned: the flag/TTY resolution path (--color=always vs --plain)
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  if ← exe.pathExists then
+    let spawn (args : List String) : IO String := do
+      let out ← IO.Process.output { cmd := exe.toString, args := args.toArray }
+      pure out.stdout
+    let always ← spawn ["ready", "--dir", dir, "--color=always"]
+    let plainOut ← spawn ["ready", "--dir", dir, "--plain"]
+    o := o ++
+      [check "--color=always emits ANSI on stdout" (always.contains esc) "no ESC",
+       check "--plain emits no ANSI on stdout" (!plainOut.contains esc) plainOut]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
-    ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliBinaryTests)
+    ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
+    ++ (← cliBinaryTests)
 
 end Tl.Tests

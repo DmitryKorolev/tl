@@ -42,8 +42,8 @@ def grammarSchemaTests : List Outcome := Id.run do
        (dispatchVerbs.all (fun v => names.contains v)) s!"schema names {names}",
      check "every schema command is dispatchable"
        (names.all (fun n => dispatchVerbs.contains n)) s!"schema names {names}",
-     check "global flags are json/dir/skip-bad"
-       (globals == ["json", "dir", "skip-bad"]) s!"got {globals}",
+     check "global flags include the styling surfaces"
+       (globals == ["json", "dir", "skip-bad", "color", "glyphs", "plain"]) s!"got {globals}",
      check "every command object carries the four pinned fields"
        (cmds.all (fun c => (jGet c "command").isSome && (jGet c "positionals").isSome
          && (jGet c "summary").isSome && (jGet c "flags").isSome)),
@@ -56,7 +56,7 @@ def grammarSchemaTests : List Outcome := Id.run do
        (let one := helpJson (some "close")
         (jArr one "commands").length == 1
           && ((jArr one "commands").head?.bind (fun c => jStr c "command")) == some "close"
-          && (jArr one "globalFlags").length == 3),
+          && (jArr one "globalFlags").length == 6),
      check "help <group> expands to its subcommands"
        ((jArr (helpJson (some "dep")) "commands").length == 3)]
 
@@ -94,7 +94,7 @@ def grammarParserAgreementTests : IO (List Outcome) := do
           | .ok j =>
             (jGet j "ok").bind (·.getBool?.toOption) == some true
               && ((jGet j "data").map (fun d =>
-                    (jArr d "commands").length > 0 && (jArr d "globalFlags").length == 3)).getD false
+                    (jArr d "commands").length > 0 && (jArr d "globalFlags").length == 6)).getD false
           | .error _ => false)
          out.stdout]
   return o

@@ -41,7 +41,13 @@ def globalFlags : List FlagSpec :=
     { name := "dir", value := true,
       summary := "use this state directory, skipping discovery (the env var TL_DIR is the fallback)" },
     { name := "skip-bad", value := false,
-      summary := "read commands only: skip malformed log lines, each disclosed on stderr" } ]
+      summary := "read commands only: skip malformed log lines, each disclosed on stderr" },
+    { name := "color", value := true,
+      summary := "auto | always | never (auto = a TTY without NO_COLOR); --json never colors" },
+    { name := "glyphs", value := true,
+      summary := "auto | unicode | ascii (auto detects the terminal)" },
+    { name := "plain", value := false,
+      summary := "shorthand for --color=never --glyphs=ascii" } ]
 
 private def actorFlag : FlagSpec :=
   { name := "assignee", value := true,
