@@ -33,5 +33,8 @@ import Tl.Clock.Hlc
 import Tl.Clock.Replica
 import Tl.Format.Crockford
 import Tl.Format.Record
+import Tl.Format.Time
+import Tl.Format.Version
+import Tl.Format.Codec
 import Tl.Cli.Envelope
 import Tl.Cli.Init

@@ -7,6 +7,8 @@ import Tests.CrockfordTests
 import Tests.RecordTests
 import Tests.ErrorTests
 import Tests.Sha256Tests
+import Tests.TimeTests
+import Tests.CodecTests
 
 open Tl.Tests
 
@@ -19,5 +21,7 @@ def main : IO UInt32 :=
     ("Crockford round-trip (seeded property)", crockfordRoundtripProp),
     ("JSONL record round-trip & preserve-unknown", recordTests),
     ("Error codes, exit codes & --json envelope", errorCodeTests ++ envelopeTests),
-    ("SHA-256 vectors, padding edges & the mint vector", sha256Tests)
+    ("SHA-256 vectors, padding edges & the mint vector", sha256Tests),
+    ("ISO-8601 UTC instant codec", timeTests),
+    ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests)
   ]
