@@ -16,11 +16,14 @@ namespace Tl.Format
 open Tl.Crdt (Stamp)
 open Tl.Hash
 
-/-- Mint the bare 16-char issue id from the create op's stamp (ADR-0007). -/
+/-- Mint the bare 16-char issue id from the create op's stamp (ADR-0007):
+    the leftmost 80 bits — the first 10 of the digest's typed 32 bytes,
+    `Fin`-indexed, so the slice can neither panic nor run off the end. -/
 def mintIssueId (st : Stamp) : String :=
   let preimage := toCrockford st.replica 13 ++ hlcHex st.hlc ++ toCrockford st.nonce 26
-  let digest := Sha256.digestString preimage
-  let v := (List.range 10).foldl (fun acc i => acc * 256 + (digest.get! i).toNat) 0
+  let digest := Sha256.digestVec preimage.toUTF8
+  let v := (List.finRange 10).foldl
+    (fun acc i => acc * 256 + (digest.get (i.castLE (Nat.le_add_right 10 22))).toNat) 0
   toCrockford v 16
 
 /-- The display/reference form (`tl-` affix, ADR-0007). -/

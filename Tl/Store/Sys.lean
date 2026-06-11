@@ -74,6 +74,12 @@ opaque ownedByCaller (fd : UInt32) : IO Bool
 @[extern "tl_sys_close"]
 opaque close (fd : UInt32) : IO Unit
 
+/-- A whole byte buffer as a big-endian `Nat` (entropy → numeric ids); a
+    plain list fold, so no index can panic. Callers check the buffer length
+    (the width *is* the contract — 8 entropy bytes are a 64-bit id). -/
+def natOfBytesBE (bytes : ByteArray) : Nat :=
+  bytes.toList.foldl (fun acc b => acc * 256 + b.toNat) 0
+
 /-- The `ERRNO-NAME` token of a shim failure, if the error is one
     (`tlsys:<op>:<ERRNO-NAME>: <detail>`). -/
 def errnoOf (e : IO.Error) : Option String :=

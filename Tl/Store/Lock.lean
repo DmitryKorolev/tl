@@ -79,8 +79,10 @@ def mintStamps (replicaVal : Nat) (clock0 : Hlc) (now : Nat) (n : Nat) :
       | .error msg => throw (saturatedClock msg)
     let bytes ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}")
       (Sys.entropy 16)
-    let nonce := (List.range 16).foldl (fun acc i => acc * 256 + (bytes.get! i).toNat) 0
-    stamps := stamps ++ [⟨clock.pack, replicaVal, nonce⟩]
+    unless bytes.size == 16 do
+      throw (.mk' .internal
+        "the entropy source returned a short read — this is a bug in tl; please report it")
+    stamps := stamps ++ [⟨clock.pack, replicaVal, Sys.natOfBytesBE bytes⟩]
   return (stamps, clock)
 
 /-- The locked critical section (ADR-0015 §1). `build` receives the state and

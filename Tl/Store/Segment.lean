@@ -51,20 +51,25 @@ def readSegments (d : Dirs) : TlM (List SegmentData) := do
     return { replicaId := rid, bytes := ← readSegment d rid }
 
 /-- The complete LF-terminated lines (without their LF); a trailing
-    fragment without a newline is dropped (ADR-0015 §5). -/
+    fragment without a newline is dropped (ADR-0015 §5). Iterates the bytes
+    themselves with a position accumulator — no index, nothing to panic. -/
 def completeLines (bytes : ByteArray) : List ByteArray := Id.run do
   let mut lines : List ByteArray := []
   let mut start := 0
-  for i in [0:bytes.size] do
-    if bytes.get! i == 10 then
+  let mut i := 0
+  for b in bytes do
+    if b == 10 then
       lines := bytes.extract start i :: lines
       start := i + 1
+    i := i + 1
   return lines.reverse
 
 /-- Does the segment end in a newline-less crash fragment the next writer
     must close (ADR-0008 crash hygiene)? -/
 def tornTail (bytes : ByteArray) : Bool :=
-  bytes.size > 0 && bytes.get! (bytes.size - 1) != 10
+  match bytes[bytes.size - 1]? with
+  | some b => b != 10
+  | none => false
 
 /-- Append rendered record lines to the replica's own segment under the
     mutation lock (the caller holds it): close a crash fragment if needed,

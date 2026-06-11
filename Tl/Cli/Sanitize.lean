@@ -27,34 +27,39 @@ private def isControl (c : Char) : Bool :=
   c.toNat < 0x20 || c.toNat == 0x7F || (0x80 ≤ c.toNat && c.toNat ≤ 0x9F)
 
 /-- Drop ANSI escape sequences whole: `ESC [ … final` (CSI) and
-    `ESC ] … BEL|ESC\` (OSC); a bare ESC drops alone. -/
+    `ESC ] … BEL|ESC\` (OSC); a bare ESC drops alone. Access is
+    proof-carrying (the dependent `while` binds the bound) or `Option`-based
+    lookahead — nothing can panic. -/
 private def stripAnsi (cs : List Char) : List Char := Id.run do
   let a := cs.toArray
+  -- the index just past a CSI's final byte (0x40–0x7E), or the end
+  let csiEnd (start : Nat) : Nat := Id.run do
+    let mut j := start
+    while h : j < a.size do
+      let cj := a[j]
+      if 0x40 ≤ cj.toNat && cj.toNat ≤ 0x7E then
+        return j + 1
+      j := j + 1
+    return a.size
+  -- the index just past an OSC terminator (BEL or ESC\), or the end
+  let oscEnd (start : Nat) : Nat := Id.run do
+    let mut j := start
+    while h : j < a.size do
+      let cj := a[j]
+      if cj == '\x07' then
+        return j + 1
+      if cj == '\x1b' && a[j + 1]? == some '\\' then
+        return j + 2
+      j := j + 1
+    return a.size
   let mut out : Array Char := #[]
   let mut i := 0
-  while i < a.size do
-    let c := a[i]!
-    if c == '\x1b' && i + 1 < a.size && a[i + 1]! == '[' then
-      -- CSI: consume through the final byte (0x40–0x7E)
-      let mut j := i + 2
-      while j < a.size && !(0x40 ≤ (a[j]!).toNat && (a[j]!).toNat ≤ 0x7E) do
-        j := j + 1
-      i := min (j + 1) a.size
-    else if c == '\x1b' && i + 1 < a.size && a[i + 1]! == ']' then
-      -- OSC: consume through BEL or ESC\ (or to the end if unterminated)
-      let mut j := i + 2
-      let mut stop := a.size
-      let mut found := false
-      while j < a.size && !found do
-        if a[j]! == '\x07' then
-          stop := j + 1
-          found := true
-        else if a[j]! == '\x1b' && j + 1 < a.size && a[j + 1]! == '\\' then
-          stop := j + 2
-          found := true
-        else
-          j := j + 1
-      i := stop
+  while h : i < a.size do
+    let c := a[i]
+    if c == '\x1b' && a[i + 1]? == some '[' then
+      i := csiEnd (i + 2)
+    else if c == '\x1b' && a[i + 1]? == some ']' then
+      i := oscEnd (i + 2)
     else if c == '\x1b' then
       i := i + 1
     else

@@ -87,9 +87,11 @@ Tl/Error.lean           -- the structured error contract: the closed code enum,
 Tl/Hash/                -- pure hashing for identity minting (tested)
   Sha256.lean           --   FIPS 180-4 transcription returning the FULL 32-byte
                         --   digest; consumers slice (ids take the leftmost 80
-                        --   bits, import widths differ — ADR-0007/0018);
-                        --   vector-tested (FIPS + padding boundaries + the
-                        --   worked mint vector)
+                        --   bits, import widths differ — ADR-0007/0018); the
+                        --   fixed-shape state is Vector-typed (Fin-indexed
+                        --   constants/schedule/hash words, digestVec carries
+                        --   its 32 bytes in the type); vector-tested (FIPS +
+                        --   padding boundaries + the worked mint vector)
 
 Tl/Store/               -- I/O shell: local persistence (tested)
   Paths.lean            --   the .tl/ layout + ADR-0012 discovery (walk-up bounded

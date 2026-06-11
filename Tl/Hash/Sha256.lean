@@ -4,11 +4,23 @@
 Pure Lean, no FFI, no dependency: the consumers (issue-id mint, the import
 derivations) hash *public* data, so the only property needed is byte-exact
 agreement with the standard — which `Tests/Sha256Tests.lean` checks against
-CAVP-style vectors and the padding boundary lengths. The API is the full
-32-byte digest; consumers slice (ids take the leftmost 80 bits — the first 10
-bytes, NIST truncation — import widths differ), which is why truncation does
-not live here. This transcription *is* the production code: an optimized
-variant may only ever ship with a proved `fast = spec` bridge (ADR-0018).
+CAVP-style vectors and the padding boundary lengths.
+
+The fixed-shape state is `Vector`-typed (the AGENTS.md `Fin`-indices rule):
+the 64 round constants, the 64-entry message schedule, the 8 hash words, and
+the 32-byte digest all carry their length in the type, so indexing is total
+with no panics and no side bound proofs. The one dynamic boundary — reading
+block bytes out of the padded `ByteArray` — uses an explicit-default access
+whose default arm is dead by `pad`'s postcondition (the padded stream is a
+whole number of 64-byte blocks).
+
+The pinned public API stays `digest : ByteArray → ByteArray` (all 32 bytes —
+consumers slice; ids take the leftmost 80 bits, the first 10 bytes, NIST
+truncation; import widths differ, which is why truncation does not live
+here). `digestVec` is the same digest at type `Vector UInt8 32`, for
+consumers that want the length by type. This transcription *is* the
+production code: an optimized variant may only ever ship with a proved
+`fast = spec` bridge (ADR-0018).
 
 Tested I/O-shell tier (ADR-0004, pure code); no Mathlib (ADR-0009).
 -/
@@ -19,7 +31,7 @@ namespace Sha256
 
 /-- The 64 round constants (FIPS 180-4 §4.2.2): the first 32 bits of the
     fractional parts of the cube roots of the first 64 primes. -/
-def roundConstants : Array UInt32 := #[
+def roundConstants : Vector UInt32 64 := #v[
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
   0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -39,7 +51,7 @@ def roundConstants : Array UInt32 := #[
 
 /-- The initial hash value (§5.3.3): the first 32 bits of the fractional
     parts of the square roots of the first 8 primes. -/
-def initialHash : Array UInt32 := #[
+def initialHash : Vector UInt32 8 := #v[
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
 
@@ -65,7 +77,8 @@ def smallSigma0 (x : UInt32) : UInt32 := rotr 7 x ^^^ rotr 18 x ^^^ (x >>> 3)
 def smallSigma1 (x : UInt32) : UInt32 := rotr 17 x ^^^ rotr 19 x ^^^ (x >>> 10)
 
 /-- §5.1.1 padding: append `0x80`, zero bytes to 56 mod 64, then the 64-bit
-    big-endian *bit* length; the result is a whole number of 64-byte blocks. -/
+    big-endian *bit* length; the result is a whole number of 64-byte blocks
+    (the postcondition `blockWords` relies on). -/
 def pad (msg : ByteArray) : ByteArray := Id.run do
   let bitLen : Nat := msg.size * 8
   let rem := (msg.size + 1) % 64
@@ -78,37 +91,41 @@ def pad (msg : ByteArray) : ByteArray := Id.run do
   return out
 
 /-- The 16 big-endian words of the 64-byte block at byte offset `off`
-    (§5.2.1; `off + 64 ≤ msg.size` at every use site). -/
-def blockWords (msg : ByteArray) (off : Nat) : Array UInt32 := Id.run do
-  let mut w : Array UInt32 := Array.mkEmpty 16
-  for j in [0:16] do
-    let base := off + 4 * j
-    w := w.push ((msg.get! base).toUInt32 <<< 24 |||
-                 (msg.get! (base + 1)).toUInt32 <<< 16 |||
-                 (msg.get! (base + 2)).toUInt32 <<< 8 |||
-                 (msg.get! (base + 3)).toUInt32)
+    (§5.2.1). The byte source is the one dynamic boundary: access uses an
+    explicit zero default, dead so long as `off + 64 ≤ msg.size` — `pad`'s
+    whole-blocks postcondition at the single call site. -/
+def blockWords (msg : ByteArray) (off : Nat) : Vector UInt32 16 :=
+  let byte (i : Nat) : UInt32 := (msg[i]?.getD 0).toUInt32
+  Vector.ofFn fun j =>
+    let base := off + 4 * j.val
+    (byte base <<< 24) ||| (byte (base + 1) <<< 16) |||
+      (byte (base + 2) <<< 8) ||| byte (base + 3)
+
+/-- §6.2.2 step 1 — extend the 16 block words to the 64-entry schedule. The
+    recurrence indexes with `Fin 64` arithmetic (mod-64 subtraction never
+    wraps here: every updated index is ≥ 16 and every offset ≤ 16). -/
+def schedule (w16 : Vector UInt32 16) : Vector UInt32 64 := Id.run do
+  let mut w : Vector UInt32 64 :=
+    Vector.ofFn fun i => if h : i.val < 16 then w16.get ⟨i.val, h⟩ else 0
+  for i in (List.finRange 64).drop 16 do
+    w := w.set i (smallSigma1 (w.get (i - 2)) + w.get (i - 7)
+      + smallSigma0 (w.get (i - 15)) + w.get (i - 16))
   return w
 
-/-- §6.2.2 step 1 — extend the 16 block words to the 64-entry schedule. -/
-def schedule (w16 : Array UInt32) : Array UInt32 := Id.run do
-  let mut w := w16
-  for i in [16:64] do
-    w := w.push (smallSigma1 w[i - 2]! + w[i - 7]! + smallSigma0 w[i - 15]! + w[i - 16]!)
-  return w
-
-/-- §6.2.2 steps 2–4 — compress one block into the running hash. -/
-def compress (h : Array UInt32) (w16 : Array UInt32) : Array UInt32 := Id.run do
-  let w := schedule w16
-  let mut a := h[0]!
-  let mut b := h[1]!
-  let mut c := h[2]!
-  let mut d := h[3]!
-  let mut e := h[4]!
-  let mut f := h[5]!
-  let mut g := h[6]!
-  let mut hh := h[7]!
-  for i in [0:64] do
-    let t1 := hh + bigSigma1 e + ch e f g + roundConstants[i]! + w[i]!
+/-- §6.2.2 steps 2–4 — compress one block into the running hash. The round
+    loop walks the zipped constants/schedule vectors, so it needs no index
+    at all. -/
+def compress (h : Vector UInt32 8) (w16 : Vector UInt32 16) : Vector UInt32 8 := Id.run do
+  let mut a := h.get 0
+  let mut b := h.get 1
+  let mut c := h.get 2
+  let mut d := h.get 3
+  let mut e := h.get 4
+  let mut f := h.get 5
+  let mut g := h.get 6
+  let mut hh := h.get 7
+  for (k, wi) in (roundConstants.zip (schedule w16)).toList do
+    let t1 := hh + bigSigma1 e + ch e f g + k + wi
     let t2 := bigSigma0 a + maj a b c
     hh := g
     g := f
@@ -118,23 +135,33 @@ def compress (h : Array UInt32) (w16 : Array UInt32) : Array UInt32 := Id.run do
     c := b
     b := a
     a := t1 + t2
-  return #[h[0]! + a, h[1]! + b, h[2]! + c, h[3]! + d,
-           h[4]! + e, h[5]! + f, h[6]! + g, h[7]! + hh]
+  return #v[h.get 0 + a, h.get 1 + b, h.get 2 + c, h.get 3 + d,
+            h.get 4 + e, h.get 5 + f, h.get 6 + g, h.get 7 + hh]
 
-/-- The full 32-byte digest (ADR-0018: consumers slice; issue ids take the
-    *leftmost* 80 bits — the first 10 bytes, big-endian). -/
-def digest (msg : ByteArray) : ByteArray := Id.run do
+/-- The eight final hash words. -/
+def digestWords (msg : ByteArray) : Vector UInt32 8 := Id.run do
   let padded := pad msg
   let mut h := initialHash
   for blk in [0:padded.size / 64] do
     h := compress h (blockWords padded (64 * blk))
-  let mut out := ByteArray.empty
-  for word in h do
-    out := out.push (UInt8.ofNat ((word >>> 24).toNat % 256))
-    out := out.push (UInt8.ofNat ((word >>> 16).toNat % 256))
-    out := out.push (UInt8.ofNat ((word >>> 8).toNat % 256))
-    out := out.push (UInt8.ofNat (word.toNat % 256))
-  return out
+  return h
+
+/-- A word's four big-endian bytes. -/
+def bytesOfWordBE (w : UInt32) : Vector UInt8 4 :=
+  #v[(w >>> 24).toUInt8, (w >>> 16).toUInt8, (w >>> 8).toUInt8, w.toUInt8]
+
+/-- The digest with its length carried in the type (ADR-0018's
+    "digest length = 32" hardening, by construction). -/
+def digestVec (msg : ByteArray) : Vector UInt8 32 :=
+  let h := digestWords msg
+  bytesOfWordBE (h.get 0) ++ bytesOfWordBE (h.get 1)
+    ++ bytesOfWordBE (h.get 2) ++ bytesOfWordBE (h.get 3)
+    ++ bytesOfWordBE (h.get 4) ++ bytesOfWordBE (h.get 5)
+    ++ bytesOfWordBE (h.get 6) ++ bytesOfWordBE (h.get 7)
+
+/-- The full 32-byte digest — the pinned ADR-0018 API; consumers slice
+    (issue ids take the *leftmost* 80 bits, the first 10 bytes, big-endian). -/
+def digest (msg : ByteArray) : ByteArray := ⟨(digestVec msg).toArray⟩
 
 /-- Digest of a string's UTF-8 bytes (the mint preimages are ASCII strings). -/
 def digestString (s : String) : ByteArray := digest s.toUTF8

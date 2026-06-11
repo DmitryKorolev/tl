@@ -75,8 +75,10 @@ def loadReplica (d : Dirs) : TlM (Option Replica) := do
 /-- Mint a fresh replica id from 64 OS-CSPRNG bits and persist it. -/
 def mintReplica (d : Dirs) : TlM Replica := do
   let bytes ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}") (Sys.entropy 8)
-  let v := (List.range 8).foldl (fun acc i => acc * 256 + (bytes.get! i).toNat) 0
-  let r := Replica.ofNat v
+  unless bytes.size == 8 do
+    throw (.mk' .internal
+      "the entropy source returned a short read — this is a bug in tl; please report it")
+  let r := Replica.ofNat (Sys.natOfBytesBE bytes)
   writeLocalFile d d.relReplica (r.id ++ "\n")
   return r
 

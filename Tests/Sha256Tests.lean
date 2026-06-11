@@ -68,11 +68,12 @@ def sha256ShapeTests : List Outcome :=
     implementation); cross-check with the shasum one-liner above. -/
 def sha256MintVectorTests : List Outcome :=
   let preimage := "0123456789abc" ++ "0000018d07f4c812" ++ "0123456789abcdefghjkmnpqrs"
-  let dig := Sha256.digestString preimage
-  let v := (List.range 10).foldl (fun acc i => acc * 256 + (dig.get! i).toNat) 0
+  let dig := Sha256.digestVec preimage.toUTF8
+  let v := (List.finRange 10).foldl
+    (fun acc i => acc * 256 + (dig.get (i.castLE (Nat.le_add_right 10 22))).toNat) 0
   [checkEq "mint preimage is 55 bytes" preimage.utf8ByteSize 55,
    checkEq "mint preimage digest"
-     (Sha256.toHex dig)
+     (Sha256.toHex ⟨dig.toArray⟩)
      "a39f618253651fbea80e6ab7b772effe8433f860b8d06327c271a32938eb20e2",
    checkEq "leftmost 80 bits → 16-char Crockford id"
      (toCrockford v 16) "mefp30jkcmfvxa0e"]
