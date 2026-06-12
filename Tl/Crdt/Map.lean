@@ -194,6 +194,41 @@ theorem lookup_insertWith_self {f : V → V → V} {k : K} {v : V} :
         rw [if_neg h2, lookup_cons_ne h2, lookup_cons_ne h2]
         exact lookup_insertWith_self hsp
 
+/-- Boolean strict-ascending check over adjacent keys — the executable face of
+    `Sorted` for input that arrives *without* a proof (a deserialized list, e.g.
+    the store's fold cache). `sorted_of_ascending` re-establishes the canonical
+    invariant; a `false` is the caller's corrupt-input signal. -/
+def ascending : List (K × V) → Bool
+  | [] => true
+  | [_] => true
+  | p :: q :: ps => decide (lt p.1 q.1) && ascending (q :: ps)
+
+/-- Adjacent strict ascent implies the full sorted invariant (transitivity
+    closes the gap from each head to the whole tail). -/
+theorem sorted_of_ascending : {l : List (K × V)} → ascending l = true → Sorted l
+  | [], _ => trivial
+  | [_], _ => ⟨nofun, trivial⟩
+  | p :: q :: ps, h => by
+    unfold ascending at h
+    rw [Bool.and_eq_true, decide_eq_true_iff] at h
+    obtain ⟨hpq, hrest⟩ := h
+    have hs : Sorted (q :: ps) := sorted_of_ascending hrest
+    refine ⟨?_, hs⟩
+    intro r hr
+    rcases List.mem_cons.mp hr with he | hm
+    · rw [he]; exact hpq
+    · exact lt_trans hpq (hs.1 r hm)
+
+/-- The converse: a `Sorted` list always passes the boolean check, so an
+    encode of a canonical map is never rejected on decode. -/
+theorem ascending_of_sorted : {l : List (K × V)} → Sorted l → ascending l = true
+  | [], _ => rfl
+  | [_], _ => rfl
+  | _ :: q :: _, ⟨hlb, hs⟩ => by
+    unfold ascending
+    rw [Bool.and_eq_true, decide_eq_true_iff]
+    exact ⟨hlb q (List.mem_cons_self ..), ascending_of_sorted hs⟩
+
 /-- Outer-join two sorted maps, combining overlapping keys with `f`. -/
 def merge (f : V → V → V) (l1 l2 : List (K × V)) : List (K × V) :=
   l2.foldr (fun p acc => insertWith f p.1 p.2 acc) l1
@@ -390,6 +425,14 @@ theorem mem_keys {m : AMap K V} {k : K} : k ∈ m.keys ↔ (m.find k).isSome = t
 
 theorem keys_nodup (m : AMap K V) : m.keys.Nodup :=
   AssocList.sorted_map_fst_nodup m.sorted
+
+/-- Rebuild a canonical map from an untrusted (deserialized) list: accepted iff
+    strictly ascending by key, with the `Sorted` proof re-established; `none` is
+    the corrupt-input signal. By `ascending_of_sorted`, a list that came out of
+    an `AMap` (an encode of `toList`) is always accepted. -/
+def ofAscList? (l : List (K × V)) : Option (AMap K V) :=
+  if h : AssocList.ascending l = true then some ⟨l, AssocList.sorted_of_ascending h⟩
+  else none
 
 /-- Merge two maps, combining overlapping keys with `f`. -/
 def merge (f : V → V → V) (m1 m2 : AMap K V) : AMap K V :=

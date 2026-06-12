@@ -132,6 +132,14 @@ theorem fold_append_self (l : List Op) : fold (l ++ l) = fold l :=
   fold_eq_of_mem_iff (fun o => by
     rw [List.mem_append]; exact ⟨fun h => h.elim id id, Or.inl⟩)
 
+/-- Folding an appended suffix continues from the prefix's fold — the anchor of
+    the store's fold cache (ADR-0022): the cached state *is* `fold prefix`, and a
+    read folds only the appended ops on top. Suffixes interleaved across
+    segments reduce to this via `fold_perm`. -/
+theorem fold_append (l1 l2 : List Op) : fold (l1 ++ l2) = l2.foldl apply (fold l1) := by
+  show (l1 ++ l2).foldl apply State.empty = l2.foldl apply (l1.foldl apply State.empty)
+  rw [List.foldl_append]
+
 /-! ## Thm 8 — CvRDT inflation and monotonicity -/
 
 /-- Every op only moves state *up* the lattice. -/
