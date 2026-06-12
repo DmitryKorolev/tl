@@ -125,7 +125,7 @@ was superseded.
 
 ## Not yet available
 
-There is no `tl defer`, `tl edit`, or `tl dep tree/path/critical` yet, and there
+There is no `tl defer`, `tl edit`, or `tl dep path/critical` yet, and there
 is no automatic on-write publishing (auto-sync) — `tl sync` is explicit.
 `tl label add/remove/list` and `tl list --label <l>` (repeatable ⇒ AND) **are**
 available. `tl help --json` is always the authoritative list of what this binary

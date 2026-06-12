@@ -314,7 +314,7 @@ Every `message` teaches the fix (ADR-0008).
 - Agents get a uniform read/act loop: mutations return the updated issue, so
   `create → claim → close` needs no interleaved `show`s; `close.unblocked`
   feeds the next `claim` directly.
-- Later commands (`log`, `stats`, `dep tree/path`, `unblocks`, …) pin their
+- Later commands (`log`, `stats`, `dep path`, `unblocks`, …) pin their
   shapes when built, following these conventions; the backlog keeps carrying
   them until then.
 - `dependencies` stays the flat edge-triple array (ADR-0003). Inlining full

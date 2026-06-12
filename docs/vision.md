@@ -147,9 +147,8 @@ Dependencies (typed relations — `blocks` / `parent` / `related`, ADR-0003)
 | `tl dep add A B` / `tl dep remove A B` | add / retract a `blocks` edge — A is blocked by B (subject-first, blocker-second, like `create A --blocked-by B`); the CLI echoes "A is now blocked by B" to remove doubt (ADR-0003) |
 | `tl dep relate A B` / `tl dep unrelate A B` | symmetric, informational link |
 | `tl dep cycles` | report cycles per kind and readiness-deadlock (`≺`) cycles (mixed blocks+parent, ADR-0004 thm 5/6) — a key util |
-| `tl why <id>` | the transitive set of *unclosed* issues blocking this one |
-| `tl unblocks <id>` | what closing this would free |
-| `tl dep tree <id> [--kind]` | render the up/down dependency tree |
+| `tl why <id>` | the transitive set of *unclosed* issues blocking this one, rendered as the upward blocker tree |
+| `tl unblocks <id>` | what closing this would free, rendered as the downward dependents tree |
 | `tl dep path A B` | show a dependency path (the tool for breaking cycles) |
 | `tl dep critical` | rank open issues by transitive dependent-count |
 
@@ -207,7 +206,8 @@ the interactive `$EDITOR` editing flow are pinned in
 one-line-per-issue list — a color-coded status glyph (`○ ◐ ● ✓ ✗ ❄`), id,
 priority, an `[epic]` marker (epics only), and a width-truncated title — plus a
 summary footer + legend and `show`/`stats` layouts; hierarchy, including nested
-epics, renders as a tree (`list --tree`, `dep tree`, `show`); color and glyphs
+epics, renders as a tree (`list` — the default view, `--flat` for rows —
+`why`/`unblocks`, `show`); color and glyphs
 are independent surfaces (`--color` / `--glyphs`; `--plain` = both off;
 `NO_COLOR` honored); and long `description`/`notes` open `$EDITOR` only on
 `create --edit`, a no-title `create`, or `edit`. The machine path is `--json` —
@@ -284,7 +284,7 @@ each stage shippable and testable on its own:
 - Stage 2 — ergonomics + decomposition. epic display/cascade ergonomics
   (the `[epic]` glyph, child-rollup views, auto-rollup UX, `--cascade` — the
   kernel rollup itself is Stage 0), `defer` / `undefer`, `labels`, `meta`,
-  `relate`, `dep tree/path` and the `dep critical` *command* (its weight
+  `relate`, `dep path` and the `dep critical` *command* (its weight
   function is Stage 0), `unblocks`, `reopen`, `edit`, slugs, `stats`, `log`,
   and the agent surface (the discovery pointer + local `.tl/README.md`, and the
   skill).

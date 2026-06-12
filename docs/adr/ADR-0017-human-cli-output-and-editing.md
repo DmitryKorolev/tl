@@ -48,9 +48,12 @@ Used by `ready` and flat `list` output:
 
 Structure — including nested epics (epic → sub-epic → … → task, to arbitrary
 depth) — is rendered as an indented tree, never inline on the one-line format.
-Used by `list --tree` (whole-project browse; flat `list` stays one-line-per
--issue), `dep tree <id>` (a single root, ADR-0003), and the children block of
-`show <epic>`:
+Used by `list` — the tree is the **default** whole-project browse (amended
+2026-06-11: it was the `--tree` opt-in; `--flat` now opts into the one-line
+rows instead) — the dependency views `why <id>` (upward blockers) and
+`unblocks <id>` (downward dependents), each single-rooted over `blocks` edges
+(decided 2026-06-11: these subsume the separate `dep tree` verb, ADR-0003),
+and the children block of `show <epic>`:
 
 ```
 ○ tl-ep01 P1 [epic] Parser rewrite
@@ -184,7 +187,8 @@ painful as `--description "…"`. So:
   width). Hierarchy lives in the tree view (§2), so long titles never fight a
   parent suffix, and the rare `[epic]` marker carries the structural signal.
 - Tree vs queue is a clean split. `ready` is the flat ranked work
-  queue; `list --tree` / `dep tree` / `show` are the structural views — and the
+  queue; `list` (tree by default) / `why` / `unblocks` / `show` are the
+  structural views — and the
   tree is total on the cyclic/dangling/multi-parent graphs a merge can produce.
 - Color is accessible. It is redundant with the glyph and theme-portable, so
   `--plain` / `NO_COLOR` / a colorblind reader loses no information.

@@ -9,11 +9,16 @@ only what is still open.
 Status: Stages 0 and 1 are built (the verified kernel and the MVP work
 loop). Stages 2–3 are **partly built**: the agent surface (skill, `help --json`,
 discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
-`list` open-by-default + `--tree`, and the **full `refs/tl/log` sync transport**
+`list` open-by-default + tree-by-default (`--flat` for rows), labels
+(`label add/remove/list`,
+`list --label`), and the **full `refs/tl/log` sync transport**
 (local leg, read-time refresh, remote fetch/union/push, and the HLC skew window
 — proved convergence-safe) have landed. Still open: the Stage-2 ergonomics verbs
-(`labels`, `defer`/`undefer`, `dep tree/path/critical`, `edit`), auto-sync
-(Stage 3, blocked on its process-model decision), and beads `import` (Stage 3).
+(`defer`/`undefer`, `dep path`/`dep critical` — the dependency trees render
+on `why`/`unblocks`, not a separate `dep tree` verb — and `edit`), auto-sync
+(Stage 3 —
+process model decided in ADR-0021, implementation pending), and beads `import`
+(Stage 3).
 The items Stage 1 touched have graduated: `duplicate-of`
 semantics, the write-time guard inventory + idempotent re-close, the
 `not-closeable` / `unsafe-path` error codes, the canonical string-escaping
@@ -62,7 +67,8 @@ Kernel theorems still to decide whether to commit to:
 - `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020);
   the input surface so far: a bare `list` shows **open issues** oldest-first
   (effectively-closed hidden; `--all` includes closed), with `--limit`
-  (default 10, `0` = all), `--tree` (ADR-0017 §2 forest), and `--label <l>`
+  (default 10, `0` = all), the ADR-0017 §2 forest by default (`--flat` for
+  one-line rows), and `--label <l>`
   (repeatable ⇒ AND; built with labels). The open-by-default question is
   decided (this way) and built. Still open: the *other* facet flag spellings
   (status / assignee / priority / text) and text-match semantics (substring vs
