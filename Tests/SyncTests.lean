@@ -34,7 +34,13 @@ def syncMergeTests : List Outcome :=
       (String.intercalate "|" (u.map (fun s => s!"{s.replicaId}={segStr s}")))),
    (let u := unionSegments [] [seg "r2" "c\n"]
     check "unionSegments: a replica on only one side is taken whole"
-      (u.length == 1 && ((u.head?.map segStr) == some "c\n")) "")]
+      (u.length == 1 && ((u.head?.map segStr) == some "c\n")) ""),
+   -- byte-order discrete rows: a line that is a strict prefix of another
+   -- sorts first; empty inputs union to empty
+   checkEq "a prefix line sorts before its extension"
+     (String.fromUTF8! (unionLines "ab\n".toUTF8 "a\n".toUTF8)) "a\nab\n",
+   checkEq "the empty union is empty"
+     (String.fromUTF8! (unionLines ByteArray.empty ByteArray.empty)) ""]
 
 /-- The canonicalized union bytes must not move (a re-sync builds no churn
     commit) — pinned against a list-level reference of the original shape on

@@ -103,3 +103,19 @@ here is unaffected.)
 - Lean core only, no `batteries`. Rejected: `batteries` provides
   essential `List`/`Array`/`Option` lemmas and structures cheaply, with none
   of Mathlib's weight.
+
+> **Amendment (2026-06-12) — the fast-path modules sit inside the Mathlib
+> import cone.** The performance work ships the read path's fast forms next
+> to their refinement bridges (`Tl/Kernel/RollupFast.lean` →
+> `ReadyFast.lean` → `CyclesFast.lean`), and the rollup bridge folds against
+> the saturation argument in `Tl/Kernel/RollupSat.lean` — a genuine
+> cardinality/pigeonhole module, squarely inside this ADR's recorded scope
+> (a `Reach.lean` dependent). Consequence: the shipped fast definitions, and
+> through them the CLI build cone, now transitively import Mathlib. This is
+> a BUILD-STRUCTURE widening only — Mathlib is used exclusively by the
+> bridge proofs, the runtime semantics are pinned by the `*_eq` agreement
+> theorems, and the axiom probes stay clean. Recorded here per the "do not
+> widen without recording" rule; if build times ever make it bite, the
+> mechanical fix is splitting each fast module into a definition file
+> (batteries-only) and a proof file (Mathlib zone), at the cost of some
+> duplication of private helpers.

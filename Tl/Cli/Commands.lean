@@ -602,15 +602,25 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let s := v.state
-  let countOf (l : String) : Nat :=
-    (s.presentIssues.filter (fun i => (s.issueData i).labels.presentElements.contains l)).length
-  let labels := (s.presentIssues.flatMap (fun i => (s.issueData i).labels.presentElements))
-    |>.eraseDups |>.mergeSort (· ≤ ·)
-  let rows := labels.map (fun l =>
-    Json.mkObj [("label", Json.str (sanitizeSingle l)), ("count", jnum (countOf l))])
-  return { data := Json.mkObj [("count", jnum labels.length), ("labels", Json.arr rows.toArray)]
-           human := if labels.isEmpty then "no labels"
-                    else String.intercalate "\n" (labels.map (fun l => s!"{sanitizeSingle l}  {countOf l}"))
+  -- one pass: each present issue's label set is computed once and the counts
+  -- accumulate per label; the JSON rows and the human lines read the same
+  -- counted list (the old shape re-counted every label twice, each count
+  -- rescanning every issue). An issue's label set is duplicate-free
+  -- (presentElements of the OR-Set), so counts stay per-issue.
+  let counts : List (String × Nat) := Id.run do
+    let mut acc : List (String × Nat) := []
+    for i in s.presentIssues do
+      for l in (s.issueData i).labels.presentElements do
+        acc := match acc.lookup l with
+          | some n => acc.map (fun p => if p.1 == l then (p.1, n + 1) else p)
+          | none => (l, 1) :: acc
+    return acc
+  let counted := counts.mergeSort (fun a b => decide (a.1 ≤ b.1))
+  let rows := counted.map (fun (l, n) =>
+    Json.mkObj [("label", Json.str (sanitizeSingle l)), ("count", jnum n)])
+  return { data := Json.mkObj [("count", jnum counted.length), ("labels", Json.arr rows.toArray)]
+           human := if counted.isEmpty then "no labels"
+                    else String.intercalate "\n" (counted.map (fun (l, n) => s!"{sanitizeSingle l}  {n}"))
            notes }
 
 /-! ## doctor / init / version -/

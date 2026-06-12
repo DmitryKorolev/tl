@@ -1030,14 +1030,17 @@ def provenanceAgreementTests : List Outcome :=
   let pick (k : Nat) : IssueId := ids.getD (k % 3) ""
   let ops := (List.range 40).map (fun k =>
     let i := pick k
-    match k % 7 with
+    match k % 9 with
     | 0 => mk k (.create i { title := some s!"t{k}" })
     | 1 => mk k (.update i { description := some (some s!"d{k}") })
     | 2 => mk k (.claim i s!"who{k}")
     | 3 => mk k (.close i .Done)
     | 4 => mk k (.reopen i)
     | 5 => mk k (.defer i (2000000 + k))
-    | _ => mk k (.undefer i))
+    | 6 => mk k (.undefer i)
+    -- non-provenance verbs must be inert in both forms
+    | 7 => mk k (.labelAdd i "x")
+    | _ => mk k (.depAdd (i, pick (k + 1), EdgeKind.Blocks)))
   let m := provenanceMap ops
   ids.map (fun i =>
     let a := provOf m i
@@ -1047,6 +1050,72 @@ def provenanceAgreementTests : List Outcome :=
         && a.closedAt == b.closedAt && a.claimedAt == b.claimedAt
         && a.createdBy == b.createdBy && a.createdReplica == b.createdReplica))
 
+/-- Tree rendering on graphs the CLI cannot create but a merge can (ADR-0003:
+    cycles are reported, tolerated at read): a parent cycle renders the "↺"
+    marker — distinct from the diamond's already-shown marker — and a root
+    re-encountered inside an earlier root's subtree is marked, not re-walked.
+    Built directly over a folded kernel state (no store). -/
+def treeCycleRenderTests : List Outcome :=
+  let stA := (⟨10, 7, 1⟩ : Tl.Crdt.Stamp)
+  let stB := (⟨11, 7, 2⟩ : Tl.Crdt.Stamp)
+  let stE1 := (⟨12, 7, 3⟩ : Tl.Crdt.Stamp)
+  let stE2 := (⟨13, 7, 4⟩ : Tl.Crdt.Stamp)
+  let a := "a000000000000000"
+  let b := "b000000000000000"
+  let mkView (s : State) : View :=
+    { dirs := ⟨"", ".tl"⟩
+      loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
+                  maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      now := 0, replica := none
+      rollup := s.effStatusAll, edges := s.presentEdges, pedges := s.parentEdges
+      prov := Tl.Crdt.AMap.empty }
+  -- a 2-cycle: a parent-of b, b parent-of a
+  let sCyc := Tl.Kernel.fold [
+    Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
+    Op.edgeAdd (a, b, .Parent) stE1, Op.edgeAdd (b, a, .Parent) stE2]
+  let vCyc := mkView sCyc
+  let cycOut := String.intercalate "\n" (treeForest Style.plain vCyc [a] (fun _ => true))
+  -- a shared root: r1 and r2 both roots, r2 also a child of r1
+  let r1 := "c000000000000000"
+  let r2 := "d000000000000000"
+  let sShared := Tl.Kernel.fold [
+    Op.create r1 stA { title := some "R1" }, Op.create r2 stB { title := some "R2" },
+    Op.edgeAdd (r1, r2, .Parent) stE1]
+  let vShared := mkView sShared
+  let sharedOut := String.intercalate "\n" (treeForest Style.plain vShared [r1, r2] (fun _ => true))
+  [ check "a parent cycle renders the ↺ marker, not the diamond marker"
+      (((cycOut.splitOn "↺").length - 1 ≥ 1) && !(cycOut.splitOn "(shown above)").length.blt 0) cycOut,
+    check "the cycle marker is distinct from the already-shown marker"
+      (!((cycOut.splitOn "(shown above)").length - 1 ≥ 1)) cycOut,
+    check "a root already shown in an earlier subtree renders one marked line"
+      (((sharedOut.splitOn "(shown above)").length - 1 == 1)
+        && ((sharedOut.splitOn "R2").length - 1 == 2)) sharedOut ]
+
+/-- The canonical-parent LWW tie-break: with two surviving parent edges the
+    display parent is the one whose greatest add-tag is LWW-greater — on both
+    the spec form and the hoisted-view form. -/
+def canonicalParentTieTests : List Outcome :=
+  let pOld := "e000000000000000"
+  let pNew := "f000000000000000"
+  let child := "g000000000000000"
+  let s := Tl.Kernel.fold [
+    Op.create pOld ⟨10, 7, 1⟩ { title := some "old" },
+    Op.create pNew ⟨11, 7, 2⟩ { title := some "new" },
+    Op.create child ⟨12, 7, 3⟩ { title := some "kid" },
+    Op.edgeAdd (pOld, child, .Parent) ⟨20, 7, 4⟩,
+    Op.edgeAdd (pNew, child, .Parent) ⟨21, 7, 5⟩]
+  let v : View :=
+    { dirs := ⟨"", ".tl"⟩
+      loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
+                  maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      now := 0, replica := none
+      rollup := s.effStatusAll, edges := s.presentEdges, pedges := s.parentEdges
+      prov := Tl.Crdt.AMap.empty }
+  [ check "canonicalParent picks the LWW-greatest surviving parent edge"
+      (canonicalParent s child == some pNew),
+    check "canonicalParentE agrees with the spec form"
+      (canonicalParentE v child == canonicalParent s child) ]
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1054,6 +1123,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
+    ++ treeCycleRenderTests ++ canonicalParentTieTests
     ++ (← cliTreeDiamondTests)
     ++ (← cliBinaryTests)
 

@@ -162,6 +162,13 @@ structure View where
       rendered row (`provenanceMap` mirrors `provenanceOf` arm-for-arm). -/
   prov : AMap IssueId Prov
 
+/- View-construction note (an accepted cost): every command builds all four
+   hoisted views eagerly, including single-issue reads and write echoes —
+   each build is one pass with linear-find constants, milliseconds at the
+   thousands-of-ops scale target, and `tl close` pays it three times (the
+   pre-state view and `unblocksFast`'s two queues). Revisiting laziness or
+   sharing rides the tracked comparison-constant follow-up work. -/
+
 def View.state (v : View) : State := v.loaded.state
 
 

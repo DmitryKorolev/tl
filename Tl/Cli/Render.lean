@@ -131,18 +131,18 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
 
 /-! ## Children tree (ADR-0017 §2) — total on cyclic/dangling parent graphs -/
 
-/-- The tree walk: `path` is the current descent (cycle marker at the exact
-    node, as before); `emitted` is GLOBAL across the whole forest — a node
-    reached through a second parent (a multi-parent diamond, one `create
-    --parent --parent` away) renders one already-shown marker line instead of
-    re-walking its subtree, which is what made diamonds exponential. Children
-    come from the hoisted view (the per-node `presentChildren` re-derived
-    `presentEdges` each call). Returns the lines and the grown emitted set. -/
+/-- The tree walk. Two distinct markers, checked in this order per kid: a kid
+    on the current descent `path` closes a parent CYCLE and renders the "↺"
+    line (the path check must come first — every path member is also emitted,
+    so the other order would disguise a reportable cycle as a benign diamond);
+    a kid merely in the forest-global `emitted` set is a multi-parent diamond
+    re-encounter and renders the already-shown marker instead of re-walking
+    its subtree (which is what made diamonds exponential). Children come from
+    the hoisted view (the per-node `presentChildren` re-derived `presentEdges`
+    each call). Returns the lines and the grown emitted set. -/
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
     (pre : String) (path : List IssueId) (emitted : List IssueId)
     (keep : IssueId → Bool) : List String × List IssueId := Id.run do
-  if path.contains i then
-    return ([pre ++ st.paint "2" "↺ " ++ styledLine st v i], emitted)
   let kids := (State.kidsOfEdges v.pedges i).filter keep
   let n := kids.length
   let mut lines : List String := []
@@ -155,7 +155,9 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     let childPre := pre ++ (if st.glyph == .unicode then (if last then "    " else "│   ")
                             else (if last then "    " else "|   "))
     let node := pre ++ st.paint "2" conn ++ styledLine st v c
-    if em.contains c then
+    if c == i || path.contains c then
+      lines := lines ++ [pre ++ st.paint "2" "↺ " ++ styledLine st v c]
+    else if em.contains c then
       lines := lines ++ [node ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
       em := c :: em
@@ -166,18 +168,23 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
   return (lines, em)
 
 /-- A forest (ADR-0017 §2, `list --tree`): each root rendered as its one-line
-    node followed by its subtree. Roots are passed in (issues with no present
-    canonical parent — an orphan or a dangling-parent issue renders at top
-    level). Cycles get the per-path marker; shared (multi-parent) nodes render
-    once and mark later encounters, across the whole forest. -/
+    node followed by its subtree. A root already shown inside an earlier
+    root's subtree (a shared node whose canonical parent is hidden) renders
+    one marked line, like any other re-encounter. Cycles get the per-path "↺"
+    marker; shared (multi-parent) nodes render once and mark later
+    encounters, across the whole forest. -/
 def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String := Id.run do
   let mut lines : List String := []
   let mut em : List IssueId := []
   for r in roots do
-    em := r :: em
-    let (sub, em') := treeLines st v r "" [] em keep
-    lines := lines ++ (styledLine st v r :: sub)
-    em := em'
+    if em.contains r then
+      lines := lines ++ [styledLine st v r
+        ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
+    else
+      em := r :: em
+      let (sub, em') := treeLines st v r "" [] em keep
+      lines := lines ++ (styledLine st v r :: sub)
+      em := em'
   return lines
 
 /-! ## show detail view (ADR-0017 §4) -/
