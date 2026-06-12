@@ -45,8 +45,9 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let _ ← Tl.Sync.refreshFromRef d (replica.map (·.id))
   let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
   -- skew-check foreign segments against `now` (ADR-0007): a future-dated
-  -- foreign op is deferred from the fold until local time catches up
-  let loaded ← readState d skipBad (some now) (replica.map (·.id))
+  -- foreign op is deferred from the fold until local time catches up; the
+  -- fold itself runs through the content-keyed cache (ADR-0022)
+  let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
   return { dirs := d, loaded, now, replica }
 
 /-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
@@ -622,9 +623,11 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
   let own ← try loadReplica d catch _ => pure none
   let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
   -- doctor reports store damage instead of dying on it (the exemption); the
-  -- skew check runs here too, so deferred foreign ops surface as clockSkew
+  -- skew check runs here too, so deferred foreign ops surface as clockSkew.
+  -- It reads through the fold cache but never persists it (persist := false):
+  -- doctor stays a pure diagnostic, mutating nothing — not even a cache.
   let (loaded, loadFail) ← try
-      pure (← readState d false (some now) (own.map (·.id)), none)
+      pure (← readStateCached d false (some now) (own.map (·.id)) (persist := false), none)
     catch e =>
       pure (materialize [] false (some now) (own.map (·.id)), some e)
   let v : View := { dirs := d, loaded, now, replica := own }

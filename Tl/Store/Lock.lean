@@ -14,6 +14,7 @@ holder's flock).
 -/
 import Tl.Store.Local
 import Tl.Store.Materialize
+import Tl.Store.Cache
 
 namespace Tl.Store
 
@@ -100,8 +101,15 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
     let (segs, segNotes) ← readSegments d
     let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
     -- skew-check foreign segments against `now` (ADR-0007): a future-dated
-    -- foreign op neither folds into the guard state nor inflates the reseed
-    let loaded0 := materialize segs false (some now) (some replica.id)
+    -- foreign op neither folds into the guard state nor inflates the reseed.
+    -- The guard state folds through the cache (ADR-0022) — under the lock, so
+    -- the write path stops paying the whole-log refold; the appended ops are
+    -- NOT folded into the persisted cache here (it is keyed to the pre-append
+    -- bytes and stays exactly valid — the next invocation folds the suffix).
+    let cache ← loadCache d
+    let (loaded0, refreshed) := materializeCached segs cache false (some now) (some replica.id)
+    if let some c := refreshed then
+      saveCache d c
     let loaded := { loaded0 with warnings := segNotes ++ loaded0.warnings }
     -- a refused OWN segment fails the write: guards would run against a
     -- wrong fold, and the segment needs repair anyway (ADR-0008 §corruption)
