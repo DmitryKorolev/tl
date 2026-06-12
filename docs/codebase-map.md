@@ -78,8 +78,8 @@ Tl/Kernel/              -- the verified core (NO I/O)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's only Mathlib imports live here, ADR-0009)
   CyclesFast.lean       --   the SHIPPED diagnostics: hoisted views, rollups
-                        --   through the batched map, saturating closures in
-                        --   onCycle/sameSCC; bridge cyclesFast_eq /
+                        --   through the batched map, cached saturating
+                        --   closures for onCycle/sameSCC; bridge cyclesFast_eq /
                         --   precCyclesFast_eq — EQUAL to the spec, thm 6
                         --   transfers; commands compute each result once
   SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
@@ -288,11 +288,9 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   nodes render once and are marked on re-encounter;
                         --   parent cycles keep the distinct cycle marker)
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
-                        --   grow ≤ ×12 on five ratio-asserted paths (cold
+                        --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
-                        --   provenance, sync union); ready + diagnostics are
-                        --   ceiling-only pending the remaining ready/SCC
-                        --   algorithm work
+                        --   ready, diagnostics, provenance, sync union)
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class

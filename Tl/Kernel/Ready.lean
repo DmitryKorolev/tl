@@ -109,15 +109,9 @@ def readyLe (s : State) (a b : IssueId) : Bool :=
   else if s.createdAtOf a ≠ s.createdAtOf b then decide (s.createdAtOf a < s.createdAtOf b)
   else decide (TotalOrd.le a b)
 
-/-- Insertion into a `readyLe`-sorted list. -/
-def rankInsert (s : State) (x : IssueId) : List IssueId → List IssueId
-  | [] => [x]
-  | y :: ys => if s.readyLe x y then x :: y :: ys else y :: rankInsert s x ys
-
 /-- Sort by the ranking order. -/
-def rankSort (s : State) : List IssueId → List IssueId
-  | [] => []
-  | x :: xs => rankInsert s x (rankSort s xs)
+def rankSort (s : State) (l : List IssueId) : List IssueId :=
+  l.mergeSort (fun a b => s.readyLe a b)
 
 /-- `ready s now`: the ranked list of workable items — the core feature. -/
 def ready (s : State) (now : Instant) : List IssueId :=

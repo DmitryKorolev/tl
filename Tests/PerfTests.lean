@@ -2,15 +2,12 @@
 `Tests.PerfTests` — scaling assertions over synthetic logs (the standing
 algorithmic-efficiency principle, CLAUDE.md Code rules, enforced in CI).
 
-Four workhorses run at two op scales (100 and 400, ×4) with a ratio
+Every workhorse runs at two op scales (100 and 400, ×4) with a ratio
 assertion: growth must stay far below quadratic (×16) — a generous ×12 with
 a small-scale floor, so a regression to an accidental quadratic fails loudly
 while honest machine noise on a near-linear path does not (the
 timing-flake-proof intent; per-call counters would need kernel hooks the
-proofs do not carry). The other two rows — the ready queue and the cycle
-diagnostics — are CEILING-ONLY for now: their remaining cost is dominated by
-linear-list-backed ready sorting and SCC traversal, so a ratio there would
-assert the workload, not a regression.
+proofs do not carry).
 
 Covered: the COLD fold (`foldFast`, a full refold with no cache), the warm
 cached materialize (the suffix-fold read path), the batched rollup
@@ -105,15 +102,6 @@ private def ratioRow (name : String) (tSmall tBig : Nat) : Outcome :=
     (tBig ≤ 12 * floor && tBig ≤ 8000)
     s!"small={tSmall}ms big={tBig}ms"
 
-/-- A ceiling-only row — for the documented compromises: the per-candidate /
-    per-node closures (`ready`'s weights, the cycle diagnostics) still pay
-    algorithmic costs in linear-list-backed sort/traversal code. The ceiling
-    catches an order-of-magnitude regression; the ×4 ratio deliberately is not
-    asserted until the remaining ready/SCC algorithm work lands. -/
-private def ceilingRow (name : String) (ceilMs tBig : Nat) : Outcome :=
-  check s!"{name}: stays under the generous ceiling (big {tBig}ms ≤ {ceilMs}ms)"
-    (tBig ≤ ceilMs) s!"big={tBig}ms"
-
 def perfTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let scales := [(100, 4), (400, 4)]
@@ -136,14 +124,9 @@ def perfTests : IO (List Outcome) := do
       (materializeCached segs (some cache) false (some synthNow) (some stem)).1.ops.length)
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
     let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)
-    -- the diagnostics pay a per-node closure over the remaining list-backed
-    -- SCC work — measured at the SMALL scale only so the suite stays fast; the
-    -- small ceiling still catches an order-of-magnitude regression
-    let cyc ← if n ≤ 100 then
-        bench 1 (fun _ =>
-          (State.cyclesFast s EdgeKind.Parent).length
-          + (State.precCyclesFast rollup s).length)
-      else pure 0
+    let cyc ← bench 1 (fun _ =>
+      (State.cyclesFast s EdgeKind.Parent).length
+      + (State.precCyclesFast rollup s).length)
     let prov ← bench reps (fun _ => (provenanceMap loaded.ops).toList.length)
     let uni ← bench reps (fun _ =>
       (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
@@ -156,10 +139,7 @@ def perfTests : IO (List Outcome) := do
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
-      o := o ++ [
-        if name == "fast diagnostics" then ceilingRow (name ++ " (small scale)") 20000 tS
-        else if name == "fast ready queue" then ceilingRow name 60000 tB
-        else ratioRow name tS tB]
+      o := o ++ [ratioRow name tS tB]
     return o
   | _ => return [{ name := "perf scaling setup", passed := false,
                    msg := s!"expected two scales, got {results.length}" }]

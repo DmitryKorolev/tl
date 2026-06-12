@@ -164,22 +164,10 @@ membership is exactly the readiness predicate (thm 4); and since `now` enters
 `ready` only through the monotone defer conjunct, the passage of time never
 un-readies an item (thm 9). -/
 
-/-- Ranked insertion permutes (only reorders). -/
-theorem rankInsert_perm (s : State) (x : IssueId) :
-    (l : List IssueId) → (State.rankInsert s x l).Perm (x :: l)
-  | [] => List.Perm.refl _
-  | y :: ys => by
-    unfold State.rankInsert
-    split
-    · exact List.Perm.refl _
-    · exact (List.Perm.cons y (rankInsert_perm s x ys)).trans (List.Perm.swap x y ys)
-
 /-- The ranked sort is a permutation of its input — it filters nothing. -/
-theorem rankSort_perm (s : State) : (l : List IssueId) → (State.rankSort s l).Perm l
-  | [] => List.Perm.refl _
-  | x :: xs => by
-    unfold State.rankSort
-    exact (rankInsert_perm s x (State.rankSort s xs)).trans (List.Perm.cons x (rankSort_perm s xs))
+theorem rankSort_perm (s : State) (l : List IssueId) : (State.rankSort s l).Perm l := by
+  unfold State.rankSort
+  exact List.mergeSort_perm l (fun a b => s.readyLe a b)
 
 theorem mem_rankSort (s : State) (x : IssueId) (l : List IssueId) :
     x ∈ State.rankSort s l ↔ x ∈ l := (rankSort_perm s l).mem_iff

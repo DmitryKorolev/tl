@@ -1,14 +1,14 @@
 /-
 `Tl.Kernel.ReadyFast` — the fast ready queue and its refinement bridge.
 
-The spec (`Ready.lean`) recomputes everything per use: `rankSort` makes
-O(R²) comparisons, each comparison recomputes both `weight`s, each `weight`
+The spec (`Ready.lean`) recomputes everything per use: each ranking comparison
+recomputes both `weight`s, each `weight`
 recomputes `presentIssues` (the closure fuel) and burns ALL fuel iterations
 with no saturation exit, and every `blockersOf`/`isEpic` re-derives
-`presentEdges` — Θ(R²N²) per `ready` even on an edgeless graph. The fast
+`presentEdges` — superlinear per `ready` even on an edgeless graph. The fast
 form hoists the present issues/edges once per call, reads rollups through
 the batched map (`RollupFast`), computes each candidate's ranking key once
-(`RankKey`), sorts by the cached keys, and saturates the reachability
+(`RankKey`), merge-sorts by the cached keys, and saturates the reachability
 closure early (`reachFix` stops at the first fixed point — justified by
 `iterateN_of_fixed`, fixpoint stability).
 
@@ -159,43 +159,21 @@ theorem keyLe_keyOf_eq (s : State) (a b : IssueId) :
   unfold State.keyLe State.keyOf State.readyLe
   rw [weightFast_eq, weightFast_eq]
 
-/-- Insertion into a `keyLe`-sorted key list. -/
-def rankInsertK (x : RankKey) : List RankKey → List RankKey
-  | [] => [x]
-  | y :: ys => if keyLe x y then x :: y :: ys else y :: rankInsertK x ys
+/-- Near-linear sort on cached keys. -/
+def rankSortK (l : List RankKey) : List RankKey :=
+  l.mergeSort keyLe
 
-/-- Insertion sort on cached keys. -/
-def rankSortK : List RankKey → List RankKey
-  | [] => []
-  | x :: xs => rankInsertK x (rankSortK xs)
-
-theorem rankInsertK_map (s : State) (x : IssueId) :
-    (ys : List IssueId) →
-    rankInsertK (keyOf s.presentEdges s s.presentIssues.length x)
-        (ys.map (keyOf s.presentEdges s s.presentIssues.length))
-      = (s.rankInsert x ys).map (keyOf s.presentEdges s s.presentIssues.length)
-  | [] => rfl
-  | y :: ys => by
-    rw [List.map_cons]
-    unfold State.rankInsertK State.rankInsert
-    rw [keyLe_keyOf_eq]
-    by_cases h : s.readyLe x y = true
-    · rw [if_pos h, if_pos h]
-      rfl
-    · rw [if_neg h, if_neg h, List.map_cons]
-      rw [rankInsertK_map s x ys]
-
-theorem rankSortK_map (s : State) :
+theorem rankSortK_map (st : State) :
     (l : List IssueId) →
-    rankSortK (l.map (keyOf s.presentEdges s s.presentIssues.length))
-      = (s.rankSort l).map (keyOf s.presentEdges s s.presentIssues.length)
-  | [] => rfl
-  | x :: xs => by
+    rankSortK (l.map (keyOf st.presentEdges st st.presentIssues.length))
+      = (st.rankSort l).map (keyOf st.presentEdges st st.presentIssues.length)
+  | l => by
     unfold State.rankSortK State.rankSort
-    rw [List.map_cons]
-    show rankInsertK _ (rankSortK (xs.map _)) = _
-    rw [rankSortK_map s xs]
-    exact rankInsertK_map s x (s.rankSort xs)
+    exact (List.map_mergeSort
+      (f := keyOf st.presentEdges st st.presentIssues.length)
+      (r := fun a b => st.readyLe a b)
+      (s := fun a b => keyLe a b)
+      (l := l) (fun a _ b _ => (keyLe_keyOf_eq st a b).symm)).symm
 
 /-! ## The fast queue and its bridge -/
 

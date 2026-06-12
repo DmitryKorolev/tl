@@ -214,17 +214,11 @@ theorem readyLe_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edge
   simp only [State.readyLe, hprio a, hprio b, weight_congr hi he a, weight_congr hi he b,
     createdAtOf_congr hi a, createdAtOf_congr hi b]
 
-theorem rankInsert_congr {s1 s2 : State} (hle : s1.readyLe = s2.readyLe) (x : IssueId) :
-    (l : List IssueId) → s1.rankInsert x l = s2.rankInsert x l
-  | [] => rfl
-  | y :: ys => by unfold State.rankInsert; rw [hle, rankInsert_congr hle x ys]
-
 theorem rankSort_congr {s1 s2 : State} (hle : s1.readyLe = s2.readyLe) :
     (l : List IssueId) → s1.rankSort l = s2.rankSort l
-  | [] => rfl
-  | x :: xs => by
+  | l => by
     unfold State.rankSort
-    rw [rankSort_congr hle xs, rankInsert_congr hle x (s2.rankSort xs)]
+    rw [hle]
 
 /-- `ready` is a congruence over `(issues, edges, status, priority, deferUntil)`. -/
 theorem ready_congr {s1 s2 : State} (hi : s1.issues = s2.issues) (he : s1.edges = s2.edges)

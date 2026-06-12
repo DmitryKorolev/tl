@@ -6,7 +6,7 @@ already gives *determinism* (the output is a permutation of the input, so equal 
 give equal queues — what convergence needs). This file proves the queue is genuinely
 *ordered* by the ranking comparator `readyLe`: `readyLe` is a total order (reflexive,
 total, transitive — lexicographic on priority ↑ / weight ↓ / createdAt ↑ / the unique
-`id`), and insertion sort produces a `Pairwise`-sorted list. Mathlib-free: the order
+`id`), and `mergeSort` produces a `Pairwise`-sorted list. Mathlib-free: the order
 facts ride on `Nat` and `Tl.Crdt.TotalOrd`, the sortedness on core `List.Pairwise`.
 -/
 import Tl.Kernel.Theorems
@@ -160,34 +160,23 @@ theorem readyLe_trans (s : State) {a b c : IssueId}
 
 /-! ## The queue is sorted by `readyLe` -/
 
-/-- Inserting `x` preserves `readyLe`-sortedness (`readyLe` total + transitive). -/
-theorem rankInsert_sorted (s : State) (x : IssueId) :
-    (l : List IssueId) → List.Pairwise (fun a b => s.readyLe a b = true) l →
-    List.Pairwise (fun a b => s.readyLe a b = true) (s.rankInsert x l)
-  | [], _ => List.Pairwise.cons (fun b hb => nomatch hb) List.Pairwise.nil
-  | y :: ys, hp => by
-    unfold State.rankInsert
-    by_cases h : s.readyLe x y = true
-    · rw [if_pos h]
-      refine List.Pairwise.cons (fun z hz => ?_) hp
-      rcases List.mem_cons.mp hz with rfl | hz'
-      · exact h
-      · exact readyLe_trans s h ((List.pairwise_cons.mp hp).1 z hz')
-    · rw [if_neg h]
-      refine List.Pairwise.cons (fun z hz => ?_)
-        (rankInsert_sorted s x ys (List.pairwise_cons.mp hp).2)
-      rcases List.mem_cons.mp ((rankInsert_perm s x ys).mem_iff.mp hz) with hzx | hz'
-      · rw [hzx]
-        rcases readyLe_total s x y with hxy | hyx
-        · exact absurd hxy h
-        · exact hyx
-      · exact (List.pairwise_cons.mp hp).1 z hz'
+theorem readyLe_total_bool (s : State) (a b : IssueId) :
+    (s.readyLe a b || s.readyLe b a) = true := by
+  rcases readyLe_total s a b with h | h
+  · rw [h]
+    rfl
+  · rw [h, Bool.or_true]
 
-/-- `rankSort` produces a `readyLe`-sorted list (insertion sort is correct). -/
+/-- `rankSort` produces a `readyLe`-sorted list. -/
 theorem rankSort_sorted (s : State) :
     (l : List IssueId) → List.Pairwise (fun a b => s.readyLe a b = true) (s.rankSort l)
-  | [] => List.Pairwise.nil
-  | x :: xs => rankInsert_sorted s x (s.rankSort xs) (rankSort_sorted s xs)
+  | l => by
+    unfold State.rankSort
+    exact List.pairwise_mergeSort
+      (le := fun a b => s.readyLe a b)
+      (fun a b c => readyLe_trans s)
+      (fun a b => readyLe_total_bool s a b)
+      l
 
 /-- **The `ready` queue is sorted by the ranking order** (ADR-0004 thm 4): every issue
     ranks `readyLe`-before every later one. Closes the ranking-soundness residual. -/
