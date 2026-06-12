@@ -145,10 +145,10 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- the --json data is the flat items array (the tree is a human browse mode
   -- only — ADR-0017 §2; a recursive JSON shape isn't pinned)
   let capped := if limit == 0 then visible else visible.take limit
-  -- `--tree`: a forest over the visible set. Roots = a visible issue with no
-  -- visible canonical parent (an orphan, a dangling/cycle parent, or a parent
-  -- hidden by the filter → top level, §2); closed children are pruned unless
-  -- --all.
+  -- tree (the default render; `--flat` opts into one-line rows): a forest over
+  -- the visible set. Roots = a visible issue with no visible canonical parent
+  -- (an orphan, a dangling/cycle parent, or a parent hidden by the filter →
+  -- top level, §2); closed children are pruned unless --all.
   let r : Style → String :=
     if tree then
       let isRoot (i : IssueId) : Bool := match canonicalParent s i with

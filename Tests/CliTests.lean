@@ -809,21 +809,36 @@ def cliRenderTests : IO (List Outcome) := do
        check "show detail lists the blocker relationship"
          ((plain.splitOn "blocked by").length > 1) plain]
   | .error e => o := o ++ [{ name := "show render", passed := false, msg := e.message }]
-  -- list --tree: children nested under their epic (ADR-0017 §2)
+  -- list renders the hierarchy tree by default (ADR-0017 §2); --flat opts into
+  -- one-line rows; --json stays the flat items array either way
   let dirT ← freshDir
   let epic ← mkIssue dirT "An epic"
   let _ ← mkIssue dirT "A child" ["--parent", "tl-" ++ epic]
   let _ ← mkIssue dirT "An orphan"
-  match ← run' ["list", "--tree", "--dir", dirT, "--limit", "0"] with
+  match ← run' ["list", "--dir", dirT, "--limit", "0"] with
   | .ok out =>
     let plain := (out.render.map (· Style.plain)).getD out.human
     o := o ++
-      [check "list --tree marks the epic" ((plain.splitOn "[epic]").length > 1) plain,
-       check "list --tree indents the child with a connector"
+      [check "default list marks the epic" ((plain.splitOn "[epic]").length > 1) plain,
+       check "default list indents the child with a connector"
          ((plain.splitOn "\\-- ").length > 1 || (plain.splitOn "+-- ").length > 1) plain,
        check "the child line sits below its epic line"
          (((plain.splitOn "An epic").head?.getD "").length < ((plain.splitOn "A child").head?.getD "").length) plain]
-  | .error e => o := o ++ [{ name := "list --tree", passed := false, msg := e.message }]
+  | .error e => o := o ++ [{ name := "list default tree", passed := false, msg := e.message }]
+  match ← run' ["list", "--flat", "--dir", dirT, "--limit", "0"] with
+  | .ok out =>
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "list --flat has no tree connectors"
+         ((plain.splitOn "\\-- ").length == 1 && (plain.splitOn "+-- ").length == 1) plain,
+       check "list --flat still shows every visible issue"
+         (((plain.splitOn "A child").length > 1) && ((plain.splitOn "An orphan").length > 1)) plain]
+  | .error e => o := o ++ [{ name := "list --flat", passed := false, msg := e.message }]
+  o := o ++
+    [← expectData "default list --json keeps the flat items array"
+       ["list", "--dir", dirT, "--limit", "0"]
+       (fun j => (jArr j "items").length == 3
+         && (jArr j "items").all (fun r => (jStr r "id").isSome))]
   -- spawned: the flag/TTY resolution path (--color=always vs --plain)
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   if ← exe.pathExists then
