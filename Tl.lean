@@ -7,6 +7,7 @@
 -- Verified core (proved, no I/O)
 import Tl.Crdt.Order
 import Tl.Crdt.Map
+import Tl.Crdt.MapFold
 import Tl.Crdt.Lww
 import Tl.Crdt.OrSet
 import Tl.Kernel.State
