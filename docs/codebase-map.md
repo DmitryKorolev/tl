@@ -16,6 +16,9 @@ Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
                         -- there is no separate Join.lean)
   Order.lean            --   TotalOrd + the Stamp triple (hlc, replica, nonce)
   Map.lean              --   sorted assoc map (AMap) + FinSet, with join laws
+  MapFold.lean          --   batched canonical AMap join (mergeSort + adjacent
+                        --   collapse, O(N log N)) = the iterated merge
+                        --   (joinFast_eq) — the cold-fold core
   Lww.lean              --   LWW register; key is the TRIPLE (HLC, replica, nonce)
                         --   (ADR-0002/0007; wire encodings ADR-0007/0008 — 16-hex HLC, 13/26-char Crockford);
                         --   lifted pointwise over a key map = the `meta` CRDT
@@ -66,6 +69,10 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   and acyclicity deliberately excluded (tolerated at read)
   Theorems.lean         --   convergence + tracker theorems (ADR-0004/0003);
                         --   liveness is one-directional deadlock-freedom, not a biconditional
+  FoldFast.lean         --   the shipped cold fold: foldFast joins the deltas'
+                        --   component maps by batched construction (O(N log N))
+                        --   + the bridge foldFast_eq_fold — equal to fold, so
+                        --   every fold theorem transfers (cold path, ADR-0022)
   Frame.lean            --   frame lemmas: meta/labels/relate move neither ready nor rollup
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
@@ -281,12 +288,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   nodes render once and are marked on re-encounter;
                         --   parent cycles keep the distinct cycle marker)
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
-                        --   grow ≤ ×12 on four ratio-asserted paths (warm
-                        --   cached materialize, rollup, provenance, sync
-                        --   union); ready + diagnostics are ceiling-only
-                        --   pending the tracked comparison-constant and
-                        --   construction follow-ups; the cold fold is
-                        --   excluded (tracked: batched construction)
+                        --   grow ≤ ×12 on five ratio-asserted paths (cold
+                        --   batched fold, warm cached materialize, rollup,
+                        --   provenance, sync union); ready + diagnostics are
+                        --   ceiling-only pending the tracked comparison-constant
+                        --   and sublinear-find follow-ups
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class
