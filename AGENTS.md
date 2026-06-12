@@ -123,6 +123,18 @@ duplicating them here; this file is process, not spec.
 - **Don't regress production code to make a proof easier.** Bridge from the
   efficient form to the spec; don't slow the runtime to simplify a proof
   without explicit approval.
+- **Maintain algorithmic efficiency as a principle.** Work proportional to
+  the input: memoize shared descents, precompute an index instead of
+  rescanning a collection per item, and don't leave accidentally-quadratic
+  folds, sorts, or graph walks on command paths. In the kernel the efficient
+  form *is* the production code and the theorems are proved about it —
+  directly, via a characterization (recurrence) lemma, or via an equivalence
+  bridge, whichever proves cheapest; a reference function, when one helps, is
+  proof scaffolding, never the shipped path, and is not required. Structural
+  efficiency properties (e.g. each node evaluated once per query) are
+  themselves provable; wall-clock cost of the compiled binary stays tested,
+  not proved (the ADR-0004 tiering). An accepted cost compromise is recorded
+  explicitly (ADR or tracked task), never silently.
 - **Error messages teach.** Every error's human `message` says what to do next
   (the fix), not just what failed — written for a human *and* an agent that
   branches on the `code` and reads `message` to self-correct. The `code` is the
