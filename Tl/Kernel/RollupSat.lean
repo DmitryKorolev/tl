@@ -47,13 +47,6 @@ private theorem boolEq_of_iff {a b : Bool} (h : a = true ↔ b = true) : a = b :
     | true => exact absurd (h.mpr rfl) Bool.false_ne_true
     | false => rfl
 
-private theorem allCongr {α : Type _} (p q : α → Bool) :
-    (l : List α) → (∀ x ∈ l, p x = q x) → l.all p = l.all q
-  | [], _ => rfl
-  | x :: xs, h => by
-    rw [List.all_cons, List.all_cons, h x (List.mem_cons_self ..),
-      allCongr p q xs (fun c hc => h c (List.mem_cons_of_mem x hc))]
-
 /-- One-step definitional unfolding at fuel 0 (a named equation so rewrites
     stay targeted — a bare `unfold` would also mangle inner occurrences). -/
 private theorem effStatusAux_zero_def (s : State) (i : IssueId) :
@@ -346,7 +339,7 @@ theorem effectiveStatus_recurrence (s : State) (i : IssueId) :
           (List.length_pos_of_mem (presentChildren_subset_present s i hc0)))
       have hall : (s.presentChildren i).all (fun c => Status.closed (s.effStatusAux M c))
                 = (s.presentChildren i).all (fun c => s.effClosed c) := by
-        apply allCongr
+        apply all_congr
         intro c hcm
         show closedAt s M c = s.effClosed c
         rw [effClosed_eq_closedAt, hN]

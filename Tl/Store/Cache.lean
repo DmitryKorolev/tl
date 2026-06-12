@@ -295,7 +295,12 @@ private def shaHexOf (b : ByteArray) : String :=
 /-- Encode the cache: a SHA-256 checksum line over the compressed JSON payload
     line. The checksum is what makes "corrupt ⇒ rebuild" hold for *value*
     corruption too (a flipped digit in a line count or a state string is not a
-    JSON shape error — only the checksum catches it). -/
+    JSON shape error — only the checksum catches it).
+
+    Load-bearing invariant: `Json.compress` emits a single line — newlines
+    inside string values are escaped to the two-char `\n`, never a literal `\n`
+    — so the payload is always exactly one line, and `decodeCache`'s
+    `splitOn "\n"` recovers `[checksum, payload]` unambiguously. -/
 def encodeCache (c : FoldCache) : String :=
   let payload := (Json.mkObj [
     ("v", jnum cacheVersion),

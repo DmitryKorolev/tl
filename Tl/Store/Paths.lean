@@ -52,9 +52,11 @@ def relLock (d : Dirs) : String := d.tlRel ++ "/local/lock"
     only forces a re-materialize, never a wrong read. -/
 def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
 /-- The materialization fold cache (ADR-0022): the folded state keyed to
-    per-segment log content. Gitignored, local-only, never synced, no log
-    format impact — absent/stale/corrupt only costs a rebuild from the
-    segments, never a wrong read. -/
+    per-segment log content. Local-only, never synced, no log format impact —
+    absent/stale/corrupt only costs a rebuild from the segments, never a wrong
+    read. It stays out of git via the single `*` self-ignore `init` writes to
+    `.tl/.gitignore` (the whole `.tl/local/` subtree is covered) — that file is
+    the only thing keeping the cache untracked. -/
 def relCache (d : Dirs) : String := d.tlRel ++ "/local/cache"
 def relLog (d : Dirs) : String := d.tlRel ++ "/log"
 def relSegment (d : Dirs) (replicaId : String) : String :=

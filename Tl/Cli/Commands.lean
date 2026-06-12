@@ -603,19 +603,18 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
   let notes ← cleanReadNotes v
   let s := v.state
   -- one pass: each present issue's label set is computed once and the counts
-  -- accumulate per label; the JSON rows and the human lines read the same
-  -- counted list (the old shape re-counted every label twice, each count
-  -- rescanning every issue). An issue's label set is duplicate-free
-  -- (presentElements of the OR-Set), so counts stay per-issue.
-  let counts : List (String × Nat) := Id.run do
+  -- accumulate per label into a sorted assoc map; the JSON rows and the human
+  -- lines read the same counted list (the old shape re-counted every label
+  -- twice, each count rescanning every issue). `insertWith` keeps the list
+  -- sorted by label as it goes, so the result is already name-ordered — no
+  -- separate sort. An issue's label set is duplicate-free (presentElements of
+  -- the OR-Set), so counts stay per-issue.
+  let counted : List (String × Nat) := Id.run do
     let mut acc : List (String × Nat) := []
     for i in s.presentIssues do
       for l in (s.issueData i).labels.presentElements do
-        acc := match acc.lookup l with
-          | some n => acc.map (fun p => if p.1 == l then (p.1, n + 1) else p)
-          | none => (l, 1) :: acc
+        acc := AssocList.insertWith (· + ·) l 1 acc
     return acc
-  let counted := counts.mergeSort (fun a b => decide (a.1 ≤ b.1))
   let rows := counted.map (fun (l, n) =>
     Json.mkObj [("label", Json.str (sanitizeSingle l)), ("count", jnum n)])
   return { data := Json.mkObj [("count", jnum counted.length), ("labels", Json.arr rows.toArray)]

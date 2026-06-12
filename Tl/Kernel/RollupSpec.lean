@@ -163,8 +163,11 @@ theorem effectiveStatus_open_on_liveCycle (s : State) (C : List IssueId)
 so if the children agree at two fuels the parent agrees at one-higher fuel. This is
 the inductive step that lets fuel-irrelevance descend the parent graph. -/
 
-/-- `List.all` agrees when the predicates agree on every element. -/
-private theorem all_congr {α : Type _} (p q : α → Bool) :
+/-- `List.all` agrees when the predicates agree on every *member* of the list.
+    The membership-conditional companion to the library's unconditional
+    `List.all_congr`; shared by `RollupSat`/`RollupFast` (whose predicates only
+    agree on present children, not universally). -/
+theorem all_congr {α : Type _} (p q : α → Bool) :
     (l : List α) → (∀ x ∈ l, p x = q x) → l.all p = l.all q
   | [], _ => rfl
   | x :: xs, h => by

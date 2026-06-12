@@ -608,13 +608,6 @@ theorem blockerDischargedWith_eq (s : State) (b : IssueId) :
   unfold State.blockerDischargedWith State.blockerDischarged
   rw [effClosedWith_eq]
 
-private theorem allCongr' {α : Type _} (p q : α → Bool) :
-    (l : List α) → (∀ x ∈ l, p x = q x) → l.all p = l.all q
-  | [], _ => rfl
-  | x :: xs, h => by
-    rw [List.all_cons, List.all_cons, h x (List.mem_cons_self ..),
-      allCongr' p q xs (fun c hc => h c (List.mem_cons_of_mem x hc))]
-
 /-- `isReady` through a rollup map — the per-row readiness the CLI renders. -/
 def isReadyWith (m : AMap IssueId Status) (s : State) (now : Instant) (i : IssueId) : Bool :=
   decide (s.hasIssue i)
@@ -626,7 +619,7 @@ def isReadyWith (m : AMap IssueId Status) (s : State) (now : Instant) (i : Issue
 theorem isReadyWith_eq (s : State) (now : Instant) (i : IssueId) :
     isReadyWith (s.effStatusAll) s now i = s.isReady now i := by
   unfold State.isReadyWith State.isReady
-  rw [allCongr' (blockerDischargedWith (s.effStatusAll) s ·) (s.blockerDischarged ·)
+  rw [all_congr (blockerDischargedWith (s.effStatusAll) s ·) (s.blockerDischarged ·)
     (s.blockersOf i) (fun b _ => blockerDischargedWith_eq s b)]
 
 end State
