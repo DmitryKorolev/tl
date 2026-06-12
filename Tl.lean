@@ -15,6 +15,8 @@ import Tl.Kernel.Apply
 import Tl.Kernel.Invariant
 import Tl.Kernel.Rollup
 import Tl.Kernel.RollupSpec
+import Tl.Kernel.RollupSat
+import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.Cycles
 import Tl.Kernel.Theorems

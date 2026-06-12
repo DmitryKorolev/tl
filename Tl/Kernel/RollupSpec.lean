@@ -103,7 +103,7 @@ On a cycle of *non-cancelled epics* — every member has a present child that is
 also a member — every member rolls up `Open` at every fuel: at exhaustion by
 the epic fallback, and inductively because the on-cycle child is `Open`, hence
 never closed. This is the exactness (not mere conservatism) of the memoized
-walk's path cutoff (ADR-0003 §3 amendment, `RollupMemo.lean`): a re-encountered
+walk's path cutoff (ADR-0003 §3 amendment, `RollupFast.lean`): a re-encountered
 node *is* `Open`, so treating it as not-closed loses nothing. -/
 
 /-- Every member of a live cycle (non-cancelled, with an on-cycle present
