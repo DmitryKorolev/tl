@@ -171,8 +171,8 @@ def rollupKids (s : State) (pe : List (IssueId × IssueId))
       match memo.find c with
       | some v => (memo, v)
       | none =>
-        if hcon : path.contains c then (memo, Status.Open)
-        else if hpres : s.hasIssue c then rollupVisit s pe path memo c
+        if _hcon : path.contains c then (memo, Status.Open)
+        else if _hpres : s.hasIssue c then rollupVisit s pe path memo c
         else (memo, (s.issueData c).statusOf)
     let r' := rollupKids s pe path r.1 cs'
     (r'.1, Status.closed r.2 && r'.2)
@@ -182,10 +182,10 @@ decreasing_by
   · -- kids → visit: a fresh present kid strictly shrinks the unvisited set
     apply Prod.Lex.left
     apply length_filter_lt_of_mem
-    · exact (Tl.Crdt.OrSet.mem_presentElements s.issues c).mpr hpres
+    · exact (Tl.Crdt.OrSet.mem_presentElements s.issues c).mpr _hpres
     · show (!path.contains c) = true
       cases hb : path.contains c with
-      | true => exact absurd hb hcon
+      | true => exact absurd hb _hcon
       | false => rfl
   · -- kids → kids: same path, shorter list
     exact Prod.Lex.right _ (Nat.lt_succ_self _)
@@ -209,6 +209,394 @@ def effStatusWith (m : AMap IssueId Status) (s : State) (i : IssueId) : Status :
 def effClosedWith (m : AMap IssueId Status) (s : State) (i : IssueId) : Bool :=
   Status.closed (effStatusWith m s i)
 
+/-! ## The refinement bridge -/
+
+/-- The hoisted view agrees with the spec's `presentChildren` — list-equal,
+    order included. -/
+theorem kidsOfEdges_parentEdges (s : State) (i : IssueId) :
+    kidsOfEdges (s.parentEdges) i = s.presentChildren i := by
+  unfold kidsOfEdges parentEdges State.presentChildren State.childrenOf
+  generalize s.presentEdges = l
+  induction l with
+  | nil => rfl
+  | cons e es ih =>
+    obtain ⟨f, t, k⟩ := e
+    by_cases hk : k = EdgeKind.Parent
+    · by_cases ht : s.hasIssue t
+      · have hpf : (fun e : Edge =>
+            if decide (e.2.2 = EdgeKind.Parent) && decide (s.hasIssue e.2.1)
+            then some (e.1, e.2.1) else none) (f, t, k) = some (f, t) := by
+          show (if decide (k = EdgeKind.Parent) && decide (s.hasIssue t)
+                then some (f, t) else none) = some (f, t)
+          rw [decide_eq_true hk, decide_eq_true ht]
+          rfl
+        simp only [List.filterMap_cons, hpf]
+        by_cases hf : f = i
+        · have hkeep : (fun p : IssueId × IssueId => p.1 == i) (f, t) = true := by
+            show (f == i) = true
+            rw [hf]
+            exact beq_self_eq_true i
+          have hkeep' : (fun e : Edge =>
+              decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i)) (f, t, k) = true :=
+            decide_eq_true ⟨hk, hf⟩
+          rw [List.filter_cons_of_pos (p := fun p : IssueId × IssueId => p.1 == i) hkeep, List.map_cons,
+            List.filter_cons_of_pos (p := fun e : Edge => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+              hkeep', List.map_cons,
+            List.filter_cons_of_pos (p := fun c : IssueId => decide (s.hasIssue c))
+              (decide_eq_true ht), ih]
+        · have hdrop : ¬ ((fun p : IssueId × IssueId => p.1 == i) (f, t) = true) := by
+            show ¬ ((f == i) = true)
+            rw [beq_eq_false_iff_ne.mpr hf]
+            exact Bool.false_ne_true
+          have hdrop' : ¬ ((fun e : Edge =>
+              decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i)) (f, t, k) = true) := by
+            show ¬ (decide (k = EdgeKind.Parent ∧ f = i) = true)
+            rw [decide_eq_false (fun h => hf h.2)]
+            exact Bool.false_ne_true
+          rw [List.filter_cons_of_neg (p := fun p : IssueId × IssueId => p.1 == i) hdrop,
+            List.filter_cons_of_neg (p := fun e : Edge => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+              hdrop', ih]
+      · have hpf : (fun e : Edge =>
+            if decide (e.2.2 = EdgeKind.Parent) && decide (s.hasIssue e.2.1)
+            then some (e.1, e.2.1) else none) (f, t, k) = none := by
+          show (if decide (k = EdgeKind.Parent) && decide (s.hasIssue t)
+                then some (f, t) else none) = none
+          rw [decide_eq_false ht, Bool.and_false]
+          rfl
+        simp only [List.filterMap_cons, hpf]
+        by_cases hf : f = i
+        · have hkeep' : (fun e : Edge =>
+              decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i)) (f, t, k) = true :=
+            decide_eq_true ⟨hk, hf⟩
+          rw [List.filter_cons_of_pos (p := fun e : Edge => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+              hkeep', List.map_cons,
+            List.filter_cons_of_neg (p := fun c : IssueId => decide (s.hasIssue c)) (by
+              show ¬ (decide (s.hasIssue t) = true)
+              rw [decide_eq_false ht]
+              exact Bool.false_ne_true), ih]
+        · rw [List.filter_cons_of_neg (p := fun e : Edge => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i)) (by
+            show ¬ (decide (k = EdgeKind.Parent ∧ f = i) = true)
+            rw [decide_eq_false (fun h => hf h.2)]
+            exact Bool.false_ne_true), ih]
+    · have hpf : (fun e : Edge =>
+          if decide (e.2.2 = EdgeKind.Parent) && decide (s.hasIssue e.2.1)
+          then some (e.1, e.2.1) else none) (f, t, k) = none := by
+        show (if decide (k = EdgeKind.Parent) && decide (s.hasIssue t)
+              then some (f, t) else none) = none
+        rw [decide_eq_false hk, Bool.false_and]
+        rfl
+      simp only [List.filterMap_cons, hpf]
+      rw [List.filter_cons_of_neg (p := fun e : Edge => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i)) (by
+          show ¬ (decide (k = EdgeKind.Parent ∧ f = i) = true)
+          rw [decide_eq_false (fun h => hk h.1)]
+          exact Bool.false_ne_true), ih]
+
+/-- Memo coherence: every cached value is the spec's. -/
+def Coherent (s : State) (m : AMap IssueId Status) : Prop :=
+  ∀ k v, m.find k = some v → v = s.effectiveStatus k
+
+/-- The descent-chain invariant: the head of `path` is the parent of the
+    current node, each member parents the one before it, and every member is
+    non-cancelled (the walk only descends past the cancel check). -/
+def ChainOk (s : State) : List IssueId → IssueId → Prop
+  | [], _ => True
+  | p :: rest, i => i ∈ s.presentChildren p ∧
+      (s.issueData p).statusOf ≠ Status.Cancelled ∧ ChainOk s rest p
+
+/-- The path prefix down to (and including) the re-encountered node. -/
+def seg (path : List IssueId) (c : IssueId) : List IssueId :=
+  match path with
+  | [] => []
+  | p :: rest => if p == c then [p] else p :: seg rest c
+
+theorem mem_seg_self (c : IssueId) :
+    (path : List IssueId) → c ∈ path → c ∈ seg path c
+  | p :: rest, hc => by
+    unfold seg
+    by_cases hpc : (p == c) = true
+    · rw [if_pos hpc]
+      exact List.mem_singleton.mpr (eq_of_beq hpc).symm
+    · rw [if_neg hpc]
+      rcases List.mem_cons.mp hc with rfl | hmem
+      · exact absurd (beq_self_eq_true c) hpc
+      · exact List.mem_cons_of_mem p (mem_seg_self c rest hmem)
+
+/-- The walked chain closed at the re-encountered node is a live set: every
+    member non-cancelled, with a present child among `a :: seg path c`. -/
+theorem seg_liveSet (s : State) (c : IssueId) :
+    (path : List IssueId) → (a : IssueId) → ChainOk s path a → c ∈ path →
+    ∀ x ∈ seg path c, (s.issueData x).statusOf ≠ Status.Cancelled ∧
+      ∃ x', x' ∈ a :: seg path c ∧ x' ∈ s.presentChildren x
+  | p :: rest, a, ⟨hap, hpnc, hrest⟩, hc => by
+    unfold seg
+    by_cases hpc : (p == c) = true
+    · rw [if_pos hpc]
+      intro x hx
+      rw [List.mem_singleton] at hx
+      subst hx
+      exact ⟨hpnc, a, List.mem_cons_self .., hap⟩
+    · rw [if_neg hpc]
+      have hcrest : c ∈ rest := by
+        rcases List.mem_cons.mp hc with rfl | hmem
+        · exact absurd (beq_self_eq_true c) hpc
+        · exact hmem
+      intro x hx
+      rcases List.mem_cons.mp hx with rfl | hxseg
+      · exact ⟨hpnc, a, List.mem_cons_self .., hap⟩
+      · obtain ⟨hnc, x', hx', hchild⟩ := seg_liveSet s c rest p hrest hcrest x hxseg
+        rcases List.mem_cons.mp hx' with rfl | hx'seg
+        · exact ⟨hnc, x', List.mem_cons_of_mem a (List.mem_cons_self ..), hchild⟩
+        · exact ⟨hnc, x',
+            List.mem_cons_of_mem a (List.mem_cons_of_mem p hx'seg), hchild⟩
+
+/-- A kid found on the walked chain is effectively `Open` — the path cutoff is
+    exact, not merely conservative. The witness cycle is the chain segment
+    from the kid down to the current node, closed by the `(node, kid)` edge. -/
+theorem effectiveStatus_open_of_reencounter (s : State) {path : List IssueId}
+    {i c : IssueId} (hchain : ChainOk s path i)
+    (hinc : (s.issueData i).statusOf ≠ Status.Cancelled)
+    (hkid : c ∈ s.presentChildren i) (hmem : c ∈ i :: path) :
+    s.effectiveStatus c = Status.Open := by
+  rcases List.mem_cons.mp hmem with rfl | hpath
+  · exact effectiveStatus_open_on_liveCycle s [c] (fun x hx => by
+      rw [List.mem_singleton] at hx
+      subst hx
+      exact ⟨hinc, x, List.mem_singleton.mpr rfl, hkid⟩) c (List.mem_singleton.mpr rfl)
+  · refine effectiveStatus_open_on_liveCycle s (i :: seg path c) ?_ c
+      (List.mem_cons_of_mem i (mem_seg_self c path hpath))
+    intro x hx
+    rcases List.mem_cons.mp hx with rfl | hxseg
+    · exact ⟨hinc, c, List.mem_cons_of_mem x (mem_seg_self c path hpath), hkid⟩
+    · exact seg_liveSet s c path i hchain hpath x hxseg
+
+private theorem coherent_insert (s : State) {m : AMap IssueId Status}
+    (hcoh : Coherent s m) {i : IssueId} {v : Status}
+    (hv : v = s.effectiveStatus i) : Coherent s (m.insert i v) := by
+  intro k w hkw
+  rw [AMap.find_insert] at hkw
+  by_cases hki : k = i
+  · rw [if_pos hki] at hkw
+    rw [← Option.some.inj hkw, hki]
+    exact hv
+  · rw [if_neg hki] at hkw
+    exact hcoh k w hkw
+
+private theorem isSome_insert_mono {m : AMap IssueId Status} {i : IssueId}
+    {v : Status} (k : IssueId) (h : (m.find k).isSome = true) :
+    ((m.insert i v).find k).isSome = true := by
+  rw [AMap.find_insert]
+  by_cases hki : k = i
+  · rw [if_pos hki]
+    rfl
+  · rw [if_neg hki]
+    exact h
+
+mutual
+
+/-- **Refinement (node).** With a coherent memo and the chain invariant, the
+    walk returns exactly `effectiveStatus`, keeps the memo coherent, never
+    drops an entry, and records the node. -/
+theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
+    (hpe : pe = s.parentEdges) (path : List IssueId) (memo : AMap IssueId Status)
+    (i : IssueId) (hcoh : Coherent s memo) (hchain : ChainOk s path i) :
+    Coherent s (rollupVisit s pe path memo i).1
+    ∧ (rollupVisit s pe path memo i).2 = s.effectiveStatus i
+    ∧ (∀ k, (memo.find k).isSome = true →
+        ((rollupVisit s pe path memo i).1.find k).isSome = true)
+    ∧ ((rollupVisit s pe path memo i).1.find i).isSome = true := by
+  unfold State.rollupVisit
+  cases hfind : memo.find i with
+  | some v =>
+    refine ⟨hcoh, hcoh i v hfind, fun k hk => hk, ?_⟩
+    rw [hfind]
+    rfl
+  | none =>
+    by_cases hcanc : (s.issueData i).statusOf = Status.Cancelled
+    · rw [if_pos hcanc]
+      exact ⟨coherent_insert s hcoh (effectiveStatus_cancelled s i hcanc).symm,
+        (effectiveStatus_cancelled s i hcanc).symm,
+        fun k hk => isSome_insert_mono k hk,
+        by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+    · rw [if_neg hcanc]
+      have hkids_eq : kidsOfEdges pe i = s.presentChildren i := by
+        rw [hpe]
+        exact kidsOfEdges_parentEdges s i
+      cases hkemp : (kidsOfEdges pe i).isEmpty with
+      | true =>
+        rw [if_pos hkemp]
+        have hepic : s.isEpic i = false := by
+          unfold State.isEpic
+          rw [← hkids_eq, hkemp]
+          rfl
+        exact ⟨coherent_insert s hcoh (effectiveStatus_nonEpic s i hepic).symm,
+          (effectiveStatus_nonEpic s i hepic).symm,
+          fun k hk => isSome_insert_mono k hk,
+          by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+      | false =>
+        rw [if_neg (by rw [hkemp]; exact Bool.false_ne_true)]
+        have hcs : ∀ c ∈ kidsOfEdges pe i, c ∈ s.presentChildren i := by
+          intro c hcm
+          rw [← hkids_eq]
+          exact hcm
+        obtain ⟨hcoh', hval, hmono⟩ :=
+          rollupKids_sound s pe hpe path i hchain hcanc memo (kidsOfEdges pe i) hcoh hcs
+        have heff : (if (rollupKids s pe (i :: path) memo (kidsOfEdges pe i)).2
+            then Status.Done else Status.Open) = s.effectiveStatus i := by
+          rw [hval, hkids_eq, effectiveStatus_recurrence s i, if_neg hcanc]
+          have hpem : (s.presentChildren i).isEmpty = false := by
+            rw [← hkids_eq]
+            exact hkemp
+          rw [hpem, if_neg Bool.false_ne_true]
+        exact ⟨coherent_insert s hcoh' heff, heff,
+          fun k hk => isSome_insert_mono k (hmono k hk),
+          by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+termination_by
+  ((s.presentIssues.filter (fun x => !path.contains x && x != i)).length, pe.length + 1)
+decreasing_by
+  rw [← filter_path_cons]
+  exact Prod.Lex.right _ (Nat.lt_succ_of_le (length_kidsOfEdges_le pe i))
+
+/-- **Refinement (kid loop).** The conjoined closed-ness is exactly
+    `cs.all effClosed`: memo hits are coherent, path hits are `Open` by the
+    re-encounter cycle, fresh kids recurse. -/
+theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
+    (hpe : pe = s.parentEdges) (path : List IssueId) (i : IssueId)
+    (hchain : ChainOk s path i)
+    (hinc : (s.issueData i).statusOf ≠ Status.Cancelled) :
+    (memo : AMap IssueId Status) → (cs : List IssueId) → Coherent s memo →
+    (∀ c ∈ cs, c ∈ s.presentChildren i) →
+    Coherent s (rollupKids s pe (i :: path) memo cs).1
+    ∧ (rollupKids s pe (i :: path) memo cs).2 = cs.all (fun c => s.effClosed c)
+    ∧ ∀ k, (memo.find k).isSome = true →
+        ((rollupKids s pe (i :: path) memo cs).1.find k).isSome = true
+  | memo, [], hcoh, _ => by
+    unfold State.rollupKids
+    exact ⟨hcoh, rfl, fun k hk => hk⟩
+  | memo, c :: cs', hcoh, hcs => by
+    unfold State.rollupKids
+    have hckid : c ∈ s.presentChildren i := hcs c (List.mem_cons_self ..)
+    cases hfind : memo.find c with
+    | some v =>
+      dsimp only
+      obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
+        memo cs' hcoh (fun x hx => hcs x (List.mem_cons_of_mem c hx))
+      refine ⟨hcoh', ?_, hmono'⟩
+      rw [List.all_cons, hval']
+      have hv : Status.closed v = s.effClosed c := by
+        unfold State.effClosed
+        rw [hcoh c v hfind]
+      rw [hv]
+    | none =>
+      dsimp only
+      by_cases hcon : (i :: path).contains c = true
+      · rw [dif_pos hcon]
+        dsimp only
+        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
+          memo cs' hcoh (fun x hx => hcs x (List.mem_cons_of_mem c hx))
+        refine ⟨hcoh', ?_, hmono'⟩
+        rw [List.all_cons, hval']
+        have hopen : s.effClosed c = false := by
+          unfold State.effClosed
+          rw [effectiveStatus_open_of_reencounter s hchain hinc hckid
+            (List.contains_iff_mem.mp hcon)]
+          rfl
+        rw [hopen]
+        rfl
+      · rw [dif_neg hcon]
+        have hpres : s.hasIssue c := (OrSet.mem_presentElements s.issues c).mp
+          (presentChildren_subset_present s i hckid)
+        rw [dif_pos hpres]
+        have hchain' : ChainOk s (i :: path) c := ⟨hckid, hinc, hchain⟩
+        obtain ⟨hcohV, hvalV, hmonoV, _⟩ :=
+          rollupVisit_sound s pe hpe (i :: path) memo c hcoh hchain'
+        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
+          (rollupVisit s pe (i :: path) memo c).1 cs' hcohV
+          (fun x hx => hcs x (List.mem_cons_of_mem c hx))
+        refine ⟨hcoh', ?_, fun k hk => hmono' k (hmonoV k hk)⟩
+        rw [List.all_cons, hval', hvalV]
+        rfl
+termination_by memo cs _ _ =>
+  ((s.presentIssues.filter (fun x => !(i :: path).contains x)).length, cs.length)
+decreasing_by
+  all_goals first
+    | exact Prod.Lex.right _ (Nat.lt_succ_self _)
+    | (apply Prod.Lex.left
+       apply length_filter_lt_of_mem
+       · exact presentChildren_subset_present s i (hcs c (List.mem_cons_self ..))
+       · show (!(i :: path).contains c) = true
+         cases hb : (i :: path).contains c with
+         | true => exact absurd hb hcon
+         | false => rfl)
+
+end
+
+/-- **Once-per-pass.** A memoized node returns without recomputation. -/
+theorem rollupVisit_find_hit (s : State) (pe : List (IssueId × IssueId))
+    (path : List IssueId) (memo : AMap IssueId Status) (i : IssueId) (v : Status)
+    (h : memo.find i = some v) : rollupVisit s pe path memo i = (memo, v) := by
+  unfold State.rollupVisit
+  rw [h]
+
+/-- The batched map is coherent: every entry is the spec's value. -/
+theorem effStatusAll_coherent (s : State) : Coherent s s.effStatusAll := by
+  unfold State.effStatusAll
+  have main : ∀ (l : List IssueId) (memo : AMap IssueId Status), Coherent s memo →
+      Coherent s (l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo) := by
+    intro l
+    induction l with
+    | nil => exact fun _ h => h
+    | cons x xs ih =>
+      intro memo h
+      rw [List.foldl_cons]
+      exact ih _ (rollupVisit_sound s s.parentEdges rfl [] memo x h trivial).1
+  exact main s.presentIssues AMap.empty (fun k v h => nomatch h)
+
+/-- **The refinement bridge.** The batched rollup holds exactly
+    `effectiveStatus` for every present issue. -/
+theorem effStatusAll_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues) :
+    (s.effStatusAll).find i = some (s.effectiveStatus i) := by
+  have hsome : ((s.effStatusAll).find i).isSome = true := by
+    unfold State.effStatusAll
+    have main : ∀ (l : List IssueId) (memo : AMap IssueId Status), Coherent s memo →
+        (i ∈ l ∨ (memo.find i).isSome = true) →
+        ((l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo).find i).isSome
+          = true := by
+      intro l
+      induction l with
+      | nil =>
+        intro memo _ h
+        rcases h with h | h
+        · exact absurd h (List.not_mem_nil)
+        · exact h
+      | cons x xs ih =>
+        intro memo hcoh h
+        rw [List.foldl_cons]
+        obtain ⟨hcoh', _, hmono, hself⟩ :=
+          rollupVisit_sound s s.parentEdges rfl [] memo x hcoh trivial
+        rcases h with h | h
+        · rcases List.mem_cons.mp h with rfl | hxs
+          · exact ih _ hcoh' (Or.inr hself)
+          · exact ih _ hcoh' (Or.inl hxs)
+        · exact ih _ hcoh' (Or.inr (hmono i h))
+    exact main s.presentIssues AMap.empty (fun k v h => nomatch h) (Or.inl hi)
+  obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+  rw [hv, effStatusAll_coherent s i v hv]
+
+/-- `effStatusWith` over the batched map *is* `effectiveStatus` — for every
+    id, present or dangling (an absent key falls back to the spec; a found
+    key is coherent). Every spec theorem transfers through this equation. -/
+theorem effStatusWith_eq (s : State) (i : IssueId) :
+    effStatusWith (s.effStatusAll) s i = s.effectiveStatus i := by
+  unfold State.effStatusWith
+  cases hf : (s.effStatusAll).find i with
+  | none => rfl
+  | some v => exact effStatusAll_coherent s i v hf
+
+/-- `effClosedWith` over the batched map is `effClosed`. -/
+theorem effClosedWith_eq (s : State) (i : IssueId) :
+    effClosedWith (s.effStatusAll) s i = s.effClosed i := by
+  unfold State.effClosedWith State.effClosed
+  rw [effStatusWith_eq]
 
 end State
 
