@@ -68,7 +68,13 @@ def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
       Sys.sync fd
     finally
       Sys.close fd
-  liftSys (mapSysError rel) (IO.FS.rename (d.absOf tmpRel) (d.absOf rel))
+  match ← (IO.FS.rename (d.absOf tmpRel) (d.absOf rel)).toBaseIO with
+  | .ok _ => return ()
+  | .error e =>
+    -- a failed replace must not strand the uniquely-named temp (CSPRNG suffixes
+    -- mean a persistent failure would otherwise pile up a new file per attempt)
+    let _ ← (IO.FS.removeFile (d.absOf tmpRel)).toBaseIO
+    throw (mapSysError rel e)
 
 /-- Load `.tl/local/replica`. Absent → `none` (the write path auto-mints,
     ADR-0012); present but not a canonical 13-char id → `corrupt-replica`. -/

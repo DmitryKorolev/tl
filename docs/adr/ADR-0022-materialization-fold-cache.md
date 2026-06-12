@@ -1,7 +1,7 @@
 # ADR-0022 — The materialization fold cache
 
 - Status: Accepted
-- Date: 2026-06-12
+- Date: 2026-06-11
 
 ## Context
 
@@ -68,19 +68,29 @@ classification; validity rules out every other drift) makes this the fresh
 fold's op set exactly, and `fold_append` + `fold_perm` close the equality.
 Anything invalid ⇒ full refold. Stale, absent, corrupt, wrong-version,
 non-canonical — all the same answer: rebuild from the segments, never
-repair. Decode re-establishes the canonical sortedness proofs via
-`AMap.ofAscList?` (`ascending_of_sorted` guarantees an encode is never
-rejected), so a decoded state is canonical by construction.
+repair. "Corrupt" includes *value* corruption, not just shape: the file is
+a SHA-256 checksum line over the payload line, verified before any decoded
+value (the state, a line count, a deferral set) is believed — a flipped
+digit that stays valid JSON must rebuild, not silently drop an op. Decode
+then re-establishes the canonical sortedness proofs via `AMap.ofAscList?`
+(`ascending_of_sorted` guarantees an encode is never rejected), so a
+decoded state is canonical by construction. Both the prefix-validity hash
+and the file checksum lean on SHA-256 collision freeness — a tier-3 carried
+assumption now recorded in [overview §Trusted](../overview.md) (this widens
+ADR-0018's "byte-exact agreement is the only property needed" framing:
+the cache is the first consumer that also needs collision resistance).
 
 ### 3. Who reads and writes it
 
 - **Reads** (`loadView` → `readStateCached`): consult, then persist the
-  refreshed cache best-effort when the fold advanced (atomic temp+`rename`
-  replace via `writeLocalFile`, the ADR-0015 §3 pattern; CSPRNG temp
-  suffixes make concurrent lock-free readers collision-safe, and
-  last-writer-wins is harmless because every written cache is valid for the
-  bytes it folded). A read-only filesystem or lost race never fails a read —
-  the ADR-0015 §5 read discipline.
+  refreshed cache best-effort whenever anything moved — the fold advanced,
+  a content key changed (even with nothing new to fold, e.g. a torn
+  fragment growing), or the cache was rebuilt (atomic temp+`rename` replace
+  via `writeLocalFile`, the ADR-0015 §3 pattern; CSPRNG temp suffixes make
+  concurrent lock-free readers collision-safe, and last-writer-wins is
+  harmless because every written cache is valid for the bytes it folded).
+  Only the exactly-fresh case writes nothing. A read-only filesystem or
+  lost race never fails a read — the ADR-0015 §5 read discipline.
 - **Writes** (`transact`): the guard-state materialize runs through the
   cache under the lock and persists the refreshed *pre-append* state (keyed
   to the pre-append bytes, it stays exactly valid; the next invocation folds
@@ -96,8 +106,12 @@ The file is gitignored via the `.tl/.gitignore` `*` self-ignore, local-only,
 never synced, and has **no log format impact** (no `v` bump). It is opened
 no-follow like every `.tl` file (ADR-0015 §6); a symlinked cache name is
 refused on read and atomically *replaced* (not followed) on write. The cache
-format version is private to the working copy and can move freely — a
-mismatch is just a rebuild.
+version is private to the working copy and moves freely — a mismatch is just
+a rebuild — but it versions the *semantics*, not only the bytes: any change
+to per-line classification (`decodeLine`, the segment-owner check), to
+`WireOp.toOp`, or to kernel `apply`/`merge` must bump it, or two tl builds
+sharing one working copy could suffix-fold new-semantics ops onto an
+old-semantics cached state with no key divergence to force a rebuild.
 
 ### 4. Distinct from compaction
 
@@ -115,20 +129,26 @@ supplied by the kernel.
   write-path quadratic under the lock is gone.
 - **Accepted cost, recorded per the efficiency principle**: validity hashes
   every cached segment prefix with the pure-Lean SHA-256 (ADR-0018) on each
-  consultation, and a refreshed cache re-serializes the whole state — both
-  linear in log bytes with real constants, accepted against the quadratic
-  refold they replace. If profiling ever blames the hash, ADR-0018 already
-  pins the upgrade path (an optimized SHA-256 ships only with a proved
-  `fast = spec` bridge). The full per-read line decode also remains — the
-  `ops` list is a disclosure surface (`provenance`, `tl log`), not a cache
-  concern.
+  consultation (once — the exactly-fresh check compares the cheap key
+  fields instead of re-hashing, since under validity equal lengths imply
+  equal bytes), and a refreshed cache re-serializes and re-hashes the whole
+  state — linear in log bytes with real constants, accepted against the
+  quadratic refold they replace. If profiling ever blames the hash,
+  ADR-0018 already pins the upgrade path (an optimized SHA-256 ships only
+  with a proved `fast = spec` bridge). Also accepted: the per-item
+  `find?`/`contains` rescans in validity and the suffix partition — they
+  are quadratic-shaped in *segment count* (= replica count, single digits)
+  and *deferred-line count* (normally zero), not in ops, so an index would
+  be machinery without a workload; revisit if either count grows real. The
+  full per-read line decode also remains — the `ops` list is a disclosure
+  surface (`provenance`, `tl log`), not a cache concern.
 - A byte-copied `.tl/` clones the cache; the content key keeps the copy
   harmless (same bytes ⇒ same fold; diverged bytes ⇒ rebuild) — consistent
   with the replica-id uniqueness assumption's framing in
   [overview §Trusted](../overview.md).
 - Tested-shell duty (`Tests/CacheTests.lean`): codec round-trip and
-  fail-closed decode rows, every validity branch with the *path taken*
-  observed (a marker poisoned into a cache survives iff the cache was
+  fail-closed decode rows (every decoder arm, plus checksum-caught value
+  flips), every validity branch with the *path taken* observed (a marker poisoned into a cache survives iff the cache was
   used), a seeded property pinning `materializeCached ≡ materialize` across
   random prefix splits and `now` advances, and the file lifecycle (healing,
   doctor non-persist, skip-bad bypass, symlink refusal).

@@ -32,6 +32,18 @@ back (atomic replace, best-effort — a read-only filesystem never fails a
 read). `--skip-bad` folds are different folds (skipped lines are absent):
 they neither consult nor produce the cache.
 
+The file is a SHA-256 checksum line over a payload line: the values the
+fold trusts (the state, line counts, deferral sets) are integrity-checked
+before any of them is believed, so bit rot anywhere in the file is a
+rebuild, never a silently wrong read — the cache stays the discardable one
+(deliberate tampering inside `.tl/` is the segments' trust domain, ADR-0014,
+and hash-collision freeness is a recorded carried assumption, overview
+§Trusted). `cacheVersion` is a *semantics* version, not just a format
+version: any change to per-line classification (`decodeLine`, the owner
+check), to `WireOp.toOp`, or to kernel `apply`/`merge` semantics must bump
+it, or a binary-version skew on one working copy could suffix-fold
+new-semantics ops onto an old-semantics cached state.
+
 Tested-shell tier (ADR-0004): codec round-trip, every validity branch, and
 the property test pinning `materializeCached` = `materialize` live in
 `Tests/CacheTests.lean`.
@@ -47,8 +59,11 @@ open Tl.Kernel
 open Tl.Format
 open Lean (Json)
 
-/-- The cache format version — local-only (never synced, no log `v` impact);
-    a mismatch just forces a rebuild, so it can move freely. -/
+/-- The cache version — local-only (never synced, no log `v` impact); a
+    mismatch just forces a rebuild, so it moves freely. It versions the
+    *semantics*, not only the bytes: bump it for any change to per-line
+    classification, `WireOp.toOp`, or kernel `apply`/`merge` (see the module
+    header). -/
 def cacheVersion : Nat := 1
 
 /-- One segment's content key at snapshot time. -/
@@ -193,7 +208,8 @@ private def decFin5 (j : Json) : Option (Fin 5) := do
   if h : n < 5 then some ⟨n, h⟩ else none
 
 private def encEdge (e : Edge) : Json :=
-  Json.arr #[Json.str e.1, Json.str e.2.1, jnum e.2.2.toNat]
+  let (f, t, k) := e
+  Json.arr #[Json.str f, Json.str t, jnum k.toNat]
 
 private def decEdge (j : Json) : Option Edge :=
   match j with
@@ -272,17 +288,29 @@ private def decSegMeta (j : Json) : Option CacheSegMeta := do
     | _ => none
   some { replicaId, byteLen, lineCount, shaHex, refused, deferred }
 
-/-- Encode the cache as one compressed JSON line. -/
+private def shaHexOf (b : ByteArray) : String :=
+  Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest b)
+
+/-- Encode the cache: a SHA-256 checksum line over the compressed JSON payload
+    line. The checksum is what makes "corrupt ⇒ rebuild" hold for *value*
+    corruption too (a flipped digit in a line count or a state string is not a
+    JSON shape error — only the checksum catches it). -/
 def encodeCache (c : FoldCache) : String :=
-  (Json.mkObj [
+  let payload := (Json.mkObj [
     ("v", jnum cacheVersion),
     ("segments", Json.arr (c.segments.map encSegMeta).toArray),
-    ("state", encState c.state)]).compress ++ "\n"
+    ("state", encState c.state)]).compress
+  shaHexOf payload.toUTF8 ++ "\n" ++ payload ++ "\n"
 
-/-- Decode a cache file. ANY failure — parse error, version mismatch,
-    non-canonical content — is `none`: the cache is rebuilt, never repaired. -/
+/-- Decode a cache file. ANY failure — a checksum mismatch anywhere in the
+    file, parse error, version mismatch, non-canonical content — is `none`:
+    the cache is rebuilt, never repaired. -/
 def decodeCache (s : String) : Option FoldCache := do
-  let j ← (Json.parse s).toOption
+  let payload ← match s.splitOn "\n" with
+    | [sum, payload] | [sum, payload, ""] =>
+      if shaHexOf payload.toUTF8 == sum then some payload else none
+    | _ => none
+  let j ← (Json.parse payload).toOption
   let v ← (← (j.getObjVal? "v").toOption).getNat?.toOption
   if v != cacheVersion then none else
   let segs ← match ← (j.getObjVal? "segments").toOption with
@@ -296,9 +324,6 @@ def decodeCache (s : String) : Option FoldCache := do
   else none
 
 /-! ## Validity and the cached fold -/
-
-private def shaHexOf (b : ByteArray) : String :=
-  Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest b)
 
 /-- Is the cache valid against the live segments and their decode? See the
     module header for why each conjunct exists. -/
@@ -361,10 +386,16 @@ def materializeCached (segs : List SegmentData) (cache : Option FoldCache)
       if cacheValid c pairs then
         let extras := extraOps c pairs
         let state := extras.foldl (fun s p => Tl.Kernel.apply s p.kernelOp) c.state
-        let newMeta := liveMeta pairs
-        let refreshed :=
-          if extras.isEmpty && newMeta == c.segments then none
-          else some { segments := newMeta, state }
+        -- exactly-fresh detection without re-hashing: validity already pinned
+        -- the prefix bytes, so an equal byteLen implies an equal sha — compare
+        -- only the cheap key fields (in order; both lists ascend by replica)
+        let fresh := extras.isEmpty
+          && c.segments.length == pairs.length
+          && (c.segments.zip pairs).all (fun (m, sd, dec) =>
+               m.replicaId == sd.replicaId && m.byteLen == sd.bytes.size
+               && m.lineCount == dec.lineCount && m.refused == dec.refusal.isSome
+               && m.deferred == dec.deferred)
+        let refreshed := if fresh then none else some { segments := liveMeta pairs, state }
         (assemble pairs state, refreshed)
       else
         refold pairs

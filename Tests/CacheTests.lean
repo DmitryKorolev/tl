@@ -20,6 +20,7 @@ Four suites, per the tested-shell mandate (every branch, in the same change):
 -/
 import Tl.Store.Cache
 import Tl.Store.Lock
+import Tl.Cli.Main
 import Tl.Format.Ids
 import Tests.Harness
 
@@ -113,21 +114,56 @@ private def metaFor : CacheSegMeta :=
 
 private def richMeta : List CacheSegMeta := [metaOwn, metaFor]
 
-/-- A minimal handcrafted cache JSON whose `issues` add-map is `AAA` and whose
-    removed set is `RRR` — for corrupt-input variants the encoder can never
-    produce. -/
-private def handJson (aaa rrr : String) : String :=
-  "{\"v\":1,\"segments\":[],\"state\":{\"issues\":{\"a\":" ++ aaa ++ ",\"r\":" ++ rrr
-    ++ "},\"data\":[],\"edges\":{\"a\":[],\"r\":[]}}}"
+/-- Sign a payload line as a well-formed cache file — crafted negative rows
+    must carry a CORRECT checksum so they exercise the inner decoder arm they
+    target, not the checksum gate. -/
+private def sign (payload : String) : String :=
+  Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest payload.toUTF8) ++ "\n" ++ payload ++ "\n"
+
+private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ r ++ "}"
+
+/-- A handcrafted, correctly-signed payload with all three state components
+    injectable — for shapes the encoder can never produce. -/
+private def handState (issues data edges : String) : String :=
+  sign ("{\"v\":1,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+    ++ ",\"edges\":" ++ edges ++ "}}")
+
+private def handIssues (aaa rrr : String) : String :=
+  handState (orsetJson aaa rrr) "[]" (orsetJson "[]" "[]")
+
+/-- A full `IssueData` JSON object with selected fields overridden. -/
+private def issueDataJson (overrides : List (String × String)) : String :=
+  let base := [("title", "null"), ("status", "null"), ("prio", "null"),
+               ("assignee", "null"), ("desc", "null"), ("notes", "null"),
+               ("slug", "null"), ("defer", "null"), ("close", "null"),
+               ("labels", orsetJson "[]" "[]"), ("meta", "[]")]
+  "{" ++ String.intercalate "," (base.map (fun (k, v) =>
+    "\"" ++ k ++ "\":" ++ ((overrides.lookup k).getD v))) ++ "}"
+
+private def handData (entry : String) : String :=
+  handState (orsetJson "[]" "[]") ("[[\"a\"," ++ entry ++ "]]") (orsetJson "[]" "[]")
+
+private def handEdges (aaa : String) : String :=
+  handState (orsetJson "[]" "[]") "[]" (orsetJson aaa "[]")
+
+private def emptyStateJson : String :=
+  "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
+
+private def handSeg (segJson : String) : String :=
+  sign ("{\"v\":1,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
 def cacheCodecTests : List Outcome :=
   let c : FoldCache := { segments := richMeta, state := richState }
   let enc := encodeCache c
+  let payload := (enc.splitOn "\n").getD 1 ""
   let dec? := decodeCache enc
-  let surgery (needle repl : String) :=
-    decodeCache (enc.replace needle repl)
+  -- a re-signed payload edit: exercises the targeted decoder arm
+  let surgery (needle repl : String) := decodeCache (sign (payload.replace needle repl))
+  -- an UNsigned payload edit: structurally valid, caught only by the checksum
+  let bitrot (needle repl : String) :=
+    decodeCache ((enc.splitOn "\n").getD 0 "" ++ "\n" ++ payload.replace needle repl ++ "\n")
   [ check "round-trip re-encodes byte-identically"
       ((dec?.map encodeCache) == some enc),
     check "round-trip preserves the segment keys"
@@ -141,30 +177,85 @@ def cacheCodecTests : List Outcome :=
          && (d.state.issueData idA).labels.presentElements == ["perf"]
          && d.state.presentEdges.length == 2
          && (d.state.issueData idA).deferUntilOf == some 123456),
+    -- the checksum gate: structurally-valid VALUE corruption must rebuild,
+    -- never serve a silently wrong state (deferred-set, line-count, and
+    -- state-string flips are all shape-preserving)
+    check "a flipped deferred-line digit is rejected by the checksum"
+      (bitrot "\"deferred\":[3,7]" "\"deferred\":[4,7]").isNone,
+    check "a flipped lineCount is rejected by the checksum"
+      (bitrot "\"lines\":12" "\"lines\":13").isNone,
+    check "a flipped state string byte is rejected by the checksum"
+      (bitrot "alpha" "alphb").isNone,
+    check "a missing checksum line is rejected" (decodeCache (payload ++ "\n")).isNone,
+    check "a wrong checksum is rejected" (decodeCache ("0" ++ enc.drop 1)).isNone,
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
+    check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
       (surgery "\"v\":1}" "\"v\":2}").isNone,
+    check "a missing version is rejected"
+      (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+    check "a non-numeric version is rejected"
+      (decodeCache (sign ("{\"v\":\"1\",\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache "{\"v\":1,\"segments\":[]}").isNone,
+      (decodeCache (sign "{\"v\":1,\"segments\":[]}")).isNone,
+    check "a state missing a component is rejected"
+      (decodeCache (sign ("{\"v\":1,\"segments\":[],\"state\":{\"issues\":"
+        ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache "{\"v\":1,\"segments\":{},\"state\":{}}").isNone,
+      (decodeCache (sign ("{\"v\":1,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
-      (decodeCache "{\"v\":1,\"segments\":[{\"replica\":\"x\"}],\"state\":{}}").isNone,
+      (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
+    check "a wrongly-typed segment scalar is rejected"
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":\"y\",\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":[]}")).isNone,
+    check "a non-array deferred set is rejected"
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":{}}")).isNone,
+    check "a non-numeric deferred entry is rejected"
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":[\"x\"]}")).isNone,
     check "duplicate segment entries are rejected"
       (decodeCache (encodeCache { c with segments := [metaOwn, metaOwn] })).isNone,
-    -- canonicality gates: a sorted twin is the control for each rejected variant
+    -- canonicality + per-decoder arms: a decoding twin is each row's control
     check "a canonical handcrafted state decodes (control)"
-      (match decodeCache (handJson s!"[[\"a\",[\"{validTag}\"]]]" "[]") with
+      (match decodeCache (handIssues s!"[[\"a\",[\"{validTag}\"]]]" "[]") with
        | some d => d.state.presentIssues == ["a"]
        | none => false),
     check "a non-ascending canonical list is rejected"
-      (decodeCache (handJson "[[\"b\",[]],[\"a\",[]]]" "[]")).isNone,
+      (decodeCache (handIssues "[[\"b\",[]],[\"a\",[]]]" "[]")).isNone,
     check "duplicate stamps in a tombstone set are rejected"
-      (decodeCache (handJson "[]" s!"[\"{validTag}\",\"{validTag}\"]")).isNone,
+      (decodeCache (handIssues "[]" s!"[\"{validTag}\",\"{validTag}\"]")).isNone,
     check "a malformed stamp tag is rejected"
-      (decodeCache (handJson "[[\"a\",[\"bogus\"]]]" "[]")).isNone,
+      (decodeCache (handIssues "[[\"a\",[\"bogus\"]]]" "[]")).isNone,
+    check "a non-string tombstone entry is rejected"
+      (decodeCache (handIssues "[]" "[5]")).isNone,
+    check "a non-array tag set is rejected"
+      (decodeCache (handIssues "[[\"a\",5]]" "[]")).isNone,
+    check "an or-set missing a component is rejected"
+      (decodeCache (handState "{\"a\":[]}" "[]" (orsetJson "[]" "[]"))).isNone,
+    check "a full handcrafted issue-data record decodes (control)"
+      (decodeCache (handData (issueDataJson []))).isSome,
+    check "a non-register field payload is rejected"
+      (decodeCache (handData (issueDataJson [("title", "5")]))).isNone,
+    check "a wrong-arity register is rejected"
+      (decodeCache (handData (issueDataJson [("title", "[\"x\"]")]))).isNone,
+    check "a non-numeric defer payload is rejected"
+      (decodeCache (handData (issueDataJson [("defer", s!"[\"{validTag}\",\"x\"]")]))).isNone,
+    check "a non-string assignee payload is rejected"
+      (decodeCache (handData (issueDataJson [("assignee", s!"[\"{validTag}\",5]")]))).isNone,
+    check "an out-of-range close payload is rejected"
+      (decodeCache (handData (issueDataJson [("close", s!"[\"{validTag}\",9]")]))).isNone,
+    check "a non-pair meta entry is rejected"
+      (decodeCache (handData (issueDataJson [("meta", "[[\"k\"]]")]))).isNone,
+    check "a non-array meta map is rejected"
+      (decodeCache (handData (issueDataJson [("meta", "5")]))).isNone,
+    check "a handcrafted edge decodes (control)"
+      (decodeCache (handEdges s!"[[[\"a\",\"b\",0],[\"{validTag}\"]]]")).isSome,
+    check "an out-of-range edge kind is rejected"
+      (decodeCache (handEdges "[[[\"a\",\"b\",9],[]]]")).isNone,
+    check "a non-string edge endpoint is rejected"
+      (decodeCache (handEdges "[[[\"a\",5,0],[]]]")).isNone,
+    check "a wrong-arity edge is rejected"
+      (decodeCache (handEdges "[[[\"a\",\"b\"],[]]]")).isNone,
     check "an out-of-range status payload is rejected"
       (surgery s!"\"status\":[\"{validTag}\",1]" s!"\"status\":[\"{validTag}\",9]").isNone,
     check "an out-of-range priority payload is rejected"
@@ -236,9 +327,13 @@ def cacheFoldTests : List Outcome := Id.run do
   let (_, rGrown) := materializeCached grown (some c0) false (some now0) (some ownStem)
   o := o ++ branchCase "appended suffix" grown c0 true
   o := o ++ [check "appended suffix: the refreshed cache is persisted" rGrown.isSome]
-  -- a segment the cache never saw
-  let withNew := base ++ [segOf newStem [mkLine (.create markerId { title := some "N" }) 7 newStem]]
+  -- a segment the cache never saw (its issue id must differ from the poison
+  -- marker, or the path observation is vacuous — a rebuild would also fold it)
+  let withNew := base ++ [segOf newStem [mkLine (.create "9000000000000000" { title := some "N" }) 7 newStem]]
   o := o ++ branchCase "new segment appears" withNew c0 true
+  -- a cached segment missing live (deleted/renamed segment, or a byte-copied
+  -- cache from a working copy that had more segments)
+  o := o ++ branchCase "cached segment missing live" [segOf ownStem baseOwn] c0 false
   -- shrunk prefix
   o := o ++ branchCase "shrunk segment" [segOf ownStem (baseOwn.take 2), segOf forStem forPlain] c0 false
   -- same length, different bytes (in-place rewrite)
@@ -262,6 +357,11 @@ def cacheFoldTests : List Outcome := Id.run do
   o := o ++ branchCase "deferred line admitted at a later now" deferSegs cDefer true (some later)
   let (_, rAdmit) := materializeCached deferSegs (some cDefer) false (some later) (some ownStem)
   o := o ++ [check "admission refreshes the cache (the admitted op advanced the state)" rAdmit.isSome]
+  -- a far-future line APPENDED after the snapshot: valid, and stays held back
+  let appendedDefer := [segOf ownStem baseOwn, segOf forStem forDefer]
+  o := o ++ branchCase "deferred line appended after the snapshot" appendedDefer c0 true
+  let (lDef, _) := materializeCached appendedDefer (some c0) false (some now0) (some ownStem)
+  o := o ++ [check "the appended deferred line is disclosed" (lDef.deferred == [(forStem, 2)])]
   -- a clock that went backwards: cached-as-folded line is deferred now → rebuild
   let cLater := cacheOf deferSegs (some later)
   o := o ++ branchCase "deferral grew (clock went backwards)" deferSegs cLater false
@@ -282,6 +382,14 @@ def cacheFoldTests : List Outcome := Id.run do
   let closed := [({ replicaId := ownStem, bytes := tornBytes ++ "\n".toUTF8 } : SegmentData),
                  segOf forStem forPlain]
   o := o ++ branchCase "torn fragment closed into a valid suffix line" closed cTorn true
+  -- key-only drift: a torn fragment grows the bytes but closes no line — the
+  -- cache stays valid with nothing to fold, yet the key must be re-persisted
+  let fragOnly := [({ replicaId := ownStem,
+                      bytes := (segOf ownStem baseOwn).bytes ++ "unfinished".toUTF8 } : SegmentData),
+                   segOf forStem forPlain]
+  o := o ++ branchCase "torn fragment grows the bytes, no new line" fragOnly c0 true
+  let (_, rFrag) := materializeCached fragOnly (some c0) false (some now0) (some ownStem)
+  o := o ++ [check "key-only drift still refreshes the cache" rFrag.isSome]
   return o
 
 /-! ## The seeded property: cached fold ≡ fresh fold -/
@@ -422,6 +530,29 @@ def cacheIoTests : IO (List Outcome) := do
       (decodeCache (← IO.FS.readFile cachePath)).isSome,
     check "the symlink target was never written through"
       ((← IO.FS.readFile outside) == "X")]
+  -- the actual doctor verb never persists: a corrupt cache survives it untouched
+  IO.FS.writeFile cachePath "{not json"
+  let _ ← runTl (Tl.Cli.runVerb ["doctor", "--json", "--dir", (root / ".tl").toString])
+  o := o ++ [check "doctor leaves a corrupt cache untouched (mutates nothing)"
+    ((← IO.FS.readFile cachePath) == "{not json")]
+  let _ ← runTl (readStateCached d false (some now0) (some fixedReplica))  -- heal it
+  -- a directory at the cache path: the read degrades, the save's failed atomic
+  -- replace is swallowed AND does not strand its temp file
+  IO.FS.removeFile cachePath
+  IO.FS.createDir cachePath
+  o := o ++ [← readsAgree "a directory at the cache path degrades to the plain fold" d]
+  let localEntries ← (root / ".tl" / "local").readDir
+  o := o ++ [
+    check "the failed replace is swallowed (the path is still a directory)"
+      (← cachePath.isDir),
+    check "no temp file is stranded by the failed replace"
+      (localEntries.toList.all (fun e => !e.fileName.endsWith ".tmp"))]
+  IO.FS.removeDir cachePath
+  -- a non-UTF-8 cache file degrades and heals
+  IO.FS.writeBinFile cachePath (ByteArray.mk #[0xff, 0x01, 0x02])
+  o := o ++ [← readsAgree "a non-UTF-8 cache degrades to the plain fold" d]
+  o := o ++ [check "a non-UTF-8 cache heals on a persisted read"
+    (decodeCache (← IO.FS.readFile cachePath)).isSome]
   return o
 
 end Tl.Tests
