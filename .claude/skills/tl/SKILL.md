@@ -73,6 +73,11 @@ tl dep add <A> <B>       # A becomes blocked by B
 tl dep remove <A> <B>
 ```
 
+- **Write a `--description` on every create.** The description is the context
+  handoff: what, why, and the file/ADR refs an agent with *no conversation
+  history* needs in order to act. A bare title rarely survives a context
+  clear — and `tl list` rows do not show descriptions, so a missing one stays
+  invisible until someone runs `show` and finds nothing.
 - Priorities are `0`–`4`, `0` = highest (default `2`).
 - An epic is just an issue with `--parent` children; it is `done` when they all
   close — never close an epic `--as done` yourself (`--as cancelled` is the only
@@ -83,7 +88,8 @@ tl dep remove <A> <B>
 
 1. Close everything you actually finished (`tl close … --as done`).
 2. **Deferral-as-task discipline**: any *"not doing this sub-scope now"*
-   becomes a **new linked task** — `tl create "<title>" --related <id>` (or
+   becomes a **new linked task** —
+   `tl create "<title>" --related <id> --description "<why deferred + what remains>"` (or
    `--blocks <id>`) — **never** a note on a closed item, so deferred work
    cannot evaporate. (This is spinning out *new* scope; it is distinct from
    timed postponement of the same task.)
