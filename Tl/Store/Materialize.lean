@@ -102,7 +102,10 @@ private def enrich (rid : String) (n : Nat) (e : Tl.Error) : Tl.Error :=
     consumed by `materialize` and by `transact`'s own-segment `maxHlc` probe
     (ADR-0015 §1) — 5+ components across 2+ callers (AGENTS.md). -/
 structure SegmentDecode where
-  ops : List ParsedOp
+  /-- The kept ops, each with its 1-based line number — the fold cache
+      (ADR-0022) keys fold membership on `(segment, line)`; plain materialize
+      drops the numbers. -/
+  ops : List (Nat × ParsedOp)
   refusal : Option Refusal
   skipped : List Nat
   /-- Skew-future lines held back (ADR-0007): excluded from `ops` AND `maxHlc`. -/
@@ -111,6 +114,9 @@ structure SegmentDecode where
   /-- Max HLC among the deferred lines (the ahead clock's real lead). -/
   maxDeferred : Nat
   warnings : List String
+  /-- How many complete lines the segment held (a torn trailing fragment is not
+      a line) — the fold cache's prefix boundary. -/
+  lineCount : Nat
 
 /-- Decode one segment: kept ops, the refusal (first bad line, unless
     `skipBad`), skipped lines, skew-deferred lines, the line-scoped max HLC, and
@@ -121,7 +127,7 @@ structure SegmentDecode where
     `none` (authoritative, never skew-checked). -/
 def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
     (skewBound : Option Nat := none) : SegmentDecode := Id.run do
-  let mut ops : List ParsedOp := []
+  let mut ops : List (Nat × ParsedOp) := []
   let mut refusal : Option Refusal := none
   let mut skipped : List Nat := []
   let mut deferred : List Nat := []
@@ -159,7 +165,7 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
         warnings := warnings ++ p.warnings.map (s!"segment {sd.replicaId}.jsonl line {n}: " ++ ·)
         -- a refused segment's later good lines still feed maxHlc, never the fold
         if refusal.isNone then
-          ops := p :: ops
+          ops := (n, p) :: ops
     | .error e =>
       if skipBad then
         skipped := n :: skipped
@@ -172,15 +178,30 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
   let deferredKept := if refusal.isSome then [] else deferred.reverse
   let maxDeferredKept := if refusal.isSome then 0 else maxDeferred
   return { ops := kept, refusal, skipped := skipped.reverse,
-           deferred := deferredKept, maxDeferred := maxDeferredKept, maxHlc, warnings }
+           deferred := deferredKept, maxDeferred := maxDeferredKept, maxHlc, warnings,
+           lineCount := n }
 
-/-- Materialize a set of segments (pure — I/O happens in `readSegments`).
-    When `now` is given, FOREIGN segments are skew-checked against `now +
-    skewWindowMs` (ADR-0007): a future-dated foreign op is deferred from the
-    fold and from `maxHlc`. The own segment (`ownReplica`) is exempt. With
-    `now := none` the skew check is off (the pure-fold default for tests). -/
-def materialize (segs : List SegmentData) (skipBad : Bool := false)
-    (now : Option Nat := none) (ownReplica : Option String := none) : Loaded := Id.run do
+/-- Decode every segment, pairing each with its result. The skew bound applies
+    to FOREIGN segments only, and ONLY when the own replica id is known: with it
+    unknown (the `.tl/local/replica` file absent) we cannot tell a segment apart
+    from our own, so we never defer — better to fold a maybe-future op than to
+    silently defer one of our own (ADR-0007). Shared by `materialize` and the
+    fold cache (`Tl.Store.Cache`), so the two paths cannot drift in per-line
+    classification. -/
+def decodeAll (segs : List SegmentData) (skipBad : Bool := false)
+    (now : Option Nat := none) (ownReplica : Option String := none) :
+    List (SegmentData × SegmentDecode) :=
+  segs.map (fun sd =>
+    let skewBound : Option Nat := match now, ownReplica with
+      | some t, some own => if sd.replicaId == own then none else some (t + skewWindowMs)
+      | _, _ => none
+    (sd, decodeSegment sd skipBad skewBound))
+
+/-- Assemble the `Loaded` from decoded segments and an already-computed state —
+    the fold is the one thing the cached path does differently, every other
+    field is the same function of the live decode. -/
+def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.State) :
+    Loaded := Id.run do
   let mut allOps : List ParsedOp := []
   let mut refused : List Refusal := []
   let mut skipped : List (String × Nat) := []
@@ -188,16 +209,8 @@ def materialize (segs : List SegmentData) (skipBad : Bool := false)
   let mut maxHlc := 0
   let mut maxDeferredHlc := 0
   let mut warnings : List String := []
-  for sd in segs do
-    -- skew-check FOREIGN segments only, and ONLY when the own replica id is
-    -- known: with it unknown (the `.tl/local/replica` file absent) we cannot
-    -- tell a segment apart from our own, so we never defer — better to fold a
-    -- maybe-future op than to silently defer one of our own (ADR-0007).
-    let skewBound : Option Nat := match now, ownReplica with
-      | some t, some own => if sd.replicaId == own then none else some (t + skewWindowMs)
-      | _, _ => none
-    let dec := decodeSegment sd skipBad skewBound
-    allOps := allOps ++ dec.ops
+  for (sd, dec) in pairs do
+    allOps := allOps ++ dec.ops.map (·.2)
     if let some r := dec.refusal then
       refused := refused ++ [r]
     skipped := skipped ++ dec.skipped.map (sd.replicaId, ·)
@@ -205,9 +218,21 @@ def materialize (segs : List SegmentData) (skipBad : Bool := false)
     maxHlc := max maxHlc dec.maxHlc
     maxDeferredHlc := max maxDeferredHlc dec.maxDeferred
     warnings := warnings ++ dec.warnings
-  return { state := Tl.Kernel.fold (allOps.map ParsedOp.kernelOp)
-           ops := allOps, refused, skipped, deferred, maxHlc, maxDeferredHlc, warnings
-           segmentCount := segs.length }
+  return { state, ops := allOps, refused, skipped, deferred, maxHlc, maxDeferredHlc,
+           warnings, segmentCount := pairs.length }
+
+/-- Materialize a set of segments (pure — I/O happens in `readSegments`).
+    When `now` is given, FOREIGN segments are skew-checked against `now +
+    skewWindowMs` (ADR-0007): a future-dated foreign op is deferred from the
+    fold and from `maxHlc`. The own segment (`ownReplica`) is exempt. With
+    `now := none` the skew check is off (the pure-fold default for tests).
+    This is the uncached reference fold; `Tl.Store.Cache.materializeCached`
+    must agree with it exactly (pinned by the cache property tests). -/
+def materialize (segs : List SegmentData) (skipBad : Bool := false)
+    (now : Option Nat := none) (ownReplica : Option String := none) : Loaded :=
+  let pairs := decodeAll segs skipBad now ownReplica
+  let loaded := assemble pairs Tl.Kernel.State.empty
+  { loaded with state := Tl.Kernel.fold (loaded.ops.map ParsedOp.kernelOp) }
 
 /-- The lock-free read path: enumerate, read, materialize (ADR-0015 §5);
     enumeration disclosures (ignored non-segment files) join the warnings.
