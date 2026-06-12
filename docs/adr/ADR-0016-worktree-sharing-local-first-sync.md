@@ -80,11 +80,13 @@ restructures it:
 
 ```json
 { "local":  { "ran": true, "published": false, "absorbed": ["<replica-id>"], "tip": "<oid>" },
-  "remote": null }
+  "remote": { "ran": false, "reason": "no-upstream" } }
 ```
 
 `local.ran` is false outside a git repo (no shared ref). `remote` is `null`
-until the remote leg lands, when it becomes its own leg-result object.
+only outside a git repo; since the remote leg landed (`Tl/Sync/Remote.lean`,
+ADR-0001 §5 built form) it is its own leg-result object —
+`{ "ran": false, "reason": "no-upstream" }` when no remote is configured.
 
 ### 2. Worktree sharing uses the shared common-`.git` ref
 

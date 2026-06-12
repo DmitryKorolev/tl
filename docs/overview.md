@@ -13,10 +13,11 @@
 > (SHA-256), `Tl/Store` (the ADR-0019 native shim + discovery, segments,
 > materialize, the locked write path, clock/replica recovery), `Tl/Clock`,
 > and `Tl/Cli` (the stage-1 verbs with `--json`, dispatch, init incl. its IO
-> tests). `Tl/Sync` is partly built — the `refs/tl/log` plumbing, the
-> complete-line union merge, and the local-first worktree leg (`tl sync`) are
-> done and tested; the remote fetch/push leg, read-time refresh, and auto-sync
-> are not. `Tl/Import` is not yet built (Stage 3).
+> tests). `Tl/Sync` is built except auto-sync — the `refs/tl/log` plumbing, the
+> complete-line union merge, the local-first worktree leg (`tl sync`), the
+> read-time refresh, and the remote fetch/union/push leg are done and tested;
+> auto-sync is decided (ADR-0021) but not yet implemented. `Tl/Import` is not
+> yet built (Stage 3).
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
