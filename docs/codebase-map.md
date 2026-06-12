@@ -107,8 +107,8 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   reason:"saturated" (ADR-0007)
   Lock.lean             --   the mutation lock (bounded lock-busy poll) and the
                         --   locked critical section `transact`: acquire → load
-                        --   replica → materialize (a refused OWN segment fails
-                        --   the write) → read+advance the HLC (the absent-clock
+                        --   replica → materialize through the fold cache
+                        --   (ADR-0022; a refused OWN segment fails the write) → read+advance the HLC (the absent-clock
                         --   arm reseeds from max(all-segments line max, now)
                         --   INSIDE the lock) → build (guards refuse before any
                         --   byte) → append → fsync → persist clock → release
@@ -133,6 +133,17 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   (Tl/Sync composes Store primitives — own-segment
                         --   snapshot under lock, atomic foreign-cache replace —
                         --   rather than owning segment I/O)
+  Cache.lean            --   the materialization fold cache (ADR-0022): the
+                        --   folded State persisted in gitignored .tl/local/cache,
+                        --   keyed per segment on (byteLen, sha256 prefix,
+                        --   lineCount, refused, deferred lines); valid ⇒ reads
+                        --   and transact fold only appended suffixes + newly-
+                        --   admissible deferred lines on top (fold_append +
+                        --   order-insensitivity); stale/corrupt/absent ⇒ rebuilt
+                        --   from segments, never repaired; persists best-effort
+                        --   via atomic replace (doctor reads, never persists;
+                        --   --skip-bad bypasses). Only the fold is cached —
+                        --   ops/refusals/deferrals/warnings recompute live
   Sys.lean              --   bindings to the native shim (ffi/tlsys.c): no-follow
                         --   + ownership-checked two-part open (the §6 checks
                         --   ride EVERY component of every open), read/write,
@@ -236,6 +247,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   SysTests.lean         --   per-branch shim tests (symlinks, locks, entropy, sync)
   StoreTests.lean       --   discovery, transact, crash/hostile adversity, clock
                         --   and replica recovery, lock contention
+  CacheTests.lean       --   fold-cache codec round-trip + fail-closed rows,
+                        --   every validity branch (path observed via a poisoned
+                        --   marker), the cached≡fresh seeded property, file
+                        --   lifecycle (healing, doctor non-persist, skip-bad
+                        --   bypass, symlink refusal)
   CliTests.lean         --   per-verb contract rows + spawned-binary envelope/
                         --   exit/env tests (TL_DIR, ceiling dirs)
   CrossTests.lean       --   encoding order-preservation (all pairs) + the

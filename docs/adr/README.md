@@ -34,3 +34,4 @@ not reference task-tracker IDs.
 | 0019 | [Native primitives shim, and the FFI policy](ADR-0019-native-shim-ffi-policy.md) |
 | 0020 | [`--json` data shapes (the stage-1 surface)](ADR-0020-json-data-shapes.md) |
 | 0021 | [Auto-sync: a synchronous, best-effort local-leg publish](ADR-0021-auto-sync-process-model.md) |
+| 0022 | [The materialization fold cache](ADR-0022-materialization-fold-cache.md) |

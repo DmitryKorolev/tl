@@ -231,12 +231,13 @@ decision, not an oversight:
   instant on write, stored as an ISO-8601 UTC string — distinct from the
   16-hex HLC used for ordering/provenance; a tested contract (ADR-0010/0008).
 - Scale target. Designed for thousands of issues/ops per repo, read
-  by a fold-per-invocation (ADR-0001/0008). That is comfortably fast at this
-  size; incremental/cached materialization is a later optimization with no
-  format impact, triggered only if real repos outgrow the fold. When built it
-  is an automatic, self-validating cache in gitignored `.tl/local/`
-  (keyed to log content; rebuilt from scratch if stale/absent) — never a
-  user-managed command.
+  by a fold-per-invocation (ADR-0001/0008). The fold-only premise outgrew
+  itself at dogfooding scale, so the pre-pinned cache is now **built**
+  (ADR-0022): an automatic, self-validating fold cache in gitignored
+  `.tl/local/` (keyed to log content; rebuilt from scratch if stale/absent) —
+  never a user-managed command, no log format impact. Reads and writes fold
+  only appended suffixes; everything a command *discloses* is still
+  recomputed live per invocation.
 - Settings are config-free — environment + git config + flags, no config
   file (ADR-0013). A `tl config` is additive if a real need appears.
 - Parallel work fan-out, and no `next` verb. There is deliberately no
