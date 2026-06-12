@@ -97,6 +97,66 @@ theorem effStatusAux_epic_zero_ne_done (s : State) (i : IssueId) (h : s.isEpic i
   · rw [if_neg hc, hne, if_neg Bool.false_ne_true]
     exact fun heq => Status.noConfusion heq
 
+/-! ## Live-cycle conservatism (unconditional)
+
+On a cycle of *non-cancelled epics* — every member has a present child that is
+also a member — every member rolls up `Open` at every fuel: at exhaustion by
+the epic fallback, and inductively because the on-cycle child is `Open`, hence
+never closed. This is the exactness (not mere conservatism) of the memoized
+walk's path cutoff (ADR-0003 §3 amendment, `RollupMemo.lean`): a re-encountered
+node *is* `Open`, so treating it as not-closed loses nothing. -/
+
+/-- Every member of a live cycle (non-cancelled, with an on-cycle present
+    child) is `Open` at every fuel. -/
+theorem effStatusAux_open_on_liveCycle (s : State) (C : List IssueId)
+    (hcyc : ∀ c ∈ C, (s.issueData c).statusOf ≠ Status.Cancelled ∧
+            ∃ c', c' ∈ C ∧ c' ∈ s.presentChildren c) :
+    (fuel : Nat) → (c : IssueId) → c ∈ C → s.effStatusAux fuel c = Status.Open
+  | 0, c, hc => by
+    obtain ⟨hnc, c', _, hchild⟩ := hcyc c hc
+    have hne : (s.presentChildren c).isEmpty = false := by
+      cases hb : (s.presentChildren c).isEmpty with
+      | false => rfl
+      | true =>
+        rw [List.isEmpty_iff] at hb
+        rw [hb] at hchild
+        exact absurd hchild (List.not_mem_nil)
+    unfold State.effStatusAux
+    rw [if_neg hnc]
+    show (if (s.presentChildren c).isEmpty then (s.issueData c).statusOf else Status.Open)
+       = Status.Open
+    rw [hne, if_neg Bool.false_ne_true]
+  | fuel + 1, c, hc => by
+    obtain ⟨hnc, c', hc', hchild⟩ := hcyc c hc
+    have hne : (s.presentChildren c).isEmpty = false := by
+      cases hb : (s.presentChildren c).isEmpty with
+      | false => rfl
+      | true =>
+        rw [List.isEmpty_iff] at hb
+        rw [hb] at hchild
+        exact absurd hchild (List.not_mem_nil)
+    have hall : (s.presentChildren c).all
+        (fun k => Status.closed (s.effStatusAux fuel k)) = false := by
+      cases hb : (s.presentChildren c).all (fun k => Status.closed (s.effStatusAux fuel k)) with
+      | false => rfl
+      | true =>
+        have hcl := List.all_eq_true.mp hb c' hchild
+        rw [effStatusAux_open_on_liveCycle s C hcyc fuel c' hc'] at hcl
+        exact absurd hcl Bool.false_ne_true
+    unfold State.effStatusAux
+    rw [if_neg hnc]
+    show (if (s.presentChildren c).isEmpty then (s.issueData c).statusOf
+          else if (s.presentChildren c).all (fun k => Status.closed (s.effStatusAux fuel k))
+               then Status.Done else Status.Open) = Status.Open
+    rw [hne, if_neg Bool.false_ne_true, hall, if_neg Bool.false_ne_true]
+
+/-- Live-cycle members are effectively `Open` (the `effectiveStatus` face). -/
+theorem effectiveStatus_open_on_liveCycle (s : State) (C : List IssueId)
+    (hcyc : ∀ c ∈ C, (s.issueData c).statusOf ≠ Status.Cancelled ∧
+            ∃ c', c' ∈ C ∧ c' ∈ s.presentChildren c)
+    (c : IssueId) (hc : c ∈ C) : s.effectiveStatus c = Status.Open :=
+  effStatusAux_open_on_liveCycle s C hcyc _ c hc
+
 /-! ## One-step fuel congruence (unconditional)
 
 `effStatusAux` reads `fuel` only to evaluate the present children at one-lower fuel,

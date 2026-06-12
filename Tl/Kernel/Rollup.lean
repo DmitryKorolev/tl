@@ -188,9 +188,9 @@ def rollupVisit (s : State) (pe : List (IssueId × IssueId))
         let v := (s.issueData i).statusOf
         (memo.insert i v, v)
       else
-        let (memo', allClosed) := rollupKids s pe (i :: path) memo kids
-        let v := if allClosed then Status.Done else Status.Open
-        (memo'.insert i v, v)
+        let r := rollupKids s pe (i :: path) memo kids
+        let v := if r.2 then Status.Done else Status.Open
+        (r.1.insert i v, v)
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x && x != i)).length, pe.length + 1)
 decreasing_by
@@ -209,15 +209,15 @@ def rollupKids (s : State) (pe : List (IssueId × IssueId))
   match cs with
   | [] => (memo, true)
   | c :: cs' =>
-    let (memo', st) :=
+    let r :=
       match memo.find c with
       | some v => (memo, v)
       | none =>
         if hcon : path.contains c then (memo, Status.Open)
         else if hpres : s.hasIssue c then rollupVisit s pe path memo c
         else (memo, (s.issueData c).statusOf)
-    let (memo'', rest) := rollupKids s pe path memo' cs'
-    (memo'', Status.closed st && rest)
+    let r' := rollupKids s pe path r.1 cs'
+    (r'.1, Status.closed r.2 && r'.2)
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x)).length, cs.length)
 decreasing_by
