@@ -98,6 +98,27 @@ reparentable); `--cascade` cancels open children too (one `close` op per issue).
 `effectiveStatus` is total by well-founded recursion on a finite visited-set
 over the `parent` graph (a cycle-trapped epic falls back to not-done, reported).
 
+> **Amendment (2026-06-11) — the rollup recursion shape.** The built form to
+> date is fuel-bounded (`effStatusAux` with present-issue-count fuel: exact on
+> acyclic graphs, conservative at exhaustion). Decided: switch to the memoized
+> shape `effectiveStatus (visiting, memo) i`, where `visiting` is the *current
+> recursion path* — it detects a parent cycle at the exact node, and must not
+> be a global visited set, which would mistake shared DAG children for cycles —
+> and `memo` caches completed statuses so each node is evaluated once per
+> query (the unmemoized descent re-evaluates shared descendants per parent on
+> diamond-shaped parent DAGs). Semantics are unchanged: manual `Cancelled`
+> precedence, a cycle-trapped epic still falls back conservatively (never
+> `Done`), dangling children stay inert. Obligations: totality via
+> well-founded recursion on the not-yet-visited measure, and the acyclic
+> exactness theorem plus the never-`Done` cycle guarantee re-proved over the
+> new shape — directly, or through a characterization (recurrence) lemma that
+> quarantines the memo-coherence invariant in one proof; an equivalence bridge
+> to a reference function is admissible proof scaffolding, not a requirement,
+> and no unmemoized version need ship. The once-per-query property (an id,
+> once in `memo`, is never recomputed) is itself a statable theorem and the
+> recommended form of the performance claim; wall-clock of the compiled
+> binary stays tested, never proved.
+
 ### 4. Multi-parent is the third reported condition
 
 `parent` is an add-wins OR-Set edge, so concurrent reparenting converges to
