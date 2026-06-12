@@ -48,7 +48,10 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   -- foreign op is deferred from the fold until local time catches up; the
   -- fold itself runs through the content-keyed cache (ADR-0022)
   let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
-  return { dirs := d, loaded, now, replica, rollup := loaded.state.effStatusAll }
+  let st := loaded.state
+  return { dirs := d, loaded, now, replica, rollup := st.effStatusAll,
+           edges := st.presentEdges, pedges := st.parentEdges,
+           prov := provenanceMap loaded.ops }
 
 /-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
     write paths so neither silently drops a future-dated op (ADR-0008
@@ -97,7 +100,10 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
     loaded := { v.loaded with state, ops := v.loaded.ops ++ parsed }
     now
     replica := some v.replica
-    rollup := state.effStatusAll }
+    rollup := state.effStatusAll
+    edges := state.presentEdges
+    pedges := state.parentEdges
+    prov := provenanceMap (v.loaded.ops ++ parsed) }
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
   Json.mkObj [("count", jnum total), (key, Json.arr rows.toArray)]
@@ -210,7 +216,7 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
   let trans := State.whyFast v.rollup s i
-  let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith v.rollup s b)
+  let direct := (State.blockersOfE v.edges i).filter (fun b => !State.blockerDischargedWith v.rollup s b)
   let rows := trans.map (fun b =>
     let bd := s.issueData b
     Json.mkObj <|
@@ -242,12 +248,16 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
   let entry (kind : String) (issues : List IssueId) : Json :=
     Json.mkObj [("kind", Json.str kind),
                 ("issues", Json.arr (issues.map (Json.str ∘ displayId)).toArray)]
-  let structural := s.cycles EdgeKind.Blocks ++ s.cycles EdgeKind.Parent
+  -- each diagnostic computed exactly once per invocation (the fast forms,
+  -- bridged to the spec by cyclesFast_eq/precCyclesFast_eq) and reused
+  let blocksCycles := State.cyclesFast s EdgeKind.Blocks
+  let parentCycles := State.cyclesFast s EdgeKind.Parent
+  let structural := blocksCycles ++ parentCycles
   -- a ≺-cycle whose node set coincides with a structural witness is already
   -- diagnosed by that row; only genuinely mixed deadlocks add a readiness row
-  let readiness := s.precCycles.filter (fun w => !structural.contains w)
-  let rows := (s.cycles EdgeKind.Blocks).map (entry "blocks")
-    ++ (s.cycles EdgeKind.Parent).map (entry "parent")
+  let readiness := (State.precCyclesFast v.rollup s).filter (fun w => !structural.contains w)
+  let rows := blocksCycles.map (entry "blocks")
+    ++ parentCycles.map (entry "parent")
     ++ readiness.map (entry "readiness")
   return { data := listPayload "cycles" rows.length rows
            human :=
@@ -257,9 +267,9 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 
 /-- The cycle count (structural per kind + the non-duplicate readiness
     deadlocks), shared with `doctor`'s graph check. -/
-private def cycleCount (s : State) : Nat :=
-  let structural := s.cycles EdgeKind.Blocks ++ s.cycles EdgeKind.Parent
-  structural.length + (s.precCycles.filter (fun w => !structural.contains w)).length
+private def cycleCount (m : AMap IssueId Status) (s : State) : Nat :=
+  let structural := State.cyclesFast s EdgeKind.Blocks ++ State.cyclesFast s EdgeKind.Parent
+  structural.length + ((State.precCyclesFast m s).filter (fun w => !structural.contains w)).length
 
 def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
@@ -268,9 +278,9 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let issues := s.presentIssues
   let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
   let ready := (State.readyFast v.rollup s v.now).length
-  let blocked := (issues.filter (blockedOf v.rollup s)).length
+  let blocked := (issues.filter (blockedOf v.rollup v.edges s)).length
   let deferred := (issues.filter (deferredOf s v.now)).length
-  let cycles := cycleCount s
+  let cycles := cycleCount v.rollup s
   let openN := byStored .Open
   let inProg := byStored .InProgress
   let doneN := byStored .Done
@@ -634,7 +644,10 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
     catch e =>
       pure (materialize [] false (some now) (own.map (·.id)), some e)
   let v : View := { dirs := d, loaded, now, replica := own,
-                    rollup := loaded.state.effStatusAll }
+                    rollup := loaded.state.effStatusAll,
+                    edges := loaded.state.presentEdges,
+                    pedges := loaded.state.parentEdges,
+                    prov := provenanceMap loaded.ops }
   let s := v.state
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
@@ -651,7 +664,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
         [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "ok")], false)]
       else logRows
   -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008)
-  let cyc := cycleCount s
+  let cyc := cycleCount v.rollup s
   let multi := (s.presentIssues.filter (fun i => (s.parentsOf i).length > 1)).length
   let dangling := (s.presentEdges.filter (fun (f, t, k) =>
     (k == EdgeKind.Blocks || k == EdgeKind.Parent)
@@ -670,7 +683,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
   -- stale claims (ADR-0013 24h default)
   let stale := s.presentIssues.filter (fun i =>
     (s.issueData i).statusOf == .InProgress
-      && match (provenanceOf loaded.ops i).claimedAt with
+      && match (provOf v.prov i).claimedAt with
          | some h => now > h / 2 ^ 16 + 24 * 3600 * 1000
          | none => false)
   let staleRow := (Json.mkObj <|

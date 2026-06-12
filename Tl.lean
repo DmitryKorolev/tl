@@ -20,6 +20,7 @@ import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
+import Tl.Kernel.CyclesFast
 import Tl.Kernel.Theorems
 import Tl.Kernel.Frame
 import Tl.Kernel.CloseMono

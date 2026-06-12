@@ -82,6 +82,13 @@ def blockersOfE (edges : List Edge) (i : IssueId) : List IssueId :=
 theorem blockersOfE_eq (s : State) (i : IssueId) :
     blockersOfE s.presentEdges i = s.blockersOf i := rfl
 
+/-- `dependentsOf` over a hoisted edge list. -/
+def dependentsOfE (edges : List Edge) (i : IssueId) : List IssueId :=
+  (edges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))).map (·.2.1)
+
+theorem dependentsOfE_eq (s : State) (i : IssueId) :
+    dependentsOfE s.presentEdges i = s.dependentsOf i := rfl
+
 /-- `blocksSucc` over a hoisted edge list. -/
 def blocksSuccE (edges : List Edge) (s : State) (i : IssueId) : List IssueId :=
   ((edges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))).map (·.2.1)).filter

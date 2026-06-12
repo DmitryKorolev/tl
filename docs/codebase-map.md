@@ -70,6 +70,11 @@ Tl/Kernel/              -- the verified core (NO I/O)
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's only Mathlib imports live here, ADR-0009)
+  CyclesFast.lean       --   the SHIPPED diagnostics: hoisted views, rollups
+                        --   through the batched map, saturating closures in
+                        --   onCycle/sameSCC; bridge cyclesFast_eq /
+                        --   precCyclesFast_eq — EQUAL to the spec, thm 6
+                        --   transfers; commands compute each result once
   SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
   Unblocks.lean         --   unblocks = the ready-set diff; exact and unconditional
   Ranking.lean          --   ready-queue ranking; the queue is proved sorted

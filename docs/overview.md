@@ -116,6 +116,11 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   composed from `weightFast_eq`, `isReadyFast_eq`, `keyLe_keyOf_eq`, and the
   sort-map commutation `rankSortK_map`), so ready soundness/completeness/ordering
   and `unblocks`/`why` exactness transfer to the shipped path with no re-proof.
+- **The fast-diagnostics refinement bridge** (`Tl/Kernel/CyclesFast.lean`). The
+  shipped `cycles`/`precCycles`/`hasCycle`/`hasDeadlock` — hoisted views, rollups
+  through the batched map, saturating closures — are pointwise EQUAL to the spec
+  (`cyclesFast_eq`/`precCyclesFast_eq`/`hasCycleFast_eq`/`hasDeadlockFast_eq`),
+  so the SCC-witness theorems transfer untouched.
 - **SCC-witness enumeration** (`Tl/Kernel/SccProps.lean`). `sccWitnesses` partitions the
   cyclic nodes by SCC exactly: `sameSCC` is an equivalence on present nodes, the
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),

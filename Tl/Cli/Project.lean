@@ -22,6 +22,7 @@ import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
+import Tl.Kernel.CyclesFast
 
 namespace Tl.Cli
 
@@ -30,19 +31,6 @@ open Tl.Kernel
 open Tl.Format
 open Tl.Crdt
 open Lean (Json)
-
-/-- A command's read view. -/
-structure View where
-  dirs : Dirs
-  loaded : Loaded
-  now : Nat
-  replica : Option Tl.Clock.Replica
-  /-- The batched rollup map (ADR-0003 §3 amendment), computed once per view:
-      every per-row effectiveStatus/readiness read goes through it
-      (`effStatusWith_eq` — pointwise the spec, so nothing observable moves). -/
-  rollup : AMap IssueId Status
-
-def View.state (v : View) : State := v.loaded.state
 
 def jnum (n : Nat) : Json := Json.num ⟨n, 0⟩
 
@@ -98,6 +86,65 @@ def provenanceOf (ops : List ParsedOp) (id : IssueId) : Prov := Id.run do
     | _ => pure ()
   return pr
 
+/-- One pass over the whole log: every issue's provenance at once. The
+    per-id `provenanceOf` rescans the full log per rendered row — O(rows × ops)
+    across a `list`; this map costs one pass and each row one lookup. The
+    per-op arms mirror `provenanceOf` exactly (the property test pins
+    agreement per id). -/
+def provenanceMap (ops : List ParsedOp) : AMap IssueId Prov := Id.run do
+  let mut m : AMap IssueId Prov := AMap.empty
+  for p in ops do
+    let st := p.stamp
+    let upd (i : IssueId) (f : Prov → Prov) : AMap IssueId Prov :=
+      m.insert i (f ((m.find i).getD {}))
+    match p.op with
+    | .create i _ => m := upd i (fun pr =>
+        let pr := if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c))
+                  then { pr with created := some (st, p.actor) } else pr
+        { pr with updated := laterStamp pr.updated st })
+    | .update i _ => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
+    | .claim i _ => m := upd i (fun pr =>
+        { pr with updated := laterStamp pr.updated st,
+                  lastClaim := laterStamp pr.lastClaim st })
+    | .close i _ => m := upd i (fun pr =>
+        { pr with updated := laterStamp pr.updated st,
+                  lastClose := laterStamp pr.lastClose st })
+    | .reopen i => m := upd i (fun pr =>
+        { pr with updated := laterStamp pr.updated st,
+                  lastReopen := laterStamp pr.lastReopen st })
+    | .defer i _ => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
+    | .undefer i => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
+    | _ => pure ()
+  return m
+
+/-- One issue's provenance from the batched map (absent ⇒ no ops touched it). -/
+def provOf (m : AMap IssueId Prov) (i : IssueId) : Prov := (m.find i).getD {}
+
+/-- A command's read view. -/
+structure View where
+  dirs : Dirs
+  loaded : Loaded
+  now : Nat
+  replica : Option Tl.Clock.Replica
+  /-- The batched rollup map (ADR-0003 §3 amendment), computed once per view:
+      every per-row effectiveStatus/readiness read goes through it
+      (`effStatusWith_eq` — pointwise the spec, so nothing observable moves). -/
+  rollup : AMap IssueId Status
+  /-- The present edges, hoisted once per view — the spec re-derives them
+      inside every `blockersOf`/`isEpic` call, O(E²) per row (the profile's
+      whole remaining `list` cost). Row helpers read `blockersOfE`-style
+      views, each rfl-equal to the spec at this list. -/
+  edges : List Edge
+  /-- The hoisted `(parent, child)` view (`parentEdges`), for per-row
+      epic-ness (`kidsOfEdges_parentEdges`). -/
+  pedges : List (IssueId × IssueId)
+  /-- The batched provenance map — one log pass per view instead of one per
+      rendered row (`provenanceMap` mirrors `provenanceOf` arm-for-arm). -/
+  prov : AMap IssueId Prov
+
+def View.state (v : View) : State := v.loaded.state
+
+
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
 def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
 def Prov.createdBy (pr : Prov) : Option String := pr.created.bind (·.2)
@@ -120,9 +167,9 @@ def Prov.claimedAt (pr : Prov) : Option Nat := do
 
 /-! ## Derived booleans (vision §states) -/
 
-def blockedOf (m : AMap IssueId Status) (s : State) (i : IssueId) : Bool :=
+def blockedOf (m : AMap IssueId Status) (edges : List Edge) (s : State) (i : IssueId) : Bool :=
   (s.issueData i).statusOf == .Open
-    && (s.blockersOf i).any (fun b => !State.blockerDischargedWith m s b)
+    && (State.blockersOfE edges i).any (fun b => !State.blockerDischargedWith m s b)
 
 def deferredOf (s : State) (now : Nat) (i : IssueId) : Bool :=
   (s.issueData i).statusOf == .Open
@@ -193,15 +240,15 @@ private def optField (k : String) (v : Option Json) : List (String × Json) :=
 def issueObj (v : View) (i : IssueId) : Json :=
   let s := v.state
   let d := s.issueData i
-  let pr := provenanceOf v.loaded.ops i
+  let pr := provOf v.prov i
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
      ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
      ("priority", jnum d.priorityOf.val),
-     ("isEpic", Json.bool (s.isEpic i)),
-     ("ready", Json.bool (State.isReadyWith v.rollup s v.now i)),
-     ("blocked", Json.bool (blockedOf v.rollup s i)),
+     ("isEpic", Json.bool (!(State.kidsOfEdges v.pedges i).isEmpty)),
+     ("ready", Json.bool (State.isReadyFast v.rollup v.edges v.pedges s v.now i)),
+     ("blocked", Json.bool (blockedOf v.rollup v.edges s i)),
      ("deferred", Json.bool (deferredOf s v.now i)),
      ("labels", labelsJson d),
      ("meta", metaJson d),
@@ -229,18 +276,18 @@ def issueObj (v : View) (i : IssueId) : Json :=
 def issueRow (v : View) (i : IssueId) : Json :=
   let s := v.state
   let d := s.issueData i
-  let pr := provenanceOf v.loaded.ops i
+  let pr := provOf v.prov i
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
      ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
      ("priority", jnum d.priorityOf.val),
-     ("isEpic", Json.bool (s.isEpic i)),
-     ("ready", Json.bool (State.isReadyWith v.rollup s v.now i)),
-     ("blocked", Json.bool (blockedOf v.rollup s i)),
+     ("isEpic", Json.bool (!(State.kidsOfEdges v.pedges i).isEmpty)),
+     ("ready", Json.bool (State.isReadyFast v.rollup v.edges v.pedges s v.now i)),
+     ("blocked", Json.bool (blockedOf v.rollup v.edges s i)),
      ("deferred", Json.bool (deferredOf s v.now i)),
-     ("dependencyCount", jnum (s.blockersOf i).length),
-     ("dependentCount", jnum (s.dependentsOf i).length)]
+     ("dependencyCount", jnum (State.blockersOfE v.edges i).length),
+     ("dependentCount", jnum (State.dependentsOfE v.edges i).length)]
     ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
     ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
@@ -251,8 +298,8 @@ def issueLine (v : View) (i : IssueId) : String :=
   let d := v.state.issueData i
   let title := sanitizeSingle ((d.title.value).getD "(untitled)")
   let flags := String.intercalate ""
-    [if v.state.isEpic i then " [epic]" else "",
-     if blockedOf v.rollup v.state i then " [blocked]" else "",
+    [if !(State.kidsOfEdges v.pedges i).isEmpty then " [epic]" else "",
+     if blockedOf v.rollup v.edges v.state i then " [blocked]" else "",
      if deferredOf v.state v.now i then " [deferred]" else ""]
   s!"{displayId i}  p{d.priorityOf.val}  {statusWire (State.effStatusWith v.rollup v.state i)}  {title}{flags}"
 

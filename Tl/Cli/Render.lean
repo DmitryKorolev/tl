@@ -85,7 +85,7 @@ def displayState (v : View) (i : IssueId) : DState :=
   | _ =>
     if (s.issueData i).statusOf == .InProgress then .inProgress
     else if deferredOf s v.now i then .deferred
-    else if blockedOf v.rollup s i then .blocked
+    else if blockedOf v.rollup v.edges s i then .blocked
     else .ready
 
 def DState.glyph (st : Style) : DState → String
@@ -124,7 +124,7 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
   let glyph := st.paint ds.colorCode (ds.glyph st)
   let id := st.paint "2" (displayId i)
   let prio := prioToken st d.priorityOf.val
-  let epic := if s.isEpic i then " " ++ st.paint "1" "[epic]" else ""
+  let epic := if !(State.kidsOfEdges v.pedges i).isEmpty then " " ++ st.paint "1" "[epic]" else ""
   let titleRaw := sanitizeSingle ((d.title.value).getD "(untitled)")
   let title := if ds == .done || ds == .cancelled then st.paint "2" titleRaw else titleRaw
   s!"{glyph} {id} {prio}{epic} {title}"
@@ -163,7 +163,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let s := v.state
   let d := s.issueData i
   let ds := displayState v i
-  let pr := provenanceOf v.loaded.ops i
+  let pr := provOf v.prov i
   let glyph := st.paint ds.colorCode (ds.glyph st)
   let idTok := st.paint "2" (displayId i)
   let statusTok := st.paint ds.colorCode ds.word
@@ -171,7 +171,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let header := s!"{glyph} {idTok} · {title}   [" ++
     prioToken st d.priorityOf.val ++ " · " ++ statusTok ++ "]"
   let mut prov : List String := []
-  if s.isEpic i then prov := prov ++ [st.paint "1" "[epic]"]
+  if !(State.kidsOfEdges v.pedges i).isEmpty then prov := prov ++ [st.paint "1" "[epic]"]
   match d.assignee.value.getD none with
     | some a => prov := prov ++ [s!"assignee: {sanitizeSingle a}"] | none => pure ()
   match pr.createdAt with | some h => prov := prov ++ [s!"created:  {hlcIso h}"] | none => pure ()
