@@ -34,6 +34,12 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   critical-path weight = |reach⁺ over blocks| (total);
                         --   why/unblocks = transitive unclosed blockers / freed-set
                         --   (same reach⁺ machinery; total, proved — ADR-0004 thm 10)
+  ReadyFast.lean        --   the SHIPPED queue: hoisted present/edge views,
+                        --   rollups through the batched map, one RankKey per
+                        --   candidate, sort on cached keys, saturating closure
+                        --   (reachFix + fixpoint stability); refinement bridge
+                        --   readyFast_eq / unblocksFast_eq / whyFast_eq — the
+                        --   fast forms EQUAL the spec, so thm 4/10 transfer
   Cycles.lean           --   per-kind cycle detection (bounded reachClosure
                         --   iteration — total, no well-founded obligation);
                         --   one canonical witness per cyclic SCC = the SCC's

@@ -25,6 +25,7 @@ import Tl.Kernel.Ready
 import Tl.Kernel.Rollup
 import Tl.Kernel.Cycles
 import Tl.Kernel.RollupFast
+import Tl.Kernel.ReadyFast
 import Tests.Harness
 
 namespace Tl.Tests
@@ -137,8 +138,14 @@ def kernelSpecTests : List Outcome :=
     let fastAgrees := s.presentIssues.all (fun i =>
       State.effStatusWith rollupMap s i == s.effectiveStatus i
       && State.isReadyWith rollupMap s now i == s.isReady now i)
+    -- the COMPILED fast queue/echo/why agree with the compiled spec (the
+    -- ReadyFast refinement bridge re-checked over the executable)
+    let readyFastAgrees := State.readyFast rollupMap s now == s.ready now
+    let echoFastAgrees := s.presentIssues.all (fun i =>
+      State.unblocksFast s now i == s.unblocks now i
+      && State.whyFast rollupMap s i == s.why i)
     (seed, orderOk && dupOk && joinIdem && joinComm && readySound && readySorted
-      && unblocksOk && rollupTotal && fastAgrees))
+      && unblocksOk && rollupTotal && fastAgrees && readyFastAgrees && echoFastAgrees))
   rows.map (fun (seed, ok) =>
     check s!"compiled kernel meets its spec on seed {seed}" ok)
 

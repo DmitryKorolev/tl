@@ -116,7 +116,7 @@ private def listRender (v : View) (rows : List IssueId) (total : Nat) (summary e
 def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let ranked := v.state.ready v.now
+  let ranked := State.readyFast v.rollup v.state v.now
   let capped := if limit == 0 then ranked else ranked.take limit
   let r := listRender v capped ranked.length
     s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready"
@@ -209,7 +209,7 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   if State.isReadyWith v.rollup s v.now i then
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
-  let trans := s.why i
+  let trans := State.whyFast v.rollup s i
   let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith v.rollup s b)
   let rows := trans.map (fun b =>
     let bd := s.issueData b
@@ -267,7 +267,7 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let s := v.state
   let issues := s.presentIssues
   let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
-  let ready := (s.ready v.now).length
+  let ready := (State.readyFast v.rollup s v.now).length
   let blocked := (issues.filter (blockedOf v.rollup s)).length
   let deferred := (issues.filter (deferredOf s v.now)).length
   let cycles := cycleCount s
@@ -460,7 +460,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   -- computed on the PRE-state (where i is still open — on the post-state the
   -- diff is empty). Report it only when the close actually took effect: a
   -- superseded close frees nothing.
-  let freed := if actuallyClosed then (ctx.loaded.state.unblocks ctx.now i).map (Json.str ∘ displayId)
+  let freed := if actuallyClosed then (State.unblocksFast ctx.loaded.state ctx.now i).map (Json.str ∘ displayId)
                else []
   let data := (issueObj v i).setObjVal! "unblocked" (Json.arr freed.toArray)
   let human :=

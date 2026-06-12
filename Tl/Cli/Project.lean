@@ -20,6 +20,7 @@ import Tl.Cli.Sanitize
 import Tl.Kernel.Rollup
 import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
+import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
 
 namespace Tl.Cli

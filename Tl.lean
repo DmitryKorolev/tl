@@ -18,6 +18,7 @@ import Tl.Kernel.RollupSpec
 import Tl.Kernel.RollupSat
 import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
+import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
 import Tl.Kernel.Theorems
 import Tl.Kernel.Frame
