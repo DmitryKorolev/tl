@@ -51,6 +51,7 @@ the property test pinning `materializeCached` = `materialize` live in
 import Tl.Store.Materialize
 import Tl.Store.Local
 import Tl.Hash.Sha256
+import Tl.Kernel.FoldFast
 
 namespace Tl.Store
 
@@ -363,7 +364,7 @@ def liveMeta (pairs : List (SegmentData × SegmentDecode)) : List CacheSegMeta :
 
 private def refold (pairs : List (SegmentData × SegmentDecode)) : Loaded × Option FoldCache :=
   let loaded := assemble pairs State.empty
-  let loaded := { loaded with state := Tl.Kernel.fold (loaded.ops.map ParsedOp.kernelOp) }
+  let loaded := { loaded with state := Tl.Kernel.foldFast (loaded.ops.map ParsedOp.kernelOp) }
   (loaded, some { segments := liveMeta pairs, state := loaded.state })
 
 /-- `materialize` through the cache: the same `Loaded` (pinned by the property
@@ -378,7 +379,7 @@ def materializeCached (segs : List SegmentData) (cache : Option FoldCache)
   let pairs := decodeAll segs skipBad now ownReplica
   if skipBad then
     let loaded := assemble pairs State.empty
-    ({ loaded with state := Tl.Kernel.fold (loaded.ops.map ParsedOp.kernelOp) }, none)
+    ({ loaded with state := Tl.Kernel.foldFast (loaded.ops.map ParsedOp.kernelOp) }, none)
   else
     match cache with
     | none => refold pairs

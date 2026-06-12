@@ -12,13 +12,14 @@ diagnostics — are CEILING-ONLY for now: their cost is dominated by boxed
 comparisons over linear-find structures (both tracked as follow-up tasks),
 so a ratio there would assert the workload, not a regression.
 
-Covered: the warm cached materialize (the suffix-fold read path), the
-batched rollup (`effStatusAll`), the fast queue (`readyFast`), the fast
-diagnostics (`cyclesFast`/`precCyclesFast`), the provenance map, and the
-sync line-union. The COLD fold is deliberately not asserted near-linear: it
-is the known remaining quadratic (each delta enters via a positional
-insert), tracked as its own batched-construction task — these rows only pay
-it once per scale as setup.
+Covered: the COLD fold (`foldFast`, a full refold with no cache), the warm
+cached materialize (the suffix-fold read path), the batched rollup
+(`effStatusAll`), the fast queue (`readyFast`), the fast diagnostics
+(`cyclesFast`/`precCyclesFast`), the provenance map, and the sync line-union.
+The cold fold is now near-linear — batched canonical construction (mergeSort +
+adjacent collapse, O(N log N), `foldFast_eq_fold`) replaced the per-op
+positional insert (the old Θ(ops×issues)) — so it is asserted by the ×4-ops
+ratio like the other fast paths.
 -/
 import Tl.Store.Cache
 import Tl.Kernel.ReadyFast
@@ -121,11 +122,17 @@ def perfTests : IO (List Outcome) := do
   for (n, reps) in scales do
     let ops := synthOps n
     let segs := segsOf ops
-    -- setup: one cold fold per scale (the known quadratic, not asserted here)
+    -- setup: one cold fold per scale to seed the cache for the warm/rollup rows
     let (loaded, cache?) := materializeCached segs none false (some synthNow) (some stem)
     let cache := cache?.getD ⟨[], State.empty⟩
     let s := loaded.state
     let rollup := s.effStatusAll
+    -- the COLD fold (no cache ⇒ a full refold through `foldFast`): now batched
+    -- canonical construction (mergeSort + collapse, O(N log N)), so it is
+    -- asserted near-linear like the other fast paths — the per-op positional
+    -- insert (the old Θ(ops×issues)) is gone (foldFast_eq_fold)
+    let cold ← bench reps (fun _ =>
+      (materializeCached segs none false (some synthNow) (some stem)).1.ops.length)
     let warm ← bench reps (fun _ =>
       (materializeCached segs (some cache) false (some synthNow) (some stem)).1.ops.length)
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
@@ -143,7 +150,8 @@ def perfTests : IO (List Outcome) := do
     let uni ← bench reps (fun _ =>
       (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
         (segs.head?.map (·.bytes) |>.getD ByteArray.empty)).size)
-    results := results ++ [(n, [("warm cached materialize", warm),
+    results := results ++ [(n, [("cold batched fold", cold),
+      ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
       ("fast diagnostics", cyc), ("provenance map", prov),
       ("sync line-union", uni)])]
