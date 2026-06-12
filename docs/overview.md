@@ -88,6 +88,26 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   epic that is not manually cancelled is `Done` iff every present child is effectively
   closed (`effectiveStatus_epic`), via fuel-irrelevance above the descendant count
   (`effStatusAux_stable`, strong induction on the descendant-closure cardinality).
+- **The rollup recurrence, unconditional** (`Tl/Kernel/RollupSat.lean`; ADR-0003 §3
+  amendment). With NO acyclicity hypothesis, `effectiveStatus i` = cancel ▸
+  `Cancelled` | childless ▸ stored | `Done` iff every present child effectively
+  closed (`effectiveStatus_recurrence`): closed-ness at fuel `f` is an ascending
+  Bool chain (`closedAt_le_succ`), a present-frozen fuel freezes all later fuels
+  (`closedAt_freeze_present`), and a chain on `M+1` present issues freezes by fuel
+  `M` (`exists_closedSet_freeze`, cardinality pigeonhole). Companion: live-cycle
+  conservatism (`RollupSpec.effStatusAux_open_on_liveCycle`) — every member of a
+  cycle of non-cancelled epics is `Open` at every fuel.
+- **The fast-rollup refinement bridge** (`Tl/Kernel/RollupFast.lean`; ADR-0003 §3
+  amendment). The shipped memoized walk (`effStatusAll` — visiting-path cycle
+  detection + memo over a hoisted parent-edge view, `kidsOfEdges_parentEdges`)
+  is pointwise EQUAL to the spec: `rollupVisit_sound`/`rollupKids_sound` (mutual
+  induction on the walk's own well-founded structure; the path cutoff is exact by
+  live-cycle conservatism, the epic step folds against the recurrence), hence
+  `effStatusAll_find`, and total agreement `effStatusWith_eq` / `effClosedWith_eq`
+  / `isReadyWith_eq` — every spec theorem transfers to the shipped path with no
+  re-proof. Once-per-pass: `rollupVisit_find_hit` (a memoized node is never
+  recomputed). Decode-side canonicality for the walk's collaborators:
+  `AssocList.sorted_of_ascending`/`ascending_of_sorted` (`Tl/Crdt/Map.lean`).
 - **SCC-witness enumeration** (`Tl/Kernel/SccProps.lean`). `sccWitnesses` partitions the
   cyclic nodes by SCC exactly: `sameSCC` is an equivalence on present nodes, the
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),

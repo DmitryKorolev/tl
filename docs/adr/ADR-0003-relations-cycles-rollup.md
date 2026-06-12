@@ -98,9 +98,17 @@ reparentable); `--cascade` cancels open children too (one `close` op per issue).
 `effectiveStatus` is total by well-founded recursion on a finite visited-set
 over the `parent` graph (a cycle-trapped epic falls back to not-done, reported).
 
-> **Amendment (2026-06-11) — the rollup recursion shape.** The built form to
-> date is fuel-bounded (`effStatusAux` with present-issue-count fuel: exact on
-> acyclic graphs, conservative at exhaustion). Decided: switch to the memoized
+> **Amendment (2026-06-11, built 2026-06-12) — the rollup recursion shape.**
+> The fuel form (`effStatusAux` with present-issue-count fuel) stays as the
+> *spec*; the shipped read path is the memoized shape (`Tl/Kernel/RollupFast.lean`),
+> per the obligations below — discharged via the characterization route: the
+> recurrence is proved *unconditionally* (`RollupSat.effectiveStatus_recurrence`,
+> fuel saturation by an ascending-chain pigeonhole — no acyclicity hypothesis),
+> the path cutoff is proved *exact* (a re-encountered node is on a live cycle,
+> hence `Open` — `effStatusAux_open_on_liveCycle`), and the refinement bridge
+> (`effStatusWith_eq`) makes the fast form pointwise EQUAL to the spec, so the
+> acyclic-exactness and never-`Done` theorems transfer rather than being
+> re-proved. Once-per-pass is `rollupVisit_find_hit`. The decided shape was: switch to the memoized
 > shape `effectiveStatus (visiting, memo) i`, where `visiting` is the *current
 > recursion path* — it detects a parent cycle at the exact node, and must not
 > be a global visited set, which would mistake shared DAG children for cycles —

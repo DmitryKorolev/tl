@@ -18,6 +18,7 @@ import Tl.Format.Ids
 import Tl.Cli.Envelope
 import Tl.Cli.Sanitize
 import Tl.Kernel.Rollup
+import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.Cycles
 
@@ -35,6 +36,10 @@ structure View where
   loaded : Loaded
   now : Nat
   replica : Option Tl.Clock.Replica
+  /-- The batched rollup map (ADR-0003 §3 amendment), computed once per view:
+      every per-row effectiveStatus/readiness read goes through it
+      (`effStatusWith_eq` — pointwise the spec, so nothing observable moves). -/
+  rollup : AMap IssueId Status
 
 def View.state (v : View) : State := v.loaded.state
 
@@ -114,9 +119,9 @@ def Prov.claimedAt (pr : Prov) : Option Nat := do
 
 /-! ## Derived booleans (vision §states) -/
 
-def blockedOf (s : State) (i : IssueId) : Bool :=
+def blockedOf (m : AMap IssueId Status) (s : State) (i : IssueId) : Bool :=
   (s.issueData i).statusOf == .Open
-    && (s.blockersOf i).any (fun b => !s.blockerDischarged b)
+    && (s.blockersOf i).any (fun b => !State.blockerDischargedWith m s b)
 
 def deferredOf (s : State) (now : Nat) (i : IssueId) : Bool :=
   (s.issueData i).statusOf == .Open
@@ -191,11 +196,11 @@ def issueObj (v : View) (i : IssueId) : Json :=
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
-     ("effectiveStatus", Json.str (statusWire (s.effectiveStatus i))),
+     ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
      ("priority", jnum d.priorityOf.val),
      ("isEpic", Json.bool (s.isEpic i)),
-     ("ready", Json.bool (s.isReady v.now i)),
-     ("blocked", Json.bool (blockedOf s i)),
+     ("ready", Json.bool (State.isReadyWith v.rollup s v.now i)),
+     ("blocked", Json.bool (blockedOf v.rollup s i)),
      ("deferred", Json.bool (deferredOf s v.now i)),
      ("labels", labelsJson d),
      ("meta", metaJson d),
@@ -227,11 +232,11 @@ def issueRow (v : View) (i : IssueId) : Json :=
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
-     ("effectiveStatus", Json.str (statusWire (s.effectiveStatus i))),
+     ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
      ("priority", jnum d.priorityOf.val),
      ("isEpic", Json.bool (s.isEpic i)),
-     ("ready", Json.bool (s.isReady v.now i)),
-     ("blocked", Json.bool (blockedOf s i)),
+     ("ready", Json.bool (State.isReadyWith v.rollup s v.now i)),
+     ("blocked", Json.bool (blockedOf v.rollup s i)),
      ("deferred", Json.bool (deferredOf s v.now i)),
      ("dependencyCount", jnum (s.blockersOf i).length),
      ("dependentCount", jnum (s.dependentsOf i).length)]
@@ -246,8 +251,8 @@ def issueLine (v : View) (i : IssueId) : String :=
   let title := sanitizeSingle ((d.title.value).getD "(untitled)")
   let flags := String.intercalate ""
     [if v.state.isEpic i then " [epic]" else "",
-     if blockedOf v.state i then " [blocked]" else "",
+     if blockedOf v.rollup v.state i then " [blocked]" else "",
      if deferredOf v.state v.now i then " [deferred]" else ""]
-  s!"{displayId i}  p{d.priorityOf.val}  {statusWire (v.state.effectiveStatus i)}  {title}{flags}"
+  s!"{displayId i}  p{d.priorityOf.val}  {statusWire (State.effStatusWith v.rollup v.state i)}  {title}{flags}"
 
 end Tl.Cli

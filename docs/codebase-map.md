@@ -40,9 +40,21 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   sorted NODE SET (ADR-0004 thm 6; proved in SccProps);
                         --   ALSO readiness-deadlock ≺-cycles (mixed blocks+parent,
                         --   ADR-0004 thm 5/6) so no stuck live set is undiagnosed
-  Rollup.lean           --   effectiveStatus; reads epic's STORED status first
-                        --   (manual-cancel precedence), else derives from children
-  RollupSpec.lean       --   rollup meets its ADR-0003 spec (unconditional branches)
+  Rollup.lean           --   effectiveStatus (the SPEC: fuel form); reads epic's
+                        --   STORED status first (manual-cancel precedence), else
+                        --   derives from children
+  RollupSpec.lean       --   rollup meets its ADR-0003 spec (unconditional
+                        --   branches) + live-cycle conservatism (cycle members
+                        --   are Open at every fuel — the path-cutoff exactness)
+  RollupSat.lean        --   fuel saturation ⇒ the UNCONDITIONAL recurrence
+                        --   (no acyclicity hypothesis; ascending-chain
+                        --   pigeonhole, Mathlib zone like RollupAcyclic)
+  RollupFast.lean       --   the SHIPPED rollup: memoized visiting+memo walk
+                        --   over a hoisted parent-edge view (effStatusAll, one
+                        --   pass per view) + the refinement bridge — pointwise
+                        --   EQUAL to the spec (effStatusWith_eq/isReadyWith_eq),
+                        --   so every spec theorem transfers; once-per-pass is
+                        --   rollupVisit_find_hit (ADR-0003 §3 amendment)
   RollupAcyclic.lean    --   rollup fuel-adequacy on acyclic parent graphs
   Invariant.lean        --   Invariant = valid status enum ONLY; endpoint-existence
                         --   and acyclicity deliberately excluded (tolerated at read)

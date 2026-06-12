@@ -24,6 +24,7 @@ import Tl.Kernel.Apply
 import Tl.Kernel.Ready
 import Tl.Kernel.Rollup
 import Tl.Kernel.Cycles
+import Tl.Kernel.RollupFast
 import Tests.Harness
 
 namespace Tl.Tests
@@ -129,8 +130,15 @@ def kernelSpecTests : List Outcome :=
     let rollupTotal := s.presentIssues.all (fun i =>
       match s.effectiveStatus i with
       | .Open | .InProgress | .Done | .Cancelled => true)
+    -- the COMPILED fast rollup agrees with the compiled spec (the proved
+    -- refinement bridge, effStatusWith_eq/isReadyWith_eq, re-checked over
+    -- the executable on cyclic/diamond graphs the generator produces)
+    let rollupMap := s.effStatusAll
+    let fastAgrees := s.presentIssues.all (fun i =>
+      State.effStatusWith rollupMap s i == s.effectiveStatus i
+      && State.isReadyWith rollupMap s now i == s.isReady now i)
     (seed, orderOk && dupOk && joinIdem && joinComm && readySound && readySorted
-      && unblocksOk && rollupTotal))
+      && unblocksOk && rollupTotal && fastAgrees))
   rows.map (fun (seed, ok) =>
     check s!"compiled kernel meets its spec on seed {seed}" ok)
 

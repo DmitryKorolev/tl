@@ -20,6 +20,7 @@ effective status IS `Open` — treating it as not-closed loses nothing. The
 walk's structural once-per-pass property is `rollupVisit_find_hit`.
 -/
 import Tl.Kernel.RollupSat
+import Tl.Kernel.Ready
 
 namespace Tl.Kernel
 
@@ -597,6 +598,36 @@ theorem effClosedWith_eq (s : State) (i : IssueId) :
     effClosedWith (s.effStatusAll) s i = s.effClosed i := by
   unfold State.effClosedWith State.effClosed
   rw [effStatusWith_eq]
+
+/-- `blockerDischarged` through a rollup map. -/
+def blockerDischargedWith (m : AMap IssueId Status) (s : State) (b : IssueId) : Bool :=
+  !decide (s.hasIssue b) || effClosedWith m s b
+
+theorem blockerDischargedWith_eq (s : State) (b : IssueId) :
+    blockerDischargedWith (s.effStatusAll) s b = s.blockerDischarged b := by
+  unfold State.blockerDischargedWith State.blockerDischarged
+  rw [effClosedWith_eq]
+
+private theorem allCongr' {α : Type _} (p q : α → Bool) :
+    (l : List α) → (∀ x ∈ l, p x = q x) → l.all p = l.all q
+  | [], _ => rfl
+  | x :: xs, h => by
+    rw [List.all_cons, List.all_cons, h x (List.mem_cons_self ..),
+      allCongr' p q xs (fun c hc => h c (List.mem_cons_of_mem x hc))]
+
+/-- `isReady` through a rollup map — the per-row readiness the CLI renders. -/
+def isReadyWith (m : AMap IssueId Status) (s : State) (now : Instant) (i : IssueId) : Bool :=
+  decide (s.hasIssue i)
+  && decide ((s.issueData i).statusOf = Status.Open)
+  && !s.isEpic i
+  && deferOk (s.issueData i) now
+  && (s.blockersOf i).all (blockerDischargedWith m s ·)
+
+theorem isReadyWith_eq (s : State) (now : Instant) (i : IssueId) :
+    isReadyWith (s.effStatusAll) s now i = s.isReady now i := by
+  unfold State.isReadyWith State.isReady
+  rw [allCongr' (blockerDischargedWith (s.effStatusAll) s ·) (s.blockerDischarged ·)
+    (s.blockersOf i) (fun b _ => blockerDischargedWith_eq s b)]
 
 end State
 

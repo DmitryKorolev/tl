@@ -79,13 +79,13 @@ deriving DecidableEq
 
 def displayState (v : View) (i : IssueId) : DState :=
   let s := v.state
-  match s.effectiveStatus i with
+  match State.effStatusWith v.rollup s i with
   | .Done => .done
   | .Cancelled => .cancelled
   | _ =>
     if (s.issueData i).statusOf == .InProgress then .inProgress
     else if deferredOf s v.now i then .deferred
-    else if blockedOf s i then .blocked
+    else if blockedOf v.rollup s i then .blocked
     else .ready
 
 def DState.glyph (st : Style) : DState → String

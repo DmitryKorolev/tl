@@ -48,7 +48,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   -- foreign op is deferred from the fold until local time catches up; the
   -- fold itself runs through the content-keyed cache (ADR-0022)
   let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
-  return { dirs := d, loaded, now, replica }
+  return { dirs := d, loaded, now, replica, rollup := loaded.state.effStatusAll }
 
 /-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
     write paths so neither silently drops a future-dated op (ADR-0008
@@ -96,7 +96,8 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
   { dirs := v.dirs
     loaded := { v.loaded with state, ops := v.loaded.ops ++ parsed }
     now
-    replica := some v.replica }
+    replica := some v.replica
+    rollup := state.effStatusAll }
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
   Json.mkObj [("count", jnum total), (key, Json.arr rows.toArray)]
@@ -137,7 +138,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
   let sorted := if labels.isEmpty then sorted
     else sorted.filter (fun i => labels.all (s.issueData i).labels.presentElements.contains)
-  let visible := if showAll then sorted else sorted.filter (fun i => !s.effClosed i)
+  let visible := if showAll then sorted else sorted.filter (fun i => !State.effClosedWith v.rollup s i)
   let openN := (sorted.filter (fun i => (s.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (s.issueData i).statusOf == .InProgress)).length
   let summary :=
@@ -156,7 +157,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
         | none => true | some p => !(visible.contains p)
       let roots := visible.filter isRoot
       let cappedRoots := if limit == 0 then roots else roots.take limit
-      let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !s.effClosed i)
+      let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !State.effClosedWith v.rollup s i)
       fun st =>
         if roots.isEmpty then (if visible.isEmpty then "no issues" else "(no top-level issues)")
         else String.intercalate "\n" (treeForest st v cappedRoots keep)
@@ -205,17 +206,17 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let s := v.state
   let d := s.issueData i
-  if s.isReady v.now i then
+  if State.isReadyWith v.rollup s v.now i then
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
   let trans := s.why i
-  let direct := (s.blockersOf i).filter (fun b => !s.blockerDischarged b)
+  let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith v.rollup s b)
   let rows := trans.map (fun b =>
     let bd := s.issueData b
     Json.mkObj <|
       [("id", Json.str (displayId b)),
        ("status", Json.str (statusWire bd.statusOf)),
-       ("effectiveStatus", Json.str (statusWire (s.effectiveStatus b))),
+       ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s b))),
        ("direct", Json.bool (direct.contains b))]
       ++ (match bd.title.value with
           | some t => [("title", Json.str (sanitizeSingle t))]
@@ -267,7 +268,7 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let issues := s.presentIssues
   let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
   let ready := (s.ready v.now).length
-  let blocked := (issues.filter (blockedOf s)).length
+  let blocked := (issues.filter (blockedOf v.rollup s)).length
   let deferred := (issues.filter (deferredOf s v.now)).length
   let cycles := cycleCount s
   let openN := byStored .Open
@@ -377,11 +378,12 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
-    if s.isReady ctx.now i then
+    let rm := s.effStatusAll
+    if State.isReadyWith rm s ctx.now i then
       .ok [.claim i actor]
     else
       let dta := s.issueData i
-      let direct := (s.blockersOf i).filter (fun b => !s.blockerDischarged b)
+      let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith rm s b)
       let reasons := Json.mkObj <|
         (if dta.statusOf != .Open then [("status", Json.str (statusWire dta.statusOf))] else [])
         ++ (match dta.assignee.value.getD none with
@@ -426,7 +428,8 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
                context := [("id", .str (displayId i)),
                            ("reasons", Json.mkObj [("selfDuplicate", Json.bool true)])] }
     else if res == .Done && s.isEpic i then
-      let openKids := (s.presentChildren i).filter (fun c => !s.effClosed c)
+      let rm := s.effStatusAll
+      let openKids := (s.presentChildren i).filter (fun c => !State.effClosedWith rm s c)
       .error { code := .notCloseable
                message := s!"{displayId i} is an epic — it becomes done when its children close (open: {openKids.length}); `--as cancelled` is the manual terminal"
                context := [("id", .str (displayId i)),
@@ -630,7 +633,8 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       pure (← readStateCached d false (some now) (own.map (·.id)) (persist := false), none)
     catch e =>
       pure (materialize [] false (some now) (own.map (·.id)), some e)
-  let v : View := { dirs := d, loaded, now, replica := own }
+  let v : View := { dirs := d, loaded, now, replica := own,
+                    rollup := loaded.state.effStatusAll }
   let s := v.state
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
