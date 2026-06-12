@@ -201,25 +201,18 @@ def decodeAll (segs : List SegmentData) (skipBad : Bool := false)
     the fold is the one thing the cached path does differently, every other
     field is the same function of the live decode. -/
 def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.State) :
-    Loaded := Id.run do
-  let mut allOps : List ParsedOp := []
-  let mut refused : List Refusal := []
-  let mut skipped : List (String × Nat) := []
-  let mut deferred : List (String × Nat) := []
-  let mut maxHlc := 0
-  let mut maxDeferredHlc := 0
-  let mut warnings : List String := []
-  for (sd, dec) in pairs do
-    allOps := allOps ++ dec.ops.map (·.2)
-    if let some r := dec.refusal then
-      refused := refused ++ [r]
-    skipped := skipped ++ dec.skipped.map (sd.replicaId, ·)
-    deferred := deferred ++ dec.deferred.map (sd.replicaId, ·)
-    maxHlc := max maxHlc dec.maxHlc
-    maxDeferredHlc := max maxDeferredHlc dec.maxDeferred
-    warnings := warnings ++ dec.warnings
-  return { state, ops := allOps, refused, skipped, deferred, maxHlc, maxDeferredHlc,
-           warnings, segmentCount := pairs.length }
+    Loaded :=
+  -- linear accumulation (flatMap/filterMap, same order) — the loop-with-append
+  -- shape walked the accumulator per segment
+  { state
+    ops := pairs.flatMap (fun (_, dec) => dec.ops.map (·.2))
+    refused := pairs.filterMap (fun (_, dec) => dec.refusal)
+    skipped := pairs.flatMap (fun (sd, dec) => dec.skipped.map (sd.replicaId, ·))
+    deferred := pairs.flatMap (fun (sd, dec) => dec.deferred.map (sd.replicaId, ·))
+    maxHlc := pairs.foldl (fun a (_, dec) => max a dec.maxHlc) 0
+    maxDeferredHlc := pairs.foldl (fun a (_, dec) => max a dec.maxDeferred) 0
+    warnings := pairs.flatMap (fun (_, dec) => dec.warnings)
+    segmentCount := pairs.length }
 
 /-- Materialize a set of segments (pure — I/O happens in `readSegments`).
     When `now` is given, FOREIGN segments are skew-checked against `now +

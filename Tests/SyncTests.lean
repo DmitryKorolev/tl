@@ -36,6 +36,44 @@ def syncMergeTests : List Outcome :=
     check "unionSegments: a replica on only one side is taken whole"
       (u.length == 1 && ((u.head?.map segStr) == some "c\n")) "")]
 
+/-- The canonicalized union bytes must not move (a re-sync builds no churn
+    commit) — pinned against a list-level reference of the original shape on
+    seeded inputs with heavy duplication and shared prefixes (the cases that
+    distinguish a wrong byte comparator or a non-adjacent dedup). -/
+def syncMergeCanonicalProp : List Outcome :=
+  let refLexLe : List UInt8 → List UInt8 → Bool := fun a b => Id.run do
+    let rec go : List UInt8 → List UInt8 → Bool
+      | [], _ => true
+      | _ :: _, [] => false
+      | x :: xs, y :: ys => if x < y then true else if y < x then false else go xs ys
+    return go a b
+  let refUnion (a b : ByteArray) : ByteArray :=
+    let lines := completeLines a ++ completeLines b
+    let sorted := lines.mergeSort (fun x y => refLexLe x.toList y.toList)
+    sorted.eraseDups.foldl (fun acc l => acc ++ l ++ "\n".toUTF8) ByteArray.empty
+  (List.range 12).map (fun k =>
+    let seed := 0xd00d + 4099 * k
+    -- lines drawn from a tiny alphabet with shared prefixes and many repeats
+    let mkLine (s' : Nat) : String × Nat :=
+      let (s1, len) := nextNat s' 4
+      let (s2, c1) := nextNat s1 3
+      let (s3, c2) := nextNat s2 3
+      let body := String.ofList (List.replicate (len + 1) (Char.ofNat (97 + c1))) ++
+        String.ofList (List.replicate 1 (Char.ofNat (97 + c2)))
+      (body, s3)
+    let (linesA, sA) := (List.range 9).foldl (fun (acc, st) _ =>
+      let (l, st') := mkLine st
+      (acc ++ [l], st')) (([] : List String), seed)
+    let (linesB, _) := (List.range 9).foldl (fun (acc, st) _ =>
+      let (l, st') := mkLine st
+      (acc ++ [l], st')) (([] : List String), sA)
+    let bytesOf (ls : List String) : ByteArray :=
+      (ls.foldl (fun a l => a ++ l ++ "\n") "").toUTF8
+    let a := bytesOf linesA
+    let b := bytesOf linesB
+    check s!"canonical union bytes unchanged (seed {k})"
+      ((unionLines a b).toList == (refUnion a b).toList))
+
 /-- A throwaway git repo with a `.tl`-bearing `Dirs` pointing at it. -/
 private def gitRepo : IO Dirs := do
   let root ← IO.FS.createTempDir
@@ -329,7 +367,7 @@ def syncRemoteTests : IO (List Outcome) := do
   return o
 
 def syncTests : IO (List Outcome) := do
-  return syncMergeTests ++ (← syncRefTests) ++ (← syncLocalTests)
+  return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
     ++ (← syncRefreshTests) ++ (← syncRemoteTests)
 
 end Tl.Tests

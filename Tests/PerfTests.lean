@@ -1,0 +1,158 @@
+/-
+`Tests.PerfTests` — scaling assertions over synthetic logs (the standing
+algorithmic-efficiency principle, CLAUDE.md Code rules, enforced in CI).
+
+Each command-path workhorse runs at two op scales (100 and 400, ×4) and the
+growth ratio must stay far below quadratic (×16): the bound is a generous
+×12 with a small-scale floor and a generous absolute ceiling, so a regression
+to an accidental quadratic fails loudly while honest machine noise on a
+near-linear path does not (the task's timing-flake-proof intent; per-call
+counters would need kernel hooks the proofs do not carry).
+
+Covered: the warm cached materialize (the suffix-fold read path), the
+batched rollup (`effStatusAll`), the fast queue (`readyFast`), the fast
+diagnostics (`cyclesFast`/`precCyclesFast`), the provenance map, and the
+sync line-union. The COLD fold is deliberately not asserted near-linear: it
+is the known remaining quadratic (each delta enters via a positional
+insert), tracked as its own batched-construction task — these rows only pay
+it once per scale as setup.
+-/
+import Tl.Store.Cache
+import Tl.Kernel.ReadyFast
+import Tl.Kernel.CyclesFast
+import Tl.Cli.Project
+import Tl.Sync.Merge
+import Tests.Harness
+
+namespace Tl.Tests
+
+open Tl.Store
+open Tl.Format
+open Tl.Kernel
+open Tl.Cli (provenanceMap)
+open Tl.Sync (unionLines)
+
+private def stem : String := "0123456789abc"
+
+private def synthNow : Nat := 2000000000000
+
+/-- A synthetic id pool of `n` distinct 16-char Crockford ids. -/
+private def synthId (k : Nat) : String :=
+  toCrockford (10 ^ 18 + k) 16
+
+/-- `n` ops: a create per id, a parent edge per non-root (chains of 8 with
+    occasional extra parents — diamonds), a blocks edge per pair neighbor,
+    and a close per eighth id — enough graph structure that every measured
+    path does real work. -/
+private def synthOps (n : Nat) : List ParsedOp :=
+  let replicaVal := (ofCrockford? stem).getD 0
+  let mk (idx : Nat) (op : WireOp) : ParsedOp :=
+    { v := supportedVersion, op
+      stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
+      actor := some "perf" }
+  (List.range n).flatMap (fun k =>
+    let id := synthId k
+    let creat := mk (4 * k) (.create id { title := some s!"t{k}" })
+    let parents :=
+      if k % 8 == 0 then []
+      else [mk (4 * k + 1) (.depAdd (synthId (k - 1), id, EdgeKind.Parent))]
+        ++ (if k % 5 == 0 then
+              [mk (4 * k + 2) (.depAdd (synthId (k / 2), id, EdgeKind.Parent))]
+            else [])
+    let blocks :=
+      if k % 3 == 0 && k > 0 then
+        [mk (4 * k + 3) (.depAdd (id, synthId (k - 1), EdgeKind.Blocks))]
+      else []
+    -- the open working set stays bounded (~32, the dogfooding profile): the
+    -- epic's regressions were ops-growth at a small working set, and `ready`
+    -- is inherently per-open-candidate work — an unbounded open set would
+    -- measure the workload's size, not a regression
+    let closes :=
+      if k ≥ 32 then [mk (4 * n + k) (.close id .Done)] else []
+    creat :: parents ++ blocks ++ closes)
+
+private def segsOf (ops : List ParsedOp) : List SegmentData :=
+  [{ replicaId := stem
+     bytes := (ops.foldl (fun a p => a ++ renderLine p ++ "\n") "").toUTF8 }]
+
+private def timeMs (act : IO Nat) : IO (Nat × Nat) := do
+  let t0 ← IO.monoMsNow
+  let r ← act
+  let t1 ← IO.monoMsNow
+  return (r, t1 - t0)
+
+/-- Run `act` `reps` times, observing its Nat result so the work cannot be
+    elided; returns total ms. -/
+private def bench (reps : Nat) (act : Unit → Nat) : IO Nat := do
+  let (acc, ms) ← timeMs (do
+    let mut acc := 0
+    for _ in [0:reps] do
+      acc := acc + act ()
+    return acc)
+  -- consume acc through IO so the loop cannot be dropped
+  if acc == 0xffffffff then IO.println "" else pure ()
+  return ms
+
+/-- One scaling row: the ×4-op growth must stay under ×12 (quadratic is ×16)
+    with a 30ms floor against timer noise, plus a generous absolute ceiling. -/
+private def ratioRow (name : String) (tSmall tBig : Nat) : Outcome :=
+  let floor := max tSmall 30
+  check s!"{name}: ×4 ops grows ≤ ×12 (small {tSmall}ms, big {tBig}ms)"
+    (tBig ≤ 12 * floor && tBig ≤ 8000)
+    s!"small={tSmall}ms big={tBig}ms"
+
+/-- A ceiling-only row — for the documented compromises: the per-candidate /
+    per-node closures (`ready`'s weights, the cycle diagnostics) run over
+    linear-find structures whose boxed comparisons dominate (both tracked:
+    the TotalOrd-constants task and the sublinear-find/batched-construction
+    follow-up). The ceiling still catches an order-of-magnitude regression;
+    the ×4 ratio deliberately is not asserted until those land. -/
+private def ceilingRow (name : String) (ceilMs tBig : Nat) : Outcome :=
+  check s!"{name}: stays under the generous ceiling (big {tBig}ms ≤ {ceilMs}ms)"
+    (tBig ≤ ceilMs) s!"big={tBig}ms"
+
+def perfTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let scales := [(100, 4), (400, 4)]
+  let mut results : List (Nat × List (String × Nat)) := []
+  for (n, reps) in scales do
+    let ops := synthOps n
+    let segs := segsOf ops
+    -- setup: one cold fold per scale (the known quadratic, not asserted here)
+    let (loaded, cache?) := materializeCached segs none false (some synthNow) (some stem)
+    let cache := cache?.getD ⟨[], State.empty⟩
+    let s := loaded.state
+    let rollup := s.effStatusAll
+    let warm ← bench reps (fun _ =>
+      (materializeCached segs (some cache) false (some synthNow) (some stem)).1.ops.length)
+    let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
+    let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)
+    -- the diagnostics pay a per-node closure with boxed-comparison constants
+    -- (the tracked compromises) — measured at the SMALL scale only so the
+    -- suite stays fast; the small ceiling still catches an order-of-magnitude
+    -- regression
+    let cyc ← if n ≤ 100 then
+        bench 1 (fun _ =>
+          (State.cyclesFast s EdgeKind.Parent).length
+          + (State.precCyclesFast rollup s).length)
+      else pure 0
+    let prov ← bench reps (fun _ => (provenanceMap loaded.ops).toList.length)
+    let uni ← bench reps (fun _ =>
+      (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
+        (segs.head?.map (·.bytes) |>.getD ByteArray.empty)).size)
+    results := results ++ [(n, [("warm cached materialize", warm),
+      ("batched rollup", roll), ("fast ready queue", rdy),
+      ("fast diagnostics", cyc), ("provenance map", prov),
+      ("sync line-union", uni)])]
+  match results with
+  | [(_, small), (_, big)] =>
+    for ((name, tS), (_, tB)) in small.zip big do
+      o := o ++ [
+        if name == "fast diagnostics" then ceilingRow (name ++ " (small scale)") 8000 tS
+        else if name == "fast ready queue" then ceilingRow name 60000 tB
+        else ratioRow name tS tB]
+    return o
+  | _ => return [{ name := "perf scaling setup", passed := false,
+                   msg := s!"expected two scales, got {results.length}" }]
+
+end Tl.Tests

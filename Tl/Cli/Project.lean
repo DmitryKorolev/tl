@@ -92,30 +92,50 @@ def provenanceOf (ops : List ParsedOp) (id : IssueId) : Prov := Id.run do
     per-op arms mirror `provenanceOf` exactly (the property test pins
     agreement per id). -/
 def provenanceMap (ops : List ParsedOp) : AMap IssueId Prov := Id.run do
-  let mut m : AMap IssueId Prov := AMap.empty
-  for p in ops do
+  -- near-linear build: tag each provenance-bearing op with its target, sort
+  -- stably by target (within-target original order preserved — the per-id
+  -- fold below then matches provenanceOf's left-to-right walk exactly), fold
+  -- each adjacent group, and assemble the already-sorted entries. A per-op
+  -- positional map insert would be Θ(ops × issues).
+  let step (pr : Prov) (p : ParsedOp) : Prov :=
     let st := p.stamp
-    let upd (i : IssueId) (f : Prov → Prov) : AMap IssueId Prov :=
-      m.insert i (f ((m.find i).getD {}))
+    let bump (pr : Prov) : Prov := { pr with updated := laterStamp pr.updated st }
     match p.op with
-    | .create i _ => m := upd i (fun pr =>
-        let pr := if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c))
-                  then { pr with created := some (st, p.actor) } else pr
-        { pr with updated := laterStamp pr.updated st })
-    | .update i _ => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
-    | .claim i _ => m := upd i (fun pr =>
-        { pr with updated := laterStamp pr.updated st,
-                  lastClaim := laterStamp pr.lastClaim st })
-    | .close i _ => m := upd i (fun pr =>
-        { pr with updated := laterStamp pr.updated st,
-                  lastClose := laterStamp pr.lastClose st })
-    | .reopen i => m := upd i (fun pr =>
-        { pr with updated := laterStamp pr.updated st,
-                  lastReopen := laterStamp pr.lastReopen st })
-    | .defer i _ => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
-    | .undefer i => m := upd i (fun pr => { pr with updated := laterStamp pr.updated st })
-    | _ => pure ()
-  return m
+    | .create _ _ =>
+      let pr := if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c))
+                then { pr with created := some (st, p.actor) } else pr
+      bump pr
+    | .update _ _ => bump pr
+    | .claim _ _ => { bump pr with lastClaim := laterStamp pr.lastClaim st }
+    | .close _ _ => { bump pr with lastClose := laterStamp pr.lastClose st }
+    | .reopen _ => { bump pr with lastReopen := laterStamp pr.lastReopen st }
+    | .defer _ _ => bump pr
+    | .undefer _ => bump pr
+    | _ => pr
+  let target (p : ParsedOp) : Option IssueId :=
+    match p.op with
+    | .create i _ | .update i _ | .claim i _ | .close i _
+    | .reopen i | .defer i _ | .undefer i => some i
+    | _ => none
+  let tagged := ops.filterMap (fun p => (target p).map (·, p))
+  let sorted := tagged.mergeSort (fun a b => decide (TotalOrd.le a.1 b.1))
+  -- one fold over the sorted pairs: accumulate the current group's Prov,
+  -- emit it when the target changes (completed groups in ascending order)
+  let folded := sorted.foldl (fun acc (j, q) =>
+    match acc with
+    | none => some (j, step {} q, ([] : List (IssueId × Prov)))
+    | some (i, pr, done) =>
+      if j == i then some (i, step pr q, done)
+      else some (j, step {} q, (i, pr) :: done)) none
+  let entries := match folded with
+    | none => []
+    | some (i, pr, done) => ((i, pr) :: done).reverse
+  match AMap.ofAscList? entries with
+  | some m => m
+  | none =>
+    -- unreachable (the entries come out of a sort, grouped to distinct keys);
+    -- the fallback is the slow-but-correct per-op build, never a wrong map
+    entries.foldl (fun m (i, pr) => m.insert i pr) AMap.empty
 
 /-- One issue's provenance from the batched map (absent ⇒ no ops touched it). -/
 def provOf (m : AMap IssueId Prov) (i : IssueId) : Prov := (m.find i).getD {}
@@ -196,6 +216,21 @@ def canonicalParent (s : State) (i : IssueId) : Option IssueId := Id.run do
       best := match best with
         | none => some (p, tag)
         | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
+  return best.map (·.1)
+
+/-- `canonicalParent` over the hoisted `(parent, child)` view — the spec
+    re-derives `presentEdges` inside `parentsOf` per call (the tree render's
+    profile cost). For a present `i` the candidate set is identical: the
+    hoisted view only additionally filters child presence, and `i` is the
+    child. -/
+def canonicalParentE (v : View) (i : IssueId) : Option IssueId := Id.run do
+  let mut best : Option (IssueId × Stamp) := none
+  for (p, c) in v.pedges do
+    if c == i then
+      if let some tag := maxTagOf v.state (p, i, EdgeKind.Parent) then
+        best := match best with
+          | none => some (p, tag)
+          | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
   return best.map (·.1)
 
 def dependenciesJson (s : State) (i : IssueId) : Json :=

@@ -53,7 +53,7 @@ def segBytesOf (segs : List SegmentData) (rid : String) : ByteArray :=
     "nothing to publish" an exact, cheap check rather than a fold comparison. -/
 def segsEquiv (a b : List SegmentData) : Bool :=
   let ids := (a.map (·.replicaId) ++ b.map (·.replicaId)).eraseDups
-  ids.all (fun rid => (segBytesOf a rid).toList == (segBytesOf b rid).toList)
+  ids.all (fun rid => segBytesOf a rid == segBytesOf b rid)
 
 /-- Materialize a foreign replica's segment into `.tl/log/<rid>.jsonl` by an
     atomic temp-file + rename (ADR-0015 §3, ADR-0016 §1). The caller guarantees
@@ -92,7 +92,7 @@ private def absorbForeign (d : Dirs) (ownReplica : Option String)
     let mayWrite := match ownReplica with
       | some own => s.replicaId != own
       | none => onDisk.isNone
-    if mayWrite && (onDisk.map (·.bytes.toList)).getD [] != s.bytes.toList then
+    if mayWrite && (onDisk.map (·.bytes)).getD ByteArray.empty != s.bytes then
       writeForeignSegment d s.replicaId s.bytes
       absorbed := absorbed ++ [s.replicaId]
   return absorbed

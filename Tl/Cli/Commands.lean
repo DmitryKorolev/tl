@@ -159,7 +159,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- top level, §2); closed children are pruned unless --all.
   let r : Style → String :=
     if tree then
-      let isRoot (i : IssueId) : Bool := match canonicalParent s i with
+      let isRoot (i : IssueId) : Bool := match canonicalParentE v i with
         | none => true | some p => !(visible.contains p)
       let roots := visible.filter isRoot
       let cappedRoots := if limit == 0 then roots else roots.take limit

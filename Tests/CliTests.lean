@@ -993,12 +993,68 @@ def cliLabelTests : IO (List Outcome) := do
     ["label", "remove", "tl-" ++ a, "parser", "--dir", dir] (fun j => jStr j "status" == some "noop")]
   return o
 
+/-- The tree render on a multi-parent diamond stays linear (the old walk
+    re-walked the shared subtree under every parent — exponential on chained
+    diamonds, reachable from one `create --parent --parent`): the shared node
+    expands once, later encounters render the already-shown marker. -/
+def cliTreeDiamondTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let a ← mkIssue dir "A"
+  let b ← mkIssue dir "B" ["--parent", "tl-" ++ a]
+  let c ← mkIssue dir "C" ["--parent", "tl-" ++ a]
+  let d ← mkIssue dir "D" ["--parent", "tl-" ++ b, "--parent", "tl-" ++ c]
+  let e ← mkIssue dir "E" ["--parent", "tl-" ++ d]
+  match ← run' ["list", "--dir", dir] with
+  | .ok out =>
+    let h := out.human
+    let count (needle : String) : Nat := (h.splitOn needle).length - 1
+    return [
+      check "the shared diamond node renders under both parents" (count d == 2)
+        s!"D appearances: {count d} in:\n{h}",
+      check "the shared node's subtree expands exactly once" (count e == 1)
+        s!"E appearances: {count e} in:\n{h}",
+      check "the second encounter carries the already-shown marker"
+        (count "(shown above)" == 1) h]
+  | .error err => return [{ name := "tree diamond render", passed := false, msg := err.message }]
+
+/-- The batched provenance map agrees with the per-id scan on every issue —
+    including same-target ops interleaved out of order (the sort-grouped
+    build must preserve within-target order, like the scan's walk). -/
+def provenanceAgreementTests : List Outcome :=
+  let stem := "0123456789abc"
+  let rv := (ofCrockford? stem).getD 0
+  let mk (idx : Nat) (op : WireOp) : ParsedOp :=
+    { v := supportedVersion, op, stamp := ⟨1000000 + idx * 7, rv, 500 + idx⟩,
+      actor := some s!"a{idx % 3}" }
+  let ids := ["a000000000000000", "b000000000000000", "c000000000000000"]
+  let pick (k : Nat) : IssueId := ids.getD (k % 3) ""
+  let ops := (List.range 40).map (fun k =>
+    let i := pick k
+    match k % 7 with
+    | 0 => mk k (.create i { title := some s!"t{k}" })
+    | 1 => mk k (.update i { description := some (some s!"d{k}") })
+    | 2 => mk k (.claim i s!"who{k}")
+    | 3 => mk k (.close i .Done)
+    | 4 => mk k (.reopen i)
+    | 5 => mk k (.defer i (2000000 + k))
+    | _ => mk k (.undefer i))
+  let m := provenanceMap ops
+  ids.map (fun i =>
+    let a := provOf m i
+    let b := provenanceOf ops i
+    check s!"provenance map ≡ per-id scan for {i}"
+      (a.createdAt == b.createdAt && a.updatedAt == b.updatedAt
+        && a.closedAt == b.closedAt && a.claimedAt == b.claimedAt
+        && a.createdBy == b.createdBy && a.createdReplica == b.createdReplica))
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ (← cliBinaryTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
+    ++ (← cliTreeDiamondTests)
+    ++ (← cliBinaryTests)
 
 end Tl.Tests

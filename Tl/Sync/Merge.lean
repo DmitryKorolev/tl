@@ -22,18 +22,44 @@ namespace Tl.Sync
 
 open Tl.Store
 
-private def lexLe : List UInt8 → List UInt8 → Bool
-  | [], _ => true
-  | _ :: _, [] => false
-  | a :: as, b :: bs => if a < b then true else if b < a then false else lexLe as bs
+/-- Byte-lexicographic `≤` directly over the arrays — the comparator runs per
+    merge-sort comparison, so it must not materialize per-comparison copies
+    (the previous shape built two boxed `List UInt8` per call). The fuel is
+    `a.size + 1`: the index only grows, so `a` exhausts (the `none` arm) before
+    the fuel does — the zero arm is dead by construction. -/
+private def lexLeBytesAux (a b : ByteArray) : Nat → Nat → Bool
+  | _, 0 => true
+  | i, fuel + 1 =>
+    match a[i]?, b[i]? with
+    | none, _ => true
+    | some _, none => false
+    | some x, some y =>
+      if x < y then true
+      else if y < x then false
+      else lexLeBytesAux a b (i + 1) fuel
+
+private def lexLeBytes (a b : ByteArray) : Bool := lexLeBytesAux a b 0 (a.size + 1)
+
+/-- Adjacent dedup — on a sorted list duplicates are adjacent, so this equals
+    `eraseDups` (which rescans its accumulator per element, Θ(L²)) and stays
+    linear. -/
+private def dedupAdjacentGo (prev : ByteArray) : List ByteArray → List ByteArray
+  | [] => [prev]
+  | x :: xs => if prev == x then dedupAdjacentGo prev xs else prev :: dedupAdjacentGo x xs
+
+private def dedupAdjacent : List ByteArray → List ByteArray
+  | [] => []
+  | x :: xs => dedupAdjacentGo x xs
 
 /-- The set union of the complete lines of two segment byte streams,
     deduplicated and byte-lexicographically sorted, each line re-terminated
-    with LF (ADR-0001 §5). -/
+    with LF (ADR-0001 §5). The output bytes are pinned by tests: the
+    canonicalized form must not move (it is what makes a re-sync build no
+    churn commit). -/
 def unionLines (a b : ByteArray) : ByteArray :=
   let lines := completeLines a ++ completeLines b
-  let sorted := lines.mergeSort (fun x y => lexLe x.toList y.toList)
-  let uniq := sorted.eraseDups
+  let sorted := lines.mergeSort lexLeBytes
+  let uniq := dedupAdjacent sorted
   uniq.foldl (fun acc l => acc ++ l ++ "\n".toUTF8) ByteArray.empty
 
 /-- Union two sets of per-replica segments (ADR-0001 §5): each replica id

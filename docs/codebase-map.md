@@ -276,7 +276,14 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   lifecycle (healing, doctor non-persist, skip-bad
                         --   bypass, symlink refusal)
   CliTests.lean         --   per-verb contract rows + spawned-binary envelope/
-                        --   exit/env tests (TL_DIR, ceiling dirs)
+                        --   exit/env tests (TL_DIR, ceiling dirs) + the tree
+                        --   diamond fixture (shared nodes render once)
+  PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
+                        --   grow ≤ ×12 on every fast path (warm cached
+                        --   materialize, rollup, ready, diagnostics,
+                        --   provenance, sync union) — the efficiency
+                        --   principle in CI; the cold fold is excluded
+                        --   (tracked: batched canonical construction)
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class

@@ -9,4 +9,5 @@ import Tests.HlcTests
 import Tests.CrockfordTests
 import Tests.RecordTests
 import Tests.CacheTests
+import Tests.PerfTests
 import Tests.Main

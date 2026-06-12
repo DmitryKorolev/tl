@@ -131,27 +131,54 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
 
 /-! ## Children tree (ADR-0017 §2) — total on cyclic/dangling parent graphs -/
 
+/-- The tree walk: `path` is the current descent (cycle marker at the exact
+    node, as before); `emitted` is GLOBAL across the whole forest — a node
+    reached through a second parent (a multi-parent diamond, one `create
+    --parent --parent` away) renders one already-shown marker line instead of
+    re-walking its subtree, which is what made diamonds exponential. Children
+    come from the hoisted view (the per-node `presentChildren` re-derived
+    `presentEdges` each call). Returns the lines and the grown emitted set. -/
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
-    (pre : String) (visited : List IssueId) (keep : IssueId → Bool) : List String :=
-  if visited.contains i then [pre ++ st.paint "2" "↺ " ++ styledLine st v i]
-  else
-    let kids := (v.state.presentChildren i).filter keep
-    let n := kids.length
-    kids.zipIdx.flatMap (fun (c, idx) =>
-      let last := idx + 1 == n
-      let conn := if st.glyph == .unicode then (if last then "└── " else "├── ")
-                  else (if last then "\\-- " else "+-- ")
-      let childPre := pre ++ (if st.glyph == .unicode then (if last then "    " else "│   ")
-                              else (if last then "    " else "|   "))
-      (pre ++ st.paint "2" conn ++ styledLine st v c)
-        :: treeLines st v c childPre (i :: visited) keep)
+    (pre : String) (path : List IssueId) (emitted : List IssueId)
+    (keep : IssueId → Bool) : List String × List IssueId := Id.run do
+  if path.contains i then
+    return ([pre ++ st.paint "2" "↺ " ++ styledLine st v i], emitted)
+  let kids := (State.kidsOfEdges v.pedges i).filter keep
+  let n := kids.length
+  let mut lines : List String := []
+  let mut em := emitted
+  let mut idx := 0
+  for c in kids do
+    let last := idx + 1 == n
+    let conn := if st.glyph == .unicode then (if last then "└── " else "├── ")
+                else (if last then "\\-- " else "+-- ")
+    let childPre := pre ++ (if st.glyph == .unicode then (if last then "    " else "│   ")
+                            else (if last then "    " else "|   "))
+    let node := pre ++ st.paint "2" conn ++ styledLine st v c
+    if em.contains c then
+      lines := lines ++ [node ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
+    else
+      em := c :: em
+      let (sub, em') := treeLines st v c childPre (i :: path) em keep
+      lines := lines ++ (node :: sub)
+      em := em'
+    idx := idx + 1
+  return (lines, em)
 
 /-- A forest (ADR-0017 §2, `list --tree`): each root rendered as its one-line
     node followed by its subtree. Roots are passed in (issues with no present
     canonical parent — an orphan or a dangling-parent issue renders at top
-    level). Each subtree is total on cycles via `treeLines`' visited set. -/
-def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String :=
-  roots.flatMap (fun r => styledLine st v r :: treeLines st v r "" [] keep)
+    level). Cycles get the per-path marker; shared (multi-parent) nodes render
+    once and mark later encounters, across the whole forest. -/
+def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String := Id.run do
+  let mut lines : List String := []
+  let mut em : List IssueId := []
+  for r in roots do
+    em := r :: em
+    let (sub, em') := treeLines st v r "" [] em keep
+    lines := lines ++ (styledLine st v r :: sub)
+    em := em'
+  return lines
 
 /-! ## show detail view (ADR-0017 §4) -/
 
@@ -188,11 +215,11 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let deps := s.dependentsOf i
   let rel (label : String) (ids : List IssueId) : List String :=
     if ids.isEmpty then [] else [label ++ ": " ++ String.intercalate ", " (ids.map displayId)]
-  let parentLine := match canonicalParent s i with
+  let parentLine := match canonicalParentE v i with
     | some p => ["parent: " ++ displayId p] | none => []
   let childrenBlock :=
-    if (s.presentChildren i).isEmpty then []
-    else st.paint "1" "children:" :: treeLines st v i "  " [] (fun _ => true)
+    if (State.kidsOfEdges v.pedges i).isEmpty then []
+    else st.paint "1" "children:" :: (treeLines st v i "  " [] [i] (fun _ => true)).1
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
