@@ -1,8 +1,8 @@
 /-
 `Tests.SyncTests` — the sync shared core (ADR-0001 §2/§5): the per-segment
 line-union (pure) and `refs/tl/log` read/write via git plumbing (against a
-real temporary git repo). The transport legs (local worktree, remote
-fetch/push) build on these and are tested when they land.
+real temporary git repo), plus the transport legs built on them — the local
+worktree leg and the remote fetch/union/push leg (against a bare remote).
 -/
 import Tl.Sync.Merge
 import Tl.Sync.Ref

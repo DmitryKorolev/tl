@@ -698,10 +698,12 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
   return { data, human }
 
-/-- `tl sync`: the local-first leg (ADR-0016 §1) — reconcile this replica with
-    its siblings through the shared `refs/tl/log`. The remote `fetch/push` leg
-    is a later increment; the `--json` `data` already carries a `remote` slot
-    (null until then) so the shape does not change when it lands. -/
+/-- `tl sync`: reconcile through the shared `refs/tl/log` — the local-first leg
+    (ADR-0016 §1: publish the own segment, absorb same-machine siblings), then
+    the remote leg (ADR-0001 §5: fetch → union → push) when one is configured.
+    The `--json` `data` carries one leg-result object per leg; `remote` is null
+    only outside a git repo, and `{ran:false, reason:"no-upstream"}` when no
+    remote is configured. -/
 def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
   let own ← loadReplica d

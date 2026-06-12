@@ -115,9 +115,9 @@ def commandSpecs : List CommandSpec :=
     { command := "stats", positionals := "",
       summary := "counts by state plus ready / blocked / cycles totals" },
     { command := "sync", positionals := "",
-      summary := "reconcile with siblings via refs/tl/log (local leg; the remote leg is not yet wired)" },
+      summary := "reconcile via refs/tl/log: publish + absorb siblings, then fetch/union/push to a configured remote" },
     { command := "doctor", positionals := "",
-      summary := "local health checks (replica / clock / log / graph / stale claims)" },
+      summary := "local health checks (replica / clock / log / graph / stale claims / clock skew)" },
     { command := "version", positionals := "", summary := "the product and log-format versions" },
     { command := "help", positionals := "[<command>]",
       summary := "this grammar — human, or machine-readable with --json" } ]
