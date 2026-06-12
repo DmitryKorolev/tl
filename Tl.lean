@@ -44,6 +44,7 @@ import Tl.Store.Paths
 import Tl.Store.Local
 import Tl.Store.Segment
 import Tl.Store.Materialize
+import Tl.Store.Cache
 import Tl.Store.Lock
 import Tl.Sync.Merge
 import Tl.Sync.Ref

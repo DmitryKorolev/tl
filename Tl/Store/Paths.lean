@@ -51,6 +51,11 @@ def relLock (d : Dirs) : String := d.tlRel ++ "/local/lock"
     only, not part of the log format (no `v` bump) — a stale or absent value
     only forces a re-materialize, never a wrong read. -/
 def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
+/-- The materialization fold cache (ADR-0022): the folded state keyed to
+    per-segment log content. Gitignored, local-only, never synced, no log
+    format impact — absent/stale/corrupt only costs a rebuild from the
+    segments, never a wrong read. -/
+def relCache (d : Dirs) : String := d.tlRel ++ "/local/cache"
 def relLog (d : Dirs) : String := d.tlRel ++ "/log"
 def relSegment (d : Dirs) (replicaId : String) : String :=
   d.tlRel ++ "/log/" ++ replicaId ++ ".jsonl"
