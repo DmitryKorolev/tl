@@ -270,6 +270,30 @@ theorem collapse_lookup {f : V → V → V} (key : K) :
     · rw [if_pos h, if_pos h.symm]
     · rw [if_neg h, if_neg (fun he => h he.symm)]
 
+/-- The combine splits over an append (`foldl`/`map` over `++`). -/
+theorem combFold_append (f : V → V → V) (key : K) (A B : List (K × V)) (acc : Option V) :
+    combFold f key (A ++ B) acc = combFold f key B (combFold f key A acc) := by
+  unfold combFold
+  rw [List.map_append, List.foldl_append]
+
+/-- On a canonical (`Sorted`, unique-key) list the combine reads exactly that
+    list's `lookup` (there is at most one entry per key). -/
+theorem combFold_sorted_eq_lookup {f : V → V → V} {key : K} :
+    (L : List (K × V)) → (acc : Option V) → Sorted L →
+    combFold f key L acc = optCombine f acc (lookup key L)
+  | [], acc, _ => by rw [combFold_nil, lookup_nil, optCombine_none_right]
+  | (k, v) :: rest, acc, hs => by
+    obtain ⟨hlb, hsr⟩ := hs
+    rw [combFold_cons]
+    by_cases hek : key = k
+    · rw [hek]
+      have hko : keyOpt k (k, v) = some v := by unfold keyOpt; exact if_pos rfl
+      have hnm : ∀ p ∈ rest, p.1 ≠ k := fun p hp he => ne_of_lt (hlb p hp) he.symm
+      rw [hko, combFold_of_not_mem rest _ hnm, lookup_cons_eq]
+    · have hko : keyOpt key (k, v) = none := by unfold keyOpt; exact if_neg (fun h => hek h.symm)
+      rw [hko, optCombine_none_right, combFold_sorted_eq_lookup rest acc hsr,
+        lookup_cons_ne hek]
+
 end AssocList
 
 namespace AMap
@@ -281,6 +305,52 @@ variable {K : Type u} {V : Type v} [TotalOrd K]
 def ofEntries (f : V → V → V) (entries : List (K × V)) : AMap K V :=
   ⟨AssocList.collapse f (entries.mergeSort AssocList.keyLe),
    AssocList.collapse_sorted (AssocList.pairwise_le_mergeSort entries)⟩
+
+/-- The per-key combine is permutation-invariant (semilattice combiner). -/
+theorem combFold_perm {f : V → V → V}
+    (hcomm : ∀ a b, f a b = f b a) (hassoc : ∀ a b c, f (f a b) c = f a (f b c))
+    {key : K} {L1 L2 : List (K × V)} (hp : L1.Perm L2) (acc : Option V) :
+    AssocList.combFold f key L1 acc = AssocList.combFold f key L2 acc := by
+  unfold AssocList.combFold
+  exact foldl_optCombine_perm hcomm hassoc (hp.map _) acc
+
+/-- The value `ofEntries` stores at `key` is the per-key combine of the raw
+    entries (the sort is invisible to the combine — semilattice). -/
+theorem ofEntries_find {f : V → V → V}
+    (hcomm : ∀ a b, f a b = f b a) (hassoc : ∀ a b c, f (f a b) c = f a (f b c))
+    (entries : List (K × V)) (key : K) :
+    (ofEntries f entries).find key = AssocList.combFold f key entries none := by
+  show AssocList.lookup key (AssocList.collapse f (entries.mergeSort AssocList.keyLe)) = _
+  rw [AssocList.collapse_lookup key (AssocList.pairwise_le_mergeSort entries)]
+  exact combFold_perm hcomm hassoc (List.mergeSort_perm entries AssocList.keyLe) none
+
+/-- The combine of every map's entries equals the per-map `find` fold — each
+    canonical map contributes exactly its value at `key`. -/
+theorem combFold_flatMap_find {f : V → V → V} (key : K) :
+    (ms : List (AMap K V)) → (acc : Option V) →
+    AssocList.combFold f key (ms.flatMap (fun m => m.toList)) acc
+      = (ms.map (fun m => m.find key)).foldl (optCombine f) acc
+  | [], _ => rfl
+  | m :: ms, acc => by
+    rw [List.flatMap_cons, AssocList.combFold_append,
+      AssocList.combFold_sorted_eq_lookup m.toList acc m.sorted, List.map_cons, List.foldl_cons]
+    exact combFold_flatMap_find key ms (optCombine f acc (m.find key))
+
+/-- The batched join: build the canonical map from all the maps' entries at once. -/
+def joinFast (f : V → V → V) (ms : List (AMap K V)) : AMap K V :=
+  ofEntries f (ms.flatMap (fun m => m.toList))
+
+/-- **The AMap bridge.** The batched join IS the left-folded `merge` — the cold
+    fold's per-component result, built in one O(N log N) pass. -/
+theorem joinFast_eq {f : V → V → V}
+    (hcomm : ∀ a b, f a b = f b a) (hassoc : ∀ a b c, f (f a b) c = f a (f b c))
+    (ms : List (AMap K V)) :
+    joinFast f ms = ms.foldl (AMap.merge f) AMap.empty := by
+  apply AMap.ext
+  intro key
+  show (ofEntries f (ms.flatMap (fun m => m.toList))).find key = _
+  rw [ofEntries_find hcomm hassoc, combFold_flatMap_find key ms none,
+    find_foldl_merge f key ms AMap.empty, find_empty]
 
 end AMap
 
