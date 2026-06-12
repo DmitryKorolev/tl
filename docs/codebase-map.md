@@ -291,8 +291,8 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   grow ≤ ×12 on five ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
                         --   provenance, sync union); ready + diagnostics are
-                        --   ceiling-only pending the tracked comparison-constant
-                        --   and sublinear-find follow-ups
+                        --   ceiling-only pending the remaining ready/SCC
+                        --   algorithm work
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class

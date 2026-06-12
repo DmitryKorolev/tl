@@ -8,9 +8,9 @@ a small-scale floor, so a regression to an accidental quadratic fails loudly
 while honest machine noise on a near-linear path does not (the
 timing-flake-proof intent; per-call counters would need kernel hooks the
 proofs do not carry). The other two rows — the ready queue and the cycle
-diagnostics — are CEILING-ONLY for now: their cost is dominated by boxed
-comparisons over linear-find structures (both tracked as follow-up tasks),
-so a ratio there would assert the workload, not a regression.
+diagnostics — are CEILING-ONLY for now: their remaining cost is dominated by
+linear-list-backed ready sorting and SCC traversal, so a ratio there would
+assert the workload, not a regression.
 
 Covered: the COLD fold (`foldFast`, a full refold with no cache), the warm
 cached materialize (the suffix-fold read path), the batched rollup
@@ -106,11 +106,10 @@ private def ratioRow (name : String) (tSmall tBig : Nat) : Outcome :=
     s!"small={tSmall}ms big={tBig}ms"
 
 /-- A ceiling-only row — for the documented compromises: the per-candidate /
-    per-node closures (`ready`'s weights, the cycle diagnostics) run over
-    linear-find structures whose boxed comparisons dominate (both tracked:
-    the TotalOrd-constants task and the sublinear-find/batched-construction
-    follow-up). The ceiling still catches an order-of-magnitude regression;
-    the ×4 ratio deliberately is not asserted until those land. -/
+    per-node closures (`ready`'s weights, the cycle diagnostics) still pay
+    algorithmic costs in linear-list-backed sort/traversal code. The ceiling
+    catches an order-of-magnitude regression; the ×4 ratio deliberately is not
+    asserted until the remaining ready/SCC algorithm work lands. -/
 private def ceilingRow (name : String) (ceilMs tBig : Nat) : Outcome :=
   check s!"{name}: stays under the generous ceiling (big {tBig}ms ≤ {ceilMs}ms)"
     (tBig ≤ ceilMs) s!"big={tBig}ms"
@@ -137,10 +136,9 @@ def perfTests : IO (List Outcome) := do
       (materializeCached segs (some cache) false (some synthNow) (some stem)).1.ops.length)
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
     let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)
-    -- the diagnostics pay a per-node closure with boxed-comparison constants
-    -- (the tracked compromises) — measured at the SMALL scale only so the
-    -- suite stays fast; the small ceiling still catches an order-of-magnitude
-    -- regression
+    -- the diagnostics pay a per-node closure over the remaining list-backed
+    -- SCC work — measured at the SMALL scale only so the suite stays fast; the
+    -- small ceiling still catches an order-of-magnitude regression
     let cyc ← if n ≤ 100 then
         bench 1 (fun _ =>
           (State.cyclesFast s EdgeKind.Parent).length

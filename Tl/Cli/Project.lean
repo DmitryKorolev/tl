@@ -167,7 +167,7 @@ structure View where
    each build is one pass with linear-find constants, milliseconds at the
    thousands-of-ops scale target, and `tl close` pays it three times (the
    pre-state view and `unblocksFast`'s two queues). Revisiting laziness or
-   sharing rides the tracked comparison-constant follow-up work. -/
+   sharing rides the remaining ready/SCC algorithm work. -/
 
 def View.state (v : View) : State := v.loaded.state
 

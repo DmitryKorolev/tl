@@ -370,15 +370,57 @@ instance instTotalOrdOption [TotalOrd α] : TotalOrd (Option α) where
 instance : TotalOrd Char :=
   TotalOrd.comap (fun c => c.val.toNat) (fun _ _ h => Char.ext (UInt32.toNat_inj.mp h))
 
+/-- The project order's strict `Char` relation agrees with Lean core's native
+    `Char` order. This is the element bridge for the native `String.decLE`
+    override below. -/
+private theorem charLt_iff_coreLt (a b : Char) : TotalOrd.lt a b ↔ a < b := by
+  unfold TotalOrd.lt
+  change (a.val.toNat ≤ b.val.toNat ∧ ¬ b.val.toNat ≤ a.val.toNat) ↔ a < b
+  rw [← Nat.lt_iff_le_and_not_ge, ← UInt32.lt_iff_toNat_lt]
+  exact Char.lt_def.symm
+
+/-- The project list order is Lean core's list `≤` when the element order is
+    `Char`. Core's `String.le` is exactly this list order over `toList`; this
+    bridge lets `TotalOrd String` keep its existing proposition while executing
+    through core's native string comparator. -/
+private theorem charListLe_iff_coreLe :
+    (as bs : List Char) → TotalOrd.listLe as bs ↔ as ≤ bs
+  | [], bs => by
+      constructor
+      · intro _
+        exact List.nil_le bs
+      · intro _
+        exact trivial
+  | _ :: _, [] => by
+      constructor
+      · intro h
+        exact False.elim h
+      · intro h
+        have hnil : _ :: _ = ([] : List Char) := List.le_nil.mp h
+        cases hnil
+  | a :: as, b :: bs => by
+      rw [List.cons_le_cons_iff]
+      show (TotalOrd.lt a b ∨ (a = b ∧ TotalOrd.listLe as bs))
+        ↔ (a < b ∨ a = b ∧ as ≤ bs)
+      rw [charLt_iff_coreLt a b, charListLe_iff_coreLe as bs]
+
+/-- Core `String.le` decides the same proposition as `TotalOrd String`'s list
+    semantics. -/
+private theorem stringLe_iff_totalLe (a b : String) :
+    a ≤ b ↔ TotalOrd.le a.toList b.toList := by
+  change a.toList ≤ b.toList ↔ TotalOrd.listLe a.toList b.toList
+  exact (charListLe_iff_coreLe a.toList b.toList).symm
+
 /-- `String` ordered lexicographically by its characters (the canonical issue-id,
     slug, label, and field order). The `le` is exactly `comap String.toList`'s —
-    `TotalOrd.le` on the char lists, so every order proof is unchanged — but the
-    instance overrides `decEq` with native `String.decEq`: `String` keys are the
-    hot map key everywhere (issue ids, edge endpoints, labels), and equality is
-    the most frequent comparison (`lookup`'s `k = p.1`). -/
+    `TotalOrd.le` on the char lists, so every order proof is unchanged — but
+    `decLe` executes through core's native `String.decLE`, and `decEq` through
+    native `String.decEq`. `String` keys are hot everywhere (issue ids, edge
+    endpoints, labels); this keeps the proof proposition stable while avoiding
+    per-comparison `toList` materialization on both equality and order. -/
 instance : TotalOrd String where
   le a b := TotalOrd.le a.toList b.toList
-  decLe a b := TotalOrd.decLe a.toList b.toList
+  decLe a b := decidable_of_iff (a ≤ b) (stringLe_iff_totalLe a b)
   le_refl a := TotalOrd.le_refl a.toList
   le_trans h1 h2 := TotalOrd.le_trans h1 h2
   le_antisymm h1 h2 := String.toList_injective (TotalOrd.le_antisymm h1 h2)
