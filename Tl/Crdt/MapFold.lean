@@ -167,6 +167,109 @@ theorem pairwise_le_mergeSort (entries : List (K × V)) :
   intro a b hab
   exact of_decide_eq_true hab
 
+/-! ### The per-key combine — the value the bridge reads at each key -/
+
+/-- The option a raw entry contributes when looking up `key`. -/
+def keyOpt (key : K) (p : K × V) : Option V := if p.1 = key then some p.2 else none
+
+/-- The running `f`-combine, at `key`, of an entry list (seeded `acc0`). The
+    value `lookup key` must read off the collapsed list. -/
+def combFold (f : V → V → V) (key : K) (L : List (K × V)) (acc0 : Option V) : Option V :=
+  (L.map (keyOpt key)).foldl (optCombine f) acc0
+
+theorem combFold_nil (f : V → V → V) (key : K) (acc0 : Option V) :
+    combFold f key [] acc0 = acc0 := rfl
+
+theorem combFold_cons (f : V → V → V) (key : K) (p : K × V) (ps : List (K × V))
+    (acc0 : Option V) :
+    combFold f key (p :: ps) acc0 = combFold f key ps (optCombine f acc0 (keyOpt key p)) := by
+  unfold combFold
+  rw [List.map_cons, List.foldl_cons]
+
+/-- If no entry carries `key`, the combine is inert — it leaves the seed. -/
+theorem combFold_of_not_mem {f : V → V → V} {key : K} :
+    (L : List (K × V)) → (acc0 : Option V) → (∀ p ∈ L, p.1 ≠ key) →
+    combFold f key L acc0 = acc0
+  | [], _, _ => rfl
+  | p :: ps, acc0, h => by
+    rw [combFold_cons]
+    have hp : keyOpt key p = none := by
+      unfold keyOpt; rw [if_neg (h p (List.mem_cons_self ..))]
+    rw [hp, optCombine_none_right]
+    exact combFold_of_not_mem ps acc0 (fun q hq => h q (List.mem_cons_of_mem p hq))
+
+/-- **The collapse `lookup` characterization.** On a key-sorted run (every key
+    `≥ k`, pairwise), the value `lookup key` reads off the collapsed list is the
+    per-key combine of the run, seeded with the current `k`-group accumulator. -/
+theorem collapseGo_lookup {f : V → V → V} (key : K) :
+    {rest : List (K × V)} → {k : K} → {acc : V} →
+    (∀ q ∈ rest, le k q.1) → rest.Pairwise (fun a b => le a.1 b.1) →
+    lookup key (collapseGo f k acc rest)
+      = combFold f key rest (if key = k then some acc else none)
+  | [], k, acc, _, _ => by
+    show lookup key [(k, acc)] = _
+    rw [combFold_nil]
+    unfold lookup
+    rfl
+  | (k', v') :: rest', k, acc, hk, hp => by
+    have hkk' : le k k' := hk (k', v') (List.mem_cons_self ..)
+    have hk'rest' : ∀ q ∈ rest', le k' q.1 := fun q hq => (List.pairwise_cons.mp hp).1 q hq
+    have hp' : rest'.Pairwise (fun a b => le a.1 b.1) := (List.pairwise_cons.mp hp).2
+    have hkrest' : ∀ q ∈ rest', le k q.1 := fun q hq => le_trans hkk' (hk'rest' q hq)
+    rw [combFold_cons]
+    unfold collapseGo
+    by_cases hkeq : k = k'
+    · -- same run: the head folds into the k-group accumulator
+      rw [if_pos hkeq, collapseGo_lookup key hkrest' hp']
+      congr 1
+      by_cases hek : key = k
+      · rw [hek]
+        have hko : keyOpt k (k', v') = some v' := by
+          unfold keyOpt; exact if_pos hkeq.symm
+        rw [hko, if_pos rfl, if_pos rfl]
+        rfl
+      · have hko : keyOpt key (k', v') = none := by
+          unfold keyOpt; exact if_neg (fun h => hek (hkeq.trans h).symm)
+        rw [hko, if_neg hek, if_neg hek, optCombine_none_right]
+    · -- k < k': emit (k, acc) and recurse into the k' run
+      rw [if_neg hkeq]
+      have hltkk' : lt k k' := lt_of_le_of_ne hkk' hkeq
+      by_cases hek : key = k
+      · -- key = k < every key of rest', so the run beyond contributes nothing
+        rw [hek]
+        have hko : keyOpt k (k', v') = none := by
+          unfold keyOpt; exact if_neg (fun (h : k' = k) => hkeq h.symm)
+        have hnm : ∀ p ∈ rest', p.1 ≠ k := fun p hp2 he =>
+          ne_of_lt (lt_of_lt_of_le hltkk' (hk'rest' p hp2)) he.symm
+        rw [lookup_cons_eq, hko, if_pos rfl, optCombine_none_right,
+          combFold_of_not_mem rest' (some acc) hnm]
+      · -- key ≠ k: skip the head, read the k' run by IH
+        rw [lookup_cons_ne hek, collapseGo_lookup key hk'rest' hp']
+        congr 1
+        rw [if_neg hek, optCombine_none_left]
+        unfold keyOpt
+        by_cases h : k' = key
+        · rw [if_pos h, if_pos h.symm]
+        · rw [if_neg h, if_neg (fun he => h he.symm)]
+
+/-- `lookup` on the collapsed sorted list is the per-key combine of the whole
+    list — the LHS of the batched-construction bridge. -/
+theorem collapse_lookup {f : V → V → V} (key : K) :
+    {entries : List (K × V)} → entries.Pairwise (fun a b => le a.1 b.1) →
+    lookup key (collapse f entries) = combFold f key entries none
+  | [], _ => rfl
+  | (k, v) :: rest, hp => by
+    have hkrest : ∀ q ∈ rest, le k q.1 := fun q hq => (List.pairwise_cons.mp hp).1 q hq
+    show lookup key (collapseGo f k v rest) = _
+    rw [collapseGo_lookup key hkrest (List.pairwise_cons.mp hp).2, combFold_cons]
+    congr 1
+    show (if key = k then some v else none) = optCombine f none (keyOpt key (k, v))
+    rw [optCombine_none_left]
+    unfold keyOpt
+    by_cases h : k = key
+    · rw [if_pos h, if_pos h.symm]
+    · rw [if_neg h, if_neg (fun he => h he.symm)]
+
 end AssocList
 
 namespace AMap
