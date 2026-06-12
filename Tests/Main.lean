@@ -16,6 +16,7 @@ import Tests.CrossTests
 import Tests.SanitizeTests
 import Tests.GrammarTests
 import Tests.SyncTests
+import Tests.CacheTests
 
 open Tl.Tests
 
@@ -25,6 +26,7 @@ def main : IO UInt32 := do
   let cli ← cliTests
   let grammar ← grammarTests
   let sync ← syncTests
+  let cacheIo ← cacheIoTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
@@ -42,5 +44,9 @@ def main : IO UInt32 := do
     ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
     ("Render sanitization (ADR-0014)", sanitizeTests),
     ("Grammar: tl help --json schema & parser agreement", grammar),
-    ("Sync: line-union, ref I/O, local leg + read-time refresh", sync)
+    ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
+    ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
+    ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),
+    ("Fold cache: cached fold ≡ fresh fold (seeded property)", cacheSuffixFoldProp),
+    ("Fold cache: file lifecycle, healing, doctor non-persist", cacheIo)
   ]
