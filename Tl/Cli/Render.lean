@@ -218,8 +218,8 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let labelLine := if labels.isEmpty then []
     else ["labels: " ++ String.intercalate ", " (labels.map sanitizeSingle)]
   -- relationships
-  let blockers := s.blockersOf i
-  let deps := s.dependentsOf i
+  let blockers := State.blockersOfE v.edges i
+  let deps := State.dependentsOfE v.edges i
   let rel (label : String) (ids : List IssueId) : List String :=
     if ids.isEmpty then [] else [label ++ ": " ++ String.intercalate ", " (ids.map displayId)]
   let parentLine := match canonicalParentE v i with

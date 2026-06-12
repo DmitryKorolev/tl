@@ -675,7 +675,10 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       else logRows
   -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008)
   let cyc := cycleCount v.rollup s
-  let multi := (s.presentIssues.filter (fun i => (s.parentsOf i).length > 1)).length
+  -- parents of a present `i` over the hoisted parent-edge view (`pedges` already
+  -- filters child-present, and `i` is the child) — avoids re-deriving presentEdges
+  -- per issue (the O(N·E) doctor scan)
+  let multi := (s.presentIssues.filter (fun i => (v.pedges.filter (·.2 == i)).length > 1)).length
   let dangling := (s.presentEdges.filter (fun (f, t, k) =>
     (k == EdgeKind.Blocks || k == EdgeKind.Parent)
       && (!decide (s.hasIssue f) || !decide (s.hasIssue t)))).length

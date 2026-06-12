@@ -1017,6 +1017,27 @@ def cliTreeDiamondTests : IO (List Outcome) := do
         (count "(shown above)" == 1) h]
   | .error err => return [{ name := "tree diamond render", passed := false, msg := err.message }]
 
+/-- The hoisted edge views feeding issueObj/doctor agree with the spec helpers
+    they replaced (the lingering non-hoisted scans): a multi-parent child's
+    `show --json` still reports a canonical `parent` (issueObj via
+    `canonicalParentE`), and `doctor` still counts exactly the one multi-parent
+    issue (the graph row over the hoisted `pedges`, not a per-issue `parentsOf`
+    rescan). -/
+def cliHoistedHelperTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let a ← mkIssue dir "A"
+  let b ← mkIssue dir "B" ["--parent", "tl-" ++ a]
+  let c ← mkIssue dir "C" ["--parent", "tl-" ++ a]
+  let d ← mkIssue dir "D" ["--parent", "tl-" ++ b, "--parent", "tl-" ++ c]
+  return [
+    ← expectData "show reports a canonical parent for a multi-parent child"
+      ["show", "tl-" ++ d, "--dir", dir]
+      (fun j => jStr j "parent" == some ("tl-" ++ b) || jStr j "parent" == some ("tl-" ++ c)),
+    ← expectData "doctor counts exactly the one multi-parent issue (hoisted parent view)"
+      ["doctor", "--dir", dir]
+      (fun j => (jArr j "checks").any (fun ch =>
+         jStr ch "name" == some "graph" && jNat ch "multiParent" == some 1))]
+
 /-- The batched provenance map agrees with the per-id scan on every issue —
     including same-target ops interleaved out of order (the sort-grouped
     build must preserve within-target order, like the scan's walk). -/
@@ -1124,7 +1145,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests
-    ++ (← cliTreeDiamondTests)
+    ++ (← cliTreeDiamondTests) ++ (← cliHoistedHelperTests)
     ++ (← cliBinaryTests)
 
 end Tl.Tests

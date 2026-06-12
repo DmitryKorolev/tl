@@ -240,8 +240,8 @@ def canonicalParentE (v : View) (i : IssueId) : Option IssueId := Id.run do
           | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
   return best.map (·.1)
 
-def dependenciesJson (s : State) (i : IssueId) : Json :=
-  let rows := s.presentEdges.filter (fun (f, t, _) => f == i || t == i)
+def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
+  let rows := edges.filter (fun (f, t, _) => f == i || t == i)
   Json.arr (rows.map (fun (f, t, k) =>
     Json.mkObj [("type", Json.str (edgeKindWire k)),
                 ("from", Json.str (displayId f)),
@@ -294,7 +294,7 @@ def issueObj (v : View) (i : IssueId) : Json :=
      ("deferred", Json.bool (deferredOf s v.now i)),
      ("labels", labelsJson d),
      ("meta", metaJson d),
-     ("dependencies", dependenciesJson s i)]
+     ("dependencies", dependenciesJson v.edges i)]
     ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
     ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "slug" ((d.slug.value.getD none).map (Json.str ∘ sanitizeSingle))
@@ -303,7 +303,7 @@ def issueObj (v : View) (i : IssueId) : Json :=
     ++ optField "deferUntil" ((d.deferUntilOf).map (Json.str ∘ Time.isoOfEpochMs))
     ++ optField "closeResolution"
         ((d.closeResolution.value.getD none).map (Json.str ∘ resolutionWire))
-    ++ optField "parent" ((canonicalParent s i).map (Json.str ∘ displayId))
+    ++ optField "parent" ((canonicalParentE v i).map (Json.str ∘ displayId))
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
     ++ optField "updatedAt" (pr.updatedAt.map (Json.str ∘ hlcIso))
     ++ optField "closedAt" (pr.closedAt.map (Json.str ∘ hlcIso))
