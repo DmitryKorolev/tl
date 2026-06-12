@@ -44,16 +44,29 @@ structure LocalOutcome where
   tip : Option String
 deriving Repr, Inhabited
 
-/-- A replica's segment bytes within a list (absent → empty). -/
-def segBytesOf (segs : List SegmentData) (rid : String) : ByteArray :=
-  ((segs.find? (·.replicaId == rid)).map (·.bytes)).getD ByteArray.empty
+/-- A linear walk of two replica-id-sorted segment lists: equal iff every
+    replica id carries byte-identical content, where an absent id and a
+    present-but-empty one are equal (an empty segment is no content — the
+    previous `segBytesOf` defaulted an absent id to `ByteArray.empty`). Fuel is
+    `|a| + |b|`; the zero arm is dead. -/
+private def segsEquivGo : Nat → List SegmentData → List SegmentData → Bool
+  | _, [], ys => ys.all (·.bytes == ByteArray.empty)
+  | _, x :: xs, [] => (x :: xs).all (·.bytes == ByteArray.empty)
+  | 0, _ :: _, _ :: _ => true
+  | fuel + 1, x :: xs, y :: ys =>
+    if x.replicaId == y.replicaId then (x.bytes == y.bytes) && segsEquivGo fuel xs ys
+    else if decide (x.replicaId ≤ y.replicaId) then
+      (x.bytes == ByteArray.empty) && segsEquivGo fuel xs (y :: ys)
+    else (y.bytes == ByteArray.empty) && segsEquivGo fuel (x :: xs) ys
 
 /-- Do two segment sets carry byte-identical content per replica id? The union
     is canonicalized (`Merge`), so equal line-sets are equal bytes — this makes
-    "nothing to publish" an exact, cheap check rather than a fold comparison. -/
+    "nothing to publish" an exact, cheap check rather than a fold comparison.
+    Sort each side by replica id once, then walk in lockstep — O(S log S),
+    where the previous shape paid `eraseDups` plus a `find?` per id (Θ(S²)). -/
 def segsEquiv (a b : List SegmentData) : Bool :=
-  let ids := (a.map (·.replicaId) ++ b.map (·.replicaId)).eraseDups
-  ids.all (fun rid => segBytesOf a rid == segBytesOf b rid)
+  let le := fun (x y : SegmentData) => decide (x.replicaId ≤ y.replicaId)
+  segsEquivGo (a.length + b.length) (a.mergeSort le) (b.mergeSort le)
 
 /-- Materialize a foreign replica's segment into `.tl/log/<rid>.jsonl` by an
     atomic temp-file + rename (ADR-0015 §3, ADR-0016 §1). The caller guarantees

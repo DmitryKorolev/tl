@@ -62,15 +62,33 @@ def unionLines (a b : ByteArray) : ByteArray :=
   let uniq := dedupAdjacent sorted
   uniq.foldl (fun acc l => acc ++ l ++ "\n".toUTF8) ByteArray.empty
 
+/-- The linear merge-join of two replica-id-sorted segment lists: each id
+    present on either side yields one segment whose bytes are the line-union of
+    that replica's copies (the absent side contributes `ByteArray.empty`),
+    ascending by replica id. Replica ids are unique within each side (one
+    segment file per replica, ADR-0001), so the heads alone decide each step.
+    Fuel is `|xs| + |ys|` — every step consumes one head, so the fuel never
+    runs out while either side is non-empty (the zero arm is dead). -/
+private def unionSegmentsGo : Nat → List SegmentData → List SegmentData → List SegmentData
+  | _, [], ys => ys.map (fun s => { replicaId := s.replicaId, bytes := unionLines ByteArray.empty s.bytes })
+  | _, x :: xs, [] => (x :: xs).map (fun s => { replicaId := s.replicaId, bytes := unionLines s.bytes ByteArray.empty })
+  | 0, _ :: _, _ :: _ => []
+  | fuel + 1, x :: xs, y :: ys =>
+    if x.replicaId == y.replicaId then
+      { replicaId := x.replicaId, bytes := unionLines x.bytes y.bytes } :: unionSegmentsGo fuel xs ys
+    else if decide (x.replicaId ≤ y.replicaId) then
+      { replicaId := x.replicaId, bytes := unionLines x.bytes ByteArray.empty } :: unionSegmentsGo fuel xs (y :: ys)
+    else
+      { replicaId := y.replicaId, bytes := unionLines ByteArray.empty y.bytes } :: unionSegmentsGo fuel (x :: xs) ys
+
 /-- Union two sets of per-replica segments (ADR-0001 §5): each replica id
-    present on either side yields one segment whose bytes are the line-union
-    of that replica's copies (an absent side contributes nothing). Replica
-    ids are sorted for a deterministic result. -/
+    present on either side yields one segment whose bytes are the line-union of
+    that replica's copies (an absent side contributes nothing). Sort each side
+    by replica id once, then merge-join in one pass — the previous shape paid
+    `eraseDups` (Θ(S²)) plus a `find?` per id (Θ(S²)); this is O(S log S). The
+    result is the same ascending-by-id segment list as before. -/
 def unionSegments (xs ys : List SegmentData) : List SegmentData :=
-  let ids := (xs.map (·.replicaId) ++ ys.map (·.replicaId)).eraseDups.mergeSort (· ≤ ·)
-  ids.map (fun rid =>
-    let xb := ((xs.find? (·.replicaId == rid)).map (·.bytes)).getD ByteArray.empty
-    let yb := ((ys.find? (·.replicaId == rid)).map (·.bytes)).getD ByteArray.empty
-    { replicaId := rid, bytes := unionLines xb yb })
+  let le := fun (a b : SegmentData) => decide (a.replicaId ≤ b.replicaId)
+  unionSegmentsGo (xs.length + ys.length) (xs.mergeSort le) (ys.mergeSort le)
 
 end Tl.Sync

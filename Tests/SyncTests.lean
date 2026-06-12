@@ -35,6 +35,22 @@ def syncMergeTests : List Outcome :=
    (let u := unionSegments [] [seg "r2" "c\n"]
     check "unionSegments: a replica on only one side is taken whole"
       (u.length == 1 && ((u.head?.map segStr) == some "c\n")) ""),
+   -- the sort+merge-join orders the result ascending by replica id regardless
+   -- of input order (the eraseDups+find? shape it replaces did the same)
+   (let u := unionSegments [seg "r3" "z\n", seg "r1" "a\n"] [seg "r2" "m\n"]
+    check "unionSegments output is ascending by replica id"
+      (u.map (·.replicaId) == ["r1", "r2", "r3"])
+      (String.intercalate "," (u.map (·.replicaId)))),
+   -- segsEquiv: per-replica content equality, order-independent, with an
+   -- absent id equal to a present-but-empty one (the segBytesOf empty default)
+   check "segsEquiv: identical sets (any order) are equal"
+     (segsEquiv [seg "r1" "a\n", seg "r2" "b\n"] [seg "r2" "b\n", seg "r1" "a\n"]) "",
+   check "segsEquiv: differing bytes are unequal"
+     (!segsEquiv [seg "r1" "a\n"] [seg "r1" "b\n"]) "",
+   check "segsEquiv: a present-but-empty segment equals an absent one"
+     (segsEquiv [seg "r1" "a\n", seg "r2" ""] [seg "r1" "a\n"]) "",
+   check "segsEquiv: an extra non-empty segment is unequal"
+     (!segsEquiv [seg "r1" "a\n", seg "r2" "b\n"] [seg "r1" "a\n"]) "",
    -- byte-order discrete rows: a line that is a strict prefix of another
    -- sorts first; empty inputs union to empty
    checkEq "a prefix line sorts before its extension"
