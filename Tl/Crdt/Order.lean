@@ -34,18 +34,30 @@ class TotalOrd (α : Type u) where
   le_trans : {a b c : α} → le a b → le b c → le a c
   le_antisymm : {a b : α} → le a b → le b a → a = b
   le_total : (a b : α) → le a b ∨ le b a
+  /-- Decidable equality. Defaults to the `le`-derived procedure (two `decLe`
+      walks); a type may override it with a faster native one (e.g. `String` →
+      `String.decEq`). Both decide the *same* `Prop` `a = b`, so by
+      `Subsingleton (Decidable …)` the choice is invisible to every proof — it
+      only changes the executable cost (ADR-0004: shell-tested wall-clock, not
+      proved). The le-based default keeps `instDecidableEq` total for every
+      instance that does not care. -/
+  decEq : DecidableEq α := fun a b =>
+    match decLe a b, decLe b a with
+    | isTrue hab, isTrue hba => isTrue (le_antisymm hab hba)
+    | isFalse hab, _ => isFalse (fun he => hab (by subst he; exact le_refl a))
+    | _, isFalse hba => isFalse (fun he => hba (by subst he; exact le_refl a))
 
 namespace TotalOrd
 
 /-- `le` is decidable, so `if le a b then … else …` and `by_cases` work. -/
 instance instDecidableLe [TotalOrd α] (a b : α) : Decidable (le a b) := decLe a b
 
-/-- Equality is decidable in any total order: `a = b ↔ le a b ∧ le b a`. -/
-instance instDecidableEq [TotalOrd α] : DecidableEq α := fun a b =>
-  match decLe a b, decLe b a with
-  | isTrue hab, isTrue hba => isTrue (le_antisymm hab hba)
-  | isFalse hab, _ => isFalse (fun he => hab (by subst he; exact le_refl a))
-  | _, isFalse hba => isFalse (fun he => hba (by subst he; exact le_refl a))
+/-- Equality is decidable in any total order — via the instance's `decEq` (the
+    `le`-derived default, or a native override like `String.decEq`). Generic
+    `AMap`/`AssocList` key-equality (`k = p.1` in every `lookup`/`insertWith`)
+    dispatches through this, so a `String`-keyed map pays native equality rather
+    than two `toList` lex walks. -/
+instance instDecidableEq [TotalOrd α] : DecidableEq α := TotalOrd.decEq
 
 /-- Strict order. -/
 def lt [TotalOrd α] (a b : α) : Prop := le a b ∧ ¬ le b a
@@ -359,9 +371,19 @@ instance : TotalOrd Char :=
   TotalOrd.comap (fun c => c.val.toNat) (fun _ _ h => Char.ext (UInt32.toNat_inj.mp h))
 
 /-- `String` ordered lexicographically by its characters (the canonical issue-id,
-    slug, label, and field order). -/
-instance : TotalOrd String :=
-  TotalOrd.comap String.toList (fun _ _ h => String.toList_injective h)
+    slug, label, and field order). The `le` is exactly `comap String.toList`'s —
+    `TotalOrd.le` on the char lists, so every order proof is unchanged — but the
+    instance overrides `decEq` with native `String.decEq`: `String` keys are the
+    hot map key everywhere (issue ids, edge endpoints, labels), and equality is
+    the most frequent comparison (`lookup`'s `k = p.1`). -/
+instance : TotalOrd String where
+  le a b := TotalOrd.le a.toList b.toList
+  decLe a b := TotalOrd.decLe a.toList b.toList
+  le_refl a := TotalOrd.le_refl a.toList
+  le_trans h1 h2 := TotalOrd.le_trans h1 h2
+  le_antisymm h1 h2 := String.toList_injective (TotalOrd.le_antisymm h1 h2)
+  le_total a b := TotalOrd.le_total a.toList b.toList
+  decEq := String.decEq
 
 /-- `Fin n` ordered by value — used for `priority : Fin 5` (ADR-0002). -/
 instance (n : Nat) : TotalOrd (Fin n) :=
