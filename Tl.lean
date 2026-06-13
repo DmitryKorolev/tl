@@ -21,6 +21,7 @@ import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
+import Tl.Kernel.HashMapView
 import Tl.Kernel.Tarjan
 import Tl.Kernel.SccFast
 import Tl.Kernel.CyclesFast
