@@ -123,46 +123,11 @@ theorem getElem?_hashAssoc_amap {V : Type _} (m : AMap IssueId V) (k : IssueId) 
 /-! ## The inverse: an `AMap` materialized from a `HashMap`
 
 The rollup builds its memo in a `Std.HashMap` (O(1)-amortized), then materializes
-the canonical `AMap` once at the end so `effStatusAll`'s type and every downstream
-bridge stay unchanged. `find_amapOfHashMap` is the bridge: the materialized map
-looks up exactly the hash map's `getElem?`. -/
-
-/-- Materialize an `AMap` from a hash map by inserting its entries (one pass). -/
-def amapOfHashMap {V : Type _} (m : Std.HashMap IssueId V) : AMap IssueId V :=
-  m.toList.foldl (fun a p => a.insert p.1 p.2) AMap.empty
-
-/-- `AMap.find` after an insert-fold — the `AMap` analogue of `getElem?_foldl_insert`
-    (propositional `=`, so no `beq` bridging needed). -/
-theorem find_foldl_insert {V : Type _} (l : List (IssueId × V))
-    (m0 : AMap IssueId V) (hnd : (l.map Prod.fst).Nodup) (k : IssueId) :
-    (l.foldl (fun a p => a.insert p.1 p.2) m0).find k
-      = match AssocList.lookup k l with
-        | some v => some v
-        | none => m0.find k := by
-  induction l generalizing m0 with
-  | nil => rfl
-  | cons p ps ih =>
-    rw [List.map_cons, List.nodup_cons] at hnd
-    obtain ⟨hp, hps⟩ := hnd
-    rw [List.foldl_cons, ih _ hps]
-    by_cases hk : k = p.1
-    · have hnone : AssocList.lookup k ps = none :=
-        lookup_eq_none_of_not_fst ps (hk ▸ hp)
-      have hlk : AssocList.lookup k (p :: ps) = some p.2 := by
-        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some p.2
-        rw [if_pos hk]
-      rw [hnone, hlk]
-      show (m0.insert p.1 p.2).find k = some p.2
-      rw [AMap.find_insert, if_pos hk]
-    · have hlk : AssocList.lookup k (p :: ps) = AssocList.lookup k ps := by
-        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = _
-        rw [if_neg hk]
-      rw [hlk]
-      cases hcase : AssocList.lookup k ps with
-      | some v => rfl
-      | none =>
-        show (m0.insert p.1 p.2).find k = m0.find k
-        rw [AMap.find_insert, if_neg hk]
+the canonical `AMap` once at the end — O(N log N): sort the entries by key
+(`mergeSort`) and wrap with the proved strict sort (`sorted_mergeSort_keys`), NOT
+an O(N) `AMap.insert` per entry (which would be O(N²)). So `effStatusAll`'s type
+and every downstream bridge stay unchanged. `find_amapOfHashMap` is the bridge:
+the materialized map looks up exactly the hash map's `getElem?`. -/
 
 /-- A member of a key-nodup assoc list is found by `lookup`. -/
 theorem lookup_of_mem_nodup {V : Type _} {k : IssueId} {v : V} :
@@ -204,15 +169,65 @@ theorem lookup_toList_eq_getElem? {V : Type _} (m : Std.HashMap IssueId V) (k : 
       rw [h] at hmem
       nomatch hmem
 
+/-- Bool key order for `mergeSort` (which wants a `Bool` comparator). -/
+def keyLe {V : Type _} (a b : IssueId × V) : Bool := decide (TotalOrd.le a.1 b.1)
+
+theorem keyLe_trans {V : Type _} (a b c : IssueId × V)
+    (hab : keyLe a b = true) (hbc : keyLe b c = true) : keyLe a c = true :=
+  decide_eq_true (TotalOrd.le_trans (of_decide_eq_true hab) (of_decide_eq_true hbc))
+
+theorem keyLe_total {V : Type _} (a b : IssueId × V) :
+    (keyLe a b || keyLe b a) = true := by
+  rcases TotalOrd.le_total a.1 b.1 with h | h
+  · rw [show keyLe a b = true from decide_eq_true h, Bool.true_or]
+  · rw [show keyLe b a = true from decide_eq_true h, Bool.or_true]
+
+/-- `Pairwise` of the strict key order is exactly `AssocList.Sorted`. -/
+theorem sorted_of_pairwise_ltKey {V : Type _} :
+    (l : List (IssueId × V)) →
+    l.Pairwise (fun a b => TotalOrd.lt a.1 b.1) → AssocList.Sorted l
+  | [], _ => trivial
+  | _ :: ps, h => by
+    rw [List.pairwise_cons] at h
+    exact ⟨fun q hq => h.1 q hq, sorted_of_pairwise_ltKey ps h.2⟩
+
+/-- The mergeSorted entries are strictly key-sorted: `mergeSort` gives `≤`-pairwise,
+    and the hash map's distinct keys upgrade `≤` to `<`. -/
+theorem sorted_mergeSort_keys {V : Type _} (m : Std.HashMap IssueId V) :
+    AssocList.Sorted (m.toList.mergeSort keyLe) := by
+  have hle : (m.toList.mergeSort keyLe).Pairwise (fun a b => keyLe a b = true) :=
+    List.pairwise_mergeSort (fun a b c => keyLe_trans a b c) (fun a b => keyLe_total a b) m.toList
+  have hnd : (m.toList.mergeSort keyLe).Pairwise (fun a b => a.1 ≠ b.1) :=
+    List.pairwise_map.mp
+      (((List.mergeSort_perm m.toList keyLe).map Prod.fst).nodup_iff.mpr (nodup_keys_toList m))
+  refine sorted_of_pairwise_ltKey _ ((hle.and hnd).imp (fun {a b} h => ?_))
+  exact ⟨of_decide_eq_true h.1, fun hba => h.2 (TotalOrd.le_antisymm (of_decide_eq_true h.1) hba)⟩
+
+/-- Materialize an `AMap` from a hash map in O(N log N): sort the entries by key,
+    wrap with the proved strict sort. -/
+def amapOfHashMap {V : Type _} (m : Std.HashMap IssueId V) : AMap IssueId V :=
+  ⟨m.toList.mergeSort keyLe, sorted_mergeSort_keys m⟩
+
 /-- **The inverse bridge.** The materialized `AMap` looks up exactly the hash
     map's `getElem?` — so a rollup that threads a `HashMap` memo and materializes
     once keeps `effStatusAll.find` pointwise equal to the in-flight memo. -/
 theorem find_amapOfHashMap {V : Type _} (m : Std.HashMap IssueId V) (k : IssueId) :
     (amapOfHashMap m).find k = m[k]? := by
-  unfold amapOfHashMap
-  rw [find_foldl_insert m.toList AMap.empty (nodup_keys_toList m) k, AMap.find_empty,
-    ← lookup_toList_eq_getElem? m k]
-  cases AssocList.lookup k m.toList <;> rfl
+  show AssocList.lookup k (m.toList.mergeSort keyLe) = m[k]?
+  have hnd : ((m.toList.mergeSort keyLe).map Prod.fst).Nodup :=
+    ((List.mergeSort_perm m.toList keyLe).map Prod.fst).nodup_iff.mpr (nodup_keys_toList m)
+  cases h : m[k]? with
+  | some v =>
+    exact lookup_of_mem_nodup _ hnd
+      (List.mem_mergeSort.mpr (Std.HashMap.mem_toList_iff_getElem?_eq_some.mpr h))
+  | none =>
+    cases hl : AssocList.lookup k (m.toList.mergeSort keyLe) with
+    | none => rfl
+    | some v =>
+      have hmem : m[k]? = some v :=
+        Std.HashMap.mem_toList_iff_getElem?_eq_some.mp (List.mem_mergeSort.mp (AssocList.lookup_mem hl))
+      rw [h] at hmem
+      nomatch hmem
 
 /-! ## Adjacency bucketing -/
 
