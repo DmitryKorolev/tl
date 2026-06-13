@@ -141,11 +141,36 @@ The reparent surface is `tl parent set <child> <parent>` (a courtesy *replace*:
 tombstone the child's other parent edges, add the target — so a single replica
 stays single-parented, while a concurrent merge can still produce the
 multi-parent that `multiParent` reports) and `tl parent remove <child> <parent>`
-(detach). A dedicated verb pair, not `update --parent` (an edge write does not
-belong on the scalar-field verb, and `update` has no way to *detach*) and not
-`dep --kind parent` (`dep` is the *dependency* surface; a parent edge is not a
-dependency). A direct self-parent is a local courtesy refusal; longer cycles
-stay reported by `dep cycles`, never write-rejected (the CRDT rule).
+(detach). A direct self-parent is a local courtesy refusal; longer cycles stay
+reported by `dep cycles`, never write-rejected (the CRDT rule).
+
+**Why a dedicated verb pair, not `update --parent`.** The whole argument
+reduces to one fact: *a parent is an edge, not a scalar* (this §4 — an LWW parent
+*field* was rejected). `update` is the **scalar** verb (title/priority/
+description/notes/slug); the edge verbs are `dep`/`relate`/`parent`. Everything
+else follows:
+
+- **`update` already excludes every edge flag.** It mirrors `create`'s *scalar*
+  flags but not `--blocked-by`/`--blocks`/`--related` — those edits go through
+  `dep`/`relate`. So `--parent` on `update` would be the lone edge flag of the
+  four, *less* consistent, not more; true symmetry would mean duplicating the
+  edge verbs into `update` and reviving the add/remove/replace ambiguity the
+  split exists to avoid.
+- **The flag spelling would hide a multiplicity flip.** `create --parent` is
+  *additive* (repeatable — `--parent A --parent B` is a legitimate two-parent
+  birth); the reparent *move* is *replace-all*. A symmetric `update --parent`
+  either matches `create` (additive → it adds a second parent instead of moving,
+  instant `multiParent`) or does the move (replace) — making one spelling mean
+  *add* on `create` and *replace* on `update`. `parent set` names "replace"
+  honestly, where `--parent` everywhere else means "add".
+- **No clean detach.** A single value flag has no unambiguous "make this a root"
+  (`--parent ""`? null-vs-absent, ADR-0002); `parent remove` does.
+
+A parent *displays* as single (the canonical-by-stamp rule above), which is what
+makes `update --parent` tempting — but that is a display convenience over a
+multi-valued edge set, not a scalar field. (`dep --kind parent` was likewise
+rejected: `dep` is the *dependency* surface, and a parent edge is not a
+dependency.)
 
 ### 5. Dangling endpoints are read-time inert
 
