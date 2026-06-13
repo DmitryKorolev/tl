@@ -13,9 +13,10 @@ component indices, over successor functions whose edge/rollup/presence
 views are hoisted into hash structures once per call. A rejected
 certificate falls back to the proved cached-closure path (`sccWitnessesF`),
 so correctness never depends on the Tarjan core — only speed does, and
-that is pinned by tests. Witness grouping stays `groupSCCGoF`, whose work
-is proportional to cyclic-nodes × cycle-components — zero on a healthy
-graph, the diagnostic's own output size otherwise.
+that is pinned by tests. Witness grouping (`groupSCCH`, a hash covered-set
+over `groupSCCGoF`'s recursion) does work proportional to cyclic-nodes ×
+cycle-components — zero on a healthy graph, the diagnostic's own output
+shape otherwise.
 
 The bridge (`cyclesFast_eq` / `precCyclesFast_eq` / `hasCycleFast_eq` /
 `hasDeadlockFast_eq`) makes the shipped forms pointwise EQUAL to the spec,
@@ -248,6 +249,34 @@ theorem groupSCCGoF_congr {same₁ same₂ : IssueId → IssueId → Bool}
       dsimp only
       rw [hflt, groupSCCGoF_congr h vs hvs _]
 
+/-- `groupSCCGoF` with the covered set as a hash set — the list form pays a
+    linear scan per worklist node, quadratic on one giant SCC. -/
+def groupSCCH (same : IssueId → IssueId → Bool) (cyclic : List IssueId) :
+    List IssueId → Std.HashSet IssueId → List (List IssueId)
+  | [], _ => []
+  | v :: vs, covered =>
+    if covered.contains v then groupSCCH same cyclic vs covered
+    else
+      let scc := cyclic.filter (fun u => same u v)
+      scc :: groupSCCH same cyclic vs (scc.foldl (fun s x => s.insert x) covered)
+
+theorem groupSCCH_eq (same : IssueId → IssueId → Bool) (cyclic : List IssueId) :
+    (wl : List IssueId) → (cov : Std.HashSet IssueId) → (covL : List IssueId) →
+    (∀ x, x ∈ cov ↔ x ∈ covL) →
+    groupSCCH same cyclic wl cov = groupSCCGoF same cyclic wl covL
+  | [], _, _, _ => rfl
+  | v :: vs, cov, covL, h => by
+    unfold groupSCCH State.groupSCCGoF
+    by_cases hv : v ∈ covL
+    · rw [if_pos (Std.HashSet.contains_iff_mem.mpr ((h v).mpr hv)), if_pos hv]
+      exact groupSCCH_eq same cyclic vs cov covL h
+    · rw [if_neg (fun hc => hv ((h v).mp (Std.HashSet.contains_iff_mem.mp hc))),
+        if_neg hv]
+      dsimp only
+      rw [groupSCCH_eq same cyclic vs _
+        (cyclic.filter (fun u => same u v) ++ covL)
+        (fun x => by rw [mem_foldl_insert, List.mem_append, h x])]
+
 /-- The witnesses, reconstructed from an accepted certificate: cyclic nodes
     are those with a successor in their own component, grouped by
     component-index equality. -/
@@ -256,20 +285,23 @@ def sccFromCert (present : List IssueId) (succ : IssueId → List IssueId)
   let cidx := cidxOf comps
   let cyclic := present.filter (fun v =>
     (succ v).any (fun w => cidx[w]? == cidx[v]?))
-  groupSCCGoF (fun u v => cidx[u]? == cidx[v]?) cyclic cyclic []
+  groupSCCH (fun u v => cidx[u]? == cidx[v]?) cyclic cyclic ∅
 
 theorem sccFromCert_eq (s : State) (succ : IssueId → List IssueId)
     (hsucc : ∀ x, succ x ⊆ s.presentIssues)
     {comps : List (List IssueId)}
     (hcert : sccCertOk s.presentIssues succ comps = true) :
     sccFromCert s.presentIssues succ comps = s.sccWitnesses succ := by
-  show groupSCCGoF (fun u v => (cidxOf comps)[u]? == (cidxOf comps)[v]?)
+  show groupSCCH (fun u v => (cidxOf comps)[u]? == (cidxOf comps)[v]?)
       (s.presentIssues.filter (fun v =>
         (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?)))
       (s.presentIssues.filter (fun v =>
         (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?)))
-      []
+      ∅
     = s.sccWitnesses succ
+  rw [groupSCCH_eq _ _ _ ∅ []
+    (fun x => ⟨fun hx => absurd hx (Std.HashSet.not_mem_empty),
+      fun hx => nomatch hx⟩)]
   have hcyc : s.presentIssues.filter (fun v =>
         (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?))
       = s.presentIssues.filter (s.onCycle succ) :=

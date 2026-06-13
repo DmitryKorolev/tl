@@ -76,10 +76,24 @@ Tl/Kernel/              -- the verified core (NO I/O)
   Frame.lean            --   frame lemmas: meta/labels/relate move neither ready nor rollup
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
-                        --   the kernel's only Mathlib imports live here, ADR-0009)
-  CyclesFast.lean       --   the SHIPPED diagnostics: hoisted views, rollups
-                        --   through the batched map, cached saturating
-                        --   closures for onCycle/sameSCC; bridge cyclesFast_eq /
+                        --   the kernel's Mathlib zone starts here, ADR-0009)
+  Tarjan.lean           --   UNVERIFIED fuel-total iterative Tarjan: proposes the
+                        --   SCC partition in emission order; never trusted — its
+                        --   output is runtime-validated by SccFast's checker, so
+                        --   a bug here costs speed (fallback), never correctness
+  SccFast.lean          --   the PROVED SCC certificate checker: hash views
+                        --   (bucketed adjacency, presence set, rollup copy) with
+                        --   lookup bridges, a sound frontier BFS, and the
+                        --   acceptance characterizations — sameSCC = component-
+                        --   index equality (cert_sameSCC), onCycle = successor-
+                        --   in-my-component (cert_onCycle). Soundness only:
+                        --   rejection falls back, acceptance-on-real-runs is
+                        --   tested (CrossTests), never assumed
+  CyclesFast.lean       --   the SHIPPED diagnostics: certificate path
+                        --   (sccWitnessesT = Tarjan + checker + near-linear
+                        --   witness reconstruction over hash-hoisted successor
+                        --   views), proved cached-closure fallback
+                        --   (sccWitnessesF); bridge cyclesFast_eq /
                         --   precCyclesFast_eq — EQUAL to the spec, thm 6
                         --   transfers; commands compute each result once
   SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
