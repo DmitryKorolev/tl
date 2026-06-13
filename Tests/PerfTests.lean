@@ -63,11 +63,11 @@ private def synthId (k : Nat) : String :=
     occasional extra parents — diamonds), a blocks edge per pair neighbor,
     and a close per eighth id — enough graph structure that every measured
     path does real work. -/
-private def synthOps (n : Nat) : List ParsedOp :=
+private def synthOps (n : Nat) (base : Nat := synthNow) : List ParsedOp :=
   let replicaVal := (ofCrockford? stem).getD 0
   let mk (idx : Nat) (op : WireOp) : ParsedOp :=
     { v := supportedVersion, op
-      stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
+      stamp := ⟨(base - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
       actor := some "perf" }
   (List.range n).flatMap (fun k =>
     let id := synthId k
@@ -152,9 +152,18 @@ def perfTests : IO (List Outcome) := do
     -- insert (the old Θ(ops×issues)) is gone (foldFast_eq_fold)
     let cold ← bench reps (fun _ =>
       (materializeCached segs none false (some synthNow) (some stem)).1.ops.length)
-    let warm ← bench reps (fun _ =>
+    let warm ← bench (2 * reps) (fun _ =>
       (materializeCached segs (some cache) false (some synthNow) (some stem)).1.ops.length)
+    -- `effStatusAll` at these scales is loop-invariant and small enough that the
+    -- compiler hoists it out of `bench`'s loop (0ms at any rep count), so this row
+    -- cannot be de-floor-masked through reps — it stays a floor backstop. Its
+    -- near-linear growth IS pinned, by the in-process `RollupFast` theorems and by
+    -- the end-to-end binary row below (which folds it on every read).
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
+    -- `ready` grows ~11× for ×4 ops here (weightFast runs a blocks-reachability
+    -- closure per candidate with NO adjacency index) — so de-floor-masking it
+    -- would push the row to the ×12 edge: it stays floor-masked until that fix
+    -- lands (ADR-0023: a still-superlinear row cannot be honestly un-masked).
     let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)
     -- the diagnostics machinery (the certificate SCC path) over state views
     -- hoisted once: adjacency bucketing, presence/rollup hash views, Tarjan,
@@ -213,8 +222,10 @@ def perfTests : IO (List Outcome) := do
     certScaleOk := certScaleOk
       && sccCertOk rpresent rsuccB (tarjanSCC rpresent rsuccB)
       && sccCertOk rpresent rsuccPrec (tarjanSCC rpresent rsuccPrec)
-    let prov ← bench reps (fun _ => (provenanceMap loaded.ops).toList.length)
-    let uni ← bench reps (fun _ =>
+    -- provenanceMap is near-linear (filterMap + mergeSort + a single grouped
+    -- fold); reps sized so the small scale clears the 30ms floor (de-masked).
+    let prov ← bench 800 (fun _ => (provenanceMap loaded.ops).toList.length)
+    let uni ← bench (8 * reps) (fun _ =>
       (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
         (segs.head?.map (·.bytes) |>.getD ByteArray.empty)).size)
     -- the CLI per-row render path (ADR-0023/0024): the `list`/`stats`/`doctor`
@@ -269,5 +280,48 @@ def perfTests : IO (List Outcome) := do
     return o
   | _ => return [{ name := "perf scaling setup", passed := false,
                    msg := s!"expected two scales, got {results.length}" }]
+
+/-- End-to-end binary latency (ADR-0023 §2: "End-to-end is mandatory"). In-process
+    profiles mispredict the compiled binary — the dominant warm-read cost is the
+    parse + decode/fold, not the in-process view work — so the net MUST time
+    `./.lake/build/bin/tl` on a scaled repo, not a harness. Warm `tl list` over
+    500 vs 2000 ops; the ×4-op growth ratio pins the real per-command cost class
+    (parse + fold/decode + view + render) independent of the machine. The
+    synthetic segment is past-dated, so it folds as a foreign segment with no
+    skew deferral (ADR-0007); a guard row asserts it actually folded (else the
+    timing would be a vacuous empty-repo read). -/
+def perfBinaryTests : IO (List Outcome) := do
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  unless ← exe.pathExists do
+    return [{ name := "end-to-end binary latency", passed := false,
+              msg := "run `lake build` first: .lake/build/bin/tl missing" }]
+  let listArgs (dir : String) : Array String :=
+    #["list", "--all", "--flat", "--limit", "0", "--dir", dir]
+  -- (best warm ms over 3 runs, line count of the rendered list)
+  let run (n : Nat) : IO (Nat × Nat) := do
+    let root ← IO.FS.createTempDir
+    let dir := (root / ".tl").toString
+    let _ ← IO.Process.output { cmd := exe.toString, args := #["init", "--dir", dir] }
+    IO.FS.createDirAll (System.FilePath.mk dir / "log")
+    let ops := synthOps n 1000000000000  -- past-dated ⇒ a foreign segment that folds
+    IO.FS.writeFile (System.FilePath.mk dir / "log" / (stem ++ ".jsonl"))
+      (ops.foldl (fun a p => a ++ renderLine p ++ "\n") "")
+    -- warm-up: the first read folds cold and writes the cache; capture its output
+    -- for the fold-correctness guard
+    let warm ← IO.Process.output { cmd := exe.toString, args := listArgs dir }
+    let lines := (warm.stdout.splitOn "\n").length
+    let mut best := 1000000
+    for _ in [0:3] do
+      let (_, ms) ← timeMs (do
+        let _ ← IO.Process.output { cmd := exe.toString, args := listArgs dir }
+        pure 0)
+      best := min best ms
+    return (best, lines)
+  let (small, _) ← run 500
+  let (big, bigLines) ← run 2000
+  return [
+    check "end-to-end binary: the scaled repo folds (guard against a vacuous timing)"
+      (bigLines ≥ 2000) s!"`list --all` emitted {bigLines} lines (expected ≥ 2000)",
+    ratioRow "end-to-end binary `tl list` (compiled, warm)" small big]
 
 end Tl.Tests

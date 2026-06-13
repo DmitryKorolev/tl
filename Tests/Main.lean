@@ -29,6 +29,7 @@ def main : IO UInt32 := do
   let sync ← syncTests
   let cacheIo ← cacheIoTests
   let perf ← perfTests
+  let perfBin ← perfBinaryTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
@@ -51,5 +52,6 @@ def main : IO UInt32 := do
     ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),
     ("Fold cache: cached fold ≡ fresh fold (seeded property)", cacheSuffixFoldProp),
     ("Fold cache: file lifecycle, healing, doctor non-persist", cacheIo),
-    ("Perf: ×4-op scaling stays near-linear on every fast path", perf)
+    ("Perf: ×4-op scaling stays near-linear on every fast path", perf),
+    ("Perf: end-to-end compiled-binary latency on a scaled repo", perfBin)
   ]
