@@ -256,8 +256,10 @@ theorem closedSet_one_eq_of_zero_empty (s : State)
     rw [h] at hmem
     exact absurd hmem (Finset.notMem_empty c)
 
-theorem presentIssues_nodup (s : State) : s.presentIssues.Nodup :=
-  List.Nodup.filter _ (AMap.keys_nodup s.issues.adds)
+theorem presentIssues_nodup (s : State) : s.presentIssues.Nodup := by
+  show (s.issues.presentElements).Nodup
+  rw [OrSet.presentElements_eq_keys_filter]
+  exact List.Nodup.filter _ (AMap.keys_nodup s.issues.adds)
 
 /-- **The pigeonhole.** With `M + 1` present issues, some fuel `f ≤ M` is
     frozen: an unfrozen ascending chain of subsets of the present set starts

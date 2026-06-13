@@ -80,16 +80,65 @@ def elements (s : OrSet α) : List α := s.adds.keys
 
 /-- The present (live) elements — the enumeration `ready`/`list` iterate, proved to
     coincide exactly with `Present` (`mem_presentElements`), so theorems stated over
-    `Present` are about the very set the CLI walks. -/
-def presentElements (s : OrSet α) : List α := s.elements.filter (fun e => decide (Present s e))
+    `Present` are about the very set the CLI walks.
+
+    One pass over `adds.toList`: each entry already carries its tag set, so
+    liveness is decided in-place — no `find` per key. The old form
+    (`elements.filter (Present)`) re-`find`-ed the tags for every key, an O(N)
+    lookup per element ⇒ Θ(N²) per enumeration (the dominant `list`/`ready`/
+    `stats`/`doctor` cost at scale). -/
+def presentElements (s : OrSet α) : List α :=
+  (s.adds.toList.filter (fun p => decide (∃ q ∈ p.2.toList, q.1 ∉ s.removed))).map Prod.fst
+
+/-- Filtering then projecting the first component equals projecting then
+    filtering, when the entry predicate agrees with the key predicate per entry. -/
+theorem map_fst_filter_comm {β : Type _} {γ : Type _} (P : β → Bool) (Q : β × γ → Bool) :
+    (l : List (β × γ)) → (∀ p ∈ l, Q p = P p.1) →
+    (l.filter Q).map Prod.fst = (l.map Prod.fst).filter P
+  | [], _ => rfl
+  | p :: ps, h => by
+    have hrec := map_fst_filter_comm P Q ps (fun q hq => h q (List.mem_cons_of_mem p hq))
+    have hpq : Q p = P p.1 := h p (List.mem_cons_self ..)
+    rw [List.map_cons]
+    by_cases hP : P p.1 = true
+    · rw [List.filter_cons_of_pos (hpq.trans hP), List.map_cons,
+        List.filter_cons_of_pos hP, hrec]
+    · rw [List.filter_cons_of_neg (fun hq => hP (hpq ▸ hq)),
+        List.filter_cons_of_neg hP, hrec]
+
+/-- The fast `presentElements` equals the spec shape `keys.filter Present` — the
+    bridge that lets the `Present`-stated frame lemmas reuse their proofs. -/
+theorem presentElements_eq_keys_filter (s : OrSet α) :
+    s.presentElements = s.elements.filter (fun e => decide (Present s e)) := by
+  unfold presentElements elements AMap.keys
+  refine map_fst_filter_comm _ _ s.adds.toList (fun p hp => ?_)
+  have hfind : s.adds.find p.1 = some p.2 := AMap.find_eq_some_of_mem hp
+  have htag : s.tagsOf p.1 = p.2 := by unfold tagsOf; rw [hfind]; rfl
+  show decide (∃ q ∈ p.2.toList, q.1 ∉ s.removed) = decide (Present s p.1)
+  unfold Present
+  simp only [htag]
 
 theorem mem_presentElements (s : OrSet α) (e : α) : e ∈ s.presentElements ↔ Present s e := by
   unfold presentElements
-  rw [List.mem_filter, decide_eq_true_iff]
-  refine ⟨fun h => h.2, fun hp => ⟨?_, hp⟩⟩
-  unfold elements
-  rw [AMap.mem_keys]
-  exact isSome_of_present hp
+  rw [List.mem_map]
+  constructor
+  · rintro ⟨p, hp, hpe⟩
+    rw [List.mem_filter] at hp
+    obtain ⟨hmem, hdec⟩ := hp
+    have hc : ∃ q ∈ p.2.toList, q.1 ∉ s.removed := of_decide_eq_true hdec
+    have hmem' : (e, p.2) ∈ s.adds.toList := by rw [← hpe]; exact hmem
+    have hfind : s.adds.find e = some p.2 := AMap.find_eq_some_of_mem hmem'
+    show Present s e
+    unfold Present tagsOf
+    rw [hfind]
+    exact hc
+  · intro hpres
+    obtain ⟨tags, htags⟩ := Option.isSome_iff_exists.mp (isSome_of_present hpres)
+    have hc : ∃ q ∈ tags.toList, q.1 ∉ s.removed := by
+      unfold Present tagsOf at hpres
+      rw [htags] at hpres
+      exact hpres
+    exact ⟨(e, tags), List.mem_filter.mpr ⟨AMap.mem_toList_of_find htags, decide_eq_true hc⟩, rfl⟩
 
 /-- The CRDT join — componentwise. -/
 def merge (s t : OrSet α) : OrSet α :=
@@ -148,7 +197,7 @@ theorem presentElements_mergeAdd_filter (se : OrSet α) (e0 : α) (st : Stamp)
       unfold Present; rw [htag, hrem]
     simp only [hiff]
   -- collapse the double filter, normalise the redex via `show`, swap list then predicate
-  unfold presentElements
+  rw [presentElements_eq_keys_filter, presentElements_eq_keys_filter]
   rw [List.filter_filter, List.filter_filter]
   show List.filter (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a))
         (merge se (singletonAdd e0 st)).elements

@@ -321,6 +321,18 @@ theorem isSome_lookup_of_mem {k : K} {v : V} :
       · exact absurd (congrArg Prod.fst he) hk
       · exact isSome_lookup_of_mem he
 
+/-- In a `Sorted` list (unique keys), a member entry IS its key's lookup — the
+    converse of `lookup_mem`, needed to read an entry's value without re-scanning
+    for it (the `presentElements` one-pass enumeration). -/
+theorem lookup_of_mem {k : K} {v : V} :
+    {l : List (K × V)} → Sorted l → (k, v) ∈ l → lookup k l = some v
+  | [], _, h => nomatch h
+  | p :: ps, ⟨hlb, hps⟩, hmem => by
+    rcases List.mem_cons.mp hmem with he | hmem'
+    · rw [← he]; exact lookup_cons_eq k v ps
+    · have hlt : lt p.1 k := hlb (k, v) hmem'
+      rw [lookup_cons_ne (Ne.symm (ne_of_lt hlt)), lookup_of_mem hps hmem']
+
 /-- Keys of a `Sorted` list are duplicate-free — the strict sort gives the finite,
     NoDup node set the tracker layer's well-founded recursion measures over. -/
 theorem sorted_map_fst_nodup : {l : List (K × V)} → Sorted l → (l.map Prod.fst).Nodup
@@ -425,6 +437,17 @@ theorem mem_keys {m : AMap K V} {k : K} : k ∈ m.keys ↔ (m.find k).isSome = t
 
 theorem keys_nodup (m : AMap K V) : m.keys.Nodup :=
   AssocList.sorted_map_fst_nodup m.sorted
+
+/-- A member entry's value IS its key's `find` — read an entry in `toList`
+    without a separate O(N) lookup for it. -/
+theorem find_eq_some_of_mem {m : AMap K V} {k : K} {v : V}
+    (h : (k, v) ∈ m.toList) : m.find k = some v :=
+  AssocList.lookup_of_mem m.sorted h
+
+/-- A successful `find`'s entry is in `toList` (the converse direction). -/
+theorem mem_toList_of_find {m : AMap K V} {k : K} {v : V}
+    (h : m.find k = some v) : (k, v) ∈ m.toList :=
+  AssocList.lookup_mem h
 
 /-- Rebuild a canonical map from an untrusted (deserialized) list: accepted iff
     strictly ascending by key, with the `Sorted` proof re-established; `none` is
