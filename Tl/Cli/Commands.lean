@@ -150,7 +150,13 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- issues (done/cancelled, incl. rolled-up epics) — `tl ready` shows
   -- workable, `tl list` shows open work, `tl list --all` shows everything
   -- (vision / ADR-0020 list-grammar decision).
-  let sorted := (s.presentIssues.map (fun i => (s.createdAtOf i, i)))
+  -- createdAt from the hoisted provenance map (one log pass), not s.createdAtOf
+  -- (an O(N) add-tag find per issue ⇒ O(N²) over the sort). For a present issue
+  -- both are the min create-tag HLC: createdAtOf is the min over add-tag HLCs,
+  -- Prov.createdAt is the min-STAMP create's HLC, and Stamp orders by HLC first,
+  -- so they coincide (CrossTests pins it per seed). Default 0 = createdAtOf's nil.
+  let createdAt := fun i => ((provOf v.prov i).createdAt).getD 0
+  let sorted := (v.present.map (fun i => (createdAt i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
   -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label

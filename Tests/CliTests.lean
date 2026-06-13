@@ -1235,13 +1235,17 @@ def provenanceAgreementTests : List Outcome :=
     | 7 => mk k (.labelAdd i "x")
     | _ => mk k (.depAdd (i, pick (k + 1), EdgeKind.Blocks)))
   let m := provenanceMap ops
+  let s := ops.foldl (fun st p => Tl.Kernel.apply st p.kernelOp) State.empty
   ids.map (fun i =>
     let a := provOf m i
     let b := provenanceOf ops i
     check s!"provenance map ≡ per-id scan for {i}"
       (a.createdAt == b.createdAt && a.updatedAt == b.updatedAt
         && a.closedAt == b.closedAt && a.claimedAt == b.claimedAt
-        && a.createdBy == b.createdBy && a.createdReplica == b.createdReplica))
+        && a.createdBy == b.createdBy && a.createdReplica == b.createdReplica
+        -- cmdList sorts on Prov.createdAt instead of the O(N) createdAtOf find;
+        -- for a present issue they must coincide (both = the min create-tag HLC)
+        && (!s.presentIssues.contains i || a.createdAt == some (s.createdAtOf i))))
 
 /-- Tree rendering on graphs the CLI cannot create but a merge can (ADR-0003:
     cycles are reported, tolerated at read): a parent cycle renders the "↺"
