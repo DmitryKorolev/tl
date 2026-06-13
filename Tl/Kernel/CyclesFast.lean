@@ -475,11 +475,19 @@ theorem precSuccH_eq (m : AMap IssueId Status) (s : State) (i : IssueId) :
     List.filter_congr (fun c _ => by rw [closedH_eq m s c])
   rw [hb, hk]
 
+/-- The fast per-kind cycle witnesses over PRE-HOISTED views: the caller
+    passes `present = s.presentIssues` and `edges = s.presentEdges` (each a
+    Θ(N²)/Θ(E²) OR-Set scan) computed once and shared, instead of re-deriving
+    them per call. `cyclesFast` is the convenience wrapper that derives them;
+    a command running several diagnostics shares one `present`/`edges`. -/
+def cyclesFastWith (present : List IssueId) (edges : List Edge) (k : EdgeKind) :
+    List (List IssueId) :=
+  sccWitnessesT present present.length
+    (succOfAdj (kindAdj edges k) (hashSetOf present))
+
 /-- The fast per-kind cycle witnesses. -/
 def cyclesFast (s : State) (k : EdgeKind) : List (List IssueId) :=
-  let present := s.presentIssues
-  sccWitnessesT present present.length
-    (succOfAdj (kindAdj s.presentEdges k) (hashSetOf present))
+  cyclesFastWith s.presentIssues s.presentEdges k
 
 theorem cyclesFast_eq (s : State) (k : EdgeKind) : cyclesFast s k = s.cycles k := by
   show sccWitnessesT s.presentIssues s.presentIssues.length
@@ -490,12 +498,19 @@ theorem cyclesFast_eq (s : State) (k : EdgeKind) : cyclesFast s k = s.cycles k :
     sccWitnessesT_eq s (s.kindSucc k) (kindSucc_subset_present s k)]
   rfl
 
+/-- The fast readiness-deadlock witnesses over PRE-HOISTED views (see
+    `cyclesFastWith`): `present`/`edges`/`pe` are passed in once. `s` is still
+    taken, but only for `precSuccH`'s rollup-miss fallback — never a view scan. -/
+def precCyclesFastWith (m : AMap IssueId Status) (present : List IssueId)
+    (edges : List Edge) (pe : List (IssueId × IssueId)) (s : State) :
+    List (List IssueId) :=
+  sccWitnessesT present present.length
+    (precSuccH (hashAssoc m.toList) (blocksAdj edges) (bucketBy pe)
+      (hashSetOf present) s)
+
 /-- The fast readiness-deadlock witnesses. -/
 def precCyclesFast (m : AMap IssueId Status) (s : State) : List (List IssueId) :=
-  let present := s.presentIssues
-  sccWitnessesT present present.length
-    (precSuccH (hashAssoc m.toList) (blocksAdj s.presentEdges)
-      (bucketBy s.parentEdges) (hashSetOf present) s)
+  precCyclesFastWith m s.presentIssues s.presentEdges s.parentEdges s
 
 theorem precCyclesFast_eq (s : State) :
     precCyclesFast (s.effStatusAll) s = s.precCycles := by

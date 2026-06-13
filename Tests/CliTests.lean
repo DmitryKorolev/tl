@@ -1260,7 +1260,7 @@ def treeCycleRenderTests : List Outcome :=
       loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now := 0, replica := none
-      rollup := s.effStatusAll, edges := s.presentEdges, pedges := s.parentEdges
+      rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty }
   -- a 2-cycle: a parent-of b, b parent-of a
   let sCyc := Tl.Kernel.fold [
@@ -1302,7 +1302,7 @@ def canonicalParentTieTests : List Outcome :=
       loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now := 0, replica := none
-      rollup := s.effStatusAll, edges := s.presentEdges, pedges := s.parentEdges
+      rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty }
   [ check "canonicalParent picks the LWW-greatest surviving parent edge"
       (canonicalParent s child == some pNew),

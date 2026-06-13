@@ -150,6 +150,11 @@ structure View where
       every per-row effectiveStatus/readiness read goes through it
       (`effStatusWith_eq` — pointwise the spec, so nothing observable moves). -/
   rollup : AMap IssueId Status
+  /-- The present issues, hoisted once per view — `presentElements` is a Θ(N²)
+      OR-Set scan, and the diagnostics (`cyclesFast`/`precCyclesFast`) and
+      `stats`/`doctor` each re-derived it independently. Shared here so a
+      command pays it once (`cyclesFastWith`/`precCyclesFastWith` consume it). -/
+  present : List IssueId
   /-- The present edges, hoisted once per view — the spec re-derives them
       inside every `blockersOf`/`isEpic` call, O(E²) per row (the profile's
       whole remaining `list` cost). Row helpers read `blockersOfE`-style
@@ -168,12 +173,13 @@ structure View where
       surfaces its own pre-transact refresh degrade inline). -/
   refreshNote : Option String := none
 
-/- View-construction note (an accepted cost): every command builds all four
+/- View-construction note (an accepted cost): every command builds all the
    hoisted views eagerly, including single-issue reads and write echoes —
-   each build is one pass with linear-find constants, milliseconds at the
-   thousands-of-ops scale target, and `tl close` pays it three times (the
-   pre-state view and `unblocksFast`'s two queues). Revisiting laziness or
-   sharing rides the remaining ready/SCC algorithm work. -/
+   each build is one pass, and `tl close` pays it three times (the
+   pre-state view and `unblocksFast`'s two queues). The `present`/`edges`
+   scans are the Θ(N²)/Θ(E²) OR-Set cost (tracked separately for linearizing
+   `presentElements`); hoisting them here means a command pays each ONCE
+   rather than per diagnostic/per row. -/
 
 def View.state (v : View) : State := v.loaded.state
 

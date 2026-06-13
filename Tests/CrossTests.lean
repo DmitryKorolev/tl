@@ -163,13 +163,21 @@ def kernelSpecTests : List Outcome :=
       State.cyclesFast s .Blocks == s.cycles .Blocks
       && State.cyclesFast s .Parent == s.cycles .Parent
       && State.precCyclesFast rollupMap s == s.precCycles
+    -- the pre-hoisted-view forms (what the CLI calls with View.present/edges,
+    -- one scan shared across diagnostics) agree with the s-derived forms — so
+    -- the hoisting can't silently diverge from cyclesFast/precCyclesFast
+    let withFormsAgree :=
+      State.cyclesFastWith s.presentIssues s.presentEdges .Blocks == State.cyclesFast s .Blocks
+      && State.cyclesFastWith s.presentIssues s.presentEdges .Parent == State.cyclesFast s .Parent
+      && State.precCyclesFastWith rollupMap s.presentIssues s.presentEdges s.parentEdges s
+           == State.precCyclesFast rollupMap s
     -- the certificate accepts Tarjan's partition (the fast branch is
     -- taken, not the fallback — tested, not proved; SccFast.lean)
     let certTaken :=
       cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s
     (seed, orderOk && dupOk && joinIdem && joinComm && readySound && readySorted
       && unblocksOk && rollupTotal && fastAgrees && readyFastAgrees && echoFastAgrees
-      && cyclesFastAgrees && certTaken))
+      && cyclesFastAgrees && withFormsAgree && certTaken))
   rows.map (fun (seed, ok) =>
     check s!"compiled kernel meets its spec on seed {seed}" ok)
 

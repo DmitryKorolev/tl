@@ -57,6 +57,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
   let st := loaded.state
   return { dirs := d, loaded, now, replica, rollup := st.effStatusAll,
+           present := st.presentIssues,
            edges := st.presentEdges, pedges := st.parentEdges,
            prov := provenanceMap loaded.ops,
            refreshNote := refresh.degraded.map (fun r =>
@@ -111,6 +112,7 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
     now
     replica := some v.replica
     rollup := state.effStatusAll
+    present := state.presentIssues
     edges := state.presentEdges
     pedges := state.parentEdges
     prov := provenanceMap (v.loaded.ops ++ parsed) }
@@ -259,13 +261,16 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
     Json.mkObj [("kind", Json.str kind),
                 ("issues", Json.arr (issues.map (Json.str ∘ displayId)).toArray)]
   -- each diagnostic computed exactly once per invocation (the fast forms,
-  -- bridged to the spec by cyclesFast_eq/precCyclesFast_eq) and reused
-  let blocksCycles := State.cyclesFast s EdgeKind.Blocks
-  let parentCycles := State.cyclesFast s EdgeKind.Parent
+  -- bridged to the spec by cyclesFast_eq/precCyclesFast_eq), and over the
+  -- view's pre-hoisted present/edges/pedges so the Θ(N²) scans aren't redone
+  -- per graph (cyclesFastWith/precCyclesFastWith)
+  let blocksCycles := State.cyclesFastWith v.present v.edges EdgeKind.Blocks
+  let parentCycles := State.cyclesFastWith v.present v.edges EdgeKind.Parent
   let structural := blocksCycles ++ parentCycles
   -- a ≺-cycle whose node set coincides with a structural witness is already
   -- diagnosed by that row; only genuinely mixed deadlocks add a readiness row
-  let readiness := (State.precCyclesFast v.rollup s).filter (fun w => !structural.contains w)
+  let readiness := (State.precCyclesFastWith v.rollup v.present v.edges v.pedges s).filter
+    (fun w => !structural.contains w)
   let rows := blocksCycles.map (entry "blocks")
     ++ parentCycles.map (entry "parent")
     ++ readiness.map (entry "readiness")
@@ -276,21 +281,26 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
            notes }
 
 /-- The cycle count (structural per kind + the non-duplicate readiness
-    deadlocks), shared with `doctor`'s graph check. -/
-private def cycleCount (m : AMap IssueId Status) (s : State) : Nat :=
-  let structural := State.cyclesFast s EdgeKind.Blocks ++ State.cyclesFast s EdgeKind.Parent
-  structural.length + ((State.precCyclesFast m s).filter (fun w => !structural.contains w)).length
+    deadlocks), shared with `doctor`'s graph check. Reads the view's
+    pre-hoisted present/edges/pedges (one Θ(N²)/Θ(E²) scan total, not three). -/
+private def cycleCount (v : View) : Nat :=
+  let s := v.state
+  let structural := State.cyclesFastWith v.present v.edges EdgeKind.Blocks
+    ++ State.cyclesFastWith v.present v.edges EdgeKind.Parent
+  structural.length
+    + ((State.precCyclesFastWith v.rollup v.present v.edges v.pedges s).filter
+        (fun w => !structural.contains w)).length
 
 def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let s := v.state
-  let issues := s.presentIssues
+  let issues := v.present
   let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
   let ready := (State.readyFast v.rollup s v.now).length
   let blocked := (issues.filter (blockedOf v.rollup v.edges s)).length
   let deferred := (issues.filter (deferredOf s v.now)).length
-  let cycles := cycleCount v.rollup s
+  let cycles := cycleCount v
   let openN := byStored .Open
   let inProg := byStored .InProgress
   let doneN := byStored .Done
@@ -744,6 +754,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       pure (materialize [] false (some now) (own.map (·.id)), some e)
   let v : View := { dirs := d, loaded, now, replica := own,
                     rollup := loaded.state.effStatusAll,
+                    present := loaded.state.presentIssues,
                     edges := loaded.state.presentEdges,
                     pedges := loaded.state.parentEdges,
                     prov := provenanceMap loaded.ops }
@@ -762,16 +773,18 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       if loaded.refused.isEmpty then
         [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "ok")], false)]
       else logRows
-  -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008)
-  let cyc := cycleCount v.rollup s
+  -- graph diagnostics (incl. duplicate-of hygiene, ADR-0008) — all over the
+  -- view's pre-hoisted present/edges, so doctor scans the OR-Set views once,
+  -- not once per check plus three more inside cycleCount
+  let cyc := cycleCount v
   -- parents of a present `i` over the hoisted parent-edge view (`pedges` already
   -- filters child-present, and `i` is the child) — avoids re-deriving presentEdges
   -- per issue (the O(N·E) doctor scan)
-  let multi := (s.presentIssues.filter (fun i => (v.pedges.filter (·.2 == i)).length > 1)).length
-  let dangling := (s.presentEdges.filter (fun (f, t, k) =>
+  let multi := (v.present.filter (fun i => (v.pedges.filter (·.2 == i)).length > 1)).length
+  let dangling := (v.edges.filter (fun (f, t, k) =>
     (k == EdgeKind.Blocks || k == EdgeKind.Parent)
       && (!decide (s.hasIssue f) || !decide (s.hasIssue t)))).length
-  let dupIssues := (s.presentIssues.filter (fun i =>
+  let dupIssues := (v.present.filter (fun i =>
     match duplicateOf s i with
     | some t => !decide (s.hasIssue t) || (duplicateOf s t).isSome
     | none => false)).length
@@ -783,7 +796,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
      ("cycles", jnum cyc), ("multiParent", jnum multi),
      ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)], graphBad)
   -- stale claims (ADR-0013 24h default)
-  let stale := s.presentIssues.filter (fun i =>
+  let stale := v.present.filter (fun i =>
     (s.issueData i).statusOf == .InProgress
       && match (provOf v.prov i).claimedAt with
          | some h => now > h / 2 ^ 16 + 24 * 3600 * 1000
