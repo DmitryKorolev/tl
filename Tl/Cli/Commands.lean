@@ -42,7 +42,13 @@ structure CmdOut where
 def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View := do
   let d ← discover dirOverride
   let replica ← loadReplica d
-  let _ ← Tl.Sync.refreshFromRef d (replica.map (·.id))
+  -- the read-time refresh returns a `degraded` reason when it could not run
+  -- (git absent, read-only FS); surface it rather than serve a silently-stale
+  -- view (ADR-0008). A racing concurrent refresher does NOT trip this — the
+  -- foreign-segment writeback uses a per-call CSPRNG temp suffix + atomic
+  -- rename (ADR-0016 §3 hardening), so `degraded` reflects a real inability to
+  -- read the ref, not benign contention.
+  let refresh ← Tl.Sync.refreshFromRef d (replica.map (·.id))
   let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
   -- skew-check foreign segments against `now` (ADR-0007): a future-dated
   -- foreign op is deferred from the fold until local time catches up; the
@@ -51,7 +57,9 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let st := loaded.state
   return { dirs := d, loaded, now, replica, rollup := st.effStatusAll,
            edges := st.presentEdges, pedges := st.parentEdges,
-           prov := provenanceMap loaded.ops }
+           prov := provenanceMap loaded.ops,
+           refreshNote := refresh.degraded.map (fun r =>
+             s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up") }
 
 /-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
     write paths so neither silently drops a future-dated op (ADR-0008
@@ -76,7 +84,8 @@ def cleanReadNotes (v : View) : TlM (List String) := do
       && v.loaded.refused.length == v.loaded.segmentCount then
     throw (v.loaded.refused.head?.map (·.error)
       |>.getD (.mk' .internal "every segment refused — repair or remove the damaged segments under .tl/log/"))
-  return v.loaded.refused.map (fun r =>
+  return v.refreshNote.toList
+    ++ v.loaded.refused.map (fun r =>
       s!"segment {r.replicaId}.jsonl refused (line {r.line}): folded the others; its owner repairs or re-syncs it")
     ++ v.loaded.warnings ++ v.loaded.skipped.map (fun (rid, n) =>
       s!"--skip-bad: dropped segment {rid}.jsonl line {n}")

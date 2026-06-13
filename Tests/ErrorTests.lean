@@ -52,8 +52,12 @@ def envelopeTests : List Outcome :=
     { code := .lockBusy
       message := "another tl process holds the lock; retry shortly"
       context := [("path", Json.str ".tl/local/lock"), ("timeoutMs", Json.num 5000)] }
+  let okNotes := Tl.Cli.okEnvelope (Json.mkObj [("count", Json.num 0)]) ["a", "b"]
   [checkEq "ok envelope bytes" okStr
      "{\"schemaVersion\":1,\"ok\":true,\"data\":{\"count\":0}}",
+   checkEq "ok envelope appends a notes array (omit-empty otherwise)" okNotes
+     "{\"schemaVersion\":1,\"ok\":true,\"data\":{\"count\":0},\"notes\":[\"a\",\"b\"]}",
+   check "ok envelope with notes is valid JSON" (Json.parse okNotes).toOption.isSome,
    checkEq "error envelope bytes (no context)" (Tl.Cli.errorEnvelope plainErr)
      ("{\"schemaVersion\":1,\"ok\":false,\"error\":{\"code\":\"no-project\"," ++
       "\"message\":\"no tl project here; run `tl init`\"}}"),

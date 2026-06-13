@@ -161,6 +161,12 @@ structure View where
   /-- The batched provenance map — one log pass per view instead of one per
       rendered row (`provenanceMap` mirrors `provenanceOf` arm-for-arm). -/
   prov : AMap IssueId Prov
+  /-- A read-time refresh that could not run (no git, read-only FS): the read
+      still served — a moment stale — and this carries the disclosure
+      (ADR-0008 loud-not-silent; ADR-0016 §3 `RefreshOutcome.degraded`). `none`
+      on the steady-state path. Write echoes leave it `none` (the write path
+      surfaces its own pre-transact refresh degrade inline). -/
+  refreshNote : Option String := none
 
 /- View-construction note (an accepted cost): every command builds all four
    hoisted views eagerly, including single-issue reads and write echoes —

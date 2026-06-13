@@ -26,9 +26,16 @@ def schemaVersion : Nat := 1
 private def member (k : String) (v : Json) : String :=
   (Json.str k).compress ++ ":" ++ v.compress
 
-/-- The success envelope: `{"schemaVersion":1,"ok":true,"data":<data>}`. -/
-def okEnvelope (data : Json) : String :=
-  s!"\{\"schemaVersion\":{schemaVersion},\"ok\":true,\"data\":" ++ data.compress ++ "}"
+/-- The success envelope: `{"schemaVersion":1,"ok":true,"data":<data>}`, with an
+    optional trailing `"notes":[…]` carrying the same loud-not-silent
+    disclosures printed to stderr (foreign-refusal, skew-deferred, stale-read
+    degrade — ADR-0008). **Omit-empty** (ADR-0020): absent when there are no
+    notes, so the steady-state shape is unchanged and the field is additive.
+    Callers pass already-sanitized notes (ADR-0014). -/
+def okEnvelope (data : Json) (notes : List String := []) : String :=
+  let notesField := if notes.isEmpty then ""
+    else ",\"notes\":" ++ (Json.arr (notes.map Json.str).toArray).compress
+  s!"\{\"schemaVersion\":{schemaVersion},\"ok\":true,\"data\":" ++ data.compress ++ notesField ++ "}"
 
 /-- The error envelope:
     `{"schemaVersion":1,"ok":false,"error":{"code":…,"message":…,<context…>}}`,

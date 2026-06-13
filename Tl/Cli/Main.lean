@@ -282,7 +282,7 @@ def run (args : List String) : IO UInt32 := do
     for note in out.notes do
       IO.eprintln s!"tl: {sanitizeSingle note}"
     if jsonMode then
-      IO.println (okEnvelope out.data)
+      IO.println (okEnvelope out.data (out.notes.map sanitizeSingle))
     else
       let human := (out.render.map (· style)).getD out.human
       if !human.isEmpty then IO.println human

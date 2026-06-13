@@ -880,6 +880,44 @@ def cliReadRefreshTests : IO (List Outcome) := do
     ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 1)]
   return o
 
+/-- Degraded-refresh disclosure (ADR-0008 loud-not-silent × ADR-0016 §3): when a
+    read-time refresh cannot run (here, B's log dir is read-only so the foreign
+    materialize fails), the read still serves — a moment stale — AND discloses
+    the degrade as a note, rather than silently serving the stale view. Root
+    bypasses directory permissions, so the degrade branch is asserted only for a
+    non-root user; the always-true invariant (the read succeeds) holds for both. -/
+def cliDegradedRefreshTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let aDir := (root / ".tl").toString
+  let bDir := (root / ".tlB").toString
+  let _ ← run' ["init", "--dir", aDir]
+  let _ ← run' ["init", "--dir", bDir]
+  let _ ← run' ["create", "first task", "--dir", aDir, "--assignee", "a"]
+  let _ ← run' ["sync", "--dir", aDir]
+  -- B reads once: this materializes A's segment, creating B's log dir + ref-mark.
+  let _ ← run' ["list", "--dir", bDir, "--json"]
+  -- the ref moves AGAIN; now B's mark trails the tip, so B's next read must
+  -- materialize — but with B's log dir read-only the writeback fails and the
+  -- refresh degrades (read the ref, can't write the segment).
+  let _ ← run' ["create", "second task", "--dir", aDir, "--assignee", "a"]
+  let _ ← run' ["sync", "--dir", aDir]
+  let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
+  let isRoot := uid.stdout.trimAscii.toString == "0"
+  let bLog := (root / ".tlB" / "log").toString
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["0500", bLog] } : IO _)
+  let listed ← run' ["list", "--dir", bDir, "--json"]
+  o := o ++ [(match listed with
+    | .ok out => check "a read whose refresh cannot run succeeds and discloses the degrade"
+        (if isRoot then true
+         else out.notes.any (fun n => (n.splitOn "moment-stale").length > 1))
+        ("notes=" ++ String.intercalate "|" out.notes)
+    | .error e => { name := "degraded read succeeds", passed := false,
+                    msg := s!"read failed with {e.code.wire}: {e.message}" })]
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", bLog] } : IO _)
+  return o
+
 /-- Read-time refresh × the refused-segment policy (ADR-0008 × ADR-0016 §3):
     refresh now routinely materializes sibling segments, so a single CORRUPT
     sibling segment must be DISCLOSED, not fail a worktree whose own state is
@@ -1142,7 +1180,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
-    ++ (← cliReadRefreshTests) ++ (← cliRefreshRefusalTests)
+    ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests
     ++ (← cliTreeDiamondTests) ++ (← cliHoistedHelperTests)
