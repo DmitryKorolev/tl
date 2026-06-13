@@ -168,6 +168,21 @@ def gitConfig (d : Dirs) (key : String) : TlM (Option String) := do
   let o ← (git d ["config", "--get", key] : IO _)
   if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
 
+/-- Set a local `git config <key> <value>`; returns whether it took. -/
+def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
+  let o ← (git d ["config", key, value] : IO _)
+  return o.exitCode == 0
+
+/-- True when `d` is inside a *linked* git worktree — its `--git-dir` differs
+    from the shared `--git-common-dir`. This is exactly where auto-sync's local
+    leg is free and cross-worktree sharing is the point (ADR-0016 §4); false in
+    the main worktree or outside a repo. -/
+def isLinkedWorktree (d : Dirs) : TlM Bool := do
+  let gd ← (git d ["rev-parse", "--git-dir"] : IO _)
+  let gcd ← (git d ["rev-parse", "--git-common-dir"] : IO _)
+  if gd.exitCode != 0 || gcd.exitCode != 0 then return false
+  return gd.stdout.trimAscii.toString != gcd.stdout.trimAscii.toString
+
 /-- The current branch (`none` on a detached HEAD). -/
 def currentBranch (d : Dirs) : TlM (Option String) := do
   let o ← (git d ["symbolic-ref", "--short", "-q", "HEAD"] : IO _)

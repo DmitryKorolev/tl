@@ -918,6 +918,85 @@ def cliDegradedRefreshTests : IO (List Outcome) := do
   let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", bLog] } : IO _)
   return o
 
+/-- Auto-sync (ADR-0021): the post-`transact` hook publishes a write into the
+    shared `refs/tl/log` when `tl.autosync` is on, so a worktree sibling sees it
+    with no explicit `tl sync`; off by default; best-effort (a publish failure
+    is disclosed, never fails the write); a no-op outside a git repo. -/
+def cliAutoSyncTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let root ← IO.FS.createTempDir
+  let gitC (args : List String) : IO _ :=
+    IO.Process.output { cmd := "git", args := #["-C", root.toString] ++ args.toArray }
+  let _ ← gitC ["init", "-q"]
+  let aDir := (root / ".tl").toString
+  let bDir := (root / ".tlB").toString
+  let _ ← run' ["init", "--dir", aDir]
+  let _ ← run' ["init", "--dir", bDir]
+  -- (a) auto-sync unset (default off in a main worktree): A's write is not
+  -- published, so a sibling that only reads sees nothing.
+  let _ ← run' ["create", "off by default", "--dir", aDir, "--assignee", "a"]
+  o := o ++ [← expectData "auto-sync off: a sibling does not see an unpublished write"
+    ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 0)]
+  -- (b) auto-sync on: the next write auto-publishes; B sees it with no `tl sync`.
+  let _ ← gitC ["config", "tl.autosync", "true"]
+  let onId ← match ← run' ["create", "on, auto-published", "--dir", aDir, "--assignee", "a"] with
+    | .ok out => pure ((jStr out.data "id").getD "")
+    | .error e => throw (IO.userError s!"create failed: {e.message}")
+  o := o ++ [← expectData "auto-sync on: a sibling sees the write with no explicit sync"
+    ["list", "--dir", bDir, "--json"]
+    (fun j => (jArr j "items").any (fun it => jStr it "id" == some onId))]
+  -- (c) a publish failure is disclosed and never fails the write (ADR-0021 §4):
+  -- the object store is read-only, so update-ref fails but the append already
+  -- landed. Root bypasses permissions, so only assert the survive-invariant there.
+  let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
+  let isRoot := uid.stdout.trimAscii.toString == "0"
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["-R", "0500", (root / ".git").toString] } : IO _)
+  let res ← run' ["create", "write outlives a failed publish", "--dir", aDir, "--assignee", "a"]
+  o := o ++ [(match res with
+    | .ok out => check "a write succeeds and discloses when auto-sync's publish fails"
+        ((jStr out.data "id").isSome
+         && (isRoot || out.notes.any (fun n => (n.splitOn "auto-sync skipped").length > 1)))
+        ("notes=" ++ String.intercalate "|" out.notes)
+    | .error e => { name := "write outlives a failed publish", passed := false,
+                    msg := s!"write failed: {e.code.wire}: {e.message}" })]
+  let _ ← (IO.Process.output { cmd := "chmod", args := #["-R", "0700", (root / ".git").toString] } : IO _)
+  -- (d) no-git degrade: a write in a non-repo dir succeeds with no auto-sync
+  -- note (syncLocal is a silent no-op when there is no shared ref).
+  let solo ← IO.FS.createTempDir
+  let _ ← run' ["init", "--dir", (solo / ".tl").toString]
+  o := o ++ [(match ← run' ["create", "no repo here", "--dir", (solo / ".tl").toString] with
+    | .ok out => check "a write outside a git repo succeeds with no auto-sync note"
+        ((jStr out.data "id").isSome && !out.notes.any (fun n => (n.splitOn "auto-sync").length > 1))
+        ("notes=" ++ String.intercalate "|" out.notes)
+    | .error e => { name := "non-repo write succeeds", passed := false, msg := e.message })]
+  return o
+
+/-- Pre-transact absorb (ADR-0016 §3 amendment): a directed write by id refreshes
+    from the shared ref BEFORE its guards run, so it finds a task that exists
+    only on a sibling's published segment — closing the stale-directed-write gap
+    (without it, this `close` by id would fail not-found). -/
+def cliPreWriteAbsorbTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let aDir := (root / ".tl").toString
+  let bDir := (root / ".tlB").toString
+  let _ ← run' ["init", "--dir", aDir]
+  let _ ← run' ["init", "--dir", bDir]
+  let aId ← match ← run' ["create", "made by A", "--dir", aDir, "--assignee", "a"] with
+    | .ok out => pure ((jStr out.data "id").getD "")
+    | .error e => throw (IO.userError s!"create failed: {e.message}")
+  let _ ← run' ["sync", "--dir", aDir]  -- A publishes; B has never read or synced
+  let closed ← run' ["close", aId, "--as", "done", "--dir", bDir]
+  o := o ++ [(match closed with
+    | .ok _ => check "a directed write absorbs the shared ref before its guards (finds a sibling-only task)"
+        true ""
+    | .error e => { name := "pre-transact absorb finds a sibling-only task", passed := false,
+                    msg := s!"close by id failed: {e.code.wire}: {e.message}" })]
+  o := o ++ [← expectData "the directed close took effect against the absorbed state"
+    ["show", aId, "--dir", bDir, "--json"] (fun j => jStr j "effectiveStatus" == some "done")]
+  return o
+
 /-- Read-time refresh × the refused-segment policy (ADR-0008 × ADR-0016 §3):
     refresh now routinely materializes sibling segments, so a single CORRUPT
     sibling segment must be DISCLOSED, not fail a worktree whose own state is
@@ -1181,6 +1260,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
+    ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests
     ++ (← cliTreeDiamondTests) ++ (← cliHoistedHelperTests)
