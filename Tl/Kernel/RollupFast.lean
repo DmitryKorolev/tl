@@ -60,6 +60,16 @@ theorem length_kidsOfEdges_le (pe : List (IssueId × IssueId)) (i : IssueId) :
   rw [List.length_map]
   exact List.length_filter_le _ _
 
+/-- The bucketed kids lookup equals `kidsOfEdges` exactly (order included) — the
+    O(1)-amortized runtime form, bridged to the list form so termination and
+    soundness reason over `kidsOfEdges`/`pe` unchanged (ADR-0024 §4). -/
+theorem kidsBucket_eq {pe : List (IssueId × IssueId)}
+    {bucket : Std.HashMap IssueId (List IssueId)} (hb : bucket = bucketBy pe)
+    (i : IssueId) : (bucket[i]?.getD []).reverse = kidsOfEdges pe i := by
+  subst hb
+  rw [getD_bucketBy]
+  rfl
+
 /-- Filter-length monotonicity under predicate implication. -/
 theorem length_filter_le_of_imp {α : Type _} (p q : α → Bool)
     (h : ∀ a, q a = true → p a = true) :
@@ -135,6 +145,7 @@ mutual
     lexicographically: descending into a fresh present kid shrinks the
     unvisited-present set; walking the kid list shrinks the list. -/
 def rollupVisit (s : State) (pe : List (IssueId × IssueId))
+    (bucket : Std.HashMap IssueId (List IssueId)) (hb : bucket = bucketBy pe)
     (path : List IssueId) (memo : Std.HashMap IssueId Status) (i : IssueId) :
     Std.HashMap IssueId Status × Status :=
   match memo[i]? with
@@ -143,27 +154,31 @@ def rollupVisit (s : State) (pe : List (IssueId × IssueId))
     if (s.issueData i).statusOf = Status.Cancelled then
       (memo.insert i Status.Cancelled, Status.Cancelled)
     else
-      let kids := kidsOfEdges pe i
+      let kids := (bucket[i]?.getD []).reverse
       if kids.isEmpty then
         let v := (s.issueData i).statusOf
         (memo.insert i v, v)
       else
-        let r := rollupKids s pe (i :: path) memo kids
+        let r := rollupKids s pe bucket hb (i :: path) memo kids
         let v := if r.2 then Status.Done else Status.Open
         (r.1.insert i v, v)
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x && x != i)).length, pe.length + 1)
 decreasing_by
-  -- visit → kids: the extended path absorbs `i` (equal measure), and the kid
-  -- list is bounded by the hoisted edge list
+  -- visit → kids: the extended path absorbs `i` (equal measure), and the bucketed
+  -- kid list equals `kidsOfEdges pe i` (kidsBucket_eq), bounded by the edge list
   rw [← filter_path_cons]
-  exact Prod.Lex.right _ (Nat.lt_succ_of_le (length_kidsOfEdges_le pe i))
+  apply Prod.Lex.right
+  apply Nat.lt_succ_of_le
+  rw [kidsBucket_eq hb i]
+  exact length_kidsOfEdges_le pe i
 
 /-- The kid loop: thread the memo left-to-right, conjoin closed-ness. A kid on
     the path is a cycle re-encounter (`Open`, exact — see `rollupVisit`); a
     non-present kid cannot arise from `kidsOfEdges` and reads its stored
     status without recursing (defensive arm, unreachable in `effStatusAll`). -/
 def rollupKids (s : State) (pe : List (IssueId × IssueId))
+    (bucket : Std.HashMap IssueId (List IssueId)) (hb : bucket = bucketBy pe)
     (path : List IssueId) (memo : Std.HashMap IssueId Status) (cs : List IssueId) :
     Std.HashMap IssueId Status × Bool :=
   match cs with
@@ -174,9 +189,9 @@ def rollupKids (s : State) (pe : List (IssueId × IssueId))
       | some v => (memo, v)
       | none =>
         if _hcon : path.contains c then (memo, Status.Open)
-        else if _hpres : s.hasIssue c then rollupVisit s pe path memo c
+        else if _hpres : s.hasIssue c then rollupVisit s pe bucket hb path memo c
         else (memo, (s.issueData c).statusOf)
-    let r' := rollupKids s pe path r.1 cs'
+    let r' := rollupKids s pe bucket hb path r.1 cs'
     (r'.1, Status.closed r.2 && r'.2)
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x)).length, cs.length)
@@ -186,8 +201,8 @@ decreasing_by
     apply length_filter_lt_of_mem
     · exact (Tl.Crdt.OrSet.mem_presentElements s.issues c).mpr _hpres
     · show (!path.contains c) = true
-      cases hb : path.contains c with
-      | true => exact absurd hb _hcon
+      cases hpath : path.contains c with
+      | true => exact absurd hpath _hcon
       | false => rfl
   · -- kids → kids: same path, shorter list
     exact Prod.Lex.right _ (Nat.lt_succ_self _)
@@ -198,7 +213,8 @@ end
     threaded through a `Std.HashMap` (O(1)-amortized find/insert). -/
 def effStatusAllH (s : State) : Std.HashMap IssueId Status :=
   let pe := s.parentEdges
-  s.presentIssues.foldl (fun memo i => (rollupVisit s pe [] memo i).1) ∅
+  let bucket := bucketBy pe
+  s.presentIssues.foldl (fun memo i => (rollupVisit s pe bucket rfl [] memo i).1) ∅
 
 /-- The batched rollup, materialized to the canonical `AMap` once at the end
     (`amapOfHashMap`). The shipped form for the read path (ADR-0003 §3 amendment);
@@ -404,13 +420,14 @@ mutual
     walk returns exactly `effectiveStatus`, keeps the memo coherent, never
     drops an entry, and records the node. -/
 theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
+    (bucket : Std.HashMap IssueId (List IssueId)) (hb : bucket = bucketBy pe)
     (hpe : pe = s.parentEdges) (path : List IssueId) (memo : Std.HashMap IssueId Status)
     (i : IssueId) (hcoh : Coherent s memo) (hchain : ChainOk s path i) :
-    Coherent s (rollupVisit s pe path memo i).1
-    ∧ (rollupVisit s pe path memo i).2 = s.effectiveStatus i
+    Coherent s (rollupVisit s pe bucket hb path memo i).1
+    ∧ (rollupVisit s pe bucket hb path memo i).2 = s.effectiveStatus i
     ∧ (∀ (k : IssueId), (memo[k]?).isSome = true →
-        ((rollupVisit s pe path memo i).1[k]?).isSome = true)
-    ∧ ((rollupVisit s pe path memo i).1[i]?).isSome = true := by
+        ((rollupVisit s pe bucket hb path memo i).1[k]?).isSome = true)
+    ∧ ((rollupVisit s pe bucket hb path memo i).1[i]?).isSome = true := by
   unfold State.rollupVisit
   cases hfind : memo[i]? with
   | some v =>
@@ -424,7 +441,7 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
         (effectiveStatus_cancelled s i hcanc).symm,
         fun k hk => isSome_insert_mono k hk,
         by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
-    · rw [if_neg hcanc]
+    · rw [if_neg hcanc, kidsBucket_eq hb i]
       have hkids_eq : kidsOfEdges pe i = s.presentChildren i := by
         rw [hpe]
         exact kidsOfEdges_parentEdges s i
@@ -446,8 +463,8 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
           rw [← hkids_eq]
           exact hcm
         obtain ⟨hcoh', hval, hmono⟩ :=
-          rollupKids_sound s pe hpe path i hchain hcanc memo (kidsOfEdges pe i) hcoh hcs
-        have heff : (if (rollupKids s pe (i :: path) memo (kidsOfEdges pe i)).2
+          rollupKids_sound s pe bucket hb hpe path i hchain hcanc memo (kidsOfEdges pe i) hcoh hcs
+        have heff : (if (rollupKids s pe bucket hb (i :: path) memo (kidsOfEdges pe i)).2
             then Status.Done else Status.Open) = s.effectiveStatus i := by
           rw [hval, hkids_eq, effectiveStatus_recurrence s i, if_neg hcanc]
           have hpem : (s.presentChildren i).isEmpty = false := by
@@ -467,15 +484,16 @@ decreasing_by
     `cs.all effClosed`: memo hits are coherent, path hits are `Open` by the
     re-encounter cycle, fresh kids recurse. -/
 theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
+    (bucket : Std.HashMap IssueId (List IssueId)) (hb : bucket = bucketBy pe)
     (hpe : pe = s.parentEdges) (path : List IssueId) (i : IssueId)
     (hchain : ChainOk s path i)
     (hinc : (s.issueData i).statusOf ≠ Status.Cancelled) :
     (memo : Std.HashMap IssueId Status) → (cs : List IssueId) → Coherent s memo →
     (∀ c ∈ cs, c ∈ s.presentChildren i) →
-    Coherent s (rollupKids s pe (i :: path) memo cs).1
-    ∧ (rollupKids s pe (i :: path) memo cs).2 = cs.all (fun c => s.effClosed c)
+    Coherent s (rollupKids s pe bucket hb (i :: path) memo cs).1
+    ∧ (rollupKids s pe bucket hb (i :: path) memo cs).2 = cs.all (fun c => s.effClosed c)
     ∧ ∀ (k : IssueId), (memo[k]?).isSome = true →
-        ((rollupKids s pe (i :: path) memo cs).1[k]?).isSome = true
+        ((rollupKids s pe bucket hb (i :: path) memo cs).1[k]?).isSome = true
   | memo, [], hcoh, _ => by
     unfold State.rollupKids
     exact ⟨hcoh, rfl, fun k hk => hk⟩
@@ -485,7 +503,7 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
     cases hfind : memo[c]? with
     | some v =>
       dsimp only
-      obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
+      obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe bucket hb hpe path i hchain hinc
         memo cs' hcoh (fun x hx => hcs x (List.mem_cons_of_mem c hx))
       refine ⟨hcoh', ?_, hmono'⟩
       rw [List.all_cons, hval']
@@ -498,7 +516,7 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
       by_cases hcon : (i :: path).contains c = true
       · rw [dif_pos hcon]
         dsimp only
-        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
+        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe bucket hb hpe path i hchain hinc
           memo cs' hcoh (fun x hx => hcs x (List.mem_cons_of_mem c hx))
         refine ⟨hcoh', ?_, hmono'⟩
         rw [List.all_cons, hval']
@@ -515,9 +533,9 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
         rw [dif_pos hpres]
         have hchain' : ChainOk s (i :: path) c := ⟨hckid, hinc, hchain⟩
         obtain ⟨hcohV, hvalV, hmonoV, _⟩ :=
-          rollupVisit_sound s pe hpe (i :: path) memo c hcoh hchain'
-        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
-          (rollupVisit s pe (i :: path) memo c).1 cs' hcohV
+          rollupVisit_sound s pe bucket hb hpe (i :: path) memo c hcoh hchain'
+        obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe bucket hb hpe path i hchain hinc
+          (rollupVisit s pe bucket hb (i :: path) memo c).1 cs' hcohV
           (fun x hx => hcs x (List.mem_cons_of_mem c hx))
         refine ⟨hcoh', ?_, fun k hk => hmono' k (hmonoV k hk)⟩
         rw [List.all_cons, hval', hvalV]
@@ -531,16 +549,17 @@ decreasing_by
        apply length_filter_lt_of_mem
        · exact presentChildren_subset_present s i (hcs c (List.mem_cons_self ..))
        · show (!(i :: path).contains c) = true
-         cases hb : (i :: path).contains c with
-         | true => exact absurd hb hcon
+         cases hpath : (i :: path).contains c with
+         | true => exact absurd hpath hcon
          | false => rfl)
 
 end
 
 /-- **Once-per-pass.** A memoized node returns without recomputation. -/
 theorem rollupVisit_find_hit (s : State) (pe : List (IssueId × IssueId))
+    (bucket : Std.HashMap IssueId (List IssueId)) (hb : bucket = bucketBy pe)
     (path : List IssueId) (memo : Std.HashMap IssueId Status) (i : IssueId) (v : Status)
-    (h : memo[i]? = some v) : rollupVisit s pe path memo i = (memo, v) := by
+    (h : memo[i]? = some v) : rollupVisit s pe bucket hb path memo i = (memo, v) := by
   unfold State.rollupVisit
   rw [h]
 
@@ -553,14 +572,16 @@ private theorem coherent_empty (s : State) : Coherent s ∅ := fun k v h => by
 theorem effStatusAllH_coherent (s : State) : Coherent s s.effStatusAllH := by
   unfold State.effStatusAllH
   have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
-      Coherent s (l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo) := by
+      Coherent s (l.foldl (fun m j =>
+        (rollupVisit s s.parentEdges (bucketBy s.parentEdges) rfl [] m j).1) memo) := by
     intro l
     induction l with
     | nil => exact fun _ h => h
     | cons x xs ih =>
       intro memo h
       rw [List.foldl_cons]
-      exact ih _ (rollupVisit_sound s s.parentEdges rfl [] memo x h trivial).1
+      exact ih _ (rollupVisit_sound s s.parentEdges (bucketBy s.parentEdges) rfl rfl
+        [] memo x h trivial).1
   exact main s.presentIssues ∅ (coherent_empty s)
 
 /-- Completeness over the HashMap memo: every present issue is recorded. -/
@@ -570,7 +591,8 @@ theorem effStatusAllH_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues
     unfold State.effStatusAllH
     have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
         (i ∈ l ∨ (memo[i]?).isSome = true) →
-        ((l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo)[i]?).isSome
+        ((l.foldl (fun m j =>
+            (rollupVisit s s.parentEdges (bucketBy s.parentEdges) rfl [] m j).1) memo)[i]?).isSome
           = true := by
       intro l
       induction l with
@@ -583,7 +605,7 @@ theorem effStatusAllH_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues
         intro memo hcoh h
         rw [List.foldl_cons]
         obtain ⟨hcoh', _, hmono, hself⟩ :=
-          rollupVisit_sound s s.parentEdges rfl [] memo x hcoh trivial
+          rollupVisit_sound s s.parentEdges (bucketBy s.parentEdges) rfl rfl [] memo x hcoh trivial
         rcases h with h | h
         · rcases List.mem_cons.mp h with rfl | hxs
           · exact ih _ hcoh' (Or.inr hself)
