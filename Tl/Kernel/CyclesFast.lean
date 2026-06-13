@@ -6,15 +6,25 @@ The spec (`Cycles.lean`) pays per node: `onCycle` runs a full
 non-saturating closure whose successor function re-derives `presentEdges`
 per call, `sameSCC` runs two more closures per candidate pair, and the
 `≺`-relation's successors (`precSucc`) read `effClosed` — the fuel rollup —
-per blocker per step. The fast forms hoist the present issues/edges once
-per call, read rollups through the batched map, cache one saturating closure
-per present issue (`reachFix`), and answer `onCycle`/`sameSCC` from that
-cache. The bridge (`cyclesFast_eq` / `precCyclesFast_eq` /
-`hasCycleFast_eq` / `hasDeadlockFast_eq`) makes them pointwise EQUAL to the
-spec, so the SCC-witness theorems (ADR-0004 thm 6) transfer untouched.
+per blocker per step. The shipped path (`sccWitnessesT`) is near-linear:
+one unverified Tarjan pass (`Tarjan.lean`) validated by the proved
+certificate checker (`SccFast.lean`), answering `onCycle`/`sameSCC` from
+component indices, over successor functions whose edge/rollup/presence
+views are hoisted into hash structures once per call. A rejected
+certificate falls back to the proved cached-closure path (`sccWitnessesF`),
+so correctness never depends on the Tarjan core — only speed does, and
+that is pinned by tests. Witness grouping stays `groupSCCGoF`, whose work
+is proportional to cyclic-nodes × cycle-components — zero on a healthy
+graph, the diagnostic's own output size otherwise.
+
+The bridge (`cyclesFast_eq` / `precCyclesFast_eq` / `hasCycleFast_eq` /
+`hasDeadlockFast_eq`) makes the shipped forms pointwise EQUAL to the spec,
+so the SCC-witness theorems (ADR-0004 thm 6) transfer untouched.
 -/
 import Tl.Kernel.Reach
 import Tl.Kernel.ReadyFast
+import Tl.Kernel.SccFast
+import Tl.Kernel.Tarjan
 
 namespace Tl.Kernel
 
@@ -210,6 +220,91 @@ theorem sccWitnessesF_eq (s : State) (succ : IssueId → List IssueId)
       funext (fun u => funext (fun v => sameSCCF_eq s succ u v)),
     groupSCCGoF_eq]
 
+/-! ## The certificate fast path
+
+`tarjanSCC` proposes a partition; `sccCertOk` (proved sound, `SccFast.lean`)
+validates it; an accepted certificate answers `onCycle`/`sameSCC` from
+component indices. Rejection falls back to `sccWitnessesF` above, so the
+result is unconditionally the spec's. -/
+
+/-- The grouping is invariant under tests that agree on the cyclic nodes. -/
+theorem groupSCCGoF_congr {same₁ same₂ : IssueId → IssueId → Bool}
+    {cyclic : List IssueId}
+    (h : ∀ u ∈ cyclic, ∀ v ∈ cyclic, same₁ u v = same₂ u v) :
+    (wl : List IssueId) → wl ⊆ cyclic → (covered : List IssueId) →
+    groupSCCGoF same₁ cyclic wl covered = groupSCCGoF same₂ cyclic wl covered
+  | [], _, _ => rfl
+  | v :: vs, hwl, covered => by
+    unfold State.groupSCCGoF
+    have hvs : vs ⊆ cyclic := fun x hx => hwl (List.mem_cons_of_mem v hx)
+    by_cases hv : v ∈ covered
+    · rw [if_pos hv, if_pos hv]
+      exact groupSCCGoF_congr h vs hvs covered
+    · rw [if_neg hv, if_neg hv]
+      have hvc : v ∈ cyclic := hwl (List.mem_cons_self ..)
+      have hflt : cyclic.filter (fun u => same₁ u v)
+                = cyclic.filter (fun u => same₂ u v) :=
+        List.filter_congr (fun u hu => h u hu v hvc)
+      dsimp only
+      rw [hflt, groupSCCGoF_congr h vs hvs _]
+
+/-- The witnesses, reconstructed from an accepted certificate: cyclic nodes
+    are those with a successor in their own component, grouped by
+    component-index equality. -/
+def sccFromCert (present : List IssueId) (succ : IssueId → List IssueId)
+    (comps : List (List IssueId)) : List (List IssueId) :=
+  let cidx := cidxOf comps
+  let cyclic := present.filter (fun v =>
+    (succ v).any (fun w => cidx[w]? == cidx[v]?))
+  groupSCCGoF (fun u v => cidx[u]? == cidx[v]?) cyclic cyclic []
+
+theorem sccFromCert_eq (s : State) (succ : IssueId → List IssueId)
+    (hsucc : ∀ x, succ x ⊆ s.presentIssues)
+    {comps : List (List IssueId)}
+    (hcert : sccCertOk s.presentIssues succ comps = true) :
+    sccFromCert s.presentIssues succ comps = s.sccWitnesses succ := by
+  show groupSCCGoF (fun u v => (cidxOf comps)[u]? == (cidxOf comps)[v]?)
+      (s.presentIssues.filter (fun v =>
+        (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?)))
+      (s.presentIssues.filter (fun v =>
+        (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?)))
+      []
+    = s.sccWitnesses succ
+  have hcyc : s.presentIssues.filter (fun v =>
+        (succ v).any (fun w => (cidxOf comps)[w]? == (cidxOf comps)[v]?))
+      = s.presentIssues.filter (s.onCycle succ) :=
+    List.filter_congr (fun v hv => (cert_onCycle hsucc hcert hv).symm)
+  rw [hcyc]
+  rw [groupSCCGoF_congr (same₂ := fun u v => s.sameSCC succ u v)
+      (fun u hu v hv =>
+        (cert_sameSCC hsucc hcert (List.mem_of_mem_filter hu)
+          (List.mem_of_mem_filter hv)).symm)
+      _ (fun x hx => hx) []]
+  rw [groupSCCGoF_eq]
+  rfl
+
+/-- The shipped SCC witnesses: Tarjan, validated; the proved cached-closure
+    path on rejection. Unconditionally equal to the spec. -/
+def sccWitnessesT (present : List IssueId) (n : Nat)
+    (succ : IssueId → List IssueId) : List (List IssueId) :=
+  let comps := tarjanSCC present succ
+  if sccCertOk present succ comps then sccFromCert present succ comps
+  else sccWitnessesF present n succ
+
+theorem sccWitnessesT_eq (s : State) (succ : IssueId → List IssueId)
+    (hsucc : ∀ x, succ x ⊆ s.presentIssues) :
+    sccWitnessesT s.presentIssues s.presentIssues.length succ
+      = s.sccWitnesses succ := by
+  show (if sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ)
+        then sccFromCert s.presentIssues succ (tarjanSCC s.presentIssues succ)
+        else sccWitnessesF s.presentIssues s.presentIssues.length succ)
+      = s.sccWitnesses succ
+  by_cases hc : sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ) = true
+  · rw [if_pos hc]
+    exact sccFromCert_eq s succ hsucc hc
+  · rw [if_neg hc]
+    exact sccWitnessesF_eq s succ hsucc
+
 /-! ## The per-kind and `≺` graphs over hoisted views -/
 
 /-- `kindSucc` over a hoisted edge list. -/
@@ -235,29 +330,151 @@ theorem precSuccF_eq (s : State) (i : IssueId) :
   rw [liveSuccE_eq, kidsOfEdges_parentEdges,
     List.filter_congr (fun c _ => by rw [effClosedWith_eq])]
 
+/-! ## Hash-hoisted successor views
+
+`kindSuccE`/`precSuccF` still rescan the full edge list per node — Θ(V·E)
+across a diagnostic pass. These views bucket each graph's adjacency once
+and probe presence/rollup through hash structures, pointwise equal to the
+spec successors. -/
+
+/-- The kind-`k` adjacency, bucketed by source. -/
+def kindAdj (edges : List Edge) (k : EdgeKind) : Std.HashMap IssueId (List IssueId) :=
+  bucketBy ((edges.filter (fun e => e.2.2 == k)).map (fun e => (e.1, e.2.1)))
+
+/-- A bucketed successor function, presence-filtered. -/
+def succOfAdj (adj : Std.HashMap IssueId (List IssueId))
+    (pset : Std.HashSet IssueId) (i : IssueId) : List IssueId :=
+  ((adj[i]?.getD []).reverse).filter (fun j => pset.contains j)
+
+/-- The presence probe agrees with the spec's `hasIssue`. -/
+theorem contains_hashSetOf_present (s : State) (j : IssueId) :
+    (hashSetOf s.presentIssues).contains j = decide (s.hasIssue j) := by
+  apply Bool.eq_iff_iff.mpr
+  rw [Std.HashSet.contains_iff_mem, decide_eq_true_iff, mem_hashSetOf]
+  exact OrSet.mem_presentElements s.issues j
+
+theorem succOfAdj_kindAdj_eq (s : State) (k : EdgeKind) (i : IssueId) :
+    succOfAdj (kindAdj s.presentEdges k) (hashSetOf s.presentIssues) i
+      = s.kindSucc k i := by
+  unfold succOfAdj kindAdj State.kindSucc
+  rw [getD_bucketBy, List.filter_map, List.filter_map, List.filter_map,
+    List.map_map, List.filter_filter, List.filter_filter, List.filter_map,
+    List.filter_filter]
+  dsimp only [Function.comp]
+  rw [List.filter_congr (q := fun e : Edge =>
+      decide (s.hasIssue e.2.1) && decide (e.2.2 = k ∧ e.1 = i))
+    (fun e _ => by
+      rw [contains_hashSetOf_present s e.2.1]
+      apply Bool.eq_iff_iff.mpr
+      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_iff]
+      exact ⟨fun ⟨⟨hh, hf⟩, hk⟩ => ⟨hh, hk, hf⟩,
+        fun ⟨hh, hk, hf⟩ => ⟨⟨hh, hf⟩, hk⟩⟩)]
+  exact List.map_congr_left (fun e _ => rfl)
+
+/-- The blockers adjacency (`Blocks` edges bucketed by target). -/
+def blocksAdj (edges : List Edge) : Std.HashMap IssueId (List IssueId) :=
+  bucketBy ((edges.filter (fun e => e.2.2 == EdgeKind.Blocks)).map
+    (fun e => (e.2.1, e.1)))
+
+theorem blocksAdj_eq (edges : List Edge) (x : IssueId) :
+    ((blocksAdj edges)[x]?.getD []).reverse = blockersOfE edges x := by
+  unfold blocksAdj State.blockersOfE
+  rw [getD_bucketBy, List.filter_map, List.map_map, List.filter_filter]
+  dsimp only [Function.comp]
+  rw [List.filter_congr (q := fun e : Edge =>
+      decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = x))
+    (fun e _ => by
+      apply Bool.eq_iff_iff.mpr
+      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_iff]
+      exact ⟨fun ⟨h1, h2⟩ => ⟨h2, h1⟩, fun ⟨h1, h2⟩ => ⟨h2, h1⟩⟩)]
+  exact List.map_congr_left (fun e _ => rfl)
+
+/-- The children adjacency is the parent-edge bucket as-is. -/
+theorem kidsOfEdges_bucketBy (pe : List (IssueId × IssueId)) (i : IssueId) :
+    ((bucketBy pe)[i]?.getD []).reverse = kidsOfEdges pe i := by
+  unfold State.kidsOfEdges
+  rw [getD_bucketBy]
+
+/-- `precSucc` over hash-hoisted views: bucketed blockers and children, the
+    rollup through a hash copy, presence through a hash set. -/
+def precSuccH (mh : Std.HashMap IssueId Status)
+    (badj kadj : Std.HashMap IssueId (List IssueId))
+    (pset : Std.HashSet IssueId) (s : State) (i : IssueId) : List IssueId :=
+  let kids := (kadj[i]?.getD []).reverse
+  ((badj[i]?.getD []).reverse).filter (fun b =>
+    pset.contains b && !(Status.closed ((mh[b]?).getD (s.effectiveStatus b))))
+    ++ (if !kids.isEmpty
+        then kids.filter (fun c =>
+          !(Status.closed ((mh[c]?).getD (s.effectiveStatus c)))) else [])
+
+/-- The hash rollup probe agrees with `effClosedWith`. -/
+theorem closedH_eq (m : AMap IssueId Status) (s : State) (b : IssueId) :
+    Status.closed (((hashAssoc m.toList)[b]?).getD (s.effectiveStatus b))
+      = effClosedWith m s b := by
+  unfold State.effClosedWith State.effStatusWith
+  rw [getElem?_hashAssoc_amap]
+
+theorem precSuccH_eq (m : AMap IssueId Status) (s : State) (i : IssueId) :
+    precSuccH (hashAssoc m.toList) (blocksAdj s.presentEdges)
+        (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s i
+      = precSuccF m s.presentEdges s.parentEdges s i := by
+  show ((blocksAdj s.presentEdges)[i]?.getD []).reverse.filter (fun b =>
+      (hashSetOf s.presentIssues).contains b
+        && !(Status.closed (((hashAssoc m.toList)[b]?).getD (s.effectiveStatus b))))
+    ++ (if !((bucketBy s.parentEdges)[i]?.getD []).reverse.isEmpty
+        then ((bucketBy s.parentEdges)[i]?.getD []).reverse.filter (fun c =>
+          !(Status.closed (((hashAssoc m.toList)[c]?).getD (s.effectiveStatus c))))
+        else [])
+    = precSuccF m s.presentEdges s.parentEdges s i
+  unfold State.precSuccF State.liveSuccE
+  rw [blocksAdj_eq, kidsOfEdges_bucketBy]
+  have hb : (blockersOfE s.presentEdges i).filter (fun b =>
+      (hashSetOf s.presentIssues).contains b
+        && !(Status.closed (((hashAssoc m.toList)[b]?).getD (s.effectiveStatus b))))
+    = (blockersOfE s.presentEdges i).filter (fun b =>
+        decide (s.hasIssue b) && !effClosedWith m s b) :=
+    List.filter_congr (fun b _ => by
+      rw [contains_hashSetOf_present s b, closedH_eq m s b])
+  have hk : (kidsOfEdges s.parentEdges i).filter (fun c =>
+      !(Status.closed (((hashAssoc m.toList)[c]?).getD (s.effectiveStatus c))))
+    = (kidsOfEdges s.parentEdges i).filter (fun c => !effClosedWith m s c) :=
+    List.filter_congr (fun c _ => by rw [closedH_eq m s c])
+  rw [hb, hk]
+
 /-- The fast per-kind cycle witnesses. -/
 def cyclesFast (s : State) (k : EdgeKind) : List (List IssueId) :=
-  let edges := s.presentEdges
-  sccWitnessesF s.presentIssues s.presentIssues.length (kindSuccE edges s k)
+  let present := s.presentIssues
+  sccWitnessesT present present.length
+    (succOfAdj (kindAdj s.presentEdges k) (hashSetOf present))
 
 theorem cyclesFast_eq (s : State) (k : EdgeKind) : cyclesFast s k = s.cycles k := by
-  unfold State.cyclesFast State.cycles
-  dsimp only
-  rw [show kindSuccE s.presentEdges s k = s.kindSucc k from
-    funext (fun i => kindSuccE_eq s k i), sccWitnessesF_eq s (s.kindSucc k) (kindSucc_subset_present s k)]
+  show sccWitnessesT s.presentIssues s.presentIssues.length
+      (succOfAdj (kindAdj s.presentEdges k) (hashSetOf s.presentIssues))
+    = s.cycles k
+  rw [show succOfAdj (kindAdj s.presentEdges k) (hashSetOf s.presentIssues)
+        = s.kindSucc k from funext (succOfAdj_kindAdj_eq s k),
+    sccWitnessesT_eq s (s.kindSucc k) (kindSucc_subset_present s k)]
+  rfl
 
 /-- The fast readiness-deadlock witnesses. -/
 def precCyclesFast (m : AMap IssueId Status) (s : State) : List (List IssueId) :=
-  let edges := s.presentEdges
-  let pe := s.parentEdges
-  sccWitnessesF s.presentIssues s.presentIssues.length (precSuccF m edges pe s)
+  let present := s.presentIssues
+  sccWitnessesT present present.length
+    (precSuccH (hashAssoc m.toList) (blocksAdj s.presentEdges)
+      (bucketBy s.parentEdges) (hashSetOf present) s)
 
 theorem precCyclesFast_eq (s : State) :
     precCyclesFast (s.effStatusAll) s = s.precCycles := by
-  unfold State.precCyclesFast State.precCycles
-  dsimp only
-  rw [show precSuccF (s.effStatusAll) s.presentEdges s.parentEdges s = s.precSucc from
-    funext (fun i => precSuccF_eq s i), sccWitnessesF_eq s s.precSucc (precSucc_subset_present s)]
+  show sccWitnessesT s.presentIssues s.presentIssues.length
+      (precSuccH (hashAssoc (s.effStatusAll).toList) (blocksAdj s.presentEdges)
+        (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s)
+    = s.precCycles
+  rw [show precSuccH (hashAssoc (s.effStatusAll).toList) (blocksAdj s.presentEdges)
+        (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s
+      = s.precSucc from funext (fun i =>
+        (precSuccH_eq (s.effStatusAll) s i).trans (precSuccF_eq s i)),
+    sccWitnessesT_eq s s.precSucc (precSucc_subset_present s)]
+  rfl
 
 /-- The fast cycle-presence flag. -/
 def hasCycleFast (s : State) (k : EdgeKind) : Bool := !(cyclesFast s k).isEmpty
