@@ -120,6 +120,100 @@ theorem getElem?_hashAssoc_amap {V : Type _} (m : AMap IssueId V) (k : IssueId) 
     (hashAssoc m.toList)[k]? = m.find k :=
   getElem?_hashAssoc m.toList (AMap.keys_nodup m) k
 
+/-! ## The inverse: an `AMap` materialized from a `HashMap`
+
+The rollup builds its memo in a `Std.HashMap` (O(1)-amortized), then materializes
+the canonical `AMap` once at the end so `effStatusAll`'s type and every downstream
+bridge stay unchanged. `find_amapOfHashMap` is the bridge: the materialized map
+looks up exactly the hash map's `getElem?`. -/
+
+/-- Materialize an `AMap` from a hash map by inserting its entries (one pass). -/
+def amapOfHashMap {V : Type _} (m : Std.HashMap IssueId V) : AMap IssueId V :=
+  m.toList.foldl (fun a p => a.insert p.1 p.2) AMap.empty
+
+/-- `AMap.find` after an insert-fold — the `AMap` analogue of `getElem?_foldl_insert`
+    (propositional `=`, so no `beq` bridging needed). -/
+theorem find_foldl_insert {V : Type _} (l : List (IssueId × V))
+    (m0 : AMap IssueId V) (hnd : (l.map Prod.fst).Nodup) (k : IssueId) :
+    (l.foldl (fun a p => a.insert p.1 p.2) m0).find k
+      = match AssocList.lookup k l with
+        | some v => some v
+        | none => m0.find k := by
+  induction l generalizing m0 with
+  | nil => rfl
+  | cons p ps ih =>
+    rw [List.map_cons, List.nodup_cons] at hnd
+    obtain ⟨hp, hps⟩ := hnd
+    rw [List.foldl_cons, ih _ hps]
+    by_cases hk : k = p.1
+    · have hnone : AssocList.lookup k ps = none :=
+        lookup_eq_none_of_not_fst ps (hk ▸ hp)
+      have hlk : AssocList.lookup k (p :: ps) = some p.2 := by
+        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some p.2
+        rw [if_pos hk]
+      rw [hnone, hlk]
+      show (m0.insert p.1 p.2).find k = some p.2
+      rw [AMap.find_insert, if_pos hk]
+    · have hlk : AssocList.lookup k (p :: ps) = AssocList.lookup k ps := by
+        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = _
+        rw [if_neg hk]
+      rw [hlk]
+      cases hcase : AssocList.lookup k ps with
+      | some v => rfl
+      | none =>
+        show (m0.insert p.1 p.2).find k = m0.find k
+        rw [AMap.find_insert, if_neg hk]
+
+/-- A member of a key-nodup assoc list is found by `lookup`. -/
+theorem lookup_of_mem_nodup {V : Type _} {k : IssueId} {v : V} :
+    (l : List (IssueId × V)) → (l.map Prod.fst).Nodup → (k, v) ∈ l →
+    AssocList.lookup k l = some v
+  | [], _, hmem => absurd hmem (List.not_mem_nil)
+  | p :: ps, hnd, hmem => by
+    rw [List.map_cons, List.nodup_cons] at hnd
+    obtain ⟨hp, hps⟩ := hnd
+    rcases List.mem_cons.mp hmem with heq | hmem'
+    · subst heq
+      show (if k = (k, v).1 then some (k, v).2 else AssocList.lookup k ps) = some v
+      rw [if_pos rfl]
+    · have hkfst : k ∈ ps.map Prod.fst := List.mem_map.mpr ⟨(k, v), hmem', rfl⟩
+      have hkp : k ≠ p.1 := fun he => hp (he ▸ hkfst)
+      show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some v
+      rw [if_neg hkp]
+      exact lookup_of_mem_nodup ps hps hmem'
+
+/-- The hash map's `toList` keys are nodup. -/
+theorem nodup_keys_toList {V : Type _} (m : Std.HashMap IssueId V) :
+    (m.toList.map Prod.fst).Nodup :=
+  List.pairwise_map.mpr
+    ((Std.HashMap.distinct_keys_toList (m := m)).imp (fun hab => ne_of_beq_false hab))
+
+/-- `lookup` over the hash map's `toList` is exactly its `getElem?`. -/
+theorem lookup_toList_eq_getElem? {V : Type _} (m : Std.HashMap IssueId V) (k : IssueId) :
+    AssocList.lookup k m.toList = m[k]? := by
+  cases h : m[k]? with
+  | some v =>
+    exact lookup_of_mem_nodup m.toList (nodup_keys_toList m)
+      (Std.HashMap.mem_toList_iff_getElem?_eq_some.mpr h)
+  | none =>
+    cases hl : AssocList.lookup k m.toList with
+    | none => rfl
+    | some v =>
+      have hmem : m[k]? = some v :=
+        Std.HashMap.mem_toList_iff_getElem?_eq_some.mp (AssocList.lookup_mem hl)
+      rw [h] at hmem
+      nomatch hmem
+
+/-- **The inverse bridge.** The materialized `AMap` looks up exactly the hash
+    map's `getElem?` — so a rollup that threads a `HashMap` memo and materializes
+    once keeps `effStatusAll.find` pointwise equal to the in-flight memo. -/
+theorem find_amapOfHashMap {V : Type _} (m : Std.HashMap IssueId V) (k : IssueId) :
+    (amapOfHashMap m).find k = m[k]? := by
+  unfold amapOfHashMap
+  rw [find_foldl_insert m.toList AMap.empty (nodup_keys_toList m) k, AMap.find_empty,
+    ← lookup_toList_eq_getElem? m k]
+  cases AssocList.lookup k m.toList <;> rfl
+
 /-! ## Adjacency bucketing -/
 
 /-- Bucket `(key, value)` pairs by key; each bucket carries its values in
