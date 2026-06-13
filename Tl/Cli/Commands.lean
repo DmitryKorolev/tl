@@ -714,18 +714,19 @@ def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : S
 def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let s := v.state
   -- one pass: each present issue's label set is computed once and the counts
   -- accumulate per label into a sorted assoc map; the JSON rows and the human
   -- lines read the same counted list (the old shape re-counted every label
   -- twice, each count rescanning every issue). `insertWith` keeps the list
   -- sorted by label as it goes, so the result is already name-ordered — no
   -- separate sort. An issue's label set is duplicate-free (presentElements of
-  -- the OR-Set), so counts stay per-issue.
+  -- the OR-Set), so counts stay per-issue. `v.issueData` reads the once-built
+  -- data hash (= `s.issueData`, `issueDataH_eq`) — the raw find was O(N) per
+  -- issue, Θ(N²) over the label scan.
   let counted : List (String × Nat) := Id.run do
     let mut acc : List (String × Nat) := []
-    for i in s.presentIssues do
-      for l in (s.issueData i).labels.presentElements do
+    for i in v.present do
+      for l in (v.issueData i).labels.presentElements do
         acc := AssocList.insertWith (· + ·) l 1 acc
     return acc
   let rows := counted.map (fun (l, n) =>

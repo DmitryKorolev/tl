@@ -1391,7 +1391,14 @@ def rowAccessorAgreementTests : List Outcome :=
   let rollup := s.effStatusAll
   let edges := s.presentEdges
   let pedges := s.parentEdges
-  let prov : Tl.Crdt.AMap IssueId Prov := Tl.Crdt.AMap.empty
+  -- a NON-EMPTY prov so `v.provFor` (reads the provH hash copy) is checked
+  -- against `provOf` (reads the AMap) on populated entries, not a vacuous
+  -- both-default-{} match: `a` carries created/updated/close, `d` a claim.
+  let prov : Tl.Crdt.AMap IssueId Prov :=
+    (Tl.Crdt.AMap.empty.insert a
+        { created := some (⟨100, 7, 5⟩, some "alice"), updated := some ⟨200, 7, 6⟩,
+          lastClose := some ⟨300, 7, 7⟩ }).insert d
+        { created := some (⟨150, 8, 9⟩, some "bob"), lastClaim := some ⟨400, 8, 10⟩ }
   let v : View :=
     { dirs := ⟨"", ".tl"⟩
       loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
@@ -1422,7 +1429,8 @@ def rowAccessorAgreementTests : List Outcome :=
       && (v.duplicateOf i == duplicateOf s i)
       && (canonicalParentE v i == canonicalParent s i)
       && (pa.createdAt == pb.createdAt && pa.updatedAt == pb.updatedAt
-          && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt)))
+          && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt
+          && pa.createdBy == pb.createdBy && pa.createdReplica == pb.createdReplica)))
 
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
