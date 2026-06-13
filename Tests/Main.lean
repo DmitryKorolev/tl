@@ -29,6 +29,7 @@ def main : IO UInt32 := do
   let sync ← syncTests
   let cacheIo ← cacheIoTests
   let perf ← perfTests
+  let perfPrim ← perfPrimitiveTests
   let perfBin ← perfBinaryTests
   runAll [
     ("HLC update rules & encoding", hlcUnitTests),
@@ -53,5 +54,6 @@ def main : IO UInt32 := do
     ("Fold cache: cached fold ≡ fresh fold (seeded property)", cacheSuffixFoldProp),
     ("Fold cache: file lifecycle, healing, doctor non-persist", cacheIo),
     ("Perf: ×4-op scaling stays near-linear on every fast path", perf),
+    ("Perf: native-primitive fast paths (String compare, content hash)", perfPrim),
     ("Perf: end-to-end compiled-binary latency on a scaled repo", perfBin)
   ]

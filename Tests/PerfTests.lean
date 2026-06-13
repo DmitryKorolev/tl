@@ -41,6 +41,7 @@ import Tl.Kernel.ReadyFast
 import Tl.Kernel.CyclesFast
 import Tl.Cli.Project
 import Tl.Sync.Merge
+import Tl.Hash.Sha256
 import Tests.Harness
 
 namespace Tl.Tests
@@ -280,6 +281,50 @@ def perfTests : IO (List Outcome) := do
     return o
   | _ => return [{ name := "perf scaling setup", passed := false,
                    msg := s!"expected two scales, got {results.length}" }]
+
+/-- Guards for the proved-fast PRIMITIVES, whose revert is behavior-invisible: a
+    dropped native String comparator decides the same `Prop`, and a swapped cache
+    content hash produces a valid (just slower) digest — so every correctness
+    test stays green while a constant factor regresses. An op-count / ratio row
+    cannot see a constant factor (same complexity class), so these are the
+    ADR-0023 "assumed tier, recorded + latency-guarded" checks. Re-tune the
+    String ceiling if hardware shifts (it is sized well above honest variance and
+    well below the allocation-bound slow form, like the diagnostics rows). -/
+def perfPrimitiveTests : IO (List Outcome) := do
+  -- (1) the native String comparison path (`TotalOrd.le`/`decEq` routed to core's
+  -- extern `String.decLE`/`String.decEq`). The fallback — a `≤`-derived two-walk
+  -- `decEq`, and a `List Char` re-materialization per order compare — allocates
+  -- on every comparison: invisible to a ratio (same `O(N log N)`), caught only by
+  -- an absolute ceiling. N² comparisons over distinct 16-char Crockford keys run
+  -- ~80ms native; the allocation-bound slow form is a large multiple of that.
+  let n := 2000
+  let keys := (List.range n).map (fun k => toCrockford (10 ^ 18 + k * 2654435761) 16)
+  let (_, cmpMs) ← timeMs (do
+    let mut acc := 0
+    for a in keys do
+      for b in keys do
+        if Tl.Crdt.TotalOrd.le a b then acc := acc + 1
+    pure acc)
+  -- (2) the cache's content hash: core's native `ByteArray.hash` over the
+  -- pure-Lean SHA-256 it replaced. A machine-independent RATIO — both run here on
+  -- one machine — pins the fast-hash advantage that justifies the cache using it;
+  -- a revert to a slow hash collapses the ratio. ~2.5MB, the warm-cache size.
+  let big := ByteArray.mk (Array.replicate 2500000 (0x61 : UInt8))
+  let (_, byteHashMs) ← timeMs (do
+    let mut acc := 0
+    for _ in [0:5] do acc := acc + (ByteArray.hash big).toNat
+    pure (acc % 7))
+  let (_, shaMs) ← timeMs (do
+    let mut acc := 0
+    for _ in [0:5] do acc := acc + (Tl.Hash.Sha256.digest big).size
+    pure (acc % 7))
+  return [
+    check s!"native String compare stays fast: {n}² TotalOrd.le ≤ 800ms ({cmpMs}ms)"
+      (cmpMs ≤ 800)
+      s!"{cmpMs}ms — a revert to the ≤-derived decEq / per-compare List-Char decLE allocates per comparison",
+    check s!"cache hash on native ByteArray.hash, ≥8× faster than SHA-256 (hash {byteHashMs}ms, sha {shaMs}ms)"
+      (shaMs ≥ 8 * max byteHashMs 1)
+      s!"hash={byteHashMs}ms sha={shaMs}ms — the fast content-hash advantage the cache relies on"]
 
 /-- End-to-end binary latency (ADR-0023 §2: "End-to-end is mandatory"). In-process
     profiles mispredict the compiled binary — the dominant warm-read cost is the
