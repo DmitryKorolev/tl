@@ -98,6 +98,20 @@ private def fingerprint (s : State) : String :=
 
 private def seeds : List Nat := (List.range 25).map (0xc0ffee + 7919 * ·)
 
+/-- Mirror of what `cyclesFast` hands to `sccWitnessesT`, to assert the
+    certificate branch in isolation. -/
+def cyclesBranchOk (s : State) (k : EdgeKind) : Bool :=
+  let succ := State.succOfAdj (State.kindAdj s.presentEdges k)
+    (hashSetOf s.presentIssues)
+  sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ)
+
+/-- Mirror of what `precCyclesFast` hands to `sccWitnessesT`. -/
+def precBranchOk (s : State) : Bool :=
+  let m := s.effStatusAll
+  let succ := State.precSuccH (hashAssoc m.toList) (State.blocksAdj s.presentEdges)
+    (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s
+  sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ)
+
 def kernelSpecTests : List Outcome :=
   let rows := seeds.map (fun seed =>
     let ops := genOps seed 40
@@ -149,12 +163,81 @@ def kernelSpecTests : List Outcome :=
       State.cyclesFast s .Blocks == s.cycles .Blocks
       && State.cyclesFast s .Parent == s.cycles .Parent
       && State.precCyclesFast rollupMap s == s.precCycles
+    -- the certificate accepts Tarjan's partition (the fast branch is
+    -- taken, not the fallback — tested, not proved; SccFast.lean)
+    let certTaken :=
+      cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s
     (seed, orderOk && dupOk && joinIdem && joinComm && readySound && readySorted
       && unblocksOk && rollupTotal && fastAgrees && readyFastAgrees && echoFastAgrees
-      && cyclesFastAgrees))
+      && cyclesFastAgrees && certTaken))
   rows.map (fun (seed, ok) =>
     check s!"compiled kernel meets its spec on seed {seed}" ok)
 
-def crossTests : List Outcome := orderPreservationTests ++ kernelSpecTests
+/-! ## 3. SCC fixtures: the certificate fast path on known graphs
+
+`kernelSpecTests` checks the compiled `cyclesFast`/`precCyclesFast` against
+the compiled spec on random multisets; these fixtures additionally pin the
+EXPECTED witnesses on known graphs (the deterministic-witness contract) and
+assert the certificate ACCEPTS Tarjan's partition. The fast branch being
+taken is covered by tests, never by a proof (SccFast.lean) — a silent
+permanent fallback would read as a performance regression with no error. -/
+
+private def fixtureState (ids : List IssueId) (edges : List Edge) : State :=
+  let creates := (List.range ids.length).map (fun n =>
+    Op.create (ids.getD n "") ⟨n + 1, 0, n⟩ {})
+  let adds := (List.range edges.length).map (fun n =>
+    Op.edgeAdd (edges.getD n ("", "", .Blocks)) ⟨100 + n, 0, n⟩)
+  fold (creates ++ adds)
+
+def sccFixtureTests : List Outcome :=
+  -- a 3-cycle with a tail: one witness, the tail outside it
+  let ring := fixtureState ["a", "b", "c", "d"]
+    [("a", "b", .Blocks), ("b", "c", .Blocks), ("c", "a", .Blocks),
+     ("d", "a", .Blocks)]
+  -- two 2-cycles joined by a bridge: two witnesses, in present order
+  let twin := fixtureState ["a", "b", "c", "d"]
+    [("a", "b", .Blocks), ("b", "a", .Blocks),
+     ("c", "d", .Blocks), ("d", "c", .Blocks), ("b", "c", .Blocks)]
+  -- a self-loop is a cycle; the isolated node is not
+  let selfLoop := fixtureState ["a", "b"] [("a", "a", .Blocks)]
+  -- a parent 2-cycle: a structural cycle AND a readiness deadlock (each
+  -- epic waits on the other as its live child)
+  let parentCycle := fixtureState ["e", "f"]
+    [("e", "f", .Parent), ("f", "e", .Parent)]
+  -- mutual blocking: no structural parent cycle, but a ≺-deadlock
+  let mutualBlock := fixtureState ["a", "b"]
+    [("a", "b", .Blocks), ("b", "a", .Blocks)]
+  -- a dangling edge endpoint is inert (ADR-0003 §5): no cycle through it
+  let dangling := fixtureState ["a"] [("a", "z", .Blocks), ("z", "a", .Blocks)]
+  [check "3-cycle + tail: one Blocks witness [a b c]"
+    (State.cyclesFast ring .Blocks == [["a", "b", "c"]]
+      && State.cyclesFast ring .Blocks == ring.cycles .Blocks),
+   check "two 2-cycles + bridge: witnesses [[a b] [c d]]"
+    (State.cyclesFast twin .Blocks == [["a", "b"], ["c", "d"]]
+      && State.cyclesFast twin .Blocks == twin.cycles .Blocks),
+   check "self-loop: witness [a] only"
+    (State.cyclesFast selfLoop .Blocks == [["a"]]
+      && State.cyclesFast selfLoop .Blocks == selfLoop.cycles .Blocks),
+   check "parent 2-cycle: structural witness [e f]"
+    (State.cyclesFast parentCycle .Parent == [["e", "f"]]
+      && State.cyclesFast parentCycle .Parent == parentCycle.cycles .Parent),
+   check "parent 2-cycle: readiness deadlock [e f]"
+    (State.precCyclesFast parentCycle.effStatusAll parentCycle == [["e", "f"]]
+      && State.precCyclesFast parentCycle.effStatusAll parentCycle
+        == parentCycle.precCycles),
+   check "mutual blocking: deadlock witness [a b]"
+    (State.precCyclesFast mutualBlock.effStatusAll mutualBlock == [["a", "b"]]
+      && State.precCyclesFast mutualBlock.effStatusAll mutualBlock
+        == mutualBlock.precCycles),
+   check "dangling endpoints are inert: no witnesses"
+    (State.cyclesFast dangling .Blocks == ([] : List (List IssueId))
+      && State.precCyclesFast dangling.effStatusAll dangling
+        == ([] : List (List IssueId))),
+   check "certificate accepted on every fixture (fast branch taken)"
+    ([ring, twin, selfLoop, parentCycle, mutualBlock, dangling].all (fun s =>
+      cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s))]
+
+def crossTests : List Outcome :=
+  orderPreservationTests ++ kernelSpecTests ++ sccFixtureTests
 
 end Tl.Tests
