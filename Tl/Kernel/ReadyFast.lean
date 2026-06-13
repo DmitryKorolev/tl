@@ -155,6 +155,23 @@ theorem blocksByTarget_eq (edges : List Edge) (i : IssueId) :
       exact ⟨fun ⟨h1, h2⟩ => ⟨h2, h1⟩, fun ⟨h1, h2⟩ => ⟨h2, h1⟩⟩)]
   exact List.map_congr_left (fun e _ => rfl)
 
+/-- `Blocks` edges bucketed by source — the dependents of each issue (the
+    `dependentCount` per row, mirroring `blocksByTarget`). -/
+def blocksBySource (edges : List Edge) : Std.HashMap IssueId (List IssueId) :=
+  bucketBy ((edges.filter (fun e => e.2.2 == EdgeKind.Blocks)).map (fun e => (e.1, e.2.1)))
+
+theorem blocksBySource_eq (edges : List Edge) (i : IssueId) :
+    ((blocksBySource edges)[i]?.getD []).reverse = dependentsOfE edges i := by
+  unfold blocksBySource State.dependentsOfE
+  rw [getD_bucketBy, List.filter_map, List.map_map, List.filter_filter]
+  dsimp only [Function.comp]
+  rw [List.filter_congr (q := fun e : Edge => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
+    (fun e _ => by
+      apply Bool.eq_iff_iff.mpr
+      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_iff]
+      exact ⟨fun ⟨h1, h2⟩ => ⟨h2, h1⟩, fun ⟨h1, h2⟩ => ⟨h2, h1⟩⟩)]
+  exact List.map_congr_left (fun e _ => rfl)
+
 /-- Per-issue field data via the data hash copy (= `issueData`). -/
 theorem issueDataH_eq (s : State) (i : IssueId) :
     ((hashAssoc s.data.toList)[i]?).getD IssueData.empty = s.issueData i := by
