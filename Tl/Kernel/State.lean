@@ -40,7 +40,7 @@ deriving DecidableEq, Repr
 /-- Dependency-edge kind (ADR-0003). -/
 inductive EdgeKind where
   | Blocks | Parent | Related
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, Hashable
 
 /-- `Done`/`Cancelled` are *closed*; both discharge a blocker (ADR vision). -/
 def Status.closed : Status → Bool

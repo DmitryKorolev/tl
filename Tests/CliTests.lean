@@ -1295,7 +1295,7 @@ def treeCycleRenderTests : List Outcome :=
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty
-      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty }
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList }
   -- a 2-cycle: a parent-of b, b parent-of a
   let sCyc := Tl.Kernel.fold [
     Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
@@ -1338,7 +1338,7 @@ def canonicalParentTieTests : List Outcome :=
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty
-      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty }
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList }
   -- a parent edge to an ABSENT child (dangling): parentEdges drops it, so the
   -- fast presence-filter must too
   let sDangling := Tl.Kernel.fold [
@@ -1405,7 +1405,7 @@ def rowAccessorAgreementTests : List Outcome :=
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now, replica := none
       rollup, present := s.presentIssues, edges, pedges, prov
-      idx := ViewIndex.of s.data rollup s.presentIssues edges pedges prov }
+      idx := ViewIndex.of s.data rollup s.presentIssues edges pedges prov s.edges.adds.toList }
   s.presentIssues.map (fun i =>
     let dh := v.issueData i
     let ds := s.issueData i

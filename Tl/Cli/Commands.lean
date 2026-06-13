@@ -64,7 +64,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let pedges := parentEdgesFast st
   let prov := provenanceMap loaded.ops
   return { dirs := d, loaded, now, replica, rollup, present, edges, pedges, prov,
-           idx := ViewIndex.of st.data rollup present edges pedges prov,
+           idx := ViewIndex.of st.data rollup present edges pedges prov st.edges.adds.toList,
            refreshNote := refresh.degraded.map (fun r =>
              s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up") }
 
@@ -123,7 +123,7 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
     now
     replica := some v.replica
     rollup, present, edges, pedges, prov
-    idx := ViewIndex.of state.data rollup present edges pedges prov }
+    idx := ViewIndex.of state.data rollup present edges pedges prov state.edges.adds.toList }
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
   Json.mkObj [("count", jnum total), (key, Json.arr rows.toArray)]
@@ -774,7 +774,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
   let prov := provenanceMap loaded.ops
   let v : View := { dirs := d, loaded, now, replica := own,
                     rollup, present, edges, pedges, prov,
-                    idx := ViewIndex.of st.data rollup present edges pedges prov }
+                    idx := ViewIndex.of st.data rollup present edges pedges prov st.edges.adds.toList }
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
     (Json.mkObj [("name", Json.str "log"),

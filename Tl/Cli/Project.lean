@@ -182,6 +182,12 @@ structure ViewIndex where
   pbc : Std.HashMap IssueId (List IssueId)
   /-- The provenance map as a hash map (`getElem?_hashAssoc_amap` ⇒ `provOf`). -/
   provH : Std.HashMap IssueId Prov
+  /-- The edge OR-Set's add-tags, keyed by edge — a hash copy of
+      `state.edges.adds`, so `edgeTags[e]?.getD ∅ = state.edges.tagsOf e`. The
+      canonical-parent tie-break (`canonicalParentE`'s `maxTag`) reads it per
+      candidate; the spec `tagsOf` is an O(E) `AMap.find`, and the tree's
+      `isRoot` runs it per visible issue (Θ(N·E)). -/
+  edgeTags : Std.HashMap Edge (FinSet Stamp)
 
 /-- Build the indexed views once from a view's already-materialized collections
     (ADR-0024 "build once, read many"). Pass the SAME `rollup`/`present`/`edges`/
@@ -189,7 +195,7 @@ structure ViewIndex where
     spec accessor over those lists. -/
 def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     (present : List IssueId) (edges : List Edge) (pedges : List (IssueId × IssueId))
-    (prov : AMap IssueId Prov) : ViewIndex :=
+    (prov : AMap IssueId Prov) (edgeAdds : List (Edge × FinSet Stamp)) : ViewIndex :=
   { dataH := Tl.Kernel.hashAssoc data.toList
     rollupH := Tl.Kernel.hashAssoc rollup.toList
     presentH := Tl.Kernel.hashSetOf present
@@ -197,7 +203,8 @@ def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     bsrc := State.blocksBySource edges
     pbk := Tl.Kernel.bucketBy pedges
     pbc := Tl.Kernel.bucketBy (pedges.map (fun p => (p.2, p.1)))
-    provH := Tl.Kernel.hashAssoc prov.toList }
+    provH := Tl.Kernel.hashAssoc prov.toList
+    edgeTags := edgeAdds.foldl (fun m p => m.insert p.1 p.2) ∅ }
 
 /-- A command's read view. -/
 structure View where
@@ -295,6 +302,15 @@ def View.duplicateOf (v : View) (i : IssueId) : Option IssueId :=
   match ((v.issueData i).metadata.find "duplicate-of").bind (·.value) with
   | some (some val) => if validId val then some val else none
   | _ => none
+/-- The greatest surviving add-tag of an edge, via the edge-tag hash (=
+    `maxTagOf v.state e`: `edgeTags[e]?.getD ∅ = v.state.edges.tagsOf e`, and the
+    fold is identical). O(1) lookup vs the spec's O(E) `AMap.find`. -/
+def View.maxTag (v : View) (e : Edge) : Option Stamp :=
+  (AMap.keys (v.idx.edgeTags[e]?.getD FinSet.empty)).foldl
+    (fun acc st => match acc with
+      | none => some st
+      | some m => some (if TotalOrd.le m st then st else m))
+    none
 
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
 def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
@@ -357,11 +373,12 @@ def canonicalParent (s : State) (i : IssueId) : Option IssueId := Id.run do
 def canonicalParentE (v : View) (i : IssueId) : Option IssueId := Id.run do
   let mut best : Option (IssueId × Stamp) := none
   -- the parent candidates of `i` via the parent-by-child bucket (was an O(E)
-  -- filter of `v.pedges` per call — the tree's `isRoot` ran it per visible row);
-  -- the surviving max-tag parent is unique (stamps are distinct), so the bucket
-  -- order is immaterial and the result is identical to the spec scan
+  -- filter of `v.pedges` per call), and each candidate's max add-tag via the
+  -- edge-tag hash (`v.maxTag`, was an O(E) `tagsOf` find) — the tree's `isRoot`
+  -- ran both per visible row (Θ(N·E)). The surviving max-tag parent is unique
+  -- (stamps are distinct), so the order is immaterial and the result is identical.
   for p in v.parents i do
-    if let some tag := maxTagOf v.state (p, i, EdgeKind.Parent) then
+    if let some tag := v.maxTag (p, i, EdgeKind.Parent) then
       best := match best with
         | none => some (p, tag)
         | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
