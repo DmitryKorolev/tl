@@ -51,6 +51,14 @@ def relLock (d : Dirs) : String := d.tlRel ++ "/local/lock"
     only, not part of the log format (no `v` bump) — a stale or absent value
     only forces a re-materialize, never a wrong read. -/
 def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
+/-- The auto-sync publish marker: the `refs/tl/log` OID this replica's own
+    segment is published into, plus that segment's byte length and content hash
+    at publish time. The local-sync leg fast-outs (skipping the whole-log union)
+    when the ref still sits at this OID and the own segment is byte-identical —
+    nothing to publish, nothing new to absorb. Local-only, gitignored, no log
+    format impact: a stale/absent value only forces the full reconcile, never a
+    wrong publish (it is written ONLY after the own segment is in the tip). -/
+def relSyncPub (d : Dirs) : String := d.tlRel ++ "/local/sync-pub"
 /-- The materialization fold cache (ADR-0022): the folded state keyed to
     per-segment log content. Local-only, never synced, no log format impact —
     absent/stale/corrupt only costs a rebuild from the segments, never a wrong

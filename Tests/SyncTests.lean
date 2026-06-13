@@ -232,6 +232,28 @@ def syncLocalTests : IO (List Outcome) := do
     | some bytes => check "A's own segment on disk is never overwritten by sync"
         (String.fromUTF8! bytes == "{\"a\":1}\n") (String.fromUTF8! bytes)
     | none => { name := "own segment untouched", passed := false, msg := "no file" }]
+  -- (E) a real write GROWS A's own segment: the publish-marker fast-out must NOT
+  -- fire (the marker is keyed to the own segment's bytes), so the new op
+  -- republishes — the no-lost-publish guarantee the fast-out must preserve
+  IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n{\"a\":3}\n".toUTF8
+  o := o ++ [match ← runTl (syncLocal d (some ridA)) with
+    | .ok r => check "a write growing the own segment republishes (no stale fast-out)"
+        (r.ran && r.published) (toString (repr r))
+    | .error e => { name := "grown own republishes", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRef d) with
+    | .ok segs => check "the ref carries A's newly written op after the republish"
+        (segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n{\"a\":3}\n")) ""
+    | .error e => { name := "ref has new op", passed := false, msg := e.message }]
+  -- (F) after the publish the marker file is recorded; a third sync with nothing
+  -- new fast-outs to the same no-op outcome (published := false, tip unchanged)
+  o := o ++ [match ← readBytes (System.FilePath.mk d.base / ".tl" / "local" / "sync-pub") with
+    | some bytes => check "the publish marker is recorded after a sync" (!bytes.isEmpty) ""
+    | none => { name := "publish marker recorded", passed := false, msg := "no sync-pub file" }]
+  let tipE ← runTl (refTip d)
+  o := o ++ [match ← runTl (syncLocal d (some ridA)), tipE with
+    | .ok r, .ok t => check "a converged third sync fast-outs (no republish, tip kept)"
+        (r.ran && !r.published && r.absorbed.isEmpty && r.tip == t) (toString (repr r))
+    | _, _ => { name := "third syncLocal fast-out", passed := false, msg := "unexpected error" }]
   return o
 
 /-- Read-time refresh (ADR-0016 §3): the O(1) trigger, the materialize-on-move,

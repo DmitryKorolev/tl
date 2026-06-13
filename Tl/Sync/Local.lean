@@ -118,6 +118,24 @@ private def markTip (d : Dirs) : Option String → TlM Unit
   | some t => try storeRefMark d t catch _ => pure ()
   | none => pure ()
 
+/-- The own segment's bytes within `localSegs` (empty if this replica has not
+    written yet, or the own replica id is unknown). -/
+private def ownBytesOf (ownReplica : Option String) (localSegs : List SegmentData) : ByteArray :=
+  match ownReplica with
+  | some own => ((localSegs.find? (·.replicaId == own)).map (·.bytes)).getD ByteArray.empty
+  | none => ByteArray.empty
+
+/-- Record the publish marker after a reconcile that left our own segment in
+    `tip` (best-effort, and only with a known own replica + an existing ref — a
+    marker against `none` would never match a future `refTip`). -/
+private def markPub (d : Dirs) (ownReplica : Option String) (localSegs : List SegmentData) :
+    Option String → TlM Unit
+  | some t =>
+    match ownReplica with
+    | some _ => try storeSyncPub d t (ownBytesOf ownReplica localSegs) catch _ => pure ()
+    | none => pure ()
+  | none => pure ()
+
 /-- The bounded CAS-retry: a sibling that moves the ref between our read and
     our `update-ref` costs one re-read, never a clobber. Same-machine worktree
     contention is brief, so the cap only guards a pathological live-lock. -/
@@ -129,6 +147,19 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
       "sync: refs/tl/log kept moving under concurrent writers — retry `tl sync`")
   | fuel + 1 => do
     let tip ← refTip d
+    -- Publish-marker fast-out (ADR-0023 write-path analogue of the fold cache):
+    -- if the ref still sits at the OID our own segment is published into, AND the
+    -- own segment is byte-identical to then, nothing publishes and the absorbed
+    -- siblings are already current — return without the readRef + whole-log
+    -- union the publish check would otherwise pay on EVERY write. The marker is
+    -- written only after the own segment is in the tip (`markPub`), so a match
+    -- provably means "already published" — never a skipped publish. The outcome
+    -- equals the no-publish branch below (published := false, nothing absorbed).
+    let ownBytes := ownBytesOf ownReplica localSegs
+    if ownReplica.isSome then
+      if let some (mTip, mLen, mHash) ← loadSyncPub d then
+        if tip == some mTip && ownBytes.size == mLen && ByteArray.hash ownBytes == mHash then
+          return { ran := true, published := false, absorbed := [], tip }
     let refSegs ← readRef d
     let merged := unionSegments refSegs localSegs
     -- publish only our own ops, and only when they change the ref (a worktree
@@ -140,12 +171,16 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
       | some newTip =>
         let absorbed ← absorbForeign d ownReplica localSegs merged
         markTip d (some newTip)
+        markPub d ownReplica localSegs (some newTip)
         return { ran := true, published := true, absorbed, tip := some newTip }
     else
       -- `merged`'s foreign content equals the ref's (the local cache is a
       -- subset of the canonicalized ref), so we can absorb without writing it
       let absorbed ← absorbForeign d ownReplica localSegs merged
       markTip d tip
+      -- own's content is in `tip` (no divergence ⇒ no publish), so record the
+      -- marker for the next fast-out (no-op when `tip` is none — no ref yet)
+      markPub d ownReplica localSegs tip
       return { ran := true, published := false, absorbed, tip }
 
 /-- The local leg: reconcile against `refs/tl/log` (publish own, absorb
