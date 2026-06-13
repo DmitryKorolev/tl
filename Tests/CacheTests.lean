@@ -105,11 +105,11 @@ private def richState : State :=
     Op.labelRemove idA "ui" (FinSet.singleton (mkst 18 9))]
 
 private def metaOwn : CacheSegMeta :=
-  { replicaId := ownStem, byteLen := 420, lineCount := 12, shaHex := "abcd",
+  { replicaId := ownStem, byteLen := 420, lineCount := 12, ck := "abcd",
     refused := false, deferred := [3, 7] }
 
 private def metaFor : CacheSegMeta :=
-  { replicaId := forStem, byteLen := 0, lineCount := 0, shaHex := "ee",
+  { replicaId := forStem, byteLen := 0, lineCount := 0, ck := "ee",
     refused := true, deferred := [] }
 
 private def richMeta : List CacheSegMeta := [metaOwn, metaFor]
@@ -118,14 +118,14 @@ private def richMeta : List CacheSegMeta := [metaOwn, metaFor]
     must carry a CORRECT checksum so they exercise the inner decoder arm they
     target, not the checksum gate. -/
 private def sign (payload : String) : String :=
-  Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest payload.toUTF8) ++ "\n" ++ payload ++ "\n"
+  toString (ByteArray.hash payload.toUTF8) ++ "\n" ++ payload ++ "\n"
 
 private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ r ++ "}"
 
 /-- A handcrafted, correctly-signed payload with all three state components
     injectable — for shapes the encoder can never produce. -/
 private def handState (issues data edges : String) : String :=
-  sign ("{\"v\":1,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+  sign ("{\"v\":2,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
     ++ ",\"edges\":" ++ edges ++ "}}")
 
 private def handIssues (aaa rrr : String) : String :=
@@ -150,7 +150,7 @@ private def emptyStateJson : String :=
   "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
 
 private def handSeg (segJson : String) : String :=
-  sign ("{\"v\":1,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
+  sign ("{\"v\":2,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
@@ -191,7 +191,7 @@ def cacheCodecTests : List Outcome :=
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
     check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":1}" "\"v\":2}").isNone,
+      (surgery "\"v\":2}" "\"v\":3}").isNone,
     check "a missing version is rejected"
       (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a non-numeric version is rejected"
@@ -199,12 +199,12 @@ def cacheCodecTests : List Outcome :=
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache (sign "{\"v\":1,\"segments\":[]}")).isNone,
+      (decodeCache (sign "{\"v\":2,\"segments\":[]}")).isNone,
     check "a state missing a component is rejected"
-      (decodeCache (sign ("{\"v\":1,\"segments\":[],\"state\":{\"issues\":"
+      (decodeCache (sign ("{\"v\":2,\"segments\":[],\"state\":{\"issues\":"
         ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache (sign ("{\"v\":1,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+      (decodeCache (sign ("{\"v\":2,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"

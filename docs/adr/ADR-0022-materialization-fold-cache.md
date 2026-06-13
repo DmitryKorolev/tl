@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-06-11
+- Amended: 2026-06-13 — the cache integrity hash is now core's non-crypto
+  `ByteArray.hash`, not the pure-Lean SHA-256: the cache is a discardable
+  rot-check (tampering is the segments' trust domain, ADR-0014), so
+  collision-resistance is not required and the cache carries NO crypto
+  assumption (ADR-0023/0024 measured SHA ≈25× slower at cache sizes).
+  `cacheVersion` bumped 1→2.
 
 ## Context
 
@@ -35,8 +41,8 @@ Two facts shape the design:
 ### 1. What is cached: the fold, nothing else
 
 `.tl/local/cache` holds the folded kernel `State` plus, per segment, the
-content key it folded: `(replicaId, byteLen, lineCount, sha256(prefix),
-refused, deferredLines)`. Every other `Loaded` field — the `ops` list
+content key it folded: `(replicaId, byteLen, lineCount, checksum(prefix),
+refused, deferredLines)` (the checksum is core's non-crypto `ByteArray.hash`). Every other `Loaded` field — the `ops` list
 (provenance/`tl log` scan it), refusals, skips, deferrals, the HLC maxima,
 decode warnings, `segmentCount` — is recomputed from a full live line decode
 on every invocation. The cache can therefore only ever change *how the state
@@ -50,7 +56,7 @@ A cache is consulted only if **every** cached segment still passes, against
 the live bytes and the live decode:
 
 - the live segment exists and its first `byteLen` bytes hash to the recorded
-  SHA-256 (appends keep a cache warm; any rewrite — a repair, a reordering
+  checksum (appends keep a cache warm; any rewrite — a repair, a reordering
   ref absorb — misses and rebuilds);
 - the live refusal flag equals the recorded one. Classification is
   deterministic per line, but a bad line *appended* to a clean segment
@@ -69,16 +75,20 @@ fold's op set exactly, and `fold_append` + `fold_perm` close the equality.
 Anything invalid ⇒ full refold. Stale, absent, corrupt, wrong-version,
 non-canonical — all the same answer: rebuild from the segments, never
 repair. "Corrupt" includes *value* corruption, not just shape: the file is
-a SHA-256 checksum line over the payload line, verified before any decoded
-value (the state, a line count, a deferral set) is believed — a flipped
-digit that stays valid JSON must rebuild, not silently drop an op. Decode
-then re-establishes the canonical sortedness proofs via `AMap.ofAscList?`
-(`ascending_of_sorted` guarantees an encode is never rejected), so a
-decoded state is canonical by construction. Both the prefix-validity hash
-and the file checksum lean on SHA-256 collision freeness — a tier-3 carried
-assumption now recorded in [overview §Trusted](../overview.md) (this widens
-ADR-0018's "byte-exact agreement is the only property needed" framing:
-the cache is the first consumer that also needs collision resistance).
+a non-crypto checksum line (core's `ByteArray.hash`) over the payload line,
+verified before any decoded value (the state, a line count, a deferral set)
+is believed — a flipped digit that stays valid JSON must rebuild, not
+silently drop an op. Decode then re-establishes the canonical sortedness
+proofs via `AMap.ofAscList?` (`ascending_of_sorted` guarantees an encode is
+never rejected), so a decoded state is canonical by construction. The
+prefix-validity hash and the file checksum are ROT/CONTENT checks, not
+security digests: deliberate tampering inside `.tl/` is the segments' trust
+domain (ADR-0014), so a fast 64-bit non-crypto hash suffices and the cache
+needs NO collision-resistance assumption (an accidental shape-preserving
+collision is ~2⁻⁶⁴, negligible for the discardable cache). This *narrows*
+the framing of the original design — the cache was briefly a pure-Lean
+SHA-256 (ADR-0018), measured ≈25× slower at cache sizes (ADR-0023/0024), and
+the crypto strength bought nothing here.
 
 ### 3. Who reads and writes it
 
@@ -128,14 +138,16 @@ supplied by the kernel.
 - Reads and writes fold only appended suffixes in the steady state; the
   write-path quadratic under the lock is gone.
 - **Accepted cost, recorded per the efficiency principle**: validity hashes
-  every cached segment prefix with the pure-Lean SHA-256 (ADR-0018) on each
-  consultation (once — the exactly-fresh check compares the cheap key
-  fields instead of re-hashing, since under validity equal lengths imply
-  equal bytes), and a refreshed cache re-serializes and re-hashes the whole
-  state — linear in log bytes with real constants, accepted against the
-  quadratic refold they replace. If profiling ever blames the hash,
-  ADR-0018 already pins the upgrade path (an optimized SHA-256 ships only
-  with a proved `fast = spec` bridge). Also accepted: the per-item
+  every cached segment prefix with a fast non-crypto checksum (core's
+  `ByteArray.hash`) on each consultation (once — the exactly-fresh check
+  compares the cheap key fields instead of re-hashing, since under validity
+  equal lengths imply equal bytes), and a refreshed cache re-serializes and
+  re-hashes the whole state — linear in log bytes with small constants. This
+  hash was originally the pure-Lean SHA-256 (ADR-0018); profiling
+  (ADR-0023/0024) blamed it (≈25× slower than the extern), and since the
+  cache is a rot-check not a security surface it was switched to
+  `ByteArray.hash` rather than taking ADR-0018's optimized-SHA-with-a-proved-
+  bridge path. Also accepted: the per-item
   `find?`/`contains` rescans in validity and the suffix partition — they
   are quadratic-shaped in *segment count* (= replica count, single digits)
   and *deferred-line count* (normally zero), not in ops, so an index would

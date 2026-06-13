@@ -13,7 +13,7 @@ reports *about* is computed.
 Validity is per segment, against the live bytes and the live decode:
 
 * the live segment must still carry the cached prefix byte-for-byte
-  (length extends, SHA-256 of the prefix matches) — appends keep a cache
+  (length extends, the prefix checksum matches) — appends keep a cache
   warm, any rewrite (repair, a reordering ref absorb) forces a rebuild;
 * the refusal flag must match: parse/refusal classification is a pure
   function of the bytes, but a bad line APPENDED to a clean segment refuses
@@ -32,13 +32,14 @@ back (atomic replace, best-effort — a read-only filesystem never fails a
 read). `--skip-bad` folds are different folds (skipped lines are absent):
 they neither consult nor produce the cache.
 
-The file is a SHA-256 checksum line over a payload line: the values the
-fold trusts (the state, line counts, deferral sets) are integrity-checked
-before any of them is believed, so bit rot anywhere in the file is a
-rebuild, never a silently wrong read — the cache stays the discardable one
-(deliberate tampering inside `.tl/` is the segments' trust domain, ADR-0014,
-and hash-collision freeness is a recorded carried assumption, overview
-§Trusted). `cacheVersion` is a *semantics* version, not just a format
+The file is a non-crypto checksum line (core's `ByteArray.hash`, `ckOf`) over a
+payload line: the values the fold trusts (the state, line counts, deferral sets)
+are integrity-checked before any of them is believed, so bit rot anywhere in the
+file is a rebuild, never a silently wrong read — the cache stays the discardable
+one. The checksum is a rot/content check, NOT a security digest: deliberate
+tampering inside `.tl/` is the segments' trust domain (ADR-0014), so a 64-bit
+non-crypto hash suffices here (a faster choice than the pure-Lean SHA-256 this
+replaced; ADR-0022/0023/0024). `cacheVersion` is a *semantics* version, not just a format
 version: any change to per-line classification (`decodeLine`, the owner
 check), to `WireOp.toOp`, or to kernel `apply`/`merge` semantics must bump
 it, or a binary-version skew on one working copy could suffix-fold
@@ -50,7 +51,6 @@ the property test pinning `materializeCached` = `materialize` live in
 -/
 import Tl.Store.Materialize
 import Tl.Store.Local
-import Tl.Hash.Sha256
 import Tl.Kernel.FoldFast
 
 namespace Tl.Store
@@ -65,7 +65,7 @@ open Lean (Json)
     *semantics*, not only the bytes: bump it for any change to per-line
     classification, `WireOp.toOp`, or kernel `apply`/`merge` (see the module
     header). -/
-def cacheVersion : Nat := 1
+def cacheVersion : Nat := 2
 
 /-- One segment's content key at snapshot time. -/
 structure CacheSegMeta where
@@ -75,8 +75,9 @@ structure CacheSegMeta where
   /-- Complete lines when the cache was written — the fold-membership
       boundary (a torn trailing fragment is not a line). -/
   lineCount : Nat
-  /-- SHA-256 (lowercase hex) of the first `byteLen` bytes. -/
-  shaHex : String
+  /-- Non-crypto rot-check (decimal `ByteArray.hash`) of the first `byteLen`
+      bytes — a content key, not a security digest (see `ckOf`). -/
+  ck : String
   /-- Whether the segment was refused — a refused segment contributed
       nothing to the cached state. -/
   refused : Bool
@@ -274,7 +275,7 @@ private def encSegMeta (m : CacheSegMeta) : Json :=
     ("replica", Json.str m.replicaId),
     ("bytes", jnum m.byteLen),
     ("lines", jnum m.lineCount),
-    ("sha", Json.str m.shaHex),
+    ("ck", Json.str m.ck),
     ("refused", Json.bool m.refused),
     ("deferred", Json.arr (m.deferred.map jnum).toArray)]
 
@@ -282,18 +283,24 @@ private def decSegMeta (j : Json) : Option CacheSegMeta := do
   let replicaId ← (← (j.getObjVal? "replica").toOption).getStr?.toOption
   let byteLen ← (← (j.getObjVal? "bytes").toOption).getNat?.toOption
   let lineCount ← (← (j.getObjVal? "lines").toOption).getNat?.toOption
-  let shaHex ← (← (j.getObjVal? "sha").toOption).getStr?.toOption
+  let ck ← (← (j.getObjVal? "ck").toOption).getStr?.toOption
   let refused ← (← (j.getObjVal? "refused").toOption).getBool?.toOption
   let deferred ← match ← (j.getObjVal? "deferred").toOption with
     | Json.arr a => a.toList.mapM (fun e => e.getNat?.toOption)
     | _ => none
-  some { replicaId, byteLen, lineCount, shaHex, refused, deferred }
+  some { replicaId, byteLen, lineCount, ck, refused, deferred }
 
-private def shaHexOf (b : ByteArray) : String :=
-  Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest b)
+/-- A fast non-crypto rot-check over the cached bytes. The cache is the
+    discardable, content-keyed artifact (ADR-0022), NOT a security surface —
+    deliberate tampering inside `.tl/` is the segments' trust domain
+    (ADR-0014) — so collision-resistance is not required: a 64-bit hash
+    detects bit rot and prefix changes, and core's `ByteArray.hash` is a fast
+    extern over raw bytes (this was a pure-Lean SHA-256, ≈25× slower at the
+    cache's sizes; ADR-0023/0024). -/
+private def ckOf (b : ByteArray) : String := toString (ByteArray.hash b)
 
-/-- Encode the cache: a SHA-256 checksum line over the compressed JSON payload
-    line. The checksum is what makes "corrupt ⇒ rebuild" hold for *value*
+/-- Encode the cache: a non-crypto checksum line (`ckOf`) over the compressed JSON
+    payload line. The checksum is what makes "corrupt ⇒ rebuild" hold for *value*
     corruption too (a flipped digit in a line count or a state string is not a
     JSON shape error — only the checksum catches it).
 
@@ -306,7 +313,7 @@ def encodeCache (c : FoldCache) : String :=
     ("v", jnum cacheVersion),
     ("segments", Json.arr (c.segments.map encSegMeta).toArray),
     ("state", encState c.state)]).compress
-  shaHexOf payload.toUTF8 ++ "\n" ++ payload ++ "\n"
+  ckOf payload.toUTF8 ++ "\n" ++ payload ++ "\n"
 
 /-- Decode a cache file. ANY failure — a checksum mismatch anywhere in the
     file, parse error, version mismatch, non-canonical content — is `none`:
@@ -314,7 +321,7 @@ def encodeCache (c : FoldCache) : String :=
 def decodeCache (s : String) : Option FoldCache := do
   let payload ← match s.splitOn "\n" with
     | [sum, payload] | [sum, payload, ""] =>
-      if shaHexOf payload.toUTF8 == sum then some payload else none
+      if ckOf payload.toUTF8 == sum then some payload else none
     | _ => none
   let j ← (Json.parse payload).toOption
   let v ← (← (j.getObjVal? "v").toOption).getNat?.toOption
@@ -339,7 +346,7 @@ def cacheValid (c : FoldCache) (pairs : List (SegmentData × SegmentDecode)) : B
     | none => false
     | some (sd, dec) =>
       decide (m.byteLen ≤ sd.bytes.size)
-      && shaHexOf (sd.bytes.extract 0 m.byteLen) == m.shaHex
+      && ckOf (sd.bytes.extract 0 m.byteLen) == m.ck
       && dec.refusal.isSome == m.refused
       && dec.deferred.all (fun n => decide (m.lineCount < n) || m.deferred.contains n))
 
@@ -363,7 +370,7 @@ def liveMeta (pairs : List (SegmentData × SegmentDecode)) : List CacheSegMeta :
     { replicaId := sd.replicaId
       byteLen := sd.bytes.size
       lineCount := dec.lineCount
-      shaHex := shaHexOf sd.bytes
+      ck := ckOf sd.bytes
       refused := dec.refusal.isSome
       deferred := dec.deferred })
 
