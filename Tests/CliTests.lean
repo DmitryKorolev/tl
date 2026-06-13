@@ -1189,6 +1189,35 @@ def cliTreeDiamondTests : IO (List Outcome) := do
         (count "(shown above)" == 1) h]
   | .error err => return [{ name := "tree diamond render", passed := false, msg := err.message }]
 
+/-- Tree-skeleton coloring (ADR-0017 §7): the vertical-continuation prefix
+    (`│`/`|`) ahead of a nested node is part of the skeleton and must be painted
+    the same dim `2` as the connectors — an un-painted bar renders in the
+    terminal default (brighter) and stands out. Regression for the bare-bar bug:
+    a non-last branch (`B`) with a child (`sub`) gives `sub` a `|   `
+    continuation, which must come through painted when color is on. -/
+def cliTreePrefixDimTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let a ← mkIssue dir "A"
+  let b ← mkIssue dir "B" ["--parent", "tl-" ++ a]
+  let c ← mkIssue dir "C" ["--parent", "tl-" ++ a]
+  -- nest under BOTH siblings: whichever renders non-last yields a `|   `
+  -- continuation, independent of the sibling ordering
+  let _ ← mkIssue dir "subB" ["--parent", "tl-" ++ b]
+  let _ ← mkIssue dir "subC" ["--parent", "tl-" ++ c]
+  match ← run' ["list", "--dir", dir] with
+  | .ok out =>
+    let esc := String.singleton (Char.ofNat 27)
+    let s := (out.render.map (fun f => f (⟨.on, .ascii⟩ : Style))).getD ""
+    let lines := s.splitOn "\n"
+    return [
+      -- the scenario must actually produce a `|` continuation (not vacuous)
+      check "the tree has a painted vertical continuation"
+        ((s.splitOn (esc ++ "[2m|")).length > 1) s,
+      -- and with color on, no skeleton line is a bare (unpainted, brighter) bar
+      check "no continuation prefix is a bare bright bar — all dim-painted"
+        (lines.all (fun l => !l.startsWith "|")) s]
+  | .error err => return [{ name := "tree prefix dim", passed := false, msg := err.message }]
+
 /-- The hoisted edge views feeding issueObj/doctor agree with the spec helpers
     they replaced (the lingering non-hoisted scans): a multi-parent child's
     `show --json` still reports a canonical `parent` (issueObj via
@@ -1322,7 +1351,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests
-    ++ (← cliTreeDiamondTests) ++ (← cliHoistedHelperTests)
+    ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliBinaryTests)
 
 end Tl.Tests

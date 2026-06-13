@@ -152,7 +152,10 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     let last := idx + 1 == n
     let conn := if st.glyph == .unicode then (if last then "└── " else "├── ")
                 else (if last then "\\-- " else "+-- ")
-    let childPre := pre ++ (if st.glyph == .unicode then (if last then "    " else "│   ")
+    -- the vertical-continuation prefix is part of the tree skeleton: paint it
+    -- the same dim "2" as the connectors, or an un-painted `│` renders in the
+    -- default (brighter) color and stands out from the rest of the tree
+    let childPre := pre ++ st.paint "2" (if st.glyph == .unicode then (if last then "    " else "│   ")
                             else (if last then "    " else "|   "))
     let node := pre ++ st.paint "2" conn ++ styledLine st v c
     if c == i || path.contains c then
