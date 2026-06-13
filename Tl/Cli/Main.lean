@@ -208,6 +208,19 @@ def runVerb : List String → TlM CmdOut
       let actor ← actorOf a
       cmdUpdate (a.get? "dir") tok (a.get? "title") (a.get? "description")
         (a.get? "notes") prio actor
+    | "parent" => do
+      match rest with
+      | "set" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent set" ++ globalVal) (boolFlagsOf "parent set" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdParentSet (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "parent set takes <id> <new-parent>")
+      | "remove" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent remove" ++ globalVal) (boolFlagsOf "parent remove" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdParentRemove (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "parent remove takes <id> <parent>")
+      | _ => throw (usageErr "parent takes set|remove")
     | "dep" => do
       match rest with
       | "add" :: rest' => do

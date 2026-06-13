@@ -29,7 +29,8 @@ private def jStr (j : Json) (k : String) : Option String :=
     test below proves it matches the schema both ways). -/
 private def dispatchVerbs : List String :=
   ["init", "create", "ready", "claim", "close", "update", "reopen",
-   "dep add", "dep remove", "dep cycles", "label add", "label remove", "label list",
+   "dep add", "dep remove", "dep cycles", "parent set", "parent remove",
+   "label add", "label remove", "label list",
    "why", "show", "list", "log", "stats", "sync", "doctor", "version", "help"]
 
 def grammarSchemaTests : List Outcome := Id.run do

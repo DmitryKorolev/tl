@@ -153,6 +153,24 @@ ADR-0003):
 (`"status": "removed"` for `dep remove`; a remove that observed no live tags
 still succeeds — add-wins semantics — with `"status": "noop"`.)
 
+**`tl parent set / parent remove --json`** — reparenting echoes the full issue
+object (so the top-level `parent` field already shows the new canonical parent),
+plus a `reparent` sub-object with the action metadata. `parent set` is a
+courtesy *replace* (drop the child's other parent edges, add the target);
+`replaced` lists the tombstoned parents (`status` ∈ `set` / `noop`):
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "id": "tl-9f3cq7rkv2m8e4ha", "parent": "tl-kz8w2n4jp7e9h3vt", "...": "…",
+  "reparent": { "status": "set", "replaced": ["tl-0ld3p1cqv2m8e4ha"] }
+} }
+```
+
+(`parent remove` carries `{ "status": "removed" | "noop", "removed": "<id>" }`;
+removing a child's only parent drops the top-level `parent` field — it becomes a
+root. A direct self-parent is a `usage` refusal; longer cycles stay *reported*
+by `dep cycles`, never rejected — ADR-0003 §4.)
+
 **`tl label add / label remove --json`** — a label ack in the same shape as the
 relationship ack (`status` ∈ `added` / `removed` / `noop`; an add of a present
 label or a remove of an absent one is the idempotent `noop`):

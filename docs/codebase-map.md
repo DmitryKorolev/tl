@@ -279,7 +279,8 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   ADR-0013 actor chain
   Commands.lean         --   the stage-1 verbs + the agent-surface/ergonomics
                         --   verbs (reopen/stats/log, sync, label add/remove/list,
-                        --   list --label facet); write guards run inside the
+                        --   parent set/remove reparenting, list --label facet);
+                        --   write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows. Each
                         --   write verb brackets transact via Sync.AutoSync

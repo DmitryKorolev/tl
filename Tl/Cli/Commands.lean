@@ -567,6 +567,86 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
              else s!"{displayId a} is no longer blocked by {displayId b}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
+/-! ## parent verbs (reparenting) -/
+
+/-- `tl parent set <child> <parent>`: move `<child>` under `<parent>` (the
+    reparent operation). A local courtesy *replace*: it tombstones the
+    child's present parent edge(s) other than `<parent>` and adds the new one in
+    one transaction, so the child stays single-parented locally (no
+    self-inflicted `multiParent`); a concurrent merge can still produce
+    multi-parent, which `doctor` reports — never enforced, only reported
+    (ADR-0003 §4 / the CRDT rule). Idempotent: a child already solely under
+    `<parent>` appends nothing. A direct self-parent is a courtesy refusal;
+    longer cycles stay reported by `tl dep cycles`, not rejected (matching
+    `dep add`). -/
+def cmdParentSet (dirOverride : Option String) (childTok parentTok : String)
+    (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  -- size the stamp budget from a pre-read: at most (present parents to drop) + 1
+  -- (the new edge). The build re-derives the exact ops under the lock; a rare
+  -- concurrent parent-add to the same child in the window just retries.
+  let now ← liftSys (fun e => .mk' .internal s!"clock read failed: {e}") nowMs
+  let pre ← readStateCached d false (some now) (replica.map (·.id))
+  let budget := match resolveToken pre.state childTok with
+    | .ok child => (pre.state.parentsOf child).length + 1
+    | .error _ => 1  -- resolution re-runs in the build and surfaces the real error
+  let (ctx, parsed) ← transact d (some actor) budget (fun ctx _ => do
+    let s := ctx.loaded.state
+    let child ← resolveToken s childTok
+    let parent ← resolveToken s parentTok
+    if parent == child then
+      .error (.mk' .usage
+        s!"{displayId child} cannot be its own parent — name a different epic in <parent>")
+    else
+      -- drop every present parent edge of the child except the target, then add
+      -- the target if absent (add-wins; the new edge is canonical by stamp)
+      let drop := s.presentEdges.filter (fun e =>
+        decide (e.2.2 = EdgeKind.Parent ∧ e.2.1 = child) && e.1 != parent)
+      let needAdd := !(s.parentsOf child).contains parent
+      .ok (drop.map (fun e => .depRemove e (s.edges.tagsOf e))
+           ++ (if needAdd then [.depAdd (parent, child, EdgeKind.Parent)] else [])))
+  let v := writeNow ctx parsed
+  let child ← MonadExcept.ofExcept (resolveToken v.state childTok)
+  let parent ← MonadExcept.ofExcept (resolveToken v.state parentTok)
+  let replaced := parsed.filterMap (fun p => match p.op with
+    | .depRemove (f, _, _) _ => some (displayId f) | _ => none)
+  let status := if parsed.isEmpty then "noop" else "set"
+  -- the issue object's own `parent` field already reflects the new canonical
+  -- parent; `reparent` carries the action metadata
+  let data := (issueObj v child).setObjVal! "reparent" (Json.mkObj
+    [("status", Json.str status),
+     ("replaced", Json.arr (replaced.map Json.str).toArray)])
+  let human :=
+    if parsed.isEmpty then s!"{displayId child} is already under {displayId parent} — nothing to do"
+    else s!"Moved {displayId child} under {displayId parent}"
+      ++ (if replaced.isEmpty then "" else s!" (was under {String.intercalate ", " replaced})")
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `tl parent remove <child> <parent>`: detach `<child>` from `<parent>` —
+    retract that one parent edge if present, else a no-op (mirrors
+    `dep remove`). To drop a child's only parent is to make it a root. -/
+def cmdParentRemove (dirOverride : Option String) (childTok parentTok : String)
+    (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let child ← resolveToken s childTok
+    let parent ← resolveToken s parentTok
+    let e : Edge := (parent, child, EdgeKind.Parent)
+    if !decide (s.edges.Present e) then .ok []
+    else .ok [.depRemove e (s.edges.tagsOf e)])
+  let s := ctx.loaded.state
+  let child ← MonadExcept.ofExcept (resolveToken s childTok)
+  let parent ← MonadExcept.ofExcept (resolveToken s parentTok)
+  let v := writeNow ctx parsed
+  let status := if parsed.isEmpty then "noop" else "removed"
+  let data := (issueObj v child).setObjVal! "reparent" (Json.mkObj
+    [("status", Json.str status), ("removed", Json.str (displayId parent))])
+  let human :=
+    if parsed.isEmpty then s!"{displayId child} was not a child of {displayId parent} — nothing to do"
+    else s!"{displayId child} is no longer a child of {displayId parent}"
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
 /-! ## label verbs -/
 
 def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do

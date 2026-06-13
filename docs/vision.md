@@ -134,7 +134,7 @@ Work loop
 | `tl import <path> [--force]` | one-shot migration from an existing tracker's data; refuses existing task state (local `.tl/log/` segments or a local/remote `refs/tl/log`) without `--force` (ADR-0005) |
 | `tl sync` | publish/receive task state: fetch + union-merge + push the `refs/tl/log` ref (ADR-0001) — the transport, since `tl` never commits to your branch |
 | `tl claim <id> [--sync] [--verify]` / `tl update <id> --claim` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
-| `tl update <id> [--assignee] [-p] [--slug] [--parent …] …` | field edits via flags (lifecycle status uses `claim`/`close`/`reopen`); `--parent` reparents — an edge write (ADR-0003/0008) |
+| `tl update <id> [--assignee] [-p] [--slug] …` | scalar field edits via flags (lifecycle status uses `claim`/`close`/`reopen`; edges use `dep`/`parent`, never `update`) |
 | `tl edit <id>` | open title/description/notes in `$EDITOR` |
 | `tl close <id> --as done\|cancelled\|duplicate [--of <id>] [--cascade]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); `--cascade` cancels an epic's open children (ADR-0003) |
 | `tl reopen <id>` | terminal → `open` |
@@ -145,6 +145,7 @@ Dependencies (typed relations — `blocks` / `parent` / `related`, ADR-0003)
 | Command | Effect |
 |---|---|
 | `tl dep add A B` / `tl dep remove A B` | add / retract a `blocks` edge — A is blocked by B (subject-first, blocker-second, like `create A --blocked-by B`); the CLI echoes "A is now blocked by B" to remove doubt (ADR-0003) |
+| `tl parent set <child> <parent>` / `tl parent remove <child> <parent>` | reparent — `set` moves the child under a new parent (a courtesy replace; multi-parent from merges is reported, not enforced), `remove` detaches (ADR-0003 §4) |
 | `tl dep relate A B` / `tl dep unrelate A B` | symmetric, informational link |
 | `tl dep cycles` | report cycles per kind and readiness-deadlock (`≺`) cycles (mixed blocks+parent, ADR-0004 thm 5/6) — a key util |
 | `tl why <id>` | the transitive set of *unclosed* issues blocking this one, rendered as the upward blocker tree |
@@ -270,8 +271,9 @@ each stage shippable and testable on its own:
 - Stage 1 — the MVP work loop. `create` (with inline `--blocked-by` /
   `--blocks` / `--parent` / `--related`), `ready`, ready-only `claim`,
   `close --as`, a minimal `update` (non-lifecycle scalars —
-  title/priority/description/notes; the `--claim` alias and `--parent`
-  reparenting are Stage 2), `dep add/remove`, `why`, `dep cycles`, `show`,
+  title/priority/description/notes; the `--claim` alias is Stage 2, and
+  reparenting landed as the dedicated `parent set/remove` verbs, not
+  `update --parent`), `dep add/remove`, `why`, `dep cycles`, `show`,
   `list`, a minimal `doctor` (local clock/replica/log health + graph
   diagnostics; remote sync depth grows in Stage 3), and `--json` everywhere. This is the
   whole thesis — *"what can I work on, and is the graph sane"* — and is enough

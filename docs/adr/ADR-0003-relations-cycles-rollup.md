@@ -137,6 +137,16 @@ parent is derived deterministically: the surviving edge greatest in
 while the store stays honest. (An LWW *parent field* was rejected: it breaks the
 all-relations-are-edges model and ADR-0002's two-construction minimality.)
 
+The reparent surface is `tl parent set <child> <parent>` (a courtesy *replace*:
+tombstone the child's other parent edges, add the target — so a single replica
+stays single-parented, while a concurrent merge can still produce the
+multi-parent that `multiParent` reports) and `tl parent remove <child> <parent>`
+(detach). A dedicated verb pair, not `update --parent` (an edge write does not
+belong on the scalar-field verb, and `update` has no way to *detach*) and not
+`dep --kind parent` (`dep` is the *dependency* surface; a parent edge is not a
+dependency). A direct self-parent is a local courtesy refusal; longer cycles
+stay reported by `dep cycles`, never write-rejected (the CRDT rule).
+
 ### 5. Dangling endpoints are read-time inert
 
 An order-insensitive fold can apply a `depAdd` before its endpoint's `create`
@@ -187,7 +197,7 @@ the CLI/Format shell projects the edge set into `--json` as a read-only view
 per edge. Direction is fixed: for `blocks`, `from` blocks `to`; for `parent`,
 `from` is the parent. A convenience `parent` scalar emits the canonical parent
 (§4). Writes never go through this array (`dep add/remove`, `relate/unrelate`,
-`update --parent` mutate edges); there is deliberately no `update --dependencies`.
+`parent set/remove` mutate edges); there is deliberately no `update --dependencies`.
 
 The issue object itself is pinned here too (the `--json` `data` is an
 additive-only forever-contract, ADR-0008), so every consumer reads one

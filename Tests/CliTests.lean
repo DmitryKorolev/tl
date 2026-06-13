@@ -263,6 +263,61 @@ def cliDepTests : IO (List Outcome) := do
       (fun j => jNat j "count" == some 0)]
   return o
 
+/-- Reparenting (ADR-0003 §4): `parent set` is a courtesy replace (move under a
+    new parent, dropping the old), `parent remove` detaches; multi-parent stays
+    reported by `doctor`, never enforced, and a local `set` collapses it. -/
+def cliReparentTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let e1 ← mkIssue dir "epic one"
+  let e2 ← mkIssue dir "epic two"
+  let t ← mkIssue dir "a task"
+  -- move a root under an epic: canonical parent reflects it, status set, nothing replaced
+  o := o ++ [← expectData "parent set moves a root under an epic"
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e1, "--dir", dir, "--assignee", "t"]
+    (fun j => jStr j "parent" == some ("tl-" ++ e1)
+      && ((jGet j "reparent").bind (fun c => jStr c "status")) == some "set"
+      && ((jGet j "reparent").map (fun c => (jArr c "replaced").isEmpty)) == some true)]
+  -- reparent to a second epic replaces the first (replaced lists the old parent)
+  o := o ++ [← expectData "parent set replaces the current parent"
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    (fun j => jStr j "parent" == some ("tl-" ++ e2)
+      && ((jGet j "reparent").bind (fun c => jStr c "status")) == some "set"
+      && ((jGet j "reparent").map (fun c => (jArr c "replaced").any
+            (fun x => x.getStr?.toOption == some ("tl-" ++ e1)))) == some true)]
+  -- idempotent: already under e2 → noop, appends nothing
+  o := o ++ [← expectData "parent set to the current parent is a noop"
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "noop")]
+  -- self-parent is a courtesy usage refusal
+  o := o ++ [← expectErr "a task cannot be its own parent"
+    ["parent", "set", "tl-" ++ t, "tl-" ++ t, "--dir", dir, "--assignee", "t"] .usage]
+  -- detach: parent remove drops the edge; the child becomes a root (no parent)
+  o := o ++ [← expectData "parent remove detaches the child (now a root)"
+    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "removed"
+      && (jGet j "parent").isNone)]
+  o := o ++ [← expectData "a second parent remove is a disclosed noop"
+    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "noop")]
+  -- multi-parent: a child born under two epics is reported by doctor (never
+  -- rejected); a local `parent set` collapses it to a single parent
+  let m ← freshDir
+  let me1 ← mkIssue m "M epic one"
+  let me2 ← mkIssue m "M epic two"
+  let kid ← match ← run' ["create", "multi kid", "--dir", m, "--assignee", "t",
+                          "--parent", "tl-" ++ me1, "--parent", "tl-" ++ me2] with
+    | .ok out => pure ((jStr out.data "id").getD "")
+    | .error e => throw (IO.userError s!"create failed: {e.message}")
+  o := o ++ [← expectData "doctor reports a born multi-parent" ["doctor", "--dir", m]
+    (fun j => (jArr j "checks").any (fun c =>
+      jStr c "name" == some "graph" && jNat c "multiParent" == some 1))]
+  let _ ← run' ["parent", "set", kid, "tl-" ++ me1, "--dir", m, "--assignee", "t"]
+  o := o ++ [← expectData "parent set collapses the multi-parent" ["doctor", "--dir", m]
+    (fun j => (jArr j "checks").any (fun c =>
+      jStr c "name" == some "graph" && jNat c "multiParent" == some 0))]
+  return o
+
 def cliResolutionTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let dir ← freshDir
@@ -1256,7 +1311,7 @@ def canonicalParentTieTests : List Outcome :=
 
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
-    ++ (← cliDepTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
+    ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
