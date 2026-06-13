@@ -35,3 +35,5 @@ not reference task-tracker IDs.
 | 0020 | [`--json` data shapes (the stage-1 surface)](ADR-0020-json-data-shapes.md) |
 | 0021 | [Auto-sync: a synchronous, best-effort local-leg publish](ADR-0021-auto-sync-process-model.md) |
 | 0022 | [The materialization fold cache](ADR-0022-materialization-fold-cache.md) |
+| 0023 | [Algorithmic efficiency: the proved/tested/assumed tiering and the prevention net](ADR-0023-efficiency-tiering-and-prevention.md) |
+| 0024 | [Indexed views: accelerating proved collections behind an equality bridge](ADR-0024-indexed-views-bridge.md) |

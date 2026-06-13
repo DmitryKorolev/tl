@@ -263,6 +263,13 @@ discarded by any later rebuild; and
 clocks/IDs/actor entering as data — each discharged by a test or trusted by
 construction when implementation begins.
 
+On the efficiency axis (ADR-0023), the analogous tier-3 carried assumption is
+**constant factors**: cache locality, allocator behaviour, the constant in
+front of an `O(N)`, and per-syscall wall-clock are neither proved (the kernel
+pins the complexity *class*, not an operation count) nor pinned by the ratio
+tests (which bound growth, not absolutes). An accepted constant-factor
+compromise is recorded explicitly — an ADR or a tracked task — never silently.
+
 The trust boundary and threat model (who may read/write, and the threats
 accepted or carried) are recorded in ADR-0014. Its tier-3 carried
 assumptions: git access-control is `tl`'s only access control (a CRDT cannot

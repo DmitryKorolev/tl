@@ -134,7 +134,11 @@ duplicating them here; this file is process, not spec.
   efficiency properties (e.g. each node evaluated once per query) are
   themselves provable; wall-clock cost of the compiled binary stays tested,
   not proved (the ADR-0004 tiering). An accepted cost compromise is recorded
-  explicitly (ADR or tracked task), never silently.
+  explicitly (ADR or tracked task), never silently. The full discipline —
+  the proved/tested/assumed tiering, the op-count + end-to-end regression net,
+  and the indexed-view substrate that backs the proved tier — is recorded in
+  [ADR-0023](docs/adr/ADR-0023-efficiency-tiering-and-prevention.md) and
+  [ADR-0024](docs/adr/ADR-0024-indexed-views-bridge.md).
 - **Error messages teach.** Every error's human `message` says what to do next
   (the fix), not just what failed — written for a human *and* an agent that
   branches on the `code` and reads `message` to self-correct. The `code` is the
