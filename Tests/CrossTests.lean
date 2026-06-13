@@ -237,7 +237,34 @@ def sccFixtureTests : List Outcome :=
     ([ring, twin, selfLoop, parentCycle, mutualBlock, dangling].all (fun s =>
       cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s))]
 
+/-- The checker must REJECT wrong candidates — without these the rejection
+    branch (and the proved fallback behind it) is dark code in the compiled
+    suite, since Tarjan's output is always accepted. -/
+private def succOfPairs (pairs : List (IssueId × IssueId)) (i : IssueId) :
+    List IssueId :=
+  (pairs.filter (·.1 == i)).map (·.2)
+
+def checkerRejectionTests : List Outcome :=
+  -- a 3-cycle a→b→c→a with a tail d→a
+  let nodes := ["a", "b", "c", "d"]
+  let pairs := [("a", "b"), ("b", "c"), ("c", "a"), ("d", "a")]
+  let succ := succOfPairs pairs
+  -- a 2-chain (no cycle)
+  let chainN := ["a", "b"]
+  let chainS := succOfPairs [("a", "b")]
+  [check "checker rejects a merged component (tail folded into the cycle)"
+    (!(sccCertOk nodes succ [["a", "b", "c", "d"]])),
+   check "checker rejects an anti-topological component order"
+    (!(sccCertOk chainN chainS [["a"], ["b"]])),
+   check "checker accepts the emission-ordered chain (rejection control)"
+    (sccCertOk chainN chainS [["b"], ["a"]]),
+   check "checker rejects missing coverage"
+    (!(sccCertOk chainN chainS [["a"]])),
+   check "proved fallback path agrees on a known graph"
+    (State.sccWitnessesF nodes nodes.length succ == [["a", "b", "c"]])]
+
 def crossTests : List Outcome :=
   orderPreservationTests ++ kernelSpecTests ++ sccFixtureTests
+    ++ checkerRejectionTests
 
 end Tl.Tests

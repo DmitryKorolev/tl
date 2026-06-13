@@ -7,15 +7,18 @@ per kind, `precSucc`). Per-node closures cost Θ(V·(V+E)); the linear-time
 algorithms (Tarjan/Kosaraju) have famously intricate invariants. This module
 takes the checked-certificate road instead: an UNTRUSTED candidate partition
 (`tarjanSCC`, `Tarjan.lean`) is validated by `sccCertOk`, whose acceptance
-proves the partition is exactly the SCC partition:
+proves the spec's SCC characterizations on present nodes — the candidate
+need not even be a true partition (phantom or duplicated components can
+slip through the checks, but provably never matter, because every consumer
+quantifies over present nodes only):
 
   * coverage — every present node carries a component index (`certCovers`);
   * condensation order — no edge increases the component index
     (`certOrdered`), so distinct components are never mutually reachable;
   * strong connectivity — per component, a forward and a backward frontier
     BFS from its root cover it (`compOk`), so same-component nodes are
-    mutually reachable. `bfsGo` soundness is the only reachability fact the
-    checker trusts.
+    mutually reachable. The only reachability input is `bfsGo`'s, itself
+    proved (`bfsGo_sound`).
 
 Together these characterize the spec predicates with O(1)-amortized hash
 probes: `sameSCC u v = (index u == index v)` (`cert_sameSCC`) and

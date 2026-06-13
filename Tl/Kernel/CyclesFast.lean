@@ -6,17 +6,19 @@ The spec (`Cycles.lean`) pays per node: `onCycle` runs a full
 non-saturating closure whose successor function re-derives `presentEdges`
 per call, `sameSCC` runs two more closures per candidate pair, and the
 `≺`-relation's successors (`precSucc`) read `effClosed` — the fuel rollup —
-per blocker per step. The shipped path (`sccWitnessesT`) is near-linear:
-one unverified Tarjan pass (`Tarjan.lean`) validated by the proved
-certificate checker (`SccFast.lean`), answering `onCycle`/`sameSCC` from
-component indices, over successor functions whose edge/rollup/presence
+per blocker per step. The shipped path (`sccWitnessesT`) makes detection
+near-linear: one unverified Tarjan pass (`Tarjan.lean`) validated by the
+proved certificate checker (`SccFast.lean`), answering `onCycle`/`sameSCC`
+from component indices, over successor functions whose edge/rollup/presence
 views are hoisted into hash structures once per call. A rejected
 certificate falls back to the proved cached-closure path (`sccWitnessesF`),
 so correctness never depends on the Tarjan core — only speed does, and
-that is pinned by tests. Witness grouping (`groupSCCH`, a hash covered-set
-over `groupSCCGoF`'s recursion) does work proportional to cyclic-nodes ×
-cycle-components — zero on a healthy graph, the diagnostic's own output
-shape otherwise.
+that is pinned by tests. One accepted residual, recorded as a tracked
+task: witness grouping (`groupSCCH`, a hash covered-set over
+`groupSCCGoF`'s recursion) filters the cyclic set once per emitted
+component — Θ(cyclic-nodes × cycle-components). That is zero on a healthy
+graph and linear for one big cycle, but quadratic when the cyclic set
+shatters into many small components.
 
 The bridge (`cyclesFast_eq` / `precCyclesFast_eq` / `hasCycleFast_eq` /
 `hasDeadlockFast_eq`) makes the shipped forms pointwise EQUAL to the spec,

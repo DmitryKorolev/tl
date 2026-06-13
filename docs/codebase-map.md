@@ -90,9 +90,11 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   rejection falls back, acceptance-on-real-runs is
                         --   tested (CrossTests), never assumed
   CyclesFast.lean       --   the SHIPPED diagnostics: certificate path
-                        --   (sccWitnessesT = Tarjan + checker + near-linear
-                        --   witness reconstruction over hash-hoisted successor
-                        --   views), proved cached-closure fallback
+                        --   (sccWitnessesT = Tarjan + checker + witness
+                        --   reconstruction — near-linear detection; grouping
+                        --   ∝ cyclic×components, a tracked residual — over
+                        --   hash-hoisted successor views), proved
+                        --   cached-closure fallback
                         --   (sccWitnessesF); bridge cyclesFast_eq /
                         --   precCyclesFast_eq — EQUAL to the spec, thm 6
                         --   transfers; commands compute each result once

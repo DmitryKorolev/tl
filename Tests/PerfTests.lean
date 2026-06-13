@@ -23,8 +23,13 @@ The diagnostics run the certificate path (Tarjan + proved checker,
 healthy acyclic fixture (cyclic set empty — the dogfooding profile) and on
 a blocks-ring over every id (one giant SCC — the shape the old per-node
 closure was Θ(V·(V+E)) on). Both bench the SCC machinery over state views
-hoisted once, with enough reps to clear the 30ms noise floor — real ratios,
-not floor-masked. The FULL diagnostics command path additionally pays the
+hoisted once, with reps sized so the SMALL-scale total clears ratioRow's
+30ms floor on a typical dev machine — below the floor the row silently
+degrades to its absolute backstop, so if hardware speeds shift, re-tune the
+reps until the small time again exceeds 30ms. The fast branch being taken
+at these very scales is asserted by its own row (a scale-dependent
+certificate rejection would otherwise read as a quiet slowdown). The FULL
+diagnostics command path additionally pays the
 OR-Set view scans (`presentElements`), which are superlinear today and
 tracked as their own task; that total is pinned by an explicit absolute
 CEILING row, not a ratio. If the certificate were ever rejected, the
@@ -132,6 +137,7 @@ def perfTests : IO (List Outcome) := do
   let scales := [(100, 4), (400, 4)]
   let mut results : List (Nat × List (String × Nat)) := []
   let mut fulls : List (Nat × Nat) := []
+  let mut certScaleOk := true
   for (n, reps) in scales do
     let ops := synthOps n
     let segs := segsOf ops
@@ -159,7 +165,7 @@ def perfTests : IO (List Outcome) := do
     let present := s.presentIssues
     let edges := s.presentEdges
     let pe := s.parentEdges
-    let cyc ← bench 25 (fun _ =>
+    let cyc ← bench 100 (fun _ =>
       let pset := hashSetOf present
       let succB := State.succOfAdj (State.kindAdj edges EdgeKind.Blocks) pset
       let succP := State.succOfAdj (State.kindAdj edges EdgeKind.Parent) pset
@@ -168,6 +174,18 @@ def perfTests : IO (List Outcome) := do
       (State.sccWitnessesT present present.length succB).length
       + (State.sccWitnessesT present present.length succP).length
       + (State.sccWitnessesT present present.length succPrec).length)
+    -- the fast branch must actually be taken at THESE scales, not only on
+    -- the ≤8-node cross-test graphs — a scale-dependent rejection (fuel,
+    -- depth) would otherwise surface as nothing but a quiet slowdown
+    let pset := hashSetOf present
+    let succB := State.succOfAdj (State.kindAdj edges EdgeKind.Blocks) pset
+    let succP := State.succOfAdj (State.kindAdj edges EdgeKind.Parent) pset
+    let succPrec := State.precSuccH (hashAssoc rollup.toList)
+      (State.blocksAdj edges) (bucketBy pe) pset s
+    certScaleOk := certScaleOk
+      && sccCertOk present succB (tarjanSCC present succB)
+      && sccCertOk present succP (tarjanSCC present succP)
+      && sccCertOk present succPrec (tarjanSCC present succPrec)
     let fullCyc ← bench 1 (fun _ =>
       (State.cyclesFast s EdgeKind.Blocks).length
       + (State.cyclesFast s EdgeKind.Parent).length
@@ -181,13 +199,20 @@ def perfTests : IO (List Outcome) := do
     let rpresent := rs.presentIssues
     let redges := rs.presentEdges
     let rpe := rs.parentEdges
-    let rcyc ← bench 10 (fun _ =>
+    let rcyc ← bench 120 (fun _ =>
       let pset := hashSetOf rpresent
       let succB := State.succOfAdj (State.kindAdj redges EdgeKind.Blocks) pset
       let succPrec := State.precSuccH (hashAssoc rrollup.toList)
         (State.blocksAdj redges) (bucketBy rpe) pset rs
       (State.sccWitnessesT rpresent rpresent.length succB).length
       + (State.sccWitnessesT rpresent rpresent.length succPrec).length)
+    let rpset := hashSetOf rpresent
+    let rsuccB := State.succOfAdj (State.kindAdj redges EdgeKind.Blocks) rpset
+    let rsuccPrec := State.precSuccH (hashAssoc rrollup.toList)
+      (State.blocksAdj redges) (bucketBy rpe) rpset rs
+    certScaleOk := certScaleOk
+      && sccCertOk rpresent rsuccB (tarjanSCC rpresent rsuccB)
+      && sccCertOk rpresent rsuccPrec (tarjanSCC rpresent rsuccPrec)
     let prov ← bench reps (fun _ => (provenanceMap loaded.ops).toList.length)
     let uni ← bench reps (fun _ =>
       (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
@@ -206,10 +231,14 @@ def perfTests : IO (List Outcome) := do
     -- view scans (OR-Set presentElements) are superlinear today — tracked
     -- as their own task — so this is an explicit wall-clock CEILING, not a
     -- ratio dressed up by the noise floor.
+    let fullSmall := ((fulls.head?).map (·.2)).getD 0
     let fullBig := (fulls.getLast?.map (·.2)).getD 0
     o := o ++ [check
-      s!"diagnostics command path (views + SCC) ≤ 2500ms absolute ceiling ({fullBig}ms)"
-      (fullBig ≤ 2500) s!"big={fullBig}ms"]
+      s!"diagnostics command path (views + SCC) ≤ 2500ms absolute ceiling (small {fullSmall}ms, big {fullBig}ms)"
+      (fullBig ≤ 2500) s!"small={fullSmall}ms big={fullBig}ms"]
+    o := o ++ [check
+      "certificate accepted at both perf scales (healthy + giant-SCC ring, all graphs)"
+      certScaleOk]
     return o
   | _ => return [{ name := "perf scaling setup", passed := false,
                    msg := s!"expected two scales, got {results.length}" }]
