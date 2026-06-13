@@ -21,6 +21,7 @@ walk's structural once-per-pass property is `rollupVisit_find_hit`.
 -/
 import Tl.Kernel.RollupSat
 import Tl.Kernel.Ready
+import Tl.Kernel.HashMapView
 
 namespace Tl.Kernel
 
@@ -134,9 +135,9 @@ mutual
     lexicographically: descending into a fresh present kid shrinks the
     unvisited-present set; walking the kid list shrinks the list. -/
 def rollupVisit (s : State) (pe : List (IssueId × IssueId))
-    (path : List IssueId) (memo : AMap IssueId Status) (i : IssueId) :
-    AMap IssueId Status × Status :=
-  match memo.find i with
+    (path : List IssueId) (memo : Std.HashMap IssueId Status) (i : IssueId) :
+    Std.HashMap IssueId Status × Status :=
+  match memo[i]? with
   | some v => (memo, v)
   | none =>
     if (s.issueData i).statusOf = Status.Cancelled then
@@ -163,13 +164,13 @@ decreasing_by
     non-present kid cannot arise from `kidsOfEdges` and reads its stored
     status without recursing (defensive arm, unreachable in `effStatusAll`). -/
 def rollupKids (s : State) (pe : List (IssueId × IssueId))
-    (path : List IssueId) (memo : AMap IssueId Status) (cs : List IssueId) :
-    AMap IssueId Status × Bool :=
+    (path : List IssueId) (memo : Std.HashMap IssueId Status) (cs : List IssueId) :
+    Std.HashMap IssueId Status × Bool :=
   match cs with
   | [] => (memo, true)
   | c :: cs' =>
     let r :=
-      match memo.find c with
+      match memo[c]? with
       | some v => (memo, v)
       | none =>
         if _hcon : path.contains c then (memo, Status.Open)
@@ -193,12 +194,17 @@ decreasing_by
 
 end
 
-/-- The batched rollup: one memoized pass over every present issue. The
-    shipped form for the read path (ADR-0003 §3 amendment); pointwise equal to
-    `effectiveStatus` (`effStatusAll_find` below). -/
-def effStatusAll (s : State) : AMap IssueId Status :=
+/-- The batched rollup memo: one memoized pass over every present issue,
+    threaded through a `Std.HashMap` (O(1)-amortized find/insert). -/
+def effStatusAllH (s : State) : Std.HashMap IssueId Status :=
   let pe := s.parentEdges
-  s.presentIssues.foldl (fun memo i => (rollupVisit s pe [] memo i).1) AMap.empty
+  s.presentIssues.foldl (fun memo i => (rollupVisit s pe [] memo i).1) ∅
+
+/-- The batched rollup, materialized to the canonical `AMap` once at the end
+    (`amapOfHashMap`). The shipped form for the read path (ADR-0003 §3 amendment);
+    pointwise equal to `effectiveStatus` (`effStatusAll_find` below). -/
+def effStatusAll (s : State) : AMap IssueId Status :=
+  amapOfHashMap s.effStatusAllH
 
 /-- Effective status through a rollup map, with the spec as the (dangling-id)
     fallback. With `m = effStatusAll s` this *is* `effectiveStatus`
@@ -293,8 +299,8 @@ theorem kidsOfEdges_parentEdges (s : State) (i : IssueId) :
           exact Bool.false_ne_true), ih]
 
 /-- Memo coherence: every cached value is the spec's. -/
-def Coherent (s : State) (m : AMap IssueId Status) : Prop :=
-  ∀ k v, m.find k = some v → v = s.effectiveStatus k
+def Coherent (s : State) (m : Std.HashMap IssueId Status) : Prop :=
+  ∀ k v, m[k]? = some v → v = s.effectiveStatus k
 
 /-- The descent-chain invariant: the head of `path` is the parent of the
     current node, each member parents the one before it, and every member is
@@ -370,26 +376,26 @@ theorem effectiveStatus_open_of_reencounter (s : State) {path : List IssueId}
     · exact ⟨hinc, c, List.mem_cons_of_mem x (mem_seg_self c path hpath), hkid⟩
     · exact seg_liveSet s c path i hchain hpath x hxseg
 
-private theorem coherent_insert (s : State) {m : AMap IssueId Status}
+private theorem coherent_insert (s : State) {m : Std.HashMap IssueId Status}
     (hcoh : Coherent s m) {i : IssueId} {v : Status}
     (hv : v = s.effectiveStatus i) : Coherent s (m.insert i v) := by
   intro k w hkw
-  rw [AMap.find_insert] at hkw
+  rw [Std.HashMap.getElem?_insert] at hkw
   by_cases hki : k = i
-  · rw [if_pos hki] at hkw
+  · rw [if_pos (beq_iff_eq.mpr hki.symm)] at hkw
     rw [← Option.some.inj hkw, hki]
     exact hv
-  · rw [if_neg hki] at hkw
+  · rw [if_neg (fun h => hki (beq_iff_eq.mp h).symm)] at hkw
     exact hcoh k w hkw
 
-private theorem isSome_insert_mono {m : AMap IssueId Status} {i : IssueId}
-    {v : Status} (k : IssueId) (h : (m.find k).isSome = true) :
-    ((m.insert i v).find k).isSome = true := by
-  rw [AMap.find_insert]
+private theorem isSome_insert_mono {m : Std.HashMap IssueId Status} {i : IssueId}
+    {v : Status} (k : IssueId) (h : (m[k]?).isSome = true) :
+    ((m.insert i v)[k]?).isSome = true := by
+  rw [Std.HashMap.getElem?_insert]
   by_cases hki : k = i
-  · rw [if_pos hki]
+  · rw [if_pos (beq_iff_eq.mpr hki.symm)]
     rfl
-  · rw [if_neg hki]
+  · rw [if_neg (fun h => hki (beq_iff_eq.mp h).symm)]
     exact h
 
 mutual
@@ -398,15 +404,15 @@ mutual
     walk returns exactly `effectiveStatus`, keeps the memo coherent, never
     drops an entry, and records the node. -/
 theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
-    (hpe : pe = s.parentEdges) (path : List IssueId) (memo : AMap IssueId Status)
+    (hpe : pe = s.parentEdges) (path : List IssueId) (memo : Std.HashMap IssueId Status)
     (i : IssueId) (hcoh : Coherent s memo) (hchain : ChainOk s path i) :
     Coherent s (rollupVisit s pe path memo i).1
     ∧ (rollupVisit s pe path memo i).2 = s.effectiveStatus i
-    ∧ (∀ k, (memo.find k).isSome = true →
-        ((rollupVisit s pe path memo i).1.find k).isSome = true)
-    ∧ ((rollupVisit s pe path memo i).1.find i).isSome = true := by
+    ∧ (∀ (k : IssueId), (memo[k]?).isSome = true →
+        ((rollupVisit s pe path memo i).1[k]?).isSome = true)
+    ∧ ((rollupVisit s pe path memo i).1[i]?).isSome = true := by
   unfold State.rollupVisit
-  cases hfind : memo.find i with
+  cases hfind : memo[i]? with
   | some v =>
     refine ⟨hcoh, hcoh i v hfind, fun k hk => hk, ?_⟩
     rw [hfind]
@@ -417,7 +423,7 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
       exact ⟨coherent_insert s hcoh (effectiveStatus_cancelled s i hcanc).symm,
         (effectiveStatus_cancelled s i hcanc).symm,
         fun k hk => isSome_insert_mono k hk,
-        by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+        by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
     · rw [if_neg hcanc]
       have hkids_eq : kidsOfEdges pe i = s.presentChildren i := by
         rw [hpe]
@@ -432,7 +438,7 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
         exact ⟨coherent_insert s hcoh (effectiveStatus_nonEpic s i hepic).symm,
           (effectiveStatus_nonEpic s i hepic).symm,
           fun k hk => isSome_insert_mono k hk,
-          by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+          by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
       | false =>
         rw [if_neg (by rw [hkemp]; exact Bool.false_ne_true)]
         have hcs : ∀ c ∈ kidsOfEdges pe i, c ∈ s.presentChildren i := by
@@ -450,7 +456,7 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
           rw [hpem, if_neg Bool.false_ne_true]
         exact ⟨coherent_insert s hcoh' heff, heff,
           fun k hk => isSome_insert_mono k (hmono k hk),
-          by rw [AMap.find_insert, if_pos rfl]; rfl⟩
+          by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x && x != i)).length, pe.length + 1)
 decreasing_by
@@ -464,19 +470,19 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
     (hpe : pe = s.parentEdges) (path : List IssueId) (i : IssueId)
     (hchain : ChainOk s path i)
     (hinc : (s.issueData i).statusOf ≠ Status.Cancelled) :
-    (memo : AMap IssueId Status) → (cs : List IssueId) → Coherent s memo →
+    (memo : Std.HashMap IssueId Status) → (cs : List IssueId) → Coherent s memo →
     (∀ c ∈ cs, c ∈ s.presentChildren i) →
     Coherent s (rollupKids s pe (i :: path) memo cs).1
     ∧ (rollupKids s pe (i :: path) memo cs).2 = cs.all (fun c => s.effClosed c)
-    ∧ ∀ k, (memo.find k).isSome = true →
-        ((rollupKids s pe (i :: path) memo cs).1.find k).isSome = true
+    ∧ ∀ (k : IssueId), (memo[k]?).isSome = true →
+        ((rollupKids s pe (i :: path) memo cs).1[k]?).isSome = true
   | memo, [], hcoh, _ => by
     unfold State.rollupKids
     exact ⟨hcoh, rfl, fun k hk => hk⟩
   | memo, c :: cs', hcoh, hcs => by
     unfold State.rollupKids
     have hckid : c ∈ s.presentChildren i := hcs c (List.mem_cons_self ..)
-    cases hfind : memo.find c with
+    cases hfind : memo[c]? with
     | some v =>
       dsimp only
       obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe hpe path i hchain hinc
@@ -533,15 +539,20 @@ end
 
 /-- **Once-per-pass.** A memoized node returns without recomputation. -/
 theorem rollupVisit_find_hit (s : State) (pe : List (IssueId × IssueId))
-    (path : List IssueId) (memo : AMap IssueId Status) (i : IssueId) (v : Status)
-    (h : memo.find i = some v) : rollupVisit s pe path memo i = (memo, v) := by
+    (path : List IssueId) (memo : Std.HashMap IssueId Status) (i : IssueId) (v : Status)
+    (h : memo[i]? = some v) : rollupVisit s pe path memo i = (memo, v) := by
   unfold State.rollupVisit
   rw [h]
 
-/-- The batched map is coherent: every entry is the spec's value. -/
-theorem effStatusAll_coherent (s : State) : Coherent s s.effStatusAll := by
-  unfold State.effStatusAll
-  have main : ∀ (l : List IssueId) (memo : AMap IssueId Status), Coherent s memo →
+/-- Coherence of the empty memo (vacuous). -/
+private theorem coherent_empty (s : State) : Coherent s ∅ := fun k v h => by
+  rw [Std.HashMap.getElem?_empty] at h
+  nomatch h
+
+/-- The batched HashMap memo is coherent: every entry is the spec's value. -/
+theorem effStatusAllH_coherent (s : State) : Coherent s s.effStatusAllH := by
+  unfold State.effStatusAllH
+  have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
       Coherent s (l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo) := by
     intro l
     induction l with
@@ -550,17 +561,16 @@ theorem effStatusAll_coherent (s : State) : Coherent s s.effStatusAll := by
       intro memo h
       rw [List.foldl_cons]
       exact ih _ (rollupVisit_sound s s.parentEdges rfl [] memo x h trivial).1
-  exact main s.presentIssues AMap.empty (fun k v h => nomatch h)
+  exact main s.presentIssues ∅ (coherent_empty s)
 
-/-- **The refinement bridge.** The batched rollup holds exactly
-    `effectiveStatus` for every present issue. -/
-theorem effStatusAll_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues) :
-    (s.effStatusAll).find i = some (s.effectiveStatus i) := by
-  have hsome : ((s.effStatusAll).find i).isSome = true := by
-    unfold State.effStatusAll
-    have main : ∀ (l : List IssueId) (memo : AMap IssueId Status), Coherent s memo →
-        (i ∈ l ∨ (memo.find i).isSome = true) →
-        ((l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo).find i).isSome
+/-- Completeness over the HashMap memo: every present issue is recorded. -/
+theorem effStatusAllH_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues) :
+    (s.effStatusAllH)[i]? = some (s.effectiveStatus i) := by
+  have hsome : ((s.effStatusAllH)[i]?).isSome = true := by
+    unfold State.effStatusAllH
+    have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
+        (i ∈ l ∨ (memo[i]?).isSome = true) →
+        ((l.foldl (fun m j => (rollupVisit s s.parentEdges [] m j).1) memo)[i]?).isSome
           = true := by
       intro l
       induction l with
@@ -579,9 +589,25 @@ theorem effStatusAll_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues)
           · exact ih _ hcoh' (Or.inr hself)
           · exact ih _ hcoh' (Or.inl hxs)
         · exact ih _ hcoh' (Or.inr (hmono i h))
-    exact main s.presentIssues AMap.empty (fun k v h => nomatch h) (Or.inl hi)
+    exact main s.presentIssues ∅ (coherent_empty s) (Or.inl hi)
   obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
-  rw [hv, effStatusAll_coherent s i v hv]
+  rw [hv, effStatusAllH_coherent s i v hv]
+
+/-- The materialized `AMap` is coherent — via the `amapOfHashMap` bridge, so
+    callers see the same `(s.effStatusAll).find k = some v → v = …` shape. -/
+theorem effStatusAll_coherent (s : State) (k : IssueId) (v : Status)
+    (h : (s.effStatusAll).find k = some v) : v = s.effectiveStatus k := by
+  unfold State.effStatusAll at h
+  rw [find_amapOfHashMap] at h
+  exact effStatusAllH_coherent s k v h
+
+/-- **The refinement bridge.** The batched rollup holds exactly
+    `effectiveStatus` for every present issue. -/
+theorem effStatusAll_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues) :
+    (s.effStatusAll).find i = some (s.effectiveStatus i) := by
+  unfold State.effStatusAll
+  rw [find_amapOfHashMap]
+  exact effStatusAllH_find s i hi
 
 /-- `effStatusWith` over the batched map *is* `effectiveStatus` — for every
     id, present or dangling (an absent key falls back to the spec; a found
