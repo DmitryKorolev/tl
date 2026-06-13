@@ -101,7 +101,7 @@ vacuous net this ADR retires.
   the prevention net is a keystone, closed as the paths it measures are
   fixed, not before.
 
-### 3. Command paths read the indexed view; raw per-element accessors are a smell, gated by lint
+### 3. Command paths read the indexed view; raw per-element accessors are a smell, caught by a coupled ratio row
 
 The dominant cost class is "an `O(N)` accessor in a per-element loop" —
 `AMap.find` (a linear assoc-list scan) or `OrSet.Present` (a linear
@@ -110,20 +110,33 @@ standing rule: a command path consumes the once-built indexed view
 ([ADR-0024](ADR-0024-indexed-views-bridge.md)), never re-derives a lookup per
 element.
 
-This is **discipline backed by a lint, not a by-construction guarantee** —
-and the distinction is deliberate, because an ADR whose thesis is "an
-unenforced prose principle let quadratics ship" must not itself assert an
-unenforced invariant. Today the raw accessors are public and callable from a
-command path; the per-row render path still calls `issueData`/`effStatusWith`
-once per rendered row (a tracked, open violation). The enforcement mechanism
-is therefore a CI lint, in the spirit of the existing "no task-ID leakage"
-gate (AGENTS.md): flag `AMap.find` / `presentElements` / `OrSet.Present`
-reached from a per-element loop on a command path (`Tl/Cli`, and the
-fast-path kernel modules). The stronger, type-level form — command paths
-receive only a `View` exposing hashed accessors, with the raw `State`
-accessors out of scope — is the eventual target; until the lint and that
-discipline exist, "by construction" overstates it, and the rule lives as
-convention plus the open per-row task.
+This is **discipline backed by a regression test, not a by-construction
+guarantee** — and the distinction is deliberate, because an ADR whose thesis
+is "an unenforced prose principle let quadratics ship" must not itself assert
+an unenforced invariant. The per-row render path now routes every per-issue
+read through the `View` helpers (`issueRow`/`issueObj`/`styledLine`/the
+`list`/`stats`/`doctor` aggregates), each proved pointwise-equal to its spec
+accessor (ADR-0024); the raw accessors stay public and callable, but the
+former per-row violation is closed.
+
+The enforcement is the **coupled per-path op-count ratio row of §2**, not a
+lint. A static accessor lint was evaluated and rejected: a grep cannot
+distinguish a per-element loop from a legitimate single-issue accessor
+(`tl show`/`tl why` read `issueData` correctly), so without a type system to
+back it the lint is false-positive-prone — exactly the flakiness this ADR
+warns against. Instead, a command path's per-issue work is pinned by a ratio
+row (`cli per-row projections`, `cli tree canonical-parent`) that trips when
+the `×4`-op growth jumps past the near-linear bound — a revert to a raw
+accessor goes superlinear and fails the row, with no false positives — backed
+by `rowAccessorAgreementTests` (every `View` helper `==` its spec). A new hot
+path ships with its own ratio row (§2 "untested-for-cost is a defect"). The
+stronger, type-level form — command paths receive only a `View` exposing
+hashed accessors, with the raw `State` accessors out of scope — remains the
+eventual by-construction target; it is a real refactor (`View.state` exposes
+every `State` accessor and the render path legitimately needs some — the
+`effectiveStatus` fallback, the edge views — and Lean does not cleanly express
+"may not call `X` in a loop"), so until it lands "by construction" overstates
+it and the rule lives as the ratio-row net plus the View-helper convention.
 
 ### 4. "Memoized" must mean indexed-memoized
 
@@ -139,8 +152,10 @@ container is still linear.
 
 - **Untested-for-cost is a defect, like untested shell code.** A new hot path
   ships with its op-count ratio row in the same change, exactly as shell code
-  ships with its branch tests (ADR-0004). A lint may guard the accessor
-  class, but a lint does not excuse a missing per-change ratio row.
+  ships with its branch tests (ADR-0004). The per-path ratio row *is* the
+  guard for the accessor class (§3) — a static accessor lint was rejected as
+  false-positive-prone; should one ever be added, it would not excuse a
+  missing per-change ratio row.
 - **The proved tier is honest about its reach.** "Proved efficient" means the
   structural invariant is proved (visited-once, saturation,
   fold-equivalence); the binary's wall-clock is tested, never claimed proved.
