@@ -19,7 +19,9 @@ namespace Tl.Kernel
 
 open Tl.Crdt
 
-/-- The single reducer: join the op's delta into the state (total). -/
+/-- The single reducer: join the op's delta into the state (total). A change to
+    how an `Op` maps to its delta (here or in `Op.delta`) must bump
+    `Tl.Store.cacheVersion` — the cache persists folded state (Cache.lean header). -/
 def apply (s : State) (op : Op) : State := State.merge s op.delta
 
 /-- Materialization: fold the ops over the empty state (ADR-0001). -/

@@ -115,6 +115,10 @@ def tarjanSCC (nodes : List IssueId) (succ : IssueId → List IssueId) :
   -- Closed world: vertices outside `nodes` become sinks (frame `(w, [])`).
   let succ' := fun v => if inNodes.contains v then succ v else []
   let totalEdges := nodes.foldl (fun n v => n + (succ v).length) 0
+  -- `2 * (nodes + edges)` over-covers any root's DFS (comment above); the
+  -- `+ 8` is constant slack for the seed push and `fuel + 1`-shaped decrements,
+  -- so exhaustion (→ truncated output → certificate rejection) is unreachable
+  -- on a real graph, never an off-by-one.
   let fuel := 2 * (nodes.length + totalEdges) + 8
   let st := nodes.foldl (init := TarjanState.initial) fun st v =>
     if st.index.contains v then st

@@ -291,8 +291,11 @@ theorem cidxOf_sound {comps : List (List IssueId)} {u : IssueId} {i : Nat}
 /-! ## The certificate checker -/
 
 /-- BFS fuel that over-covers any valid certificate's walk: one expansion
-    per present node plus one frontier entry per edge and per seed. An
-    invalid certificate may exhaust it — under-coverage only ever rejects. -/
+    per present node (`present.length`) plus one frontier entry per edge
+    (the folded `Σ |succ v|`). The `+ 2` is constant slack covering the
+    single seed push and the `n+1`-shaped fuel decrement so the bound is a
+    strict over-cover, never an off-by-one underrun. An invalid certificate
+    may still exhaust it — under-coverage only ever rejects, never misvalidates. -/
 def certFuel (present : List IssueId) (succ : IssueId → List IssueId) : Nat :=
   present.foldl (fun a v => a + (succ v).length) (present.length + 2)
 

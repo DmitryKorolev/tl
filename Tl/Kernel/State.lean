@@ -183,7 +183,9 @@ namespace State
 /-- The empty state. -/
 def empty : State := ⟨OrSet.empty, AMap.empty, OrSet.empty⟩
 
-/-- The state join — componentwise (ADR-0004 thm 1). -/
+/-- The state join — componentwise (ADR-0004 thm 1). A change to this join's
+    semantics must bump `Tl.Store.cacheVersion` (a stale fold cache would
+    deserialize state this join would no longer produce — Cache.lean header). -/
 def merge (s t : State) : State :=
   ⟨OrSet.merge s.issues t.issues,
    AMap.merge IssueData.merge s.data t.data,

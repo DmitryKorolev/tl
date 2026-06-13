@@ -175,7 +175,9 @@ def wire : WireOp → String
 def stripLifecycle (w : ScalarWrites) : ScalarWrites :=
   { w with status := none, deferUntil := none, closeResolution := none }
 
-/-- The ADR-0008 verb→delta table, executable: project the kernel `Op`. -/
+/-- The ADR-0008 verb→delta table, executable: project the kernel `Op`. A change
+    to this projection's classification must bump `Tl.Store.cacheVersion` — the
+    fold cache is keyed on these semantics (Tl/Store/Cache.lean header). -/
 def toOp (w : WireOp) (st : Stamp) : Op :=
   match w with
   | .create id writes => .create id st writes
@@ -465,7 +467,9 @@ def render (p : ParsedOp) : Record :=
     actor := p.actor
     fields := fields.mergeSort (fun a b => decide (a.1 ≤ b.1)) }
 
-/-- Decode one JSONL line (parse failure ⇒ `malformed-line`). -/
+/-- Decode one JSONL line (parse failure ⇒ `malformed-line`). A change to how a
+    line is classified into a `ParsedOp` must bump `Tl.Store.cacheVersion`
+    (Cache.lean header). -/
 def decodeLine (line : String) : Except Tl.Error ParsedOp :=
   match Record.parse line with
   | .ok r => decode r
