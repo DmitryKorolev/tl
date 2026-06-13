@@ -217,12 +217,39 @@ def perfTests : IO (List Outcome) := do
     let uni ← bench reps (fun _ =>
       (unionLines (segs.head?.map (·.bytes) |>.getD ByteArray.empty)
         (segs.head?.map (·.bytes) |>.getD ByteArray.empty)).size)
+    -- the CLI per-row render path (ADR-0023/0024): the `list`/`stats`/`doctor`
+    -- rows read each issue's derived fields through the once-built `ViewIndex`
+    -- (issueData/effStatus/isEpic/ready/blocked/deferred/blockers/dependents/
+    -- prov) — O(1)/O(deg) per issue. Before that routing each was an O(N)
+    -- `AMap.find` / O(E) edge-filter, so rendering N rows was Θ(N²)/Θ(N·E). A
+    -- revert to a raw accessor turns this row quadratic and the ratio jumps.
+    -- reps sized so the SMALL scale clears ratioRow's 30ms floor (de-masked).
+    let v : Tl.Cli.View :=
+      { dirs := ⟨"", ".tl"⟩, loaded, now := synthNow, replica := none,
+        rollup, present, edges, pedges := pe, prov := provenanceMap loaded.ops,
+        idx := Tl.Cli.ViewIndex.of s.data rollup present edges pe
+                 (provenanceMap loaded.ops) s.edges.adds.toList }
+    let row ← bench 1200 (fun _ =>
+      present.foldl (fun acc i =>
+        acc + (v.issueData i).priorityOf.val + (v.effStatus i).toNat
+        + (if v.isEpic i then 1 else 0) + (if v.ready i then 1 else 0)
+        + (if v.blocked i then 1 else 0) + (if v.deferred i then 1 else 0)
+        + (v.blockers i).length + (v.dependents i).length
+        + ((v.provFor i).createdAt.getD 0) % 7) 0)
+    -- the tree render's per-visible canonical-parent (cmdList `isRoot`): the
+    -- parent-by-child bucket + the edge-tag hash (`maxTag`) — O(deg) per issue.
+    -- A revert to the spec `parentsOf`/`tagsOf` scans is O(E) per issue ⇒ Θ(N·E).
+    let canon ← bench 2500 (fun _ =>
+      present.foldl (fun acc i =>
+        acc + (match Tl.Cli.canonicalParentE v i with | some _ => 1 | none => 0)) 0)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
       ("fast diagnostics (SCC machinery)", cyc),
       ("giant-SCC diagnostics (machinery)", rcyc),
-      ("provenance map", prov), ("sync line-union", uni)])]
+      ("provenance map", prov), ("sync line-union", uni),
+      ("cli per-row projections (issueRow fields)", row),
+      ("cli tree canonical-parent per row", canon)])]
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
