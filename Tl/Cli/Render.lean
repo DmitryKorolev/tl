@@ -139,8 +139,8 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
     the hoisted view (the per-node `presentChildren` re-derived `presentEdges`
     each call). Returns the lines and the grown emitted set. -/
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
-    (pre : String) (path : List IssueId) (emitted : List IssueId)
-    (keep : IssueId → Bool) : List String × List IssueId := Id.run do
+    (pre : String) (path : Std.HashSet IssueId) (emitted : Std.HashSet IssueId)
+    (keep : IssueId → Bool) : List String × Std.HashSet IssueId := Id.run do
   let kids := (v.kids i).filter keep
   let n := kids.length
   let mut lines : List String := []
@@ -161,8 +161,8 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     else if em.contains c then
       lines := lines ++ [node ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
-      em := c :: em
-      let (sub, em') := treeLines st v c childPre (i :: path) em keep
+      em := em.insert c
+      let (sub, em') := treeLines st v c childPre (path.insert i) em keep
       lines := lines ++ (node :: sub)
       em := em'
     idx := idx + 1
@@ -176,14 +176,17 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     encounters, across the whole forest. -/
 def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String := Id.run do
   let mut lines : List String := []
-  let mut em : List IssueId := []
+  -- emitted/path are forest-global membership sets: a HashSet (was List.contains,
+  -- O(N) per node ⇒ O(N²) over the forest). Order is immaterial (membership only),
+  -- so the rendered markers are byte-identical (the diamond/cycle fixtures pin it).
+  let mut em : Std.HashSet IssueId := ∅
   for r in roots do
     if em.contains r then
       lines := lines ++ [styledLine st v r
         ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
-      em := r :: em
-      let (sub, em') := treeLines st v r "" [] em keep
+      em := em.insert r
+      let (sub, em') := treeLines st v r "" ∅ em keep
       lines := lines ++ (styledLine st v r :: sub)
       em := em'
   return lines
@@ -226,7 +229,8 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
     | some p => ["parent: " ++ displayId p] | none => []
   let childrenBlock :=
     if (v.kids i).isEmpty then []
-    else st.paint "1" "children:" :: (treeLines st v i "  " [] [i] (fun _ => true)).1
+    else st.paint "1" "children:"
+      :: (treeLines st v i "  " ∅ ((∅ : Std.HashSet IssueId).insert i) (fun _ => true)).1
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
