@@ -78,14 +78,13 @@ inductive DState | ready | inProgress | blocked | deferred | done | cancelled
 deriving DecidableEq
 
 def displayState (v : View) (i : IssueId) : DState :=
-  let s := v.state
-  match State.effStatusWith v.rollup s i with
+  match v.effStatus i with
   | .Done => .done
   | .Cancelled => .cancelled
   | _ =>
-    if (s.issueData i).statusOf == .InProgress then .inProgress
-    else if deferredOf s v.now i then .deferred
-    else if blockedOf v.rollup v.edges s i then .blocked
+    if (v.issueData i).statusOf == .InProgress then .inProgress
+    else if v.deferred i then .deferred
+    else if v.blocked i then .blocked
     else .ready
 
 def DState.glyph (st : Style) : DState → String
@@ -118,13 +117,12 @@ private def prioToken (st : Style) (p : Nat) : String :=
 /-- `<glyph> <id> <P#> [epic] <title>`, per-token colored; `title` dimmed when
     closed. Content is sanitized (ADR-0014). -/
 def styledLine (st : Style) (v : View) (i : IssueId) : String :=
-  let s := v.state
-  let d := s.issueData i
+  let d := v.issueData i
   let ds := displayState v i
   let glyph := st.paint ds.colorCode (ds.glyph st)
   let id := st.paint "2" (displayId i)
   let prio := prioToken st d.priorityOf.val
-  let epic := if !(State.kidsOfEdges v.pedges i).isEmpty then " " ++ st.paint "1" "[epic]" else ""
+  let epic := if v.isEpic i then " " ++ st.paint "1" "[epic]" else ""
   let titleRaw := sanitizeSingle ((d.title.value).getD "(untitled)")
   let title := if ds == .done || ds == .cancelled then st.paint "2" titleRaw else titleRaw
   s!"{glyph} {id} {prio}{epic} {title}"
@@ -143,7 +141,7 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
     (pre : String) (path : List IssueId) (emitted : List IssueId)
     (keep : IssueId → Bool) : List String × List IssueId := Id.run do
-  let kids := (State.kidsOfEdges v.pedges i).filter keep
+  let kids := (v.kids i).filter keep
   let n := kids.length
   let mut lines : List String := []
   let mut em := emitted
@@ -197,10 +195,9 @@ private def fence (st : Style) (label : String) (body : String) : List String :=
   else [st.paint "1" label, "  " ++ String.intercalate "\n  " (body.splitOn "\n"), ""]
 
 def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
-  let s := v.state
-  let d := s.issueData i
+  let d := v.issueData i
   let ds := displayState v i
-  let pr := provOf v.prov i
+  let pr := v.provFor i
   let glyph := st.paint ds.colorCode (ds.glyph st)
   let idTok := st.paint "2" (displayId i)
   let statusTok := st.paint ds.colorCode ds.word
@@ -208,7 +205,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let header := s!"{glyph} {idTok} · {title}   [" ++
     prioToken st d.priorityOf.val ++ " · " ++ statusTok ++ "]"
   let mut prov : List String := []
-  if !(State.kidsOfEdges v.pedges i).isEmpty then prov := prov ++ [st.paint "1" "[epic]"]
+  if v.isEpic i then prov := prov ++ [st.paint "1" "[epic]"]
   match d.assignee.value.getD none with
     | some a => prov := prov ++ [s!"assignee: {sanitizeSingle a}"] | none => pure ()
   match pr.createdAt with | some h => prov := prov ++ [s!"created:  {hlcIso h}"] | none => pure ()
@@ -221,14 +218,14 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let labelLine := if labels.isEmpty then []
     else ["labels: " ++ String.intercalate ", " (labels.map sanitizeSingle)]
   -- relationships
-  let blockers := State.blockersOfE v.edges i
-  let deps := State.dependentsOfE v.edges i
+  let blockers := v.blockers i
+  let deps := v.dependents i
   let rel (label : String) (ids : List IssueId) : List String :=
     if ids.isEmpty then [] else [label ++ ": " ++ String.intercalate ", " (ids.map displayId)]
   let parentLine := match canonicalParentE v i with
     | some p => ["parent: " ++ displayId p] | none => []
   let childrenBlock :=
-    if (State.kidsOfEdges v.pedges i).isEmpty then []
+    if (v.kids i).isEmpty then []
     else st.paint "1" "children:" :: (treeLines st v i "  " [] [i] (fun _ => true)).1
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]

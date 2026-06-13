@@ -56,10 +56,15 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   -- fold itself runs through the content-keyed cache (ADR-0022)
   let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
   let st := loaded.state
-  return { dirs := d, loaded, now, replica, rollup := st.effStatusAll,
-           present := st.presentIssues,
-           edges := st.presentEdges, pedges := parentEdgesFast st,
-           prov := provenanceMap loaded.ops,
+  -- bind each hoisted collection once: the base fields AND the indexed views
+  -- both read them, so `effStatusAll`/`provenanceMap`/`parentEdgesFast` run once
+  let rollup := st.effStatusAll
+  let present := st.presentIssues
+  let edges := st.presentEdges
+  let pedges := parentEdgesFast st
+  let prov := provenanceMap loaded.ops
+  return { dirs := d, loaded, now, replica, rollup, present, edges, pedges, prov,
+           idx := ViewIndex.of st.data rollup present edges pedges prov,
            refreshNote := refresh.degraded.map (fun r =>
              s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up") }
 
@@ -107,15 +112,18 @@ def writeNotes (ctx : TxContext) : List String :=
 /-- The post-write view: the pre-state plus the appended records. -/
 def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
   let state := parsed.foldl (fun s p => Tl.Kernel.apply s p.kernelOp) v.loaded.state
+  let ops := v.loaded.ops ++ parsed
+  let rollup := state.effStatusAll
+  let present := state.presentIssues
+  let edges := state.presentEdges
+  let pedges := parentEdgesFast state
+  let prov := provenanceMap ops
   { dirs := v.dirs
-    loaded := { v.loaded with state, ops := v.loaded.ops ++ parsed }
+    loaded := { v.loaded with state, ops }
     now
     replica := some v.replica
-    rollup := state.effStatusAll
-    present := state.presentIssues
-    edges := state.presentEdges
-    pedges := parentEdgesFast state
-    prov := provenanceMap (v.loaded.ops ++ parsed) }
+    rollup, present, edges, pedges, prov
+    idx := ViewIndex.of state.data rollup present edges pedges prov }
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
   Json.mkObj [("count", jnum total), (key, Json.arr rows.toArray)]
@@ -145,7 +153,6 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
     (labels : List String) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let s := v.state
   -- every issue, oldest first; then by default hide effectively-closed
   -- issues (done/cancelled, incl. rolled-up epics) — `tl ready` shows
   -- workable, `tl list` shows open work, `tl list --all` shows everything
@@ -155,16 +162,16 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- both are the min create-tag HLC: createdAtOf is the min over add-tag HLCs,
   -- Prov.createdAt is the min-STAMP create's HLC, and Stamp orders by HLC first,
   -- so they coincide (CrossTests pins it per seed). Default 0 = createdAtOf's nil.
-  let createdAt := fun i => ((provOf v.prov i).createdAt).getD 0
+  let createdAt := fun i => ((v.provFor i).createdAt).getD 0
   let sorted := (v.present.map (fun i => (createdAt i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
   -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
   let sorted := if labels.isEmpty then sorted
-    else sorted.filter (fun i => labels.all (s.issueData i).labels.presentElements.contains)
-  let visible := if showAll then sorted else sorted.filter (fun i => !State.effClosedWith v.rollup s i)
-  let openN := (sorted.filter (fun i => (s.issueData i).statusOf == .Open)).length
-  let inProg := (sorted.filter (fun i => (s.issueData i).statusOf == .InProgress)).length
+    else sorted.filter (fun i => labels.all (v.issueData i).labels.presentElements.contains)
+  let visible := if showAll then sorted else sorted.filter (fun i => !v.effClosed i)
+  let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
+  let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
   let summary :=
     if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress)"
     else s!"{visible.length} open issues ({inProg} in progress) — --all includes closed"
@@ -181,7 +188,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
         | none => true | some p => !(visible.contains p)
       let roots := visible.filter isRoot
       let cappedRoots := if limit == 0 then roots else roots.take limit
-      let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !State.effClosedWith v.rollup s i)
+      let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !v.effClosed i)
       fun st =>
         if roots.isEmpty then (if visible.isEmpty then "no issues" else "(no top-level issues)")
         else String.intercalate "\n" (treeForest st v cappedRoots keep)
@@ -302,10 +309,10 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let notes ← cleanReadNotes v
   let s := v.state
   let issues := v.present
-  let byStored (st : Status) : Nat := (issues.filter (fun i => (s.issueData i).statusOf == st)).length
+  let byStored (st : Status) : Nat := (issues.filter (fun i => (v.issueData i).statusOf == st)).length
   let ready := (State.readyFast v.rollup s v.now).length
-  let blocked := (issues.filter (blockedOf v.rollup v.edges s)).length
-  let deferred := (issues.filter (deferredOf s v.now)).length
+  let blocked := (issues.filter v.blocked).length
+  let deferred := (issues.filter v.deferred).length
   let cycles := cycleCount v
   let openN := byStored .Open
   let inProg := byStored .InProgress
@@ -758,13 +765,15 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
       pure (← readStateCached d false (some now) (own.map (·.id)) (persist := false), none)
     catch e =>
       pure (materialize [] false (some now) (own.map (·.id)), some e)
+  let st := loaded.state
+  let rollup := st.effStatusAll
+  let present := st.presentIssues
+  let edges := st.presentEdges
+  let pedges := parentEdgesFast st
+  let prov := provenanceMap loaded.ops
   let v : View := { dirs := d, loaded, now, replica := own,
-                    rollup := loaded.state.effStatusAll,
-                    present := loaded.state.presentIssues,
-                    edges := loaded.state.presentEdges,
-                    pedges := parentEdgesFast loaded.state,
-                    prov := provenanceMap loaded.ops }
-  let s := v.state
+                    rollup, present, edges, pedges, prov,
+                    idx := ViewIndex.of st.data rollup present edges pedges prov }
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
     (Json.mkObj [("name", Json.str "log"),
@@ -786,13 +795,15 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
   -- parents of a present `i` over the hoisted parent-edge view (`pedges` already
   -- filters child-present, and `i` is the child) — avoids re-deriving presentEdges
   -- per issue (the O(N·E) doctor scan)
-  let multi := (v.present.filter (fun i => (v.pedges.filter (·.2 == i)).length > 1)).length
+  -- parents of `i` via the parent-by-child bucket (was an O(E) `v.pedges` filter
+  -- per present issue — the O(N·E) doctor scan); the count is order-independent
+  let multi := (v.present.filter (fun i => (v.parents i).length > 1)).length
   let dangling := (v.edges.filter (fun (f, t, k) =>
     (k == EdgeKind.Blocks || k == EdgeKind.Parent)
-      && (!decide (s.hasIssue f) || !decide (s.hasIssue t)))).length
+      && (!v.has f || !v.has t))).length
   let dupIssues := (v.present.filter (fun i =>
-    match duplicateOf s i with
-    | some t => !decide (s.hasIssue t) || (duplicateOf s t).isSome
+    match v.duplicateOf i with
+    | some t => !v.has t || (v.duplicateOf t).isSome
     | none => false)).length
   let graphBad := decide (cyc > 0)
   let graphRow := (Json.mkObj
@@ -803,8 +814,8 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
      ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)], graphBad)
   -- stale claims (ADR-0013 24h default)
   let stale := v.present.filter (fun i =>
-    (s.issueData i).statusOf == .InProgress
-      && match (provOf v.prov i).claimedAt with
+    (v.issueData i).statusOf == .InProgress
+      && match (v.provFor i).claimedAt with
          | some h => now > h / 2 ^ 16 + 24 * 3600 * 1000
          | none => false)
   let staleRow := (Json.mkObj <|

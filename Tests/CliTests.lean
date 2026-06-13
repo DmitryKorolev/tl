@@ -1294,7 +1294,8 @@ def treeCycleRenderTests : List Outcome :=
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
-      prov := Tl.Crdt.AMap.empty }
+      prov := Tl.Crdt.AMap.empty
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty }
   -- a 2-cycle: a parent-of b, b parent-of a
   let sCyc := Tl.Kernel.fold [
     Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
@@ -1336,7 +1337,8 @@ def canonicalParentTieTests : List Outcome :=
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
-      prov := Tl.Crdt.AMap.empty }
+      prov := Tl.Crdt.AMap.empty
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty }
   -- a parent edge to an ABSENT child (dangling): parentEdges drops it, so the
   -- fast presence-filter must too
   let sDangling := Tl.Kernel.fold [
@@ -1355,6 +1357,73 @@ def canonicalParentTieTests : List Outcome :=
       (parentEdgesFast sDangling == sDangling.parentEdges
         && sDangling.parentEdges.isEmpty) ]
 
+/-- The indexed-view row accessors (ADR-0024) equal — pointwise, on every present
+    issue — the spec accessors they replace, over a folded state exercising an
+    epic, a done child, a blocked issue, a deferred issue, a multi-parent child,
+    and a `duplicate-of`. The per-issue bridges are proved in the kernel
+    (`issueDataH_eq`/`isReadyFastH_eq`/`blocksByTarget_eq`/…); this is the
+    shell-tier pin that the CLI's `View` helpers compose them faithfully (the
+    per-row Θ(N²)/Θ(N·E) → O(N) routing of `issueRow`/`issueObj`/`styledLine`/
+    `list`/`stats`/`doctor`). -/
+def rowAccessorAgreementTests : List Outcome :=
+  let st (n : Nat) : Tl.Crdt.Stamp := ⟨n, 7, n⟩
+  let a := "a000000000000000"; let b := "b000000000000000"; let c := "c000000000000000"
+  let d := "d000000000000000"; let e := "e000000000000000"; let f := "f000000000000000"
+  let g := "g000000000000000"; let h := "h000000000000000"
+  let now := 1000000
+  let s := Tl.Kernel.fold [
+    Op.create a (st 1) { title := some "epic A" },
+    Op.create b (st 2) { title := some "B" },
+    Op.create c (st 3) { title := some "C" },
+    Op.create d (st 4) { title := some "D" },
+    Op.create e (st 5) { title := some "E" },
+    Op.create f (st 6) { title := some "F" },
+    Op.create g (st 7) { title := some "epic G" },
+    Op.create h (st 8) { title := some "H" },
+    Op.edgeAdd (a, b, .Parent) (st 9),
+    Op.edgeAdd (a, c, .Parent) (st 10),
+    Op.edgeAdd (a, f, .Parent) (st 11),
+    Op.edgeAdd (g, f, .Parent) (st 12),       -- f is multi-parent (a and g)
+    Op.edgeAdd (b, d, .Blocks) (st 13),       -- b blocks d (b open ⇒ d blocked)
+    Op.setFields c (st 14) { status := some .Done },
+    Op.setFields e (st 15) { deferUntil := some (some 2000000) },  -- 2000000 > now ⇒ deferred
+    Op.metaSet h (st 16) "duplicate-of" (some a)]
+  let rollup := s.effStatusAll
+  let edges := s.presentEdges
+  let pedges := s.parentEdges
+  let prov : Tl.Crdt.AMap IssueId Prov := Tl.Crdt.AMap.empty
+  let v : View :=
+    { dirs := ⟨"", ".tl"⟩
+      loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
+                  maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      now, replica := none
+      rollup, present := s.presentIssues, edges, pedges, prov
+      idx := ViewIndex.of s.data rollup s.presentIssues edges pedges prov }
+  s.presentIssues.map (fun i =>
+    let dh := v.issueData i
+    let ds := s.issueData i
+    let pa := v.provFor i
+    let pb := provOf prov i
+    check s!"row accessors ≡ spec for {i}"
+      (  (dh.statusOf == ds.statusOf)
+      && (dh.priorityOf == ds.priorityOf)
+      && (dh.deferUntilOf == ds.deferUntilOf)
+      && (dh.title.value == ds.title.value)
+      && (v.effStatus i == State.effStatusWith rollup s i)
+      && (v.effClosed i == State.effClosedWith rollup s i)
+      && (v.isEpic i == !(State.kidsOfEdges pedges i).isEmpty)
+      && (v.kids i == State.kidsOfEdges pedges i)
+      && (v.ready i == State.isReadyFast rollup edges pedges s now i)
+      && (v.blocked i == blockedOf rollup edges s i)
+      && (v.deferred i == deferredOf s now i)
+      && (v.blockers i == State.blockersOfE edges i)
+      && (v.dependents i == State.dependentsOfE edges i)
+      && (v.has i == decide (s.hasIssue i))
+      && (v.duplicateOf i == duplicateOf s i)
+      && (canonicalParentE v i == canonicalParent s i)
+      && (pa.createdAt == pb.createdAt && pa.updatedAt == pb.updatedAt
+          && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt)))
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1363,7 +1432,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
-    ++ treeCycleRenderTests ++ canonicalParentTieTests
+    ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliBinaryTests)
 

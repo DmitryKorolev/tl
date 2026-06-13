@@ -152,6 +152,53 @@ def parentEdgesFast (s : State) : List (IssueId × IssueId) :=
     let (f, t, k) := e
     if decide (k = EdgeKind.Parent) && pset.contains t then some (f, t) else none)
 
+/-- The per-query indexed views (ADR-0024): O(1)-amortized hash/bucket copies of
+    the view's list-backed collections, built once per command and discarded.
+    Each probe is proved pointwise-equal to the spec accessor it replaces
+    (`getElem?_hashAssoc_amap` / `getD_bucketBy` / `contains_hashSetOf_present`,
+    plus the `ReadyFast` bridges), so routing a per-issue read through it leaves
+    every rendered value byte-identical while turning the O(N)-find / O(E)-filter
+    per issue into an O(1)/O(deg) lookup — the per-row Θ(N²)/Θ(N·E) command-path
+    cost class (ADR-0023 §3). -/
+structure ViewIndex where
+  /-- `state.data` as a hash map (`issueDataH_eq` ⇒ `issueData`). -/
+  dataH : Std.HashMap IssueId IssueData
+  /-- The rollup map as a hash map (`getElem?_hashAssoc_amap` ⇒
+      `effStatusWith`/`effClosedWith`). -/
+  rollupH : Std.HashMap IssueId Status
+  /-- The present issues as a hash set (`contains_hashSetOf_present` ⇒ `hasIssue`). -/
+  presentH : Std.HashSet IssueId
+  /-- `Blocks` edges bucketed by target — each issue's blockers
+      (`blocksByTarget_eq` ⇒ `blockersOfE`). -/
+  btgt : Std.HashMap IssueId (List IssueId)
+  /-- `Blocks` edges bucketed by source — each issue's dependents
+      (`blocksBySource_eq` ⇒ `dependentsOfE`). -/
+  bsrc : Std.HashMap IssueId (List IssueId)
+  /-- Parent edges bucketed by parent — each issue's children
+      (`getD_bucketBy` ⇒ `kidsOfEdges`). -/
+  pbk : Std.HashMap IssueId (List IssueId)
+  /-- Parent edges bucketed by child — each issue's parents (the canonical-parent
+      candidates and the multi-parent count; `getD_bucketBy` over swapped pairs). -/
+  pbc : Std.HashMap IssueId (List IssueId)
+  /-- The provenance map as a hash map (`getElem?_hashAssoc_amap` ⇒ `provOf`). -/
+  provH : Std.HashMap IssueId Prov
+
+/-- Build the indexed views once from a view's already-materialized collections
+    (ADR-0024 "build once, read many"). Pass the SAME `rollup`/`present`/`edges`/
+    `pedges`/`prov` the base `View` fields hold, so each hashed probe equals its
+    spec accessor over those lists. -/
+def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
+    (present : List IssueId) (edges : List Edge) (pedges : List (IssueId × IssueId))
+    (prov : AMap IssueId Prov) : ViewIndex :=
+  { dataH := Tl.Kernel.hashAssoc data.toList
+    rollupH := Tl.Kernel.hashAssoc rollup.toList
+    presentH := Tl.Kernel.hashSetOf present
+    btgt := State.blocksByTarget edges
+    bsrc := State.blocksBySource edges
+    pbk := Tl.Kernel.bucketBy pedges
+    pbc := Tl.Kernel.bucketBy (pedges.map (fun p => (p.2, p.1)))
+    provH := Tl.Kernel.hashAssoc prov.toList }
+
 /-- A command's read view. -/
 structure View where
   dirs : Dirs
@@ -178,6 +225,11 @@ structure View where
   /-- The batched provenance map — one log pass per view instead of one per
       rendered row (`provenanceMap` mirrors `provenanceOf` arm-for-arm). -/
   prov : AMap IssueId Prov
+  /-- The indexed views (ADR-0024): hash/bucket copies of `data`/`rollup`/
+      `present`/`edges`/`pedges`/`prov`, built once per command so the per-row
+      projections read each issue O(1)/O(deg) instead of O(N)/O(E). Built by
+      `ViewIndex.of` from the same lists the fields above hold. -/
+  idx : ViewIndex
   /-- A read-time refresh that could not run (no git, read-only FS): the read
       still served — a moment stale — and this carries the disclosure
       (ADR-0008 loud-not-silent; ADR-0016 §3 `RefreshOutcome.degraded`). `none`
@@ -195,6 +247,54 @@ structure View where
 
 def View.state (v : View) : State := v.loaded.state
 
+/-! ## Indexed-view row accessors (ADR-0024)
+
+Each reads the once-built `ViewIndex` and equals — pointwise — the spec accessor
+it replaces (the bridge named in each comment), so every routed render stays
+byte-identical while the per-issue read drops from O(N)/O(E) to O(1)/O(deg).
+Routed through by `issueRow`/`issueObj`/`issueLine`, `Render`'s
+`displayState`/`styledLine`/`styledShow`/`treeLines`, and the `list`/`stats`/
+`doctor` aggregates — the per-row Θ(N²)/Θ(N·E) cost class (ADR-0023). -/
+
+/-- `s.issueData i` via the data hash (`issueDataH_eq`). -/
+def View.issueData (v : View) (i : IssueId) : IssueData := (v.idx.dataH[i]?).getD IssueData.empty
+/-- `decide (s.hasIssue i)` via the present-issue set (`contains_hashSetOf_present`). -/
+def View.has (v : View) (i : IssueId) : Bool := v.idx.presentH.contains i
+/-- `effStatusWith v.rollup s i` via the rollup hash (`getElem?_hashAssoc_amap`); the
+    `effectiveStatus` fallback is reached only for an id absent from the rollup. -/
+def View.effStatus (v : View) (i : IssueId) : Status := (v.idx.rollupH[i]?).getD (v.state.effectiveStatus i)
+/-- `effClosedWith v.rollup s i`. -/
+def View.effClosed (v : View) (i : IssueId) : Bool := Status.closed (v.effStatus i)
+/-- `provOf v.prov i` via the provenance hash. -/
+def View.provFor (v : View) (i : IssueId) : Prov := (v.idx.provH[i]?).getD {}
+/-- `kidsOfEdges v.pedges i` via the parent bucket (`getD_bucketBy`). -/
+def View.kids (v : View) (i : IssueId) : List IssueId := (v.idx.pbk[i]?.getD []).reverse
+/-- Is an epic (`!(kidsOfEdges …).isEmpty`). -/
+def View.isEpic (v : View) (i : IssueId) : Bool := !(v.kids i).isEmpty
+/-- `blockersOfE v.edges i` via the blocks-by-target bucket (`blocksByTarget_eq`). -/
+def View.blockers (v : View) (i : IssueId) : List IssueId := (v.idx.btgt[i]?.getD []).reverse
+/-- `dependentsOfE v.edges i` via the blocks-by-source bucket (`blocksBySource_eq`). -/
+def View.dependents (v : View) (i : IssueId) : List IssueId := (v.idx.bsrc[i]?.getD []).reverse
+/-- The parents of `i` via the parent-by-child bucket (the canonical-parent
+    candidates / the multi-parent count) — the swapped-pair `getD_bucketBy`. -/
+def View.parents (v : View) (i : IssueId) : List IssueId := (v.idx.pbc[i]?.getD []).reverse
+/-- `isReady`/`isReadyFast` via the hash/bucket views (`isReadyFastH_eq`). -/
+def View.ready (v : View) (i : IssueId) : Bool :=
+  State.isReadyFastH v.idx.presentH v.idx.rollupH v.idx.dataH v.idx.btgt v.idx.pbk v.state v.now i
+/-- `blockedOf v.rollup v.edges s i` — open with an undischarged blocker, every
+    read hashed (`blockerDischargedH_eq`; `.any` is order-independent). -/
+def View.blocked (v : View) (i : IssueId) : Bool :=
+  (v.issueData i).statusOf == .Open
+    && (v.blockers i).any (fun b => !State.blockerDischargedH v.idx.presentH v.idx.rollupH v.state b)
+/-- `deferredOf s v.now i` — open with a future `deferUntil`, status/defer hashed. -/
+def View.deferred (v : View) (i : IssueId) : Bool :=
+  (v.issueData i).statusOf == .Open
+    && match (v.issueData i).deferUntilOf with | some t => v.now < t | none => false
+/-- `duplicateOf s i` via the data hash — the stored `duplicate-of` target. -/
+def View.duplicateOf (v : View) (i : IssueId) : Option IssueId :=
+  match ((v.issueData i).metadata.find "duplicate-of").bind (·.value) with
+  | some (some val) => if validId val then some val else none
+  | _ => none
 
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
 def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
@@ -256,12 +356,15 @@ def canonicalParent (s : State) (i : IssueId) : Option IssueId := Id.run do
     child. -/
 def canonicalParentE (v : View) (i : IssueId) : Option IssueId := Id.run do
   let mut best : Option (IssueId × Stamp) := none
-  for (p, c) in v.pedges do
-    if c == i then
-      if let some tag := maxTagOf v.state (p, i, EdgeKind.Parent) then
-        best := match best with
-          | none => some (p, tag)
-          | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
+  -- the parent candidates of `i` via the parent-by-child bucket (was an O(E)
+  -- filter of `v.pedges` per call — the tree's `isRoot` ran it per visible row);
+  -- the surviving max-tag parent is unique (stamps are distinct), so the bucket
+  -- order is immaterial and the result is identical to the spec scan
+  for p in v.parents i do
+    if let some tag := maxTagOf v.state (p, i, EdgeKind.Parent) then
+      best := match best with
+        | none => some (p, tag)
+        | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
   return best.map (·.1)
 
 def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
@@ -304,18 +407,17 @@ private def optField (k : String) (v : Option Json) : List (String × Json) :=
 
 /-- The full issue object (`show`, mutation echoes). -/
 def issueObj (v : View) (i : IssueId) : Json :=
-  let s := v.state
-  let d := s.issueData i
-  let pr := provOf v.prov i
+  let d := v.issueData i
+  let pr := v.provFor i
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
-     ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
+     ("effectiveStatus", Json.str (statusWire (v.effStatus i))),
      ("priority", jnum d.priorityOf.val),
-     ("isEpic", Json.bool (!(State.kidsOfEdges v.pedges i).isEmpty)),
-     ("ready", Json.bool (State.isReadyFast v.rollup v.edges v.pedges s v.now i)),
-     ("blocked", Json.bool (blockedOf v.rollup v.edges s i)),
-     ("deferred", Json.bool (deferredOf s v.now i)),
+     ("isEpic", Json.bool (v.isEpic i)),
+     ("ready", Json.bool (v.ready i)),
+     ("blocked", Json.bool (v.blocked i)),
+     ("deferred", Json.bool (v.deferred i)),
      ("labels", labelsJson d),
      ("meta", metaJson d),
      ("dependencies", dependenciesJson v.edges i)]
@@ -340,20 +442,19 @@ def issueObj (v : View) (i : IssueId) : Json :=
 /-- The trimmed list/ready row (ADR-0020): selection-driving scalars +
     derived booleans + the two graph counts. -/
 def issueRow (v : View) (i : IssueId) : Json :=
-  let s := v.state
-  let d := s.issueData i
-  let pr := provOf v.prov i
+  let d := v.issueData i
+  let pr := v.provFor i
   Json.mkObj <|
     [("id", Json.str (displayId i)),
      ("status", Json.str (statusWire d.statusOf)),
-     ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s i))),
+     ("effectiveStatus", Json.str (statusWire (v.effStatus i))),
      ("priority", jnum d.priorityOf.val),
-     ("isEpic", Json.bool (!(State.kidsOfEdges v.pedges i).isEmpty)),
-     ("ready", Json.bool (State.isReadyFast v.rollup v.edges v.pedges s v.now i)),
-     ("blocked", Json.bool (blockedOf v.rollup v.edges s i)),
-     ("deferred", Json.bool (deferredOf s v.now i)),
-     ("dependencyCount", jnum (State.blockersOfE v.edges i).length),
-     ("dependentCount", jnum (State.dependentsOfE v.edges i).length)]
+     ("isEpic", Json.bool (v.isEpic i)),
+     ("ready", Json.bool (v.ready i)),
+     ("blocked", Json.bool (v.blocked i)),
+     ("deferred", Json.bool (v.deferred i)),
+     ("dependencyCount", jnum (v.blockers i).length),
+     ("dependentCount", jnum (v.dependents i).length)]
     ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
     ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
@@ -361,12 +462,12 @@ def issueRow (v : View) (i : IssueId) : Json :=
 
 /-- One human line per issue (plain stage-1 output). -/
 def issueLine (v : View) (i : IssueId) : String :=
-  let d := v.state.issueData i
+  let d := v.issueData i
   let title := sanitizeSingle ((d.title.value).getD "(untitled)")
   let flags := String.intercalate ""
-    [if !(State.kidsOfEdges v.pedges i).isEmpty then " [epic]" else "",
-     if blockedOf v.rollup v.edges v.state i then " [blocked]" else "",
-     if deferredOf v.state v.now i then " [deferred]" else ""]
-  s!"{displayId i}  p{d.priorityOf.val}  {statusWire (State.effStatusWith v.rollup v.state i)}  {title}{flags}"
+    [if v.isEpic i then " [epic]" else "",
+     if v.blocked i then " [blocked]" else "",
+     if v.deferred i then " [deferred]" else ""]
+  s!"{displayId i}  p{d.priorityOf.val}  {statusWire (v.effStatus i)}  {title}{flags}"
 
 end Tl.Cli
