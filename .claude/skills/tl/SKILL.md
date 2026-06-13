@@ -79,6 +79,8 @@ tl create "<title>" --blocked-by <id> --blocks <id> --parent <id> --related <id>
 tl update <id> [--title T] [-p N] [--description D] [--notes N]   # non-lifecycle fields
 tl dep add <A> <B>       # A becomes blocked by B
 tl dep remove <A> <B>
+tl parent set <id> <new-parent>     # (re)place <id> under an epic
+tl parent remove <id> <parent>      # detach <id> from that parent
 ```
 
 - **Write a `--description` on every create.** The description is the context
@@ -91,6 +93,17 @@ tl dep remove <A> <B>
   close — never close an epic `--as done` yourself (`--as cancelled` is the only
   manual terminal). `tl dep cycles --json` reports any dependency cycles to
   break with `tl dep remove`.
+- **File new work under the epic it belongs to.** Before creating, check for an
+  existing epic that owns the area (`tl list --json` and look at the epics /
+  parent links, or `tl show <epic>`); create with `--parent <epic>` so the work
+  isn't orphaned. If it's a *new* sub-scope spun off from a task you're on, also
+  `--related <that-id>` so the provenance survives. Don't pile unrelated work
+  onto one epic — match the epic's actual scope (e.g. performance vs ergonomics).
+- **Reparent when scope is reorganized**, don't recreate: `tl parent set <id>
+  <epic>` moves an existing issue under the right epic (it *replaces* the
+  current parent; `parent remove` detaches). A `--related` edge is independent
+  of the parent and is preserved — so an item can live under one epic while
+  still pointing back to where it was discovered.
 
 ## Session-close protocol (before you declare done)
 
