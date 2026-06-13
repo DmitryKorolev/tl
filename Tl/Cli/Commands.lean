@@ -58,7 +58,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let st := loaded.state
   return { dirs := d, loaded, now, replica, rollup := st.effStatusAll,
            present := st.presentIssues,
-           edges := st.presentEdges, pedges := st.parentEdges,
+           edges := st.presentEdges, pedges := parentEdgesFast st,
            prov := provenanceMap loaded.ops,
            refreshNote := refresh.degraded.map (fun r =>
              s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up") }
@@ -114,7 +114,7 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
     rollup := state.effStatusAll
     present := state.presentIssues
     edges := state.presentEdges
-    pedges := state.parentEdges
+    pedges := parentEdgesFast state
     prov := provenanceMap (v.loaded.ops ++ parsed) }
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
@@ -762,7 +762,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
                     rollup := loaded.state.effStatusAll,
                     present := loaded.state.presentIssues,
                     edges := loaded.state.presentEdges,
-                    pedges := loaded.state.parentEdges,
+                    pedges := parentEdgesFast loaded.state,
                     prov := provenanceMap loaded.ops }
   let s := v.state
   let logRows := loaded.refused.map (fun r =>

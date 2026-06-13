@@ -1337,10 +1337,23 @@ def canonicalParentTieTests : List Outcome :=
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty }
+  -- a parent edge to an ABSENT child (dangling): parentEdges drops it, so the
+  -- fast presence-filter must too
+  let sDangling := Tl.Kernel.fold [
+    Op.create pOld ⟨10, 7, 1⟩ { title := some "p" },
+    Op.edgeAdd (pOld, child, .Parent) ⟨20, 7, 4⟩,
+    Op.edgeAdd (pOld, "h000000000000000", .Parent) ⟨21, 7, 5⟩]  -- child & h absent
   [ check "canonicalParent picks the LWW-greatest surviving parent edge"
       (canonicalParent s child == some pNew),
     check "canonicalParentE agrees with the spec form"
-      (canonicalParentE v child == canonicalParent s child) ]
+      (canonicalParentE v child == canonicalParent s child),
+    -- the loadView optimization: parentEdgesFast = State.parentEdges (same list),
+    -- so v.pedges stays exactly the spec list every kernel function expects
+    check "parentEdgesFast = parentEdges (present children)"
+      (parentEdgesFast s == s.parentEdges),
+    check "parentEdgesFast = parentEdges (drops dangling-child edges)"
+      (parentEdgesFast sDangling == sDangling.parentEdges
+        && sDangling.parentEdges.isEmpty) ]
 
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)

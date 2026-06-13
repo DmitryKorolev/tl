@@ -140,6 +140,18 @@ def provenanceMap (ops : List ParsedOp) : AMap IssueId Prov := Id.run do
 /-- One issue's provenance from the batched map (absent ⇒ no ops touched it). -/
 def provOf (m : AMap IssueId Prov) (i : IssueId) : Prov := (m.find i).getD {}
 
+/-- `State.parentEdges` with the child-present check through a hash set built
+    once, not an O(N) `hasIssue` (`OrSet.Present`) find per edge — `parentEdges`
+    is Θ(E·N) and `loadView` builds it for every command. The result is the same
+    list: `(hashSetOf present).contains t = decide (hasIssue t)`
+    (`contains_hashSetOf_present`), so `v.pedges = s.parentEdges` (pinned by a
+    test), and every kernel function taking `pe = s.parentEdges` stays correct. -/
+def parentEdgesFast (s : State) : List (IssueId × IssueId) :=
+  let pset := Tl.Kernel.hashSetOf s.presentIssues
+  s.presentEdges.filterMap (fun e =>
+    let (f, t, k) := e
+    if decide (k = EdgeKind.Parent) && pset.contains t then some (f, t) else none)
+
 /-- A command's read view. -/
 structure View where
   dirs : Dirs
