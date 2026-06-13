@@ -121,8 +121,10 @@ Concurrent readers racing to refresh are safe: the materialized content is a pur
 function of the ref OID, and atomic rename makes last-writer-wins harmless.
 
 **Built form (read-time refresh).** Implemented as `Tl/Sync/Local.refreshFromRef`,
-run by `loadView` before every read fold (not by `doctor`, which stays a pure
-diagnostic, nor by the locked write path). The marker is `.tl/local/ref-mark`
+run by `loadView` before every read fold and — as of the write-path freshness
+amendment below — by every write verb *before* `transact` takes the mutation
+lock (not by `doctor`, which stays a pure diagnostic). The marker is
+`.tl/local/ref-mark`
 (gitignored, no `v` bump). The trigger is one `git rev-parse refs/tl/log`
 compared against the mark: equal ⇒ fold the local files, git untouched;
 different ⇒ materialize the changed foreign segments (the §3 atomic-rename
@@ -132,7 +134,29 @@ and raw `IO.Error`s (git absent, a read-only FS) and degrades to "fold what is
 on disk," never failing the read; a genuine path-safety/corruption problem is
 still surfaced by the subsequent fold. It does **not** publish — that is the
 local leg (§1) / auto-sync (§4); a sibling's write is visible on the next read
-only once that sibling has published it.
+only once that sibling has published it. A degrade that the read could not
+recover from is **disclosed** (a `RefreshOutcome.degraded` note on the read and
+in the `--json` envelope's `notes` array — ADR-0008 loud-not-silent), never a
+silently stale view.
+
+**Write-path freshness (amendment — was an open decision).** The original built
+form excluded the locked write path, so a directed `claim`/`close`/`update`/`dep`
+by id from a worktree that had not read recently ran its guards against a stale
+view: it could fail `not-found` for a task that exists only on the shared ref,
+or — worse for coordination — let two worktrees both claim the same item (the
+LWW join still converges, but the readiness guard that exists to prevent the
+double-claim was bypassed). The decision: a **pre-transact local absorb**. Every
+write verb runs the *same* `refreshFromRef` reads use, in the CLI layer *before*
+`transact` acquires the mutation lock (the absorb is lock-free, so it stays
+outside the lock — `Tl.Store.transact` is in the `Store` layer and cannot import
+`Sync` anyway). Guards then run against the freshest local-leg state. This is
+symmetric with reads — a write is never staler than a read — at the cost of one
+`git rev-parse` per write (O(1) when the ref has not moved). The *remote* fetch
+stays opt-in (`tl sync`, and a future `claim --verify`); auto-sync's publish-half
+(§4 / ADR-0021) is its outbound mirror. Alternatives rejected: `claim --verify`
+*only* (leaves `close`/`update`/`dep`-by-id stale, and is opt-in — the footgun
+remains by default); pinning a "read before a directed write" contract in docs
+(a silent footgun for exactly the multi-agent case tl targets).
 
 Hardening notes (review-driven): the marker write reuses the atomic-replace
 `writeLocalFile`, which carries a per-call CSPRNG temp suffix so two lock-free

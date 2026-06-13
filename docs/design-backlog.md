@@ -11,14 +11,14 @@ loop). Stages 2–3 are **partly built**: the agent surface (skill, `help --json
 discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
 `list` open-by-default + tree-by-default (`--flat` for rows), labels
 (`label add/remove/list`,
-`list --label`), and the **full `refs/tl/log` sync transport**
+`list --label`), the **full `refs/tl/log` sync transport**
 (local leg, read-time refresh, remote fetch/union/push, and the HLC skew window
-— proved convergence-safe) have landed. Still open: the Stage-2 ergonomics verbs
-(`defer`/`undefer`, `dep path`/`dep critical` — the dependency trees render
-on `why`/`unblocks`, not a separate `dep tree` verb — and `edit`), auto-sync
-(Stage 3 —
-process model decided in ADR-0021, implementation pending), and beads `import`
-(Stage 3).
+— proved convergence-safe), and **auto-sync** (ADR-0021: the best-effort
+post-write local publish, plus the symmetric pre-transact absorb that refreshes
+a write's view before its guards — ADR-0016 §3 amendment) have landed. Still
+open: the Stage-2 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical`
+— the dependency trees render on `why`/`unblocks`, not a separate `dep tree`
+verb — and `edit`), and beads `import` (Stage 3).
 The items Stage 1 touched have graduated: `duplicate-of`
 semantics, the write-time guard inventory + idempotent re-close, the
 `not-closeable` / `unsafe-path` error codes, the canonical string-escaping

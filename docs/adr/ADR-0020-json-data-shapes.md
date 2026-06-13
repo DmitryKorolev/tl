@@ -20,7 +20,12 @@ be revised with a `schemaVersion` bump — they are pinned here as the intended
 ### Conventions (all commands)
 
 - Every response is the ADR-0008 envelope; `data` shapes below. Field names
-  are camelCase (ADR-0003/0008).
+  are camelCase (ADR-0003/0008). The success envelope may also carry an
+  **omit-empty** top-level `"notes":[…]` array — the same loud-not-silent
+  disclosures printed to stderr (foreign-refusal, skew-deferred, stale-read
+  degrade, auto-sync skipped — ADR-0008), made machine-readable for the agent
+  audience that consumes `--json` (ADR-0011). Additive over fields; absent when
+  there are no notes, so the steady-state shape is byte-unchanged.
 - **Omit-empty**: an optional field with no value is absent, not `null`.
   (Wire records distinguish null-vs-absent for *writes*, ADR-0002; the read
   projection has no clear-vs-unset distinction to preserve.) Two exceptions

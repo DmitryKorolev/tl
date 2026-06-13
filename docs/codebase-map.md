@@ -229,10 +229,14 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   (built, ADR-0016 §1/§3): syncLocal publishes the own
                         --   segment into the shared ref (CAS-retry) and absorbs
                         --   siblings into .tl/log/ via atomic rename, never the
-                        --   own segment (`tl sync`); refreshFromRef is the read-
-                        --   path O(1) ref-OID trigger (vs the .tl/local/ref-mark)
-                        --   that absorbs siblings before a fold — best-effort,
-                        --   lock-free, never fails a read
+                        --   own segment (`tl sync`); refreshFromRef is the O(1)
+                        --   ref-OID trigger (vs the .tl/local/ref-mark) that
+                        --   absorbs siblings — best-effort, lock-free, never
+                        --   fails — run before every read fold AND before every
+                        --   write's guards (pre-transact absorb, ADR-0016 §3)
+  Ref.lean              --   git ref/config plumbing: refTip/readRef/writeRef
+                        --   (CAS), gitConfig/gitConfigSet, isLinkedWorktree
+                        --   (--git-dir ≠ --git-common-dir → auto-sync default-on)
   Remote.lean           --   the remote fetch / union / push leg (built, ADR-0001
                         --   §5): resolveRemote (tl.remote > branch-upstream >
                         --   origin; detached-HEAD → origin); syncRemote unions
@@ -241,15 +245,17 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   rejection then push-rejected; no remote → no-upstream
                         --   (reported, not fatal). `tl sync` = local leg → remote
                         --   leg → absorb-pulled
-  Sync.lean             --   auto-sync (planned — publish after a write, atop the
-                        --   legs above)
+                        --   (auto-sync lives in the CLI layer — Cli/Commands
+                        --   `autoSyncNotes` — since Store cannot import Sync;
+                        --   ADR-0021)
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean
 
 Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Envelope.lean         --   the --json envelope (schemaVersion/ok/data|error) in
-                        --   the deliberate member order (ADR-0008/0020)
+                        --   the deliberate member order, + an omit-empty top-
+                        --   level notes[] (machine-readable disclosures, 0020)
   Project.lean          --   the read View + issue projections: the full object
                         --   and trimmed rows (omit-empty, display ids, forced-ms
                         --   timestamps), fold-time provenance (cross-op recency
@@ -272,7 +278,10 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   verbs (reopen/stats/log, sync, label add/remove/list,
                         --   list --label facet); write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
-                        --   the idempotent re-close); doctor's check rows
+                        --   the idempotent re-close); doctor's check rows. Each
+                        --   write verb brackets transact via preWrite (refresh
+                        --   the ref before guards) and autoSyncNotes (best-effort
+                        --   publish after — ADR-0016 §3 / ADR-0021)
   Init.lean             --   tl init (idempotent on an existing replica;
                         --   completes a partial .tl; CSPRNG replica mint;
                         --   repo-toplevel placement lives in Commands.cmdInit)

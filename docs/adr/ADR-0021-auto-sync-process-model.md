@@ -83,6 +83,20 @@ lock-free hook invoked **after** `transact` returns (never inside the lock — t
 local leg must stay lock-free). So every mutation gets it uniformly, in one
 place, and the hook reads `tl.autosync` and runs `syncLocal` best-effort.
 
+**Built form.** Implemented in the CLI layer (`Store` cannot import `Sync`):
+each write verb calls `autoSyncNotes` after `transact` returns (lock released),
+which reads `tl.autosync` via `gitConfig` and, when `true`, runs `syncLocal`
+through the same `.run.toBaseIO` best-effort catch `refreshFromRef` uses —
+swallowing both `Tl.Error` and `IO.Error` into a non-fatal `notes` entry, never
+a non-zero exit. `tl init` sets `tl.autosync=true` when it detects a linked
+worktree (`isLinkedWorktree`: `--git-dir` ≠ `--git-common-dir`), opt-in
+elsewhere, and never overrides an existing value. The write verbs *also* absorb
+the ref *before* `transact` (the pre-transact local absorb, ADR-0016 §3
+amendment) — auto-sync is the outbound mirror of that inbound refresh. Tested
+(`Tests/CliTests.lean`): off-by-default (sibling blind), on (sibling sees the
+write with no explicit sync), a publish failure disclosed while the write
+survives, and the no-git no-op.
+
 ## Consequences
 
 - Worktree siblings see a write near-instantly with zero network and zero
