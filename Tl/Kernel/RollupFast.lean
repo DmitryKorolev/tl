@@ -49,6 +49,20 @@ def parentEdges (s : State) : List (IssueId × IssueId) :=
     let (f, t, k) := e
     if decide (k = EdgeKind.Parent) && decide (s.hasIssue t) then some (f, t) else none)
 
+/-- `parentEdges` with the child-present check through a hash set built ONCE, not
+    an O(N) `hasIssue` (`OrSet.Present`) scan per edge — `parentEdges` is Θ(E·N)
+    and the rollup builds it on every pass. Same list (`parentEdgesFast_eq`), so
+    every consumer taking `pe = s.parentEdges` stays correct. -/
+def parentEdgesFast (s : State) : List (IssueId × IssueId) :=
+  let pset := hashSetOf s.presentIssues
+  s.presentEdges.filterMap (fun e =>
+    let (f, t, k) := e
+    if decide (k = EdgeKind.Parent) && pset.contains t then some (f, t) else none)
+
+theorem parentEdgesFast_eq (s : State) : s.parentEdgesFast = s.parentEdges := by
+  unfold State.parentEdgesFast State.parentEdges
+  simp only [contains_hashSetOf_present]
+
 /-- Children of `i` per the hoisted view (= `presentChildren i`,
     `kidsOfEdges_parentEdges`). -/
 def kidsOfEdges (pe : List (IssueId × IssueId)) (i : IssueId) : List IssueId :=
@@ -212,7 +226,7 @@ end
 /-- The batched rollup memo: one memoized pass over every present issue,
     threaded through a `Std.HashMap` (O(1)-amortized find/insert). -/
 def effStatusAllH (s : State) : Std.HashMap IssueId Status :=
-  let pe := s.parentEdges
+  let pe := s.parentEdgesFast
   let bucket := bucketBy pe
   s.presentIssues.foldl (fun memo i => (rollupVisit s pe bucket rfl [] memo i).1) ∅
 
@@ -573,14 +587,14 @@ theorem effStatusAllH_coherent (s : State) : Coherent s s.effStatusAllH := by
   unfold State.effStatusAllH
   have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
       Coherent s (l.foldl (fun m j =>
-        (rollupVisit s s.parentEdges (bucketBy s.parentEdges) rfl [] m j).1) memo) := by
+        (rollupVisit s s.parentEdgesFast (bucketBy s.parentEdgesFast) rfl [] m j).1) memo) := by
     intro l
     induction l with
     | nil => exact fun _ h => h
     | cons x xs ih =>
       intro memo h
       rw [List.foldl_cons]
-      exact ih _ (rollupVisit_sound s s.parentEdges (bucketBy s.parentEdges) rfl rfl
+      exact ih _ (rollupVisit_sound s s.parentEdgesFast (bucketBy s.parentEdgesFast) rfl (parentEdgesFast_eq s)
         [] memo x h trivial).1
   exact main s.presentIssues ∅ (coherent_empty s)
 
@@ -592,7 +606,7 @@ theorem effStatusAllH_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues
     have main : ∀ (l : List IssueId) (memo : Std.HashMap IssueId Status), Coherent s memo →
         (i ∈ l ∨ (memo[i]?).isSome = true) →
         ((l.foldl (fun m j =>
-            (rollupVisit s s.parentEdges (bucketBy s.parentEdges) rfl [] m j).1) memo)[i]?).isSome
+            (rollupVisit s s.parentEdgesFast (bucketBy s.parentEdgesFast) rfl [] m j).1) memo)[i]?).isSome
           = true := by
       intro l
       induction l with
@@ -605,7 +619,7 @@ theorem effStatusAllH_find (s : State) (i : IssueId) (hi : i ∈ s.presentIssues
         intro memo hcoh h
         rw [List.foldl_cons]
         obtain ⟨hcoh', _, hmono, hself⟩ :=
-          rollupVisit_sound s s.parentEdges (bucketBy s.parentEdges) rfl rfl [] memo x hcoh trivial
+          rollupVisit_sound s s.parentEdgesFast (bucketBy s.parentEdgesFast) rfl (parentEdgesFast_eq s) [] memo x hcoh trivial
         rcases h with h | h
         · rcases List.mem_cons.mp h with rfl | hxs
           · exact ih _ hcoh' (Or.inr hself)
