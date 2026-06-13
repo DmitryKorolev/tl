@@ -245,9 +245,12 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   rejection then push-rejected; no remote → no-upstream
                         --   (reported, not fatal). `tl sync` = local leg → remote
                         --   leg → absorb-pulled
-                        --   (auto-sync lives in the CLI layer — Cli/Commands
-                        --   `autoSyncNotes` — since Store cannot import Sync;
-                        --   ADR-0021)
+  AutoSync.lean         --   the write-path freshness bracket (ADR-0021 +
+                        --   ADR-0016 §3), composed over the legs above:
+                        --   preWriteRefresh (absorb before a write's guards),
+                        --   autoSyncLocal (gated best-effort publish after),
+                        --   autoSyncInitDefault (init's linked-worktree default-
+                        --   on). No CLI types — the write verbs just call it
 
 Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
   Beads.lean
@@ -279,9 +282,9 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   list --label facet); write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows. Each
-                        --   write verb brackets transact via preWrite (refresh
-                        --   the ref before guards) and autoSyncNotes (best-effort
-                        --   publish after — ADR-0016 §3 / ADR-0021)
+                        --   write verb brackets transact via Sync.AutoSync
+                        --   (preWriteRefresh before guards, autoSyncLocal publish
+                        --   after — ADR-0016 §3 / ADR-0021)
   Init.lean             --   tl init (idempotent on an existing replica;
                         --   completes a partial .tl; CSPRNG replica mint;
                         --   repo-toplevel placement lives in Commands.cmdInit)

@@ -17,6 +17,7 @@ import Tl.Cli.Resolve
 import Tl.Cli.Init
 import Tl.Sync.Local
 import Tl.Sync.Remote
+import Tl.Sync.AutoSync
 
 namespace Tl.Cli
 
@@ -358,50 +359,12 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
 private def writeNow (v : TxContext) (parsed : List ParsedOp) : View :=
   postView v parsed v.now
 
-/-- The pre-write refresh (ADR-0016 §3 amendment): absorb any sibling's
-    published changes from the shared `refs/tl/log` BEFORE the write's guards
-    run, so a directed `claim`/`close`/`update`/`dep` by id sees a sibling's
-    concurrent write — and finds a task that exists only on the ref — instead
-    of deciding against a stale local view (the double-claim hazard). The exact
-    O(1) ref-mark check reads already do (`loadView`); lock-free, runs before
-    `transact` takes the mutation lock, best-effort (a degrade is disclosed and
-    the write proceeds a moment stale, never failing). Returns the located
-    dirs, the loaded replica (reused by the post-write auto-sync), and any
-    degrade note. The remote leg stays explicit (`tl sync` / a future
-    `claim --verify`). -/
-def preWrite (dirOverride : Option String) :
-    TlM (Dirs × Option Tl.Clock.Replica × List String) := do
-  let d ← discover dirOverride
-  let replica ← loadReplica d
-  let refresh ← Tl.Sync.refreshFromRef d (replica.map (·.id))
-  let notes := refresh.degraded.toList.map (fun r =>
-    s!"wrote against a moment-stale view: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync`")
-  return (d, replica, notes)
-
-/-- Auto-sync (ADR-0021): after a successful write, if `tl.autosync` is on,
-    publish this replica's segment into the shared `refs/tl/log` (and absorb
-    siblings) so a worktree sibling sees the write without an explicit
-    `tl sync`. Best-effort and lock-free — it runs after `transact` has released
-    the lock, and ANY failure (no git, read-only FS, ref contention surviving
-    the CAS retry) is swallowed and disclosed as a non-fatal note, NEVER failing
-    the write (ADR-0021 §4 — the record is already durable). It catches both
-    thrown `Tl.Error`s and raw `IO.Error`s, mirroring `refreshFromRef`. The
-    remote leg stays explicit `tl sync`. -/
-def autoSyncNotes (d : Dirs) (replica : Option Tl.Clock.Replica) : TlM (List String) := do
-  if (← Tl.Sync.gitConfig d "tl.autosync") != some "true" then return []
-  match ← ((Tl.Sync.syncLocal d (replica.map (·.id))).run.toBaseIO : IO _) with
-  | .ok (.ok _) => return []
-  | .ok (.error e) =>
-    return [s!"auto-sync skipped ({e.message}) — run `tl sync` to publish this write to siblings"]
-  | .error ioErr =>
-    return [s!"auto-sync skipped ({toString ioErr}) — run `tl sync` to publish this write to siblings"]
-
 def cmdCreate (dirOverride : Option String) (title : String) (priority : Option Nat)
     (description : Option String) (actor : String)
     (blockedBy blocks parents related : List String) : TlM CmdOut := do
   let edgeCount := blockedBy.length + blocks.length + parents.length + related.length
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor)
     (1 + edgeCount) (fun ctx stamps => do
       let some st := stamps.head? | .error (.mk' .internal "no stamp")
@@ -428,10 +391,10 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
     | throw (.mk' .internal "create wrote no create record")
   return { data := issueObj v newId
            human := s!"Created {displayId newId}  {sanitizeSingle title}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -464,7 +427,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM
     [("outcome", Json.str (if current == some actor then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
   return { data, human := s!"Claimed {displayId i} as {sanitizeSingle actor}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     (ofTok : Option String) (actor : String) : TlM CmdOut := do
@@ -474,7 +437,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   -- duplicate's canonical issue and means nothing for done/cancelled
   if ofTok.isSome && res != .Duplicate then
     throw (.mk' .usage "--of names the canonical issue of a duplicate — it only pairs with --as duplicate")
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 2 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -526,14 +489,14 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       s!"close of {displayId i} was superseded by a later concurrent write — it is {statusWire (v.state.issueData i).statusOf}; rerun if still intended"
     else s!"Closed {displayId i} as {asStr}" ++
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
-  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdUpdate (dirOverride : Option String) (tok : String) (title description notes : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
   if title.isNone && description.isNone && notes.isNone && priority.isNone then
     throw (.mk' .usage "update needs at least one of --title, --priority, --description, --notes")
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     .ok [.update i { title, priority := prio,
@@ -544,13 +507,13 @@ def cmdUpdate (dirOverride : Option String) (tok : String) (title description no
       match p.op with | .update ui _ => some ui | _ => none)
     | throw (.mk' .internal "update wrote no record")
   return { data := issueObj v i, human := s!"Updated {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-- `tl reopen <id>`: a terminal issue back to `open`, clearing
     `closeResolution` (ADR-0008's reopen delta). Idempotent — an already-open
     issue is a no-op that appends nothing (mirroring the re-close rule). -/
 def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     if (ctx.loaded.state.issueData i).statusOf == .Open then .ok []
@@ -560,10 +523,10 @@ def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : Tl
   return { data := issueObj v i
            human := if parsed.isEmpty then s!"{displayId i} is already open"
                     else s!"Reopened {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -576,10 +539,10 @@ def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String
             [("type", Json.str "blocks"), ("from", Json.str (displayId f)),
              ("to", Json.str (displayId t)), ("status", Json.str "added")]
            human := s!"{displayId t} is now blocked by {displayId f}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -602,14 +565,14 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
            human :=
              if parsed.isEmpty then s!"{displayId a} was not blocked by {displayId b} — nothing to do"
              else s!"{displayId a} is no longer blocked by {displayId b}"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-! ## label verbs -/
 
 def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
   if label.trimAscii.isEmpty then
     throw (.mk' .usage "a label must be non-empty — `tl label add <id> <label>`")
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -623,10 +586,10 @@ def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : Stri
              ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} already has label '{sanitizeSingle label}'"
                     else s!"Labeled {displayId i} '{sanitizeSingle label}'"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← preWrite dirOverride
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -641,7 +604,7 @@ def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : S
              ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} had no label '{sanitizeSingle label}' — nothing to do"
                     else s!"Unlabeled {displayId i} '{sanitizeSingle label}'"
-           notes := freshNotes ++ writeNotes ctx ++ (← autoSyncNotes d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-- `tl label list`: the label vocabulary — every present label with how many
     issues carry it (sorted by name, a deterministic read). -/
@@ -879,19 +842,9 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   let created ← initAt target
   let dirs := Dirs.ofStatePath target.toString
   let replica ← loadReplica dirs
-  -- auto-sync default (ADR-0021 §5 / ADR-0016 §4): ON for a linked worktree
-  -- (the local leg is free and the whole point of cross-worktree sharing),
-  -- opt-in elsewhere. Never overrides an existing `tl.autosync` (a re-init is
-  -- idempotent on the knob too).
-  let autosyncNote ←
-    if (← Tl.Sync.gitConfig dirs "tl.autosync").isSome then pure []
-    else if ← Tl.Sync.isLinkedWorktree dirs then
-      if ← Tl.Sync.gitConfigSet dirs "tl.autosync" "true" then
-        pure ["auto-sync on (linked worktree): writes publish to siblings automatically; turn off with `git config tl.autosync false` (ADR-0021)"]
-      else pure []
-    else if ← Tl.Sync.inGitRepo dirs then
-      pure ["auto-sync is off; enable publish-on-write to siblings with `git config tl.autosync true` (ADR-0021)"]
-    else pure []
+  -- auto-sync default (ADR-0021 §5 / ADR-0016 §4): ON for a linked worktree,
+  -- opt-in elsewhere, never overriding an existing knob.
+  let autosyncNote ← Tl.Sync.autoSyncInitDefault dirs
   -- write/refresh the gitignored primer (ADR-0011 §3), through the no-follow
   -- shim like every other .tl write
   writeLocalFile dirs (dirs.tlRel ++ "/README.md") readmePrimer
