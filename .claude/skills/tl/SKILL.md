@@ -28,6 +28,14 @@ Every `--json` response is `{ "schemaVersion", "ok", ... }`:
   stable nonzero exit. **Branch on `error.code`** (a closed enum:
   `not-found`, `ambiguous-id`, `not-claimable`, `not-closeable`, `no-project`,
   `usage`, …), not on the message. `message` tells *you* (or a human) the fix.
+- **On success, also check the optional top-level `"notes": [...]`** (a sibling
+  of `data`, present only when there's something to disclose). It carries
+  *non-fatal* disclosures the operation still completed through — a skipped
+  auto-sync publish (`auto-sync skipped (…) — run \`tl sync\``), a stale/degraded
+  read, a malformed line skipped under `--skip-bad`, a clock-skew-deferred op.
+  `ok` stays `true` and the write is durable, but a `notes` entry means
+  something needs your attention (often: run `tl sync`). Surface these; don't
+  drop them just because the command succeeded.
 
 Discover the full grammar machine-readably — never guess flags:
 
@@ -115,7 +123,15 @@ clock, segment); only the ref is shared.
   (`tl ready`, `list`, `show`, …) does a cheap check of the shared local ref and
   pulls in a linked-worktree sibling's published changes before answering — so
   you do **not** need to sync before reading, on one machine.
-- **`tl sync` publishes and reconciles.** Run it after a batch of writes. It
+- **Writes may auto-publish.** When `tl.autosync` is on (the default for a
+  *linked worktree*, off elsewhere; toggle with `git config tl.autosync
+  <true|false>`), each write best-effort publishes to the shared local ref so
+  siblings see it without an explicit sync. It is best-effort: a failure never
+  fails the write — it surfaces as a `notes` entry (`auto-sync skipped …`)
+  telling you to run `tl sync`. Auto-sync covers only the **local** ref; the
+  **remote** leg is still explicit `tl sync`.
+- **`tl sync` publishes and reconciles.** Run it after a batch of writes (and
+  whenever a `notes` entry asks you to). It
   (1) publishes your changes to the shared ref (zero network for worktrees of
   one repo), then (2) if a git **remote** is configured, fetches it, unions, and
   pushes — so your tasks travel to other **clones / machines**. Cross-clone
@@ -131,8 +147,9 @@ was superseded.
 
 ## Not yet available
 
-There is no `tl defer`, `tl edit`, or `tl dep path/critical` yet, and there
-is no automatic on-write publishing (auto-sync) — `tl sync` is explicit.
-`tl label add/remove/list` and `tl list --label <l>` (repeatable ⇒ AND) **are**
-available. `tl help --json` is always the authoritative list of what this binary
-actually supports.
+There is no `tl defer`, `tl edit`, or `tl dep path/critical` yet. The
+**remote** sync leg is still explicit (`tl sync`); only the local-ref publish
+auto-runs (see Sharing). `tl label add/remove/list`, `tl list --label <l>`
+(repeatable ⇒ AND), `tl parent set/remove` (reparenting), and on-write
+auto-sync of the local ref **are** available. `tl help --json` is always the
+authoritative list of what this binary actually supports.
