@@ -19,6 +19,7 @@ theorems transfer to the shipped path with no re-proof. The close path's
 unblocked echo shares the win through `unblocksFast`.
 -/
 import Tl.Kernel.RollupFast
+import Tl.Kernel.HashMapView
 
 namespace Tl.Kernel
 
@@ -128,6 +129,70 @@ theorem isReadyFast_eq (s : State) (now : Instant) (i : IssueId) :
     List.all_congr rfl (fun b => blockerDischargedWith_eq s b)
   rw [hepic, hall]
 
+/-! ## Hash/bucket-backed readiness — O(1)-amortized per-candidate reads
+
+`isReadyFast` re-derives, per present issue, `s.issueData i` (an O(N)
+`AMap.find`), `blockerDischargedWith`'s rollup `find`, and the `blockersOfE`/
+`kidsOfEdges` edge filters — so `readyFast`'s candidate filter is Θ(N²)/Θ(N·E).
+These forms read the rollup/data through hash copies and blockers/kids through
+bucketed adjacency (all built once in `readyFast`), each bridged pointwise to
+the `find`/filter form so `readyFast_eq` — hence the proved `ready`
+soundness/completeness/ordering — transfers untouched. -/
+
+/-- `Blocks` edges bucketed by target — the blockers of each issue. -/
+def blocksByTarget (edges : List Edge) : Std.HashMap IssueId (List IssueId) :=
+  bucketBy ((edges.filter (fun e => e.2.2 == EdgeKind.Blocks)).map (fun e => (e.2.1, e.1)))
+
+theorem blocksByTarget_eq (edges : List Edge) (i : IssueId) :
+    ((blocksByTarget edges)[i]?.getD []).reverse = blockersOfE edges i := by
+  unfold blocksByTarget State.blockersOfE
+  rw [getD_bucketBy, List.filter_map, List.map_map, List.filter_filter]
+  dsimp only [Function.comp]
+  rw [List.filter_congr (q := fun e : Edge => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
+    (fun e _ => by
+      apply Bool.eq_iff_iff.mpr
+      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_iff]
+      exact ⟨fun ⟨h1, h2⟩ => ⟨h2, h1⟩, fun ⟨h1, h2⟩ => ⟨h2, h1⟩⟩)]
+  exact List.map_congr_left (fun e _ => rfl)
+
+/-- Per-issue field data via the data hash copy (= `issueData`). -/
+theorem issueDataH_eq (s : State) (i : IssueId) :
+    ((hashAssoc s.data.toList)[i]?).getD IssueData.empty = s.issueData i := by
+  rw [getElem?_hashAssoc_amap]; rfl
+
+/-- A blocker is discharged — via the rollup hash and the present-issue set. -/
+def blockerDischargedH (pset : Std.HashSet IssueId) (mh : Std.HashMap IssueId Status)
+    (s : State) (b : IssueId) : Bool :=
+  !pset.contains b || Status.closed ((mh[b]?).getD (s.effectiveStatus b))
+
+theorem blockerDischargedH_eq (m : AMap IssueId Status) (s : State) (b : IssueId) :
+    blockerDischargedH (hashSetOf s.presentIssues) (hashAssoc m.toList) s b
+      = blockerDischargedWith m s b := by
+  unfold State.blockerDischargedH State.blockerDischargedWith State.effClosedWith
+    State.effStatusWith
+  rw [contains_hashSetOf_present, getElem?_hashAssoc_amap]
+
+/-- `isReadyFast` over the hash/bucket views: presence, status, kids, defer,
+    and blocker-discharge all read O(1)-amortized. -/
+def isReadyFastH (pset : Std.HashSet IssueId) (mh : Std.HashMap IssueId Status)
+    (dataH : Std.HashMap IssueId IssueData) (btgt pbk : Std.HashMap IssueId (List IssueId))
+    (s : State) (now : Instant) (i : IssueId) : Bool :=
+  pset.contains i
+  && decide (((dataH[i]?).getD IssueData.empty).statusOf = Status.Open)
+  && ((pbk[i]?.getD []).reverse).isEmpty
+  && deferOk ((dataH[i]?).getD IssueData.empty) now
+  && ((btgt[i]?.getD []).reverse).all (blockerDischargedH pset mh s ·)
+
+theorem isReadyFastH_eq (m : AMap IssueId Status) (s : State) (now : Instant) (i : IssueId) :
+    isReadyFastH (hashSetOf s.presentIssues) (hashAssoc m.toList) (hashAssoc s.data.toList)
+        (blocksByTarget s.presentEdges) (bucketBy s.parentEdges) s now i
+      = isReadyFast m s.presentEdges s.parentEdges s now i := by
+  have hkids : ((bucketBy s.parentEdges)[i]?.getD []).reverse = kidsOfEdges s.parentEdges i := by
+    rw [getD_bucketBy]; rfl
+  unfold State.isReadyFastH State.isReadyFast
+  rw [contains_hashSetOf_present, issueDataH_eq, hkids, blocksByTarget_eq,
+    List.all_congr rfl (fun b => blockerDischargedH_eq m s b)]
+
 /-! ## Cached ranking keys -/
 
 /-- One candidate's ranking key, computed once: priority ↑, weight ↓,
@@ -184,7 +249,14 @@ def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List Issue
   let edges := s.presentEdges
   let pe := s.parentEdges
   let present := s.presentIssues
-  let cands := present.filter (isReadyFast m edges pe s now ·)
+  -- hoist the hash/bucket views ONCE; the per-candidate filter then reads each
+  -- O(1)-amortized instead of an O(N) find / O(E) edge-filter per issue
+  let pset := hashSetOf present
+  let mh := hashAssoc m.toList
+  let dataH := hashAssoc s.data.toList
+  let btgt := blocksByTarget edges
+  let pbk := bucketBy pe
+  let cands := present.filter (isReadyFastH pset mh dataH btgt pbk s now ·)
   (rankSortK (cands.map (keyOf edges s present.length))).map (·.id)
 
 /-- **The bridge.** The fast queue IS the spec's ranked queue — `ready`
@@ -193,9 +265,12 @@ theorem readyFast_eq (s : State) (now : Instant) :
     readyFast (s.effStatusAll) s now = s.ready now := by
   unfold State.readyFast State.ready
   dsimp only
-  have hf : s.presentIssues.filter (isReadyFast (s.effStatusAll) s.presentEdges s.parentEdges s now ·)
+  have hf : s.presentIssues.filter (isReadyFastH (hashSetOf s.presentIssues)
+              (hashAssoc (s.effStatusAll).toList) (hashAssoc s.data.toList)
+              (blocksByTarget s.presentEdges) (bucketBy s.parentEdges) s now ·)
           = s.presentIssues.filter (s.isReady now ·) :=
-    List.filter_congr (fun i _ => isReadyFast_eq s now i)
+    List.filter_congr (fun i _ =>
+      (isReadyFastH_eq (s.effStatusAll) s now i).trans (isReadyFast_eq s now i))
   rw [hf, rankSortK_map]
   rw [List.map_map]
   show (s.rankSort _).map ((·.id) ∘ keyOf s.presentEdges s s.presentIssues.length) = _

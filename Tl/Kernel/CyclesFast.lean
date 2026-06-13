@@ -380,13 +380,6 @@ def succOfAdj (adj : Std.HashMap IssueId (List IssueId))
     (pset : Std.HashSet IssueId) (i : IssueId) : List IssueId :=
   ((adj[i]?.getD []).reverse).filter (fun j => pset.contains j)
 
-/-- The presence probe agrees with the spec's `hasIssue`. -/
-theorem contains_hashSetOf_present (s : State) (j : IssueId) :
-    (hashSetOf s.presentIssues).contains j = decide (s.hasIssue j) := by
-  apply Bool.eq_iff_iff.mpr
-  rw [Std.HashSet.contains_iff_mem, decide_eq_true_iff, mem_hashSetOf]
-  exact OrSet.mem_presentElements s.issues j
-
 theorem succOfAdj_kindAdj_eq (s : State) (k : EdgeKind) (i : IssueId) :
     succOfAdj (kindAdj s.presentEdges k) (hashSetOf s.presentIssues) i
       = s.kindSucc k i := by

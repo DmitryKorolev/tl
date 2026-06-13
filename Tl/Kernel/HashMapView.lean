@@ -48,6 +48,14 @@ theorem mem_hashSetOf {l : List IssueId} {x : IssueId} : x ∈ hashSetOf l ↔ x
   rw [mem_foldl_insert]
   exact ⟨fun h => h.elim id (fun h => absurd h (Std.HashSet.not_mem_empty)), Or.inl⟩
 
+/-- The presence probe over the present-issue hash set agrees with the spec's
+    `hasIssue` (used by the ready queue and the diagnostics). -/
+theorem contains_hashSetOf_present (s : State) (j : IssueId) :
+    (hashSetOf s.presentIssues).contains j = decide (s.hasIssue j) := by
+  apply Bool.eq_iff_iff.mpr
+  rw [Std.HashSet.contains_iff_mem, decide_eq_true_iff, mem_hashSetOf]
+  exact OrSet.mem_presentElements s.issues j
+
 /-! ## A hash copy of an association list (e.g. the rollup `AMap`'s `toList`) -/
 
 def hashAssoc {V : Type _} (l : List (IssueId × V)) : Std.HashMap IssueId V :=
