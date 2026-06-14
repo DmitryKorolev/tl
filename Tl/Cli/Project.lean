@@ -354,35 +354,36 @@ private def maxTagOf (s : State) (e : Edge) : Option Stamp :=
       | some m => some (if TotalOrd.le m st then st else m))
     none
 
-/-- The canonical display parent: the surviving `parent` edge greatest in
-    `(hlc, replica, nonce)` (ADR-0003 §4). -/
-def canonicalParent (s : State) (i : IssueId) : Option IssueId := Id.run do
+/-- The canonical-parent LWW pick: among the candidate parents, the one whose
+    greatest surviving `parent` add-tag is `(hlc, replica, nonce)`-greatest
+    (ADR-0003 §4). The ONE canonicalization fold — both the spec `canonicalParent`
+    and the view-hoisted `canonicalParentE` are a candidate source + a per-parent
+    max-tag lookup over this core, so the logic cannot silently drift between them
+    (the two sources are pinned equal by `canonicalParentTieTests` /
+    `rowAccessorAgreementTests`). -/
+def canonicalParentCore (parents : List IssueId)
+    (maxTag : IssueId → Option Stamp) : Option IssueId := Id.run do
   let mut best : Option (IssueId × Stamp) := none
-  for p in s.parentsOf i do
-    if let some tag := maxTagOf s (p, i, EdgeKind.Parent) then
+  for p in parents do
+    if let some tag := maxTag p then
       best := match best with
         | none => some (p, tag)
         | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
   return best.map (·.1)
 
-/-- `canonicalParent` over the hoisted `(parent, child)` view — the spec
-    re-derives `presentEdges` inside `parentsOf` per call (the tree render's
-    profile cost). For a present `i` the candidate set is identical: the
-    hoisted view only additionally filters child presence, and `i` is the
-    child. -/
-def canonicalParentE (v : View) (i : IssueId) : Option IssueId := Id.run do
-  let mut best : Option (IssueId × Stamp) := none
-  -- the parent candidates of `i` via the parent-by-child bucket (was an O(E)
-  -- filter of `v.pedges` per call), and each candidate's max add-tag via the
-  -- edge-tag hash (`v.maxTag`, was an O(E) `tagsOf` find) — the tree's `isRoot`
-  -- ran both per visible row (Θ(N·E)). The surviving max-tag parent is unique
-  -- (stamps are distinct), so the order is immaterial and the result is identical.
-  for p in v.parents i do
-    if let some tag := v.maxTag (p, i, EdgeKind.Parent) then
-      best := match best with
-        | none => some (p, tag)
-        | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
-  return best.map (·.1)
+/-- The canonical display parent — the spec/reference: candidates from
+    `parentsOf` (re-derives `presentEdges`), tags from `maxTagOf`. Production
+    reads the hoisted `canonicalParentE`; this is the form tests compare to. -/
+def canonicalParent (s : State) (i : IssueId) : Option IssueId :=
+  canonicalParentCore (s.parentsOf i) (fun p => maxTagOf s (p, i, EdgeKind.Parent))
+
+/-- The production canonical parent — the same `canonicalParentCore` fold over
+    the hoisted views: candidates from the parent-by-child bucket (vs `parentsOf`
+    re-deriving `presentEdges`) and tags from the edge-tag hash `v.maxTag` (vs an
+    O(E) `tagsOf` find), so the tree's `isRoot` runs it O(deg)/row, not O(E)/row.
+    Both inputs are pinned equal to the spec's, so the result is identical. -/
+def canonicalParentE (v : View) (i : IssueId) : Option IssueId :=
+  canonicalParentCore (v.parents i) (fun p => v.maxTag (p, i, EdgeKind.Parent))
 
 def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
   let rows := edges.filter (fun (f, t, _) => f == i || t == i)
