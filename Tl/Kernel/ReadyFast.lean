@@ -90,23 +90,6 @@ def dependentsOfE (edges : List Edge) (i : IssueId) : List IssueId :=
 theorem dependentsOfE_eq (s : State) (i : IssueId) :
     dependentsOfE s.presentEdges i = s.dependentsOf i := rfl
 
-/-- `blocksSucc` over a hoisted edge list. -/
-def blocksSuccE (edges : List Edge) (s : State) (i : IssueId) : List IssueId :=
-  ((edges.filter (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))).map (·.2.1)).filter
-    (fun j => decide (s.hasIssue j))
-
-theorem blocksSuccE_eq (s : State) (i : IssueId) :
-    blocksSuccE s.presentEdges s i = s.blocksSucc i := rfl
-
-/-- `weight` with the hoisted successor view and the saturation exit. -/
-def weightFast (edges : List Edge) (s : State) (n : Nat) (i : IssueId) : Nat :=
-  ((reachFix (blocksSuccE edges s) n [i]).erase i).length
-
-theorem weightFast_eq (s : State) (i : IssueId) :
-    weightFast s.presentEdges s s.presentIssues.length i = s.weight i := by
-  unfold State.weightFast State.weight State.reachableBlocks
-  rw [reachFix_eq, reachClosure_congr (fun x => blocksSuccE_eq s x)]
-
 /-- `isReady` over the hoisted views and the rollup map. -/
 def isReadyFast (m : AMap IssueId Status) (edges : List Edge)
     (pe : List (IssueId × IssueId)) (s : State) (now : Instant) (i : IssueId) : Bool :=
@@ -172,6 +155,30 @@ theorem blocksBySource_eq (edges : List Edge) (i : IssueId) :
       exact ⟨fun ⟨h1, h2⟩ => ⟨h2, h1⟩, fun ⟨h1, h2⟩ => ⟨h2, h1⟩⟩)]
   exact List.map_congr_left (fun e _ => rfl)
 
+/-- `blocksSucc` via the prebuilt source-adjacency bucket (`blocksBySource`):
+    the present-filtered dependents of `i`, read O(1)-amortized instead of
+    re-filtering the whole edge list per call (the old `blocksSuccE`). -/
+def blocksSuccB (bsrc : Std.HashMap IssueId (List IssueId)) (s : State)
+    (i : IssueId) : List IssueId :=
+  ((bsrc[i]?.getD []).reverse).filter (fun j => decide (s.hasIssue j))
+
+theorem blocksSuccB_eq (s : State) (i : IssueId) :
+    blocksSuccB (blocksBySource s.presentEdges) s i = s.blocksSucc i := by
+  unfold State.blocksSuccB State.blocksSucc
+  rw [blocksBySource_eq, dependentsOfE_eq]
+
+/-- `weight` with the bucket-backed successor view and the saturation exit:
+    the blocks-reachability closure reads the once-built adjacency, so each
+    step is O(1)-amortized per node instead of an O(E) edge filter. -/
+def weightFast (bsrc : Std.HashMap IssueId (List IssueId)) (s : State)
+    (n : Nat) (i : IssueId) : Nat :=
+  ((reachFix (blocksSuccB bsrc s) n [i]).erase i).length
+
+theorem weightFast_eq (s : State) (i : IssueId) :
+    weightFast (blocksBySource s.presentEdges) s s.presentIssues.length i = s.weight i := by
+  unfold State.weightFast State.weight State.reachableBlocks
+  rw [reachFix_eq, reachClosure_congr (fun x => blocksSuccB_eq s x)]
+
 /-- Per-issue field data via the data hash copy (= `issueData`). -/
 theorem issueDataH_eq (s : State) (i : IssueId) :
     ((hashAssoc s.data.toList)[i]?).getD IssueData.empty = s.issueData i := by
@@ -228,15 +235,16 @@ def keyLe (a b : RankKey) : Bool :=
   else decide (TotalOrd.le a.id b.id)
 
 /-- A candidate's key over the hoisted views. -/
-def keyOf (edges : List Edge) (s : State) (n : Nat) (i : IssueId) : RankKey :=
+def keyOf (bsrc : Std.HashMap IssueId (List IssueId)) (s : State) (n : Nat)
+    (i : IssueId) : RankKey :=
   { prio := (s.issueData i).priorityOf.val
-    weight := weightFast edges s n i
+    weight := weightFast bsrc s n i
     createdAt := s.createdAtOf i
     id := i }
 
 theorem keyLe_keyOf_eq (s : State) (a b : IssueId) :
-    keyLe (keyOf s.presentEdges s s.presentIssues.length a)
-          (keyOf s.presentEdges s s.presentIssues.length b)
+    keyLe (keyOf (blocksBySource s.presentEdges) s s.presentIssues.length a)
+          (keyOf (blocksBySource s.presentEdges) s s.presentIssues.length b)
       = s.readyLe a b := by
   unfold State.keyLe State.keyOf State.readyLe
   rw [weightFast_eq, weightFast_eq]
@@ -247,12 +255,12 @@ def rankSortK (l : List RankKey) : List RankKey :=
 
 theorem rankSortK_map (st : State) :
     (l : List IssueId) →
-    rankSortK (l.map (keyOf st.presentEdges st st.presentIssues.length))
-      = (st.rankSort l).map (keyOf st.presentEdges st st.presentIssues.length)
+    rankSortK (l.map (keyOf (blocksBySource st.presentEdges) st st.presentIssues.length))
+      = (st.rankSort l).map (keyOf (blocksBySource st.presentEdges) st st.presentIssues.length)
   | l => by
     unfold State.rankSortK State.rankSort
     exact (List.map_mergeSort
-      (f := keyOf st.presentEdges st st.presentIssues.length)
+      (f := keyOf (blocksBySource st.presentEdges) st st.presentIssues.length)
       (r := fun a b => st.readyLe a b)
       (s := fun a b => keyLe a b)
       (l := l) (fun a _ b _ => (keyLe_keyOf_eq st a b).symm)).symm
@@ -272,9 +280,10 @@ def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List Issue
   let mh := hashAssoc m.toList
   let dataH := hashAssoc s.data.toList
   let btgt := blocksByTarget edges
+  let bsrc := blocksBySource edges
   let pbk := bucketBy pe
   let cands := present.filter (isReadyFastH pset mh dataH btgt pbk s now ·)
-  (rankSortK (cands.map (keyOf edges s present.length))).map (·.id)
+  (rankSortK (cands.map (keyOf bsrc s present.length))).map (·.id)
 
 /-- **The bridge.** The fast queue IS the spec's ranked queue — `ready`
     soundness, completeness, and the proved ordering transfer untouched. -/
@@ -290,8 +299,8 @@ theorem readyFast_eq (s : State) (now : Instant) :
       (isReadyFastH_eq (s.effStatusAll) s now i).trans (isReadyFast_eq s now i))
   rw [hf, rankSortK_map]
   rw [List.map_map]
-  show (s.rankSort _).map ((·.id) ∘ keyOf s.presentEdges s s.presentIssues.length) = _
-  have : ((·.id) ∘ keyOf s.presentEdges s s.presentIssues.length) = (id : IssueId → IssueId) := by
+  show (s.rankSort _).map ((·.id) ∘ keyOf (blocksBySource s.presentEdges) s s.presentIssues.length) = _
+  have : ((·.id) ∘ keyOf (blocksBySource s.presentEdges) s s.presentIssues.length) = (id : IssueId → IssueId) := by
     funext i
     rfl
   rw [this, List.map_id]
