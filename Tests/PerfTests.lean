@@ -176,26 +176,17 @@ def perfTests : IO (List Outcome) := do
     let edges := s.presentEdges
     let pe := s.parentEdges
     let cyc ← bench 100 (fun _ =>
-      let pset := hashSetOf present
-      let succB := State.succOfAdj (State.kindAdj edges EdgeKind.Blocks) pset
-      let succP := State.succOfAdj (State.kindAdj edges EdgeKind.Parent) pset
-      let succPrec := State.precSuccH (hashAssoc rollup.toList)
-        (State.blocksAdj edges) (bucketBy pe) pset s
-      (State.sccWitnessesT present present.length succB).length
-      + (State.sccWitnessesT present present.length succP).length
-      + (State.sccWitnessesT present present.length succPrec).length)
-    -- the fast branch must actually be taken at THESE scales, not only on
-    -- the ≤8-node cross-test graphs — a scale-dependent rejection (fuel,
-    -- depth) would otherwise surface as nothing but a quiet slowdown
-    let pset := hashSetOf present
-    let succB := State.succOfAdj (State.kindAdj edges EdgeKind.Blocks) pset
-    let succP := State.succOfAdj (State.kindAdj edges EdgeKind.Parent) pset
-    let succPrec := State.precSuccH (hashAssoc rollup.toList)
-      (State.blocksAdj edges) (bucketBy pe) pset s
+      (State.cyclesFastWith present edges EdgeKind.Blocks).length
+      + (State.cyclesFastWith present edges EdgeKind.Parent).length
+      + (State.precCyclesFastWith rollup present edges pe s).length)
+    -- the fast cert branch must actually be taken at THESE scales, not only on
+    -- the ≤8-node cross-test graphs — a scale-dependent rejection (fuel, depth)
+    -- would otherwise surface as nothing but a quiet slowdown. Reads the
+    -- production cert-acceptance guard over the same successor wiring.
     certScaleOk := certScaleOk
-      && sccCertOk present succB (tarjanSCC present succB)
-      && sccCertOk present succP (tarjanSCC present succP)
-      && sccCertOk present succPrec (tarjanSCC present succPrec)
+      && State.cyclesCertAcceptedWith present edges EdgeKind.Blocks
+      && State.cyclesCertAcceptedWith present edges EdgeKind.Parent
+      && State.precCyclesCertAcceptedWith rollup present edges pe s
     let fullCyc ← bench 1 (fun _ =>
       (State.cyclesFast s EdgeKind.Blocks).length
       + (State.cyclesFast s EdgeKind.Parent).length
@@ -210,19 +201,11 @@ def perfTests : IO (List Outcome) := do
     let redges := rs.presentEdges
     let rpe := rs.parentEdges
     let rcyc ← bench 120 (fun _ =>
-      let pset := hashSetOf rpresent
-      let succB := State.succOfAdj (State.kindAdj redges EdgeKind.Blocks) pset
-      let succPrec := State.precSuccH (hashAssoc rrollup.toList)
-        (State.blocksAdj redges) (bucketBy rpe) pset rs
-      (State.sccWitnessesT rpresent rpresent.length succB).length
-      + (State.sccWitnessesT rpresent rpresent.length succPrec).length)
-    let rpset := hashSetOf rpresent
-    let rsuccB := State.succOfAdj (State.kindAdj redges EdgeKind.Blocks) rpset
-    let rsuccPrec := State.precSuccH (hashAssoc rrollup.toList)
-      (State.blocksAdj redges) (bucketBy rpe) rpset rs
+      (State.cyclesFastWith rpresent redges EdgeKind.Blocks).length
+      + (State.precCyclesFastWith rrollup rpresent redges rpe rs).length)
     certScaleOk := certScaleOk
-      && sccCertOk rpresent rsuccB (tarjanSCC rpresent rsuccB)
-      && sccCertOk rpresent rsuccPrec (tarjanSCC rpresent rsuccPrec)
+      && State.cyclesCertAcceptedWith rpresent redges EdgeKind.Blocks
+      && State.precCyclesCertAcceptedWith rrollup rpresent redges rpe rs
     -- provenanceMap is near-linear (filterMap + mergeSort + a single grouped
     -- fold); reps sized so the small scale clears the 30ms floor (de-masked).
     let prov ← bench 800 (fun _ => (provenanceMap loaded.ops).toList.length)

@@ -518,6 +518,43 @@ theorem precCyclesFast_eq (s : State) :
     sccWitnessesT_eq s s.precSucc (precSucc_subset_present s)]
   rfl
 
+/-! ## Certificate-branch acceptance (the fast-path guard)
+
+`sccWitnessesT` takes the certificate-checked fast Tarjan path iff `sccCertOk`
+accepts the proposed partition, else it falls back to the proved (slow) closure.
+These predicates expose that decision so the acceptance tests assert the fast
+branch is taken by consuming a PRODUCTION entry point — not a hand-rolled
+successor copy in a test file that silently goes stale when the wiring changes
+(letting production drop to the slow path while the test keeps passing).
+
+The successor composition is INLINE here (mirroring `cyclesFastWith`/
+`precCyclesFastWith` directly above), not factored into a shared named def: a
+`def … : … → IssueId → List IssueId` returning that partial application is a
+perf trap — it rebuilds `kindAdj`/`blocksAdj` per successor query (Θ(N·E)/call,
+even `@[inline]`), where the inline `let`-bound form builds them once. The
+composition reads the same shared `kindAdj`/`succOfAdj`/`precSuccH`/`blocksAdj`
+primitives, so a change to those moves both; keep the one-line composition in
+sync with the two functions above (they sit adjacent for exactly that). -/
+
+/-- Is the per-kind cycle path's fast cert branch accepted, over hoisted views? -/
+def cyclesCertAcceptedWith (present : List IssueId) (edges : List Edge) (k : EdgeKind) : Bool :=
+  let succ := succOfAdj (kindAdj edges k) (hashSetOf present)
+  sccCertOk present succ (tarjanSCC present succ)
+
+/-- Is the per-kind cycle path's fast cert branch accepted for `s`? -/
+def cyclesCertAccepted (s : State) (k : EdgeKind) : Bool :=
+  cyclesCertAcceptedWith s.presentIssues s.presentEdges k
+
+/-- Is the readiness-deadlock path's fast cert branch accepted, over hoisted views? -/
+def precCyclesCertAcceptedWith (m : AMap IssueId Status) (present : List IssueId)
+    (edges : List Edge) (pe : List (IssueId × IssueId)) (s : State) : Bool :=
+  let succ := precSuccH (hashAssoc m.toList) (blocksAdj edges) (bucketBy pe) (hashSetOf present) s
+  sccCertOk present succ (tarjanSCC present succ)
+
+/-- Is the readiness-deadlock path's fast cert branch accepted for `s`? -/
+def precCyclesCertAccepted (m : AMap IssueId Status) (s : State) : Bool :=
+  precCyclesCertAcceptedWith m s.presentIssues s.presentEdges s.parentEdges s
+
 /-- The fast cycle-presence flag. -/
 def hasCycleFast (s : State) (k : EdgeKind) : Bool := !(cyclesFast s k).isEmpty
 

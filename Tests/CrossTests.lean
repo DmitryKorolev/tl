@@ -98,19 +98,10 @@ private def fingerprint (s : State) : String :=
 
 private def seeds : List Nat := (List.range 25).map (0xc0ffee + 7919 * ·)
 
-/-- Mirror of what `cyclesFast` hands to `sccWitnessesT`, to assert the
-    certificate branch in isolation. -/
-def cyclesBranchOk (s : State) (k : EdgeKind) : Bool :=
-  let succ := State.succOfAdj (State.kindAdj s.presentEdges k)
-    (hashSetOf s.presentIssues)
-  sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ)
-
-/-- Mirror of what `precCyclesFast` hands to `sccWitnessesT`. -/
-def precBranchOk (s : State) : Bool :=
-  let m := s.effStatusAll
-  let succ := State.precSuccH (hashAssoc m.toList) (State.blocksAdj s.presentEdges)
-    (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s
-  sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ)
+-- The certificate-branch acceptance asserted in the kernel-spec tests reads the
+-- production entry points `State.cyclesCertAccepted`/`precCyclesCertAccepted`
+-- directly (no hand-rolled successor mirror that silently goes stale when the
+-- production wiring changes — a refactor flips these instead).
 
 def kernelSpecTests : List Outcome :=
   let rows := seeds.map (fun seed =>
@@ -174,7 +165,8 @@ def kernelSpecTests : List Outcome :=
     -- the certificate accepts Tarjan's partition (the fast branch is
     -- taken, not the fallback — tested, not proved; SccFast.lean)
     let certTaken :=
-      cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s
+      State.cyclesCertAccepted s .Blocks && State.cyclesCertAccepted s .Parent
+        && State.precCyclesCertAccepted s.effStatusAll s
     (seed, orderOk && dupOk && joinIdem && joinComm && readySound && readySorted
       && unblocksOk && rollupTotal && fastAgrees && readyFastAgrees && echoFastAgrees
       && cyclesFastAgrees && withFormsAgree && certTaken))
@@ -243,7 +235,8 @@ def sccFixtureTests : List Outcome :=
         == ([] : List (List IssueId))),
    check "certificate accepted on every fixture (fast branch taken)"
     ([ring, twin, selfLoop, parentCycle, mutualBlock, dangling].all (fun s =>
-      cyclesBranchOk s .Blocks && cyclesBranchOk s .Parent && precBranchOk s))]
+      State.cyclesCertAccepted s .Blocks && State.cyclesCertAccepted s .Parent
+        && State.precCyclesCertAccepted s.effStatusAll s))]
 
 /-- The checker must REJECT wrong candidates — without these the rejection
     branch (and the proved fallback behind it) is dark code in the compiled
