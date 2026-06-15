@@ -324,13 +324,14 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
      ("done", jnum doneN), ("cancelled", jnum cancelledN),
      ("ready", jnum ready), ("blocked", jnum blocked),
      ("deferred", jnum deferred), ("cycles", jnum cycles)]
-  -- a small labelled block (§5); each state's count in its status color (§7)
+  -- a small labelled block (§5); §7: green marks the workable (ready) count, so
+  -- the stored-open row renders neutral and the derived ready count takes green
   let r : Style → String := fun st =>
     let c (ds : DState) (n : Nat) : String := st.paint ds.colorCode s!"{ds.word} {n}"
     s!"{issues.length} issues\n"
-      ++ "  " ++ String.intercalate " · " [c .ready openN, c .inProgress inProg, c .done doneN, c .cancelled cancelledN] ++ "\n"
+      ++ "  " ++ String.intercalate " · " [s!"open {openN}", c .inProgress inProg, c .done doneN, c .cancelled cancelledN] ++ "\n"
       ++ "  " ++ String.intercalate " · "
-           [st.paint "1" s!"ready {ready}", c .blocked blocked, c .deferred deferred,
+           [st.paint DState.ready.colorCode s!"ready {ready}", c .blocked blocked, c .deferred deferred,
             (if cycles > 0 then st.paint "31" s!"cycles {cycles}" else s!"cycles {cycles}")]
   return { data, human := r Style.plain, render := some r, notes }
 
@@ -446,10 +447,16 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM
       match p.op with | .claim ci _ => some ci | _ => none)
     | throw (.mk' .internal "claim wrote no claim record")
   let current := (v.state.issueData i).assignee.value.getD none
+  let won := current == some actor
   let data := (issueObj v i).setObjVal! "claim" (Json.mkObj
-    [("outcome", Json.str (if current == some actor then "won" else "superseded")),
+    [("outcome", Json.str (if won then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
-  return { data, human := s!"Claimed {displayId i} as {sanitizeSingle actor}"
+  -- mirror cmdClose: a folded foreign op can outstamp the fresh claim inside the
+  -- skew window, so the human line must disclose supersession — not assume "Claimed"
+  let human :=
+    if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
+    else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
+  return { data, human
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
@@ -692,6 +699,8 @@ def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : Stri
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
+  if label.trimAscii.isEmpty then
+    throw (.mk' .usage "a label must be non-empty — `tl label remove <id> <label>`")
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
