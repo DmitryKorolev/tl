@@ -528,6 +528,24 @@ GARBAGE
       ["show", "tl-" ++ target, "--dir", dir3]
       (fun j => jStr j "assignee" == some "eve"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- the claim COMMAND itself discloses supersession in its human line (parity
+  -- with close): a reopened issue keeps its assignee, so it is ready (status
+  -- Open) yet a higher-stamped foreign claim outranks the fresh one on the
+  -- assignee LWW — current ≠ actor, so "Claimed …" would be a lie
+  let dir3b ← freshDir
+  let tgt2 ← mkIssue dir3b "Reassigned"
+  let base ← nowMs
+  let seg := foreignLine (.claim tgt2 "eve") ((base + 20000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+          ++ foreignLine (.reopen tgt2) ((base + 40000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 2 ++ "\n"
+  IO.FS.writeFile (System.FilePath.mk dir3b / "log" / "2zzzzzzzzzzzz.jsonl") seg
+  match ← run' ["claim", "tl-" ++ tgt2, "--dir", dir3b, "--assignee", "carol"] with
+  | .error e => o := o ++ [check "superseded claim is reachable via the command" false s!"unexpected: {e.message}"]
+  | .ok out =>
+    let outc := (jGet out.data "claim").bind (fun c => jStr c "outcome")
+    o := o ++
+      [check "claim command reports superseded in JSON" (outc == some "superseded") s!"outcome={outc}",
+       check "claim command discloses supersession in the human line"
+         ((out.human.splitOn "superseded").length == 2) out.human]
   -- doctor survives store damage as a failing check
   let dir4 ← freshDir
   let _ ← mkIssue dir4 "Healthy"
@@ -555,7 +573,11 @@ def cliDescriptionTests : IO (List Outcome) := do
     [← expectData "create --description sets the body"
       ["create", "Titled", "--dir", dir, "--assignee", "t",
        "--description", "line one\nline two"]
-      (fun j => jStr j "description" == some "line one\nline two")]
+      (fun j => jStr j "description" == some "line one\nline two"),
+     -- a trailing `-` AND `--description <text>` name two body sources: a usage
+     -- conflict, caught before any IO (so it never reaches stdin)
+     ← expectErr "a trailing - with --description <text> is a usage conflict"
+       ["create", "X", "--dir", dir, "--assignee", "t", "--description", "text", "-"] .usage]
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   unless ← exe.pathExists do
     return o ++ [{ name := "binary present for stdin rows", passed := false,
@@ -563,24 +585,36 @@ def cliDescriptionTests : IO (List Outcome) := do
   let sh (script : String) : IO IO.Process.Output :=
     IO.Process.output { cmd := "sh", args := #["-c", script] }
   let q (s : String) : String := "'" ++ s ++ "'"
-  -- piped stdin becomes the description (the §8 second leg)
-  let piped ← sh s!"printf 'from\nstdin' | {q exe.toString} create Piped --dir {q dir} --assignee t --json"
+  let hasDesc (out body : String) : Bool := (out.splitOn s!"\"description\":\"{body}\"").length == 2
+  let noDesc (out : String) : Bool := (out.splitOn "\"description\"").length == 1
+  -- ADR-0017 §8 (amended 2026-06-14): WITHOUT the `-` sentinel, stdin is NOT
+  -- read — the body stays absent even with data on the pipe. The regression
+  -- guard for the hang: an unrequested stdin is never consumed.
+  let nodash ← sh s!"printf 'from\nstdin' | {q exe.toString} create NoDash --dir {q dir} --assignee t --json"
+  o := o ++ [check "no sentinel: piped stdin is NOT read (body absent)" (noDesc nodash.stdout) nodash.stdout]
+  -- `--description -` reads the body from stdin
+  let viaFlag ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaFlag --dir {q dir} --assignee t --description - --json"
+  o := o ++ [check "--description - reads the body from stdin" (hasDesc viaFlag.stdout "from\\nstdin") viaFlag.stdout]
+  -- a trailing `-` reads the body from stdin (same request as --description -)
+  let viaDash ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaDash --dir {q dir} --assignee t --json -"
+  o := o ++ [check "a trailing - reads the body from stdin" (hasDesc viaDash.stdout "from\\nstdin") viaDash.stdout]
+  -- `--description <text>` is the literal body; stdin is left untouched
+  let lit ← sh s!"printf 'ignored' | {q exe.toString} create Lit --dir {q dir} --assignee t --description flagged --json"
+  o := o ++ [check "--description <text> is the body; stdin untouched" (hasDesc lit.stdout "flagged") lit.stdout]
+  -- `-` with empty stdin leaves the description absent
+  let emptyDash ← sh s!": | {q exe.toString} create EmptyDash --dir {q dir} --assignee t --json -"
+  o := o ++ [check "- with empty stdin leaves the body absent" (noDesc emptyDash.stdout) emptyDash.stdout]
+  -- the hang guard: a held-open, non-EOF stdin WITHOUT `-` must not block — tl
+  -- returns promptly without reading it. On a regression it would block until
+  -- the 5s holder closes the write end; the timing bound catches that.
+  let fifo := s!"{dir}-holdpipe"
+  let t0 ← IO.monoMsNow
+  let held ← sh s!"mkfifo {q fifo}; sleep 5 > {q fifo} 2>/dev/null & {q exe.toString} create Held --dir {q dir} --assignee t --json < {q fifo}; rm -f {q fifo}"
+  let elapsed := (← IO.monoMsNow) - t0
   o := o ++
-    [check "piped stdin becomes the description"
-      ((piped.stdout.splitOn "\"description\":\"from\\nstdin\"").length == 2)
-      piped.stdout]
-  -- --description wins over piped stdin
-  let both ← sh s!"printf 'ignored' | {q exe.toString} create Both --dir {q dir} --assignee t --description flagged --json"
-  o := o ++
-    [check "--description wins over piped stdin"
-      ((both.stdout.splitOn "\"description\":\"flagged\"").length == 2)
-      both.stdout]
-  -- empty piped stdin leaves the description absent
-  let empty ← sh s!": | {q exe.toString} create Empty --dir {q dir} --assignee t --json"
-  o := o ++
-    [check "empty piped stdin leaves the description absent"
-      ((empty.stdout.splitOn "\"description\"").length == 1)
-      empty.stdout]
+    [check s!"held-open non-EOF stdin without - does not block ({elapsed}ms)"
+      (held.exitCode == 0 && noDesc held.stdout && elapsed < 3000)
+      s!"exit={held.exitCode} elapsed={elapsed}ms out={held.stdout}"]
   return o
 
 /-- The consistency batch: stamp-ordered provenance ties, mode-scoped
@@ -802,6 +836,18 @@ def cliFreeVerbTests : IO (List Outcome) := do
       (fun j => jNat j "total" == some 2 && jNat j "open" == some 2
         && jNat j "ready" == some 1 && jNat j "blocked" == some 1
         && jNat j "cycles" == some 0)]
+  -- §7: green marks the workable (ready) count, NOT the stored-open count
+  -- (which includes the blocked issue). Assert the colored render directly.
+  let escSeq := String.singleton (Char.ofNat 0x1b)
+  match ← run' ["stats", "--dir", dir] with
+  | .error e => o := o ++ [check "stats colored render reachable" false e.message]
+  | .ok out =>
+    let colored := match out.render with | some f => f ⟨.on, .ascii⟩ | none => ""
+    o := o ++
+      [check "stats paints the ready count green (§7 workable)"
+        ((colored.splitOn (escSeq ++ "[32mready ")).length == 2) colored,
+       check "stats leaves the stored-open count neutral (not green)"
+        ((colored.splitOn (escSeq ++ "[32mopen ")).length == 1) colored]
   -- list defaults to open-only; --all includes closed
   let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
   o := o ++
@@ -1163,6 +1209,8 @@ def cliLabelTests : IO (List Outcome) := do
     ["label", "remove", "tl-" ++ a, "parser", "--dir", dir] (fun j => jStr j "status" == some "removed")]
   o := o ++ [← expectData "label remove is a noop when the label is absent"
     ["label", "remove", "tl-" ++ a, "parser", "--dir", dir] (fun j => jStr j "status" == some "noop")]
+  o := o ++ [← expectErr "label remove rejects an empty label (parity with add)"
+    ["label", "remove", "tl-" ++ a, "", "--dir", dir] .usage]
   return o
 
 /-- The tree render on a multi-parent diamond stays linear (the old walk
