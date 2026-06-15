@@ -1219,20 +1219,23 @@ def cliLabelTests : IO (List Outcome) := do
     expands once, later encounters render the already-shown marker. -/
 def cliTreeDiamondTests : IO (List Outcome) := do
   let dir ← freshDir
-  let a ← mkIssue dir "A"
-  let b ← mkIssue dir "B" ["--parent", "tl-" ++ a]
-  let c ← mkIssue dir "C" ["--parent", "tl-" ++ a]
-  let d ← mkIssue dir "D" ["--parent", "tl-" ++ b, "--parent", "tl-" ++ c]
-  let e ← mkIssue dir "E" ["--parent", "tl-" ++ d]
+  -- distinctive titles, not ids: human rows now render SHORT ids (whose length
+  -- depends on prefix collisions), so count the stable title token instead — it
+  -- renders on both the first expansion and the shared-node "(shown above)" line.
+  let a ← mkIssue dir "Anode"
+  let b ← mkIssue dir "Bnode" ["--parent", "tl-" ++ a]
+  let c ← mkIssue dir "Cnode" ["--parent", "tl-" ++ a]
+  let d ← mkIssue dir "Dnode" ["--parent", "tl-" ++ b, "--parent", "tl-" ++ c]
+  let _e ← mkIssue dir "Enode" ["--parent", "tl-" ++ d]
   match ← run' ["list", "--dir", dir] with
   | .ok out =>
     let h := out.human
     let count (needle : String) : Nat := (h.splitOn needle).length - 1
     return [
-      check "the shared diamond node renders under both parents" (count d == 2)
-        s!"D appearances: {count d} in:\n{h}",
-      check "the shared node's subtree expands exactly once" (count e == 1)
-        s!"E appearances: {count e} in:\n{h}",
+      check "the shared diamond node renders under both parents" (count "Dnode" == 2)
+        s!"Dnode appearances: {count "Dnode"} in:\n{h}",
+      check "the shared node's subtree expands exactly once" (count "Enode" == 1)
+        s!"Enode appearances: {count "Enode"} in:\n{h}",
       check "the second encounter carries the already-shown marker"
         (count "(shown above)" == 1) h]
   | .error err => return [{ name := "tree diamond render", passed := false, msg := err.message }]
@@ -1511,6 +1514,42 @@ def cliDefaultLimitTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "tree limit rows", passed := false, msg := e.message }]
   return o
 
+/-- Short display ids (ADR-0017/0018): human one-line rows render `tl-` + the
+    shortest prefix unambiguous over the present set (floor `shortIdFloor`), JSON
+    keeps the full id, and a rendered short id resolves as a command argument. -/
+def cliShortIdTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- the pure prefix-length algorithm: floor honored, collisions extend, and
+  -- every emitted prefix is unique over the set (so it resolves)
+  let ids := ["aaaa0zzz", "aaaa1zzz", "bcde0000"]
+  let lens := shortIdLens ids
+  let prefixOf := fun (i : IssueId) => String.ofList (i.toList.take ((lens[i]?).getD i.length))
+  o := o ++
+    [check "shortIdLens floors a lone-prefix id at shortIdFloor"
+       ((lens["bcde0000"]?).getD 0 == shortIdFloor) s!"got {(lens["bcde0000"]?).getD 0}",
+     check "shortIdLens extends past the floor on a shared prefix"
+       ((lens["aaaa0zzz"]?).getD 0 == 5 && (lens["aaaa1zzz"]?).getD 0 == 5)
+       s!"a0={(lens["aaaa0zzz"]?).getD 0} a1={(lens["aaaa1zzz"]?).getD 0}",
+     check "every shortIdLens prefix is unambiguous over the set"
+       (ids.all (fun i => (ids.filter (·.startsWith (prefixOf i))).length == 1)) "a prefix matched >1 id"]
+  -- a single-issue repo: the human row drops the full id for the floor-length
+  -- prefix, and that prefix resolves back to the full id
+  let dir ← freshDir
+  let a ← mkIssue dir "Solo issue"
+  let floorPref := "tl-" ++ String.ofList (a.toList.take shortIdFloor)
+  match ← run' ["list", "--dir", dir] with
+  | .ok out =>
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "human list omits the full id (shortened)" ((plain.splitOn ("tl-" ++ a)).length == 1) plain,
+       check "human list shows the floor-length prefix" ((plain.splitOn floorPref).length > 1) plain]
+  | .error e => o := o ++ [{ name := "short id list render", passed := false, msg := e.message }]
+  o := o ++ [← expectData "a rendered short id resolves as a command arg"
+    ["show", floorPref, "--dir", dir] (fun j => jStr j "id" == some ("tl-" ++ a))]
+  o := o ++ [← expectData "--json keeps the full id" ["list", "--dir", dir]
+    (fun j => (jArr j "items").any (fun it => jStr it "id" == some ("tl-" ++ a)))]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1522,6 +1561,6 @@ def cliTests : IO (List Outcome) := do
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
-    ++ (← cliBinaryTests)
+    ++ (← cliShortIdTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

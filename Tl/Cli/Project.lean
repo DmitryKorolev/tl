@@ -188,6 +188,36 @@ structure ViewIndex where
       candidate; the spec `tagsOf` is an O(E) `AMap.find`, and the tree's
       `isRoot` runs it per visible issue (Θ(N·E)). -/
   edgeTags : Std.HashMap Edge (FinSet Stamp)
+  /-- Each present id's shortest unambiguous display-prefix length (`shortIdLens`
+      over `present`) — `View.shortId` renders `tl-` + that many chars. Display
+      only; JSON keeps the full id (ADR-0020). -/
+  shortLen : Std.HashMap IssueId Nat
+
+/-- The display floor for a short id: at least this many id chars after `tl-`
+    (git-short-hash style — keeps ids visually stable and typable; collisions
+    extend past it). -/
+def shortIdFloor : Nat := 4
+
+/-- Each id's shortest unambiguous prefix length over `ids` (the present set —
+    what input resolution disambiguates against, `resolveToken`). Sorted
+    lexicographically (`TotalOrd.le`), the longest prefix any id shares with
+    another is shared with a sorted neighbor, so one char past the max neighbor
+    LCP is unique; floored at `shortIdFloor`, capped at the id length. Built once
+    per view (O(N log N)); `View.shortId` reads it O(1). -/
+def shortIdLens (ids : List IssueId) : Std.HashMap IssueId Nat := Id.run do
+  let arr := (ids.mergeSort (fun a b => decide (TotalOrd.le a b))).toArray
+  let n := arr.size
+  let getAt := fun k => (arr[k]?).getD ""
+  let lcp := fun (a b : String) =>
+    ((a.toList.zip b.toList).takeWhile (fun p => p.1 == p.2)).length
+  let mut m : Std.HashMap IssueId Nat := ∅
+  for k in [0:n] do
+    let id := getAt k
+    let prev := if k == 0 then 0 else lcp id (getAt (k - 1))
+    let next := if k + 1 == n then 0 else lcp id (getAt (k + 1))
+    let need := Nat.max (Nat.max prev next + 1) shortIdFloor
+    m := m.insert id (Nat.min need id.length)
+  return m
 
 /-- Build the indexed views once from a view's already-materialized collections
     (ADR-0024 "build once, read many"). Pass the SAME `rollup`/`present`/`edges`/
@@ -204,7 +234,8 @@ def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     pbk := Tl.Kernel.bucketBy pedges
     pbc := Tl.Kernel.bucketBy (pedges.map (fun p => (p.2, p.1)))
     provH := Tl.Kernel.hashAssoc prov.toList
-    edgeTags := edgeAdds.foldl (fun m p => m.insert p.1 p.2) ∅ }
+    edgeTags := edgeAdds.foldl (fun m p => m.insert p.1 p.2) ∅
+    shortLen := shortIdLens present }
 
 /-- A command's read view. -/
 structure View where
@@ -265,6 +296,14 @@ Routed through by `issueRow`/`issueObj`/`issueLine`, `Render`'s
 
 /-- `s.issueData i` via the data hash (`issueDataH_eq`). -/
 def View.issueData (v : View) (i : IssueId) : IssueData := (v.idx.dataH[i]?).getD IssueData.empty
+/-- The short display id (ADR-0017 human surface; ADR-0018 ids): `tl-` + the
+    shortest id prefix unambiguous over the present set, floored at
+    `shortIdFloor`. Directly typable as a command argument — input resolution
+    matches a prefix over the same present set (`resolveToken`). `--json` keeps
+    the full id (the ADR-0020 contract): never depend on prefix length, which
+    grows as issues are added. -/
+def View.shortId (v : View) (i : IssueId) : String :=
+  displayId (String.ofList (i.toList.take ((v.idx.shortLen[i]?).getD i.length)))
 /-- `decide (s.hasIssue i)` via the present-issue set (`contains_hashSetOf_present`). -/
 def View.has (v : View) (i : IssueId) : Bool := v.idx.presentH.contains i
 /-- `effStatusWith v.rollup s i` via the rollup hash (`getElem?_hashAssoc_amap`); the

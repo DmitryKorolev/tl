@@ -23,6 +23,13 @@ Used by `ready` and flat `list` output:
 <glyph> <id> <prio> [epic] <title>
 ```
 
+- `<id>` is the **short** display id: `tl-` + the shortest id prefix unambiguous
+  over the present issue set (git-short-hash style; floor 4 chars, extending on
+  collision). It is directly usable as a command argument — input resolution
+  matches any unambiguous `tl-` prefix over the same set (ADR-0007). Human
+  display only: `--json` always carries the full 16-char id (the ADR-0008/0020
+  contract), and the prefix length grows as issues are added, so scripts and
+  agents must never depend on it. `show` / `why` keep the full id at least once.
 - Status glyph: `○ open`  `◐ in_progress`  `● blocked`  `✓ done`
   `✗ cancelled`  `❄ deferred`. `blocked` / `deferred` are the derived views
   (ADR-0003/0010) — the glyph reflects effective state, not just stored status.
