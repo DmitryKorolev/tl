@@ -292,22 +292,29 @@ def perfPrimitiveTests : IO (List Outcome) := do
   -- pure-Lean SHA-256 it replaced. A machine-independent RATIO — both run here on
   -- one machine — pins the fast-hash advantage that justifies the cache using it;
   -- a revert to a slow hash collapses the ratio. ~2.5MB, the warm-cache size.
+  -- The native hash is ~9× faster, so a handful of its reps land in the timer
+  -- noise where a few ms of OS jitter swings the ratio (the source of past
+  -- flakiness); give it enough reps to clear the floor, compare PER CALL by
+  -- cross-multiplying the rep counts (no integer division), and assert a ≥4×
+  -- margin — well under the ~9× real gap, well over the ~1× a revert collapses to.
   let big := ByteArray.mk (Array.replicate 2500000 (0x61 : UInt8))
+  let hashReps := 40
+  let shaReps := 5
   let (_, byteHashMs) ← timeMs (do
     let mut acc := 0
-    for _ in [0:5] do acc := acc + (ByteArray.hash big).toNat
+    for _ in [0:hashReps] do acc := acc + (ByteArray.hash big).toNat
     pure (acc % 7))
   let (_, shaMs) ← timeMs (do
     let mut acc := 0
-    for _ in [0:5] do acc := acc + (Tl.Hash.Sha256.digest big).size
+    for _ in [0:shaReps] do acc := acc + (Tl.Hash.Sha256.digest big).size
     pure (acc % 7))
   return [
     check s!"native String compare stays fast: {n}² TotalOrd.le ≤ 800ms ({cmpMs}ms)"
       (cmpMs ≤ 800)
       s!"{cmpMs}ms — a revert to the ≤-derived decEq / per-compare List-Char decLE allocates per comparison",
-    check s!"cache hash on native ByteArray.hash, ≥8× faster than SHA-256 (hash {byteHashMs}ms, sha {shaMs}ms)"
-      (shaMs ≥ 8 * max byteHashMs 1)
-      s!"hash={byteHashMs}ms sha={shaMs}ms — the fast content-hash advantage the cache relies on"]
+    check s!"cache hash on native ByteArray.hash, ≥4× faster per call than SHA-256 (hash {byteHashMs}ms/{hashReps}, sha {shaMs}ms/{shaReps})"
+      (shaMs * hashReps ≥ 4 * byteHashMs * shaReps)
+      s!"hash={byteHashMs}ms/{hashReps} sha={shaMs}ms/{shaReps} — the fast content-hash advantage the cache relies on"]
 
 /-- End-to-end binary latency (ADR-0023 §2: "End-to-end is mandatory"). In-process
     profiles mispredict the compiled binary — the dominant warm-read cost is the
