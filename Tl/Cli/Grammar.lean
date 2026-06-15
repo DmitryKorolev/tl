@@ -59,15 +59,15 @@ private def limitFlag : FlagSpec :=
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
   [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)" },
-    { command := "create", positionals := "<title>",
-      summary := "add an issue, wiring deps inline; body via --description or piped stdin",
+    { command := "create", positionals := "<title> [-]",
+      summary := "add an issue, wiring deps inline; body via --description, or `-` to read stdin",
       flags :=
         [ { name := "priority", value := true, summary := "0–4, 0 = highest (default 2); also -p" },
           { name := "blocked-by", value := true, repeatable := true, summary := "this issue is blocked by <id>" },
           { name := "blocks", value := true, repeatable := true, summary := "this issue blocks <id>" },
           { name := "parent", value := true, repeatable := true, summary := "make this issue a child of epic <id>" },
           { name := "related", value := true, repeatable := true, summary := "symmetric informational link to <id>" },
-          { name := "description", value := true, summary := "the body (else piped stdin is read as the body)" },
+          { name := "description", value := true, summary := "the body; pass `-` (or a trailing `-`) to read it from stdin" },
           actorFlag ] },
     { command := "ready", positionals := "",
       summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag] },
