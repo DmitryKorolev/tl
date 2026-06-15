@@ -169,12 +169,12 @@ def runVerb : List String → TlM CmdOut
     | "ready" => do
       let a ← parse "ready"
       MonadExcept.ofExcept (noPositionals a "ready")
-      let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
+      let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
       cmdReady (a.get? "dir") limit (a.has "skip-bad")
     | "list" => do
       let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
-      let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
+      let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
       cmdList (a.get? "dir") limit (!a.has "flat") (a.has "all") (a.has "skip-bad") (a.getAll "label")
     | "log" => do
       let a ← parse "log"

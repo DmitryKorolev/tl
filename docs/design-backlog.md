@@ -67,7 +67,7 @@ Kernel theorems still to decide whether to commit to:
 - `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020);
   the input surface so far: a bare `list` shows **open issues** oldest-first
   (effectively-closed hidden; `--all` includes closed), with `--limit`
-  (default 10, `0` = all), the ADR-0017 §2 forest by default (`--flat` for
+  (default 50, `0` = all), the ADR-0017 §2 forest by default (`--flat` for
   one-line rows), and `--label <l>`
   (repeatable ⇒ AND; built with labels). The open-by-default question is
   decided (this way) and built. Still open: the *other* facet flag spellings

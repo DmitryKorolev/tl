@@ -54,7 +54,10 @@ private def actorFlag : FlagSpec :=
     summary := "record this actor (else TL_ACTOR, then git user.email, then user@host)" }
 
 private def limitFlag : FlagSpec :=
-  { name := "limit", value := true, summary := "max rows shown (default 10; 0 = all)" }
+  { name := "limit", value := true, summary := "max rows shown (default 50; 0 = all)" }
+
+private def logLimitFlag : FlagSpec :=
+  { name := "limit", value := true, summary := "max entries shown (default 10; 0 = all)" }
 
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
@@ -115,7 +118,7 @@ def commandSpecs : List CommandSpec :=
     { command := "label list", positionals := "",
       summary := "every label in use, with issue counts" },
     { command := "log", positionals := "[<id>]",
-      summary := "the op history, newest first (optionally one issue)", flags := [limitFlag] },
+      summary := "the op history, newest first (optionally one issue)", flags := [logLimitFlag] },
     { command := "stats", positionals := "",
       summary := "counts by state plus ready / blocked / cycles totals" },
     { command := "sync", positionals := "",

@@ -1480,6 +1480,21 @@ def rowAccessorAgreementTests : List Outcome :=
           && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt
           && pa.createdBy == pb.createdBy && pa.createdReplica == pb.createdReplica)))
 
+/-- The default `--limit` is 50 (was 10) for `ready` and `list`: 11 plain issues
+    — all open, unblocked, top-level — must all show with no explicit flag. Under
+    the old default of 10 the items array would cap at 10; the literal 50 lives in
+    `Tl/Cli/Main.lean`. `count` always reports the true total. -/
+def cliDefaultLimitTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  for k in [0:11] do
+    let _ ← mkIssue dir s!"issue {k}"
+  o := o ++ [← expectData "ready default limit shows all 11 (>10)" ["ready", "--dir", dir]
+    (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
+  o := o ++ [← expectData "list default limit shows all 11 (>10)" ["list", "--dir", dir]
+    (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1487,7 +1502,8 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ provenanceAgreementTests
+    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliBinaryTests)
