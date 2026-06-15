@@ -37,6 +37,11 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   critical-path weight = |reach⁺ over blocks| (total);
                         --   why/unblocks = transitive unclosed blockers / freed-set
                         --   (same reach⁺ machinery; total, proved — ADR-0004 thm 10)
+  HashMapView.lean      --   the shared Std.HashMap-backed view primitives
+                        --   (upstream of ReadyFast/RollupFast/SccFast):
+                        --   bucketBy adjacency, presence-set membership,
+                        --   amapOfHashMap materialize in O(N log N), and the
+                        --   find = getElem? lookup bridge to the AMap spec
   ReadyFast.lean        --   the SHIPPED queue: hoisted present/edge views,
                         --   rollups through the batched map, one RankKey per
                         --   candidate, sort on cached keys, saturating closure
@@ -81,9 +86,9 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   SCC partition in emission order; never trusted — its
                         --   output is runtime-validated by SccFast's checker, so
                         --   a bug here costs speed (fallback), never correctness
-  SccFast.lean          --   the PROVED SCC certificate checker: hash views
-                        --   (bucketed adjacency, presence set, rollup copy) with
-                        --   lookup bridges, a sound frontier BFS, and the
+  SccFast.lean          --   the PROVED SCC certificate checker: over the
+                        --   HashMapView hash views (bucketed adjacency,
+                        --   presence set), a sound frontier BFS, and the
                         --   acceptance characterizations — sameSCC = component-
                         --   index equality (cert_sameSCC), onCycle = successor-
                         --   in-my-component (cert_onCycle). Soundness only:
