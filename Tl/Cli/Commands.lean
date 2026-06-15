@@ -187,12 +187,20 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
       let isRoot (i : IssueId) : Bool := match canonicalParentE v i with
         | none => true | some p => !(visible.contains p)
       let roots := visible.filter isRoot
-      let cappedRoots := if limit == 0 then roots else roots.take limit
       let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !v.effClosed i)
       fun st =>
         if roots.isEmpty then (if visible.isEmpty then "no issues" else "(no top-level issues)")
-        else String.intercalate "\n" (treeForest st v cappedRoots keep)
-          ++ "\n" ++ footer st summary cappedRoots.length roots.length
+        else
+          -- cap the rendered ROWS (issues, top-to-bottom), not the roots: a human
+          -- asked for `limit` issues, not `limit` whole subtrees (capping roots
+          -- barely bit, since a few epics expand their entire subtrees). Render the
+          -- forest in reading order, then take the first `limit` lines; the footer
+          -- discloses how many rows are hidden (a truncated subtree's dangling
+          -- `├──` together with "Showing X of Y" reads as "more below").
+          let allLines := treeForest st v roots keep
+          let shown := if limit == 0 then allLines else allLines.take limit
+          String.intercalate "\n" shown
+            ++ "\n" ++ footer st summary shown.length allLines.length
     else listRender v capped visible.length summary "no issues"
   return { data := listPayload "items" visible.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }

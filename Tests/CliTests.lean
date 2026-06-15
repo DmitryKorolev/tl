@@ -1493,6 +1493,22 @@ def cliDefaultLimitTests : IO (List Outcome) := do
     (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
   o := o ++ [← expectData "list default limit shows all 11 (>10)" ["list", "--dir", dir]
     (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
+  -- the tree view caps rendered ROWS, not roots: one epic + 6 children is 7 rows
+  -- under a single root, so `--limit 3` shows 3 rows + a truncation footer — NOT
+  -- the whole subtree (which the old root-capping would have rendered in full).
+  let dirT ← freshDir
+  let epic ← mkIssue dirT "Epic root"
+  for k in [0:6] do
+    let _ ← mkIssue dirT s!"kid {k}" ["--parent", "tl-" ++ epic]
+  match ← run' ["list", "--dir", dirT, "--limit", "3"] with
+  | .ok out =>
+    let plain := (out.render.map (· Style.plain)).getD out.human
+    o := o ++
+      [check "tree --limit caps rows and discloses truncation"
+         ((plain.splitOn "Showing 3 of 7").length > 1) plain,
+       check "tree --limit renders exactly the capped rows (epic + 2 kids)"
+         ((plain.splitOn "kid ").length == 3) plain]
+  | .error e => o := o ++ [{ name := "tree limit rows", passed := false, msg := e.message }]
   return o
 
 def cliTests : IO (List Outcome) := do
