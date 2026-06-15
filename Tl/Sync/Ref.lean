@@ -29,11 +29,98 @@ private def fixedIdentity : List (String × Option String) :=
   [("GIT_AUTHOR_NAME", some "tl"), ("GIT_AUTHOR_EMAIL", some "tl@localhost"),
    ("GIT_COMMITTER_NAME", some "tl"), ("GIT_COMMITTER_EMAIL", some "tl@localhost")]
 
-/-- Run `git -C <repo> <args>` (optional stdin / extra env). -/
+/-- Local git plumbing is sub-second on tl's tiny ref; this short wall-clock
+    bound catches a *hung* local git (a stale index/ref lock, a credential helper
+    waiting on input) without false-timing a legitimately slow op. -/
+private def localGitTimeoutMs : Nat := 5000
+
+/-- The network legs (ls-remote / fetch / push) get a longer bound — a slow or
+    congested network is normal; an unbounded wait on an unreachable remote is
+    the failure to prevent. -/
+private def remoteGitTimeoutMs : Nat := 30000
+
+/-- Spawn `cfg` with `stdin`, waiting at most `timeoutMs` for it to exit. On
+    expiry the child is SIGTERM-killed — so a hung git can never wedge a tl
+    command — and the result is `(124, .empty, "timed out …")`: the conventional
+    timeout exit, which every caller already treats as a git failure (→ a
+    best-effort `degraded` note, or a thrown `internal`). Otherwise the real
+    `(exitCode, stdout-bytes, stderr-text)`. Both pipes drain on tasks so a full
+    stdout/stderr buffer can't deadlock the wait; the wait is a 10ms `tryWait`
+    poll on the calling thread — no extra thread, ≤10ms fast-path latency, no
+    busy-spin. Tested via `sleep`/`true`, no hung git needed. -/
+def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat) :
+    IO (UInt32 × ByteArray × String) := do
+  let spawned ← IO.Process.spawn { cfg with stdin := .piped, stdout := .piped, stderr := .piped }
+  let child ← do
+    let (stdinH, child) ← spawned.takeStdin
+    stdinH.write stdin
+    stdinH.flush
+    pure child  -- stdinH drops here ⇒ the child's stdin reaches EOF
+  let outTask ← IO.asTask child.stdout.readBinToEnd Task.Priority.dedicated
+  let errTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
+  let mut code? : Option UInt32 := none
+  if timeoutMs == 0 then
+    code? := some (← child.wait)  -- 0 ⇒ unbounded: the git-config opt-out
+  else
+    let stepMs := 10
+    for _ in [0 : timeoutMs / stepMs + 1] do
+      code? := (← child.tryWait)
+      if code?.isSome then break
+      IO.sleep (UInt32.ofNat stepMs)
+  match code? with
+  | some code =>
+    let out ← IO.ofExcept outTask.get
+    let err ← IO.ofExcept errTask.get
+    return (code, out, err)
+  | none =>
+    child.kill
+    return (124, ByteArray.empty,
+      s!"timed out after {timeoutMs}ms — a hung git (a stale lock, a credential helper waiting on input, or an unreachable remote)")
+
+/-- Per-repo memo of the resolved (local, remote) timeouts, so the git-config
+    read happens at most once per repo per process (tl is one-shot; a process may
+    touch several repos under test) — never once per git call. -/
+initialize timeoutCache : IO.Ref (List (String × Nat × Nat)) ← IO.mkRef []
+
+/-- Read one `tl.git*TimeoutMs` git-config value (ms), falling back to `dflt`
+    when unset or non-numeric. The config read is itself bounded (the local
+    default) so a hung git can't even wedge timeout resolution. `0` is legal — it
+    disables the bound (see `runBounded`). -/
+private def readTimeoutNat (d : Dirs) (key : String) (dflt : Nat) : IO Nat := do
+  let (code, out, _) ← runBounded
+    { cmd := "git", args := #["-C", repoOf d, "config", "--get", key] } .empty localGitTimeoutMs
+  if code != 0 then return dflt
+  return (((String.fromUTF8? out).getD "").trimAscii.toString.toNat?).getD dflt
+
+/-- The (local, remote) git timeouts for `d`, read fresh from git config
+    (`tl.gitTimeoutMs` / `tl.gitRemoteTimeoutMs`, ms; defaults `localGitTimeoutMs`
+    / `remoteGitTimeoutMs`). Public for tests; production uses the cached
+    `resolveTimeouts`. -/
+def readTimeoutsUncached (d : Dirs) : IO (Nat × Nat) :=
+  return (← readTimeoutNat d "tl.gitTimeoutMs" localGitTimeoutMs,
+          ← readTimeoutNat d "tl.gitRemoteTimeoutMs" remoteGitTimeoutMs)
+
+/-- The (local, remote) timeouts for `d`, memoized per repo (`timeoutCache`). -/
+private def resolveTimeouts (d : Dirs) : IO (Nat × Nat) := do
+  let key := repoOf d
+  match (← timeoutCache.get).find? (fun e => e.1 == key) with
+  | some (_, lo, re) => return (lo, re)
+  | none =>
+    let (lo, re) ← readTimeoutsUncached d
+    timeoutCache.modify (fun c => (key, lo, re) :: c)
+    return (lo, re)
+
+/-- Run `git -C <repo> <args>` (optional stdin / extra env). The wall-clock bound
+    is the configured local timeout, or the remote one when `remote` is set (the
+    network legs). -/
 private def git (d : Dirs) (args : List String) (stdin : String := "")
-    (env : List (String × Option String) := []) : IO IO.Process.Output :=
-  IO.Process.output
-    { cmd := "git", args := (#["-C", repoOf d] ++ args.toArray), env := env.toArray } stdin
+    (env : List (String × Option String) := []) (remote : Bool := false) :
+    IO IO.Process.Output := do
+  let (lo, re) ← resolveTimeouts d
+  let (code, out, err) ← runBounded
+    { cmd := "git", args := #["-C", repoOf d] ++ args.toArray, env := env.toArray }
+    stdin.toUTF8 (if remote then re else lo)
+  return { exitCode := code, stdout := (String.fromUTF8? out).getD "", stderr := err }
 
 /-- A git plumbing failure that isn't an expected condition is `internal`
     (the caller maps "not a repo" / "no remote" to no-upstream itself). -/
@@ -41,34 +128,19 @@ private def gitErr (op : String) (o : IO.Process.Output) : Tl.Error :=
   .mk' .internal s!"git {op} failed (exit {o.exitCode}): {o.stderr.trimAscii.toString}"
 
 private def run (d : Dirs) (op : String) (args : List String) (stdin : String := "")
-    (env : List (String × Option String) := []) : TlM String := do
-  let o ← (git d args stdin env : IO _)
+    (env : List (String × Option String) := []) (remote : Bool := false) : TlM String := do
+  let o ← (git d args stdin env remote : IO _)
   if o.exitCode == 0 then return o.stdout.trimAscii.toString
   else throw (gitErr op o)
 
 /-- Run git with raw-`ByteArray` stdin and stdout — the byte-faithful path for
-    `hash-object`/`cat-file`. `IO.Process.output` decodes both streams as
-    `String` (UTF-8, lossy / panicking), but a segment line may carry arbitrary
-    bytes (the union is a *byte*-level line set, ADR-0001 §5; per-line UTF-8 is
-    only checked later at decode). The stdin handle is written then dropped so
-    git sees EOF before `wait` (mirroring the stdlib `IO.Process.output`),
-    and stdout is read on a task so a full stdout pipe can't deadlock a large
-    stdin write. Returns `(exitCode, stdout-bytes, stderr-text)`. -/
+    `hash-object`/`cat-file` (a segment line may carry arbitrary bytes; the union
+    is a *byte*-level line set, ADR-0001 §5). Bounded by `timeoutMs` (default the
+    local bound) like the text `git`, via the shared `runBounded`. -/
 private def gitBytes (d : Dirs) (args : List String) (stdin : ByteArray := .empty) :
     IO (UInt32 × ByteArray × String) := do
-  let spawned ← IO.Process.spawn
-    { cmd := "git", args := #["-C", repoOf d] ++ args.toArray,
-      stdin := .piped, stdout := .piped, stderr := .piped }
-  let child ← do
-    let (stdinH, child) ← spawned.takeStdin
-    stdinH.write stdin
-    stdinH.flush
-    pure child  -- stdinH drops here ⇒ the child's stdin reaches EOF
-  let outTask ← IO.asTask child.stdout.readBinToEnd Task.Priority.dedicated
-  let err ← child.stderr.readToEnd
-  let code ← child.wait
-  let out ← IO.ofExcept outTask.get
-  return (code, out, err)
+  let (lo, _) ← resolveTimeouts d
+  runBounded { cmd := "git", args := #["-C", repoOf d] ++ args.toArray } stdin lo
 
 /-- The `TlM` wrapper over `gitBytes`: a non-zero exit is an `internal` git
     failure carrying the stderr (the caller maps expected conditions itself). -/
@@ -199,9 +271,9 @@ def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
     legs in sibling worktrees of one repo don't collide). -/
 def fetchRemoteLog (d : Dirs) (remote : String) : TlM (Option String × List SegmentData) := do
   -- ls-remote first: empty ⇒ the remote has no tl log (nothing to fetch)
-  let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"]
+  let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"] (remote := true)
   if ls.trimAscii.isEmpty then return (none, [])
-  let _ ← run d "fetch" ["fetch", remote, "refs/tl/log"]  -- records FETCH_HEAD (per-worktree)
+  let _ ← run d "fetch" ["fetch", remote, "refs/tl/log"] (remote := true)  -- records FETCH_HEAD
   let o ← (git d ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"] : IO _)
   if o.exitCode != 0 then return (none, [])
   return (some o.stdout.trimAscii.toString, ← readRefAt d "FETCH_HEAD")
@@ -227,7 +299,8 @@ def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String
     Pushing the explicit oid (`<commit>:refs/tl/log`) rather than the ref name
     sends exactly what was just written, immune to a concurrent local move. -/
 def pushRefLog (d : Dirs) (remote : String) (commit : String) : TlM Bool := do
-  let o ← (git d ["push", "--porcelain", remote, s!"{commit}:refs/tl/log"] : IO _)
+  let o ← (git d ["push", "--porcelain", remote, s!"{commit}:refs/tl/log"]
+            (remote := true) : IO _)
   if o.exitCode == 0 then return true
   -- --porcelain writes per-ref status to STDOUT; only these two reasons are the
   -- retryable race (a hook decline reads "(... hook declined)", an auth/transport

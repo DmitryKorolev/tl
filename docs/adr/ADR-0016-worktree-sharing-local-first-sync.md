@@ -139,6 +139,18 @@ recover from is **disclosed** (a `RefreshOutcome.degraded` note on the read and
 in the `--json` envelope's `notes` array — ADR-0008 loud-not-silent), never a
 silently stale view.
 
+**Every git invocation is wall-clock-bounded** (`runBounded`, `Tl/Sync/Ref.lean`):
+a hung git — a stale index/ref lock, a credential helper waiting on input, an
+unreachable remote — would otherwise hang a `tl` command forever, the opposite of
+the best-effort posture above. On expiry the child is SIGTERM-killed and the call
+yields the conventional timeout exit (124), which the existing paths already
+treat as a git failure: best-effort calls degrade as above, explicit ones throw.
+The bound is short for local plumbing and longer for the network legs
+(ls-remote/fetch/push), each overridable via git config —
+`tl.gitTimeoutMs` / `tl.gitRemoteTimeoutMs` (milliseconds; `0` disables the
+bound), read once per repo. The killed-mid-flight remote legs stay safe because
+`refs/tl/log` updates are atomic server-side (§1, ADR-0001 §5).
+
 **Write-path freshness (amendment — was an open decision).** The original built
 form excluded the locked write path, so a directed `claim`/`close`/`update`/`dep`
 by id from a worktree that had not read recently ran its guards against a stale

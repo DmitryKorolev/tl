@@ -410,8 +410,36 @@ def syncRemoteTests : IO (List Outcome) := do
     | .error e => { name := "fresh remote unchanged", passed := false, msg := e.message }]
   return o
 
+/-- The git wall-clock timeout: `runBounded` kills a process that overruns
+    (exit 124) and runs a fast one to completion; `0` disables the bound; and the
+    bounds are overridable via `tl.gitTimeoutMs` / `tl.gitRemoteTimeoutMs` git
+    config, falling back to the built-in defaults when unset. Exercised with
+    `sleep`/`true` — no hung git needed. -/
+def syncTimeoutTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let (c1, _, e1) ← runBounded { cmd := "sleep", args := #["5"] } .empty 200
+  let (c2, _, _) ← runBounded { cmd := "true" } .empty 5000
+  let (c3, _, _) ← runBounded { cmd := "sleep", args := #["1"] } .empty 0
+  o := o ++
+    [check "runBounded kills a process past its timeout (exit 124)" (c1 == 124) s!"c1={c1}",
+     check "runBounded surfaces a timeout message" ((e1.splitOn "timed out").length > 1) e1,
+     check "runBounded returns the real exit for a fast process" (c2 == 0) s!"c2={c2}",
+     check "runBounded with 0 disables the bound (waits to completion)" (c3 == 0) s!"c3={c3}"]
+  -- git config overrides the bounds; unset falls back to the defaults (5000/30000)
+  let cfgRepo ← gitRepo
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", cfgRepo.base, "config", "tl.gitTimeoutMs", "7777"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", cfgRepo.base, "config", "tl.gitRemoteTimeoutMs", "88888"] }
+  let (lo, re) ← readTimeoutsUncached cfgRepo
+  let plainRepo ← gitRepo
+  let (lo2, re2) ← readTimeoutsUncached plainRepo
+  o := o ++
+    [check "tl.gitTimeoutMs git-config overrides the local bound" (lo == 7777) s!"lo={lo}",
+     check "tl.gitRemoteTimeoutMs git-config overrides the remote bound" (re == 88888) s!"re={re}",
+     check "unset config falls back to the built-in defaults" (lo2 == 5000 && re2 == 30000) s!"lo2={lo2} re2={re2}"]
+  return o
+
 def syncTests : IO (List Outcome) := do
   return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
-    ++ (← syncRefreshTests) ++ (← syncRemoteTests)
+    ++ (← syncRefreshTests) ++ (← syncRemoteTests) ++ (← syncTimeoutTests)
 
 end Tl.Tests
