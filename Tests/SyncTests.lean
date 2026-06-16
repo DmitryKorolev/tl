@@ -439,7 +439,7 @@ def syncTimeoutTests : IO (List Outcome) := do
   return o
 
 /-- A ref-borne segment with a non-canonical name (crafted/junk tree entry) is
-    dropped by `readRefAt` (the `Replica.valid` filter, tl-bzzgr49m), so junk
+    dropped by `readRefAt` (the `Replica.valid` filter), so junk
     never propagates through a union into a permanently-flagged on-disk file. -/
 def syncRefNameValidationTests : IO (List Outcome) := do
   let d ← gitRepo

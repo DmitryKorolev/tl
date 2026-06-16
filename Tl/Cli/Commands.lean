@@ -164,9 +164,12 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
         pure ({ l with absorbed := (l.absorbed ++ l2.absorbed).eraseDups, tip := l2.tip }, ([] : List String))
        catch e => pure (l, [s!"reconciled with the remote, but materializing the pulled changes locally failed ({e.message}) — the next read or `tl sync` will catch up"]))
     else pure (l, [])
-  if l.ran then
+  -- record last-sync ONLY when the remote leg actually reconciled: lastSync means
+  -- "last reconciled with the remote", so a local-only sync (no remote, or a
+  -- remote added later) must not mark the view clean-vs-remote (a false-clean source).
+  if r.ran then
     let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
-    try storeLastSync d now (if r.ran then r.tip else l.tip) catch _ => pure ()
+    try storeLastSync d now r.tip catch _ => pure ()
   return (l, r, pnotes)
 
 /-- The LOCAL-only sync posture (no remote contact): the resolved upstream name
@@ -183,15 +186,18 @@ structure SyncPosture where
     ref tip. Both local (a fs read + a `cat-file`), no network — and it counts the
     *segment* ops, so it is correct in the main worktree too (where writes don't
     advance `refs/tl/log` until a sync, so a commit-based count reads a false 0). -/
-private def ownOpsSince (d : Dirs) (own syncedTip : String) : TlM Nat := do
+private def ownOpsSince (d : Dirs) (own : String) (syncedTip : Option String) : TlM Nat := do
   let (segs, _) ← readSegments d
   let localLines := (segs.find? (·.replicaId == own)).elim 0 (fun sd => (completeLines sd.bytes).length)
-  let syncedLines := ((← Tl.Sync.readRefAt d syncedTip).find? (·.replicaId == own)).elim 0
-    (fun sd => (completeLines sd.bytes).length)
+  -- ops in the own segment at the synced tip; 0 when that sync left no ref (an
+  -- empty / first sync) — then ALL local ops are unsynced, never a false 0.
+  let syncedLines ← match syncedTip with
+    | some t => pure (((← Tl.Sync.readRefAt d t).find? (·.replicaId == own)).elim 0
+        (fun sd => (completeLines sd.bytes).length))
+    | none => pure 0
   -- Nat subtraction clamps to 0 if the synced ref held MORE own-segment lines
-  -- than disk. That needs same-replica-id divergence (two working copies sharing
-  -- a replica id), which ADR-0007 rules out; the clamp is then a safe "not ahead"
-  -- rather than a wrong count, so no guard beyond this note (tl-a35ambwy sibling).
+  -- than disk — only possible under same-replica-id divergence, which ADR-0007
+  -- rules out; the clamp is then a safe "not ahead" rather than a wrong count.
   return localLines - syncedLines
 
 def syncPostureOf (d : Dirs) : TlM SyncPosture := do
@@ -199,8 +205,8 @@ def syncPostureOf (d : Dirs) : TlM SyncPosture := do
   let ls ← loadLastSync d
   let own := (← loadReplica d).map (·.id)
   let ahead ← match ls, own with
-    | some (_, some syncedTip), some o => ownOpsSince d o syncedTip
-    | _, _ => pure 0
+    | some (_, syncedTip), some o => ownOpsSince d o syncedTip
+    | _, _ => pure 0  -- never synced ⇒ the "never synced" message/advisory covers it
   return { upstream, lastSyncMs := ls.map (·.1), ahead }
 
 /-- `ready`'s staleness advisory from the local posture (`now` = the view clock).
@@ -230,8 +236,11 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
   let notes ← cleanReadNotes v
   let ranked := State.readyFast v.rollup v.state v.now
   let capped := if limit == 0 then ranked else ranked.take limit
-  -- staleness advisory (ADR-0011 §2): local-only; suppressed when we just synced
-  let advisory ← if sync then pure none else (do pure (stalenessMsg (← syncPostureOf d) v.now))
+  -- staleness advisory (ADR-0011 §2): always derived from the posture AFTER any
+  -- --sync. A successful sync makes it clean (ahead 0, lastSync now ⇒ none); a
+  -- FAILED --sync leaves genuine staleness, so it must still surface in
+  -- data.staleness (agents read the field; humans also get the degrade note).
+  let advisory ← (do pure (stalenessMsg (← syncPostureOf d) v.now))
   let r : Style → String := fun st =>
     (match advisory with | some a => st.paint "33" s!"({a})" ++ "\n" | none => "")
       ++ (listRender v capped ranked.length
@@ -1021,9 +1030,9 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
         | none =>
           match posture.lastSyncMs with
           | none => s!"remote '{name}' configured but never synced — run `tl sync`"
-          | some _ =>
-            (if posture.ahead > 0 then s!"{posture.ahead} local op(s) not yet synced; " else "")
-              ++ "run `tl sync` to reconcile with the remote"
+          | some ms =>
+            if posture.ahead > 0 then s!"{posture.ahead} local op(s) not yet synced — run `tl sync`"
+            else s!"up to date as of the last sync ({Time.isoOfEpochMs ms})"
   let syncRow := (Json.mkObj <|
     [("name", Json.str "sync"),
      ("status", Json.str (if warnSync then "warn" else "ok")),

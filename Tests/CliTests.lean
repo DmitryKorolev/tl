@@ -1670,9 +1670,9 @@ def cliClaimSyncTests : IO (List Outcome) := do
   return o
 
 /-- Two clones over a bare remote: a sync that pulls a NEW replica from the
-    remote reports it in `absorbed` (the post-remote second local leg, tl-45decmwx),
-    and `doctor`'s refMark check warns when a materialized foreign segment is
-    deleted on disk while the ref-mark stays put (tl-mrgjysh). -/
+    remote reports it in `absorbed` (the post-remote second local leg), and
+    `doctor`'s refMark check warns when a materialized foreign segment is deleted
+    on disk while the ref-mark stays put. -/
 def cliSyncTwoCloneTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let refMarkRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "refMark")
@@ -1728,8 +1728,11 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", "/no/such/tl/remote"] }
   let _ ← mkIssue dir "Workable"
   match ← run' ["ready", "--dir", dir, "--sync"] with
-  | .ok out => o := o ++ [check "ready --sync degrades (no failure) on an unreachable remote"
-      (out.notes.any (fun n => (n.splitOn "could not reconcile").length > 1)) (toString out.notes)]
+  | .ok out => o := o ++
+      [check "ready --sync degrades (no failure) on an unreachable remote"
+         (out.notes.any (fun n => (n.splitOn "could not reconcile").length > 1)) (toString out.notes),
+       check "ready --sync still reports staleness when the sync failed"
+         (jStr out.data "staleness").isSome out.data.compress]
   | .error e => o := o ++ [{ name := "ready --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
   match ← run' ["doctor", "--dir", dir, "--sync"] with
   | .ok out => o := o ++
@@ -1751,11 +1754,10 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "claim --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
   return o
 
-/-- E (tl-0vrqgndj): a push rejected (a pre-receive hook) AFTER the local CAS
-    advanced the ref self-heals — the failed sync left the local ref ahead, and a
-    later sync (hook removed) recovers and converges the remote. Plus a
-    G-adjacent (tl-a35ambwy) check: a remote-leg timeout surfaces as a clear
-    error, never misclassified as a push-rejected race. -/
+/-- A push rejected (a pre-receive hook) AFTER the local CAS advanced the ref
+    self-heals — the failed sync left the local ref ahead, and a later sync (hook
+    removed) recovers and converges the remote. Plus: a remote-leg timeout
+    surfaces as a clear error, never misclassified as a push-rejected race. -/
 def cliSyncRecoveryTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let bare ← IO.FS.createTempDir
@@ -1797,6 +1799,48 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
   | .ok _ => o := o ++ [{ name := "remote timeout should error", passed := false, msg := "succeeded under a 1ms remote timeout" }]
   return o
 
+/-- Posture must not falsely report "clean": (A) sync an empty repo with a remote
+    then create a task — the unsynced op shows as ahead>0 / a staleness advisory;
+    (B) a local-only sync (no remote) does not record lastSync, so after a remote
+    is added the view reads "never synced", not clean. -/
+def cliSyncFalseCleanTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let syncRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "sync")
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
+  -- (A) sync an empty repo (with a remote), then create the first task
+  let rootA ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA.toString, "init", "-q"] }
+  let dirA := (rootA / ".tl").toString
+  let _ ← run' ["init", "--dir", dirA]
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← run' ["sync", "--dir", dirA]
+  let _ ← mkIssue dirA "First task after an empty sync"
+  match ← run' ["doctor", "--dir", dirA] with
+  | .ok out => o := o ++
+      [check "empty-sync-then-create: ahead counts the unsynced op"
+         (((syncRow out).bind (jNat · "ahead")).getD 0 > 0) out.data.compress,
+       check "empty-sync-then-create: the row warns (not falsely ok)"
+         ((syncRow out).bind (jStr · "status") == some "warn") ""]
+  | .error e => o := o ++ [{ name := "false-clean A doctor", passed := false, msg := e.message }]
+  o := o ++ [← expectData "empty-sync-then-create: ready advises staleness" ["ready", "--dir", dirA]
+    (fun j => (jStr j "staleness").isSome)]
+  -- (B) a local-only sync (no remote), then a remote is added
+  let rootB ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB.toString, "init", "-q"] }
+  let dirB := (rootB / ".tl").toString
+  let _ ← run' ["init", "--dir", dirB]
+  let _ ← mkIssue dirB "Task before any remote"
+  let _ ← run' ["sync", "--dir", dirB]
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB.toString, "remote", "add", "origin", bare.toString] }
+  match ← run' ["doctor", "--dir", dirB] with
+  | .ok out => o := o ++ [check "local-only sync then add-remote: the row is not falsely ok"
+      ((syncRow out).bind (jStr · "status") == some "warn") out.data.compress]
+  | .error e => o := o ++ [{ name := "false-clean B doctor", passed := false, msg := e.message }]
+  o := o ++ [← expectData "local-only sync then add-remote: ready advises 'never synced'" ["ready", "--dir", dirB]
+    (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1810,6 +1854,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliBinaryTests)
 
 end Tl.Tests
