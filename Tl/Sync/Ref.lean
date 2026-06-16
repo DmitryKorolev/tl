@@ -161,13 +161,6 @@ def refTip (d : Dirs) : TlM (Option String) := do
   let o ← (git d ["rev-parse", "--verify", "--quiet", "refs/tl/log"] : IO _)
   if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
 
-/-- `git rev-list --count <a>..<b>` — how many commits `b` is ahead of `a`
-    (0 when `b` is an ancestor of `a`). Best-effort: any git failure (an unknown
-    oid, no objects) yields 0, since this only feeds the advisory diagnostics. -/
-def commitsBetween (d : Dirs) (a b : String) : TlM Nat := do
-  let o ← (git d ["rev-list", "--count", s!"{a}..{b}"] : IO _)
-  if o.exitCode == 0 then return (o.stdout.trimAscii.toString.toNat?).getD 0 else return 0
-
 /-- The segments stored at `ref` (empty when the ref is unset). Reads the
     commit's tree: one `<replica-id>.jsonl` blob per replica. -/
 def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) := do

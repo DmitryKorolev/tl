@@ -89,9 +89,12 @@ is rehomed onto these two commands rather than carried by a bundled snapshot:
   ahead }`, or a `no-upstream` / `stealth` marker (ADR-0001), so an agent can ask
   "is my view fresh?" directly. **By default it contacts no remote** — `upstream`
   is resolved from git config, `lastSync` from a local marker a sync writes, and
-  `ahead` is the local `refs/tl/log` commits since that last sync (all local). The
-  live *behind*-count needs the remote, so it is gated behind `--sync` (below),
-  not done on every `doctor`.
+  `ahead` is the count of local *ops* written since that last sync (the own
+  segment on disk vs the synced ref's own-segment — so it is correct in the main
+  worktree, where writes don't move `refs/tl/log` until a sync). The live
+  *behind*-count needs the remote, so it is gated behind `--sync` (below) — which
+  also makes `doctor` report what reconciling did (pushed / pulled) — not done on
+  every `doctor`.
 - `tl ready` surfaces a one-line advisory when the local posture says the view
   may be stale ("view may be stale — never synced / N local change(s) since last
   sync / last synced N ago; run `tl sync`"), so an agent selecting work sees

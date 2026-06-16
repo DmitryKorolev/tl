@@ -169,15 +169,25 @@ structure SyncPosture where
   lastSyncMs : Option Nat
   ahead : Nat
 
+/-- This replica's own-segment ops written since the last sync: lines (= ops) in
+    `.tl/log/<own>.jsonl` on disk now, minus those in that segment at the synced
+    ref tip. Both local (a fs read + a `cat-file`), no network — and it counts the
+    *segment* ops, so it is correct in the main worktree too (where writes don't
+    advance `refs/tl/log` until a sync, so a commit-based count reads a false 0). -/
+private def ownOpsSince (d : Dirs) (own syncedTip : String) : TlM Nat := do
+  let (segs, _) ← readSegments d
+  let localLines := (segs.find? (·.replicaId == own)).elim 0 (fun sd => (completeLines sd.bytes).length)
+  let syncedLines := ((← Tl.Sync.readRefAt d syncedTip).find? (·.replicaId == own)).elim 0
+    (fun sd => (completeLines sd.bytes).length)
+  return localLines - syncedLines
+
 def syncPostureOf (d : Dirs) : TlM SyncPosture := do
   let upstream ← Tl.Sync.resolveRemote d
   let ls ← loadLastSync d
-  let ahead ← match ls with
-    | some (_, some syncedTip) =>
-      match ← Tl.Sync.refTip d with
-      | some cur => Tl.Sync.commitsBetween d syncedTip cur
-      | none => pure 0
-    | _ => pure 0
+  let own := (← loadReplica d).map (·.id)
+  let ahead ← match ls, own with
+    | some (_, some syncedTip), some o => ownOpsSince d o syncedTip
+    | _, _ => pure 0
   return { upstream, lastSyncMs := ls.map (·.1), ahead }
 
 /-- `ready`'s staleness advisory from the local posture (`now` = the view clock).
@@ -836,7 +846,9 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 
 def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
-  if sync then let _ ← performSync d
+  -- --sync reconciles first; keep the remote leg's result so the sync row can
+  -- report what reconciling DID (pushed / pulled) instead of a bland 0/0
+  let synced ← if sync then (do let (_, r) ← performSync d; pure (some r)) else pure none
   -- doctor reports damage instead of failing on it (ADR-0008 exemption)
   let replicaRow ← try
       match ← loadReplica d with
@@ -943,23 +955,33 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   -- just ran a `tl sync`. upstream/lastSync/ahead from git config + the marker;
   -- the live behind-count is `doctor --sync`'s job (sync then read).
   let posture ← syncPostureOf d
-  let neverSynced := posture.upstream.isSome && posture.lastSyncMs.isNone
+  -- warn when there is something actionable AND we did not just reconcile:
+  -- a configured-but-never-synced remote, or unsynced local ops.
+  let warnSync := posture.upstream.isSome && synced.isNone
+                    && (posture.lastSyncMs.isNone || posture.ahead > 0)
   let syncMsg :=
     match posture.upstream with
     | none => "no remote configured — sharing is local/stealth only"
     | some name =>
-      match posture.lastSyncMs with
-      | none => s!"remote '{name}' configured but never synced — run `tl sync`"
-      | some ms =>
-        s!"last synced {Time.isoOfEpochMs ms}"
-          ++ (if posture.ahead > 0 then s!"; {posture.ahead} local commit(s) since" else "")
-          ++ "; run `tl doctor --sync` to reconcile with the remote"
+      match synced with
+      | some r =>  -- --sync just reconciled: report what it did
+        if !r.ran then s!"reconciled locally; remote '{name}' unreachable or not configured"
+        else s!"reconciled with '{name}': " ++ (if r.pushed then "pushed" else "nothing to push")
+               ++ (if r.pulled then ", pulled remote changes" else "")
+      | none =>
+        match posture.lastSyncMs with
+        | none => s!"remote '{name}' configured but never synced — run `tl sync`"
+        | some _ =>
+          (if posture.ahead > 0 then s!"{posture.ahead} local op(s) not yet synced; " else "")
+            ++ "run `tl doctor --sync` to reconcile (the behind-count needs a fetch)"
   let syncRow := (Json.mkObj
     [("name", Json.str "sync"),
-     ("status", Json.str (if neverSynced then "warn" else "ok")),
+     ("status", Json.str (if warnSync then "warn" else "ok")),
      ("upstream", posture.upstream.elim Json.null Json.str),
      ("lastSync", posture.lastSyncMs.elim Json.null (fun ms => Json.str (Time.isoOfEpochMs ms))),
      ("ahead", jnum posture.ahead),
+     -- behind needs the remote: 0 right after a --sync reconcile, else unknown (null)
+     ("behind", if synced.isSome then jnum 0 else Json.null),
      ("message", Json.str syncMsg)], false)
   let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow, syncRow]
   let healthy := rows.all (fun (_, failed) => !failed)

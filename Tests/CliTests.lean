@@ -1588,25 +1588,45 @@ def cliSyncPostureTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "doctor sync row (remote)", passed := false, msg := e.message }]
   o := o ++ [← expectData "ready: never-synced advisory" ["ready", "--dir", tldir]
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
-  -- (3) after a sync: lastSync recorded, doctor ok, ready clean
+  -- (3) after a sync: lastSync recorded, ahead 0, doctor ok, ready clean
   let _ ← run' ["sync", "--dir", tldir]
   match ← run' ["doctor", "--dir", tldir] with
   | .ok out =>
     o := o ++
       [check "doctor: lastSync set after sync" ((syncRow out).bind (jStr · "lastSync")).isSome "",
+       check "doctor: ahead 0 right after sync" ((syncRow out).bind (jNat · "ahead") == some 0) out.data.compress,
        check "doctor: ok after sync" ((syncRow out).bind (jStr · "status") == some "ok") ""]
   | .error e => o := o ++ [{ name := "doctor sync row (post-sync)", passed := false, msg := e.message }]
   o := o ++ [← expectData "ready: advisory cleared after sync" ["ready", "--dir", tldir]
     (fun j => jGet j "staleness" == some Json.null)]
-  -- (4) stale-by-time: age the marker, ready nudges (run tl sync)
-  IO.FS.writeFile (root / ".tl" / "local" / "last-sync") "1000 deadbeef\n"
+  -- (3b) a local write after sync ⇒ segment-based ahead > 0 (the main-repo fix:
+  -- writes don't advance refs/tl/log, so a commit-count would read a false 0)
+  let _ ← mkIssue tldir "Written after sync"
+  match ← run' ["doctor", "--dir", tldir] with
+  | .ok out =>
+    o := o ++
+      [check "doctor: ahead counts unsynced local ops" (((syncRow out).bind (jNat · "ahead")).getD 0 > 0) out.data.compress,
+       check "doctor: warns on unsynced ops" ((syncRow out).bind (jStr · "status") == some "warn") "",
+       check "doctor: behind null without a fetch" ((syncRow out).bind (fun c => jGet c "behind") == some Json.null) ""]
+  | .error e => o := o ++ [{ name := "doctor ahead>0", passed := false, msg := e.message }]
+  o := o ++ [← expectData "ready: unsynced-ops advisory" ["ready", "--dir", tldir]
+    (fun j => match jStr j "staleness" with | some s => (s.splitOn "local change").length > 1 | none => false)]
+  -- (4) stale-by-time: re-sync (ahead→0), then age the marker keeping the REAL
+  -- tip, so the time branch (not the ahead branch) drives the advisory
+  let _ ← run' ["sync", "--dir", tldir]
+  let tipOut ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "rev-parse", "refs/tl/log"] }
+  IO.FS.writeFile (root / ".tl" / "local" / "last-sync") s!"1000 {tipOut.stdout.trimAscii.toString}\n"
   o := o ++ [← expectData "ready: stale-by-time advisory" ["ready", "--dir", tldir]
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "ago").length > 1 | none => false)]
-  -- (5) --sync reconciles first and suppresses the advisory
+  -- (5) --sync reconciles first: advisory suppressed, doctor reports the reconcile
   o := o ++ [← expectData "ready --sync suppresses the advisory" ["ready", "--dir", tldir, "--sync"]
     (fun j => jGet j "staleness" == some Json.null)]
   match ← run' ["doctor", "--dir", tldir, "--sync"] with
-  | .ok out => o := o ++ [check "doctor --sync refreshes lastSync" ((syncRow out).bind (jStr · "lastSync")).isSome ""]
+  | .ok out =>
+    o := o ++
+      [check "doctor --sync refreshes lastSync" ((syncRow out).bind (jStr · "lastSync")).isSome "",
+       check "doctor --sync reports behind 0 (reconciled)" ((syncRow out).bind (jNat · "behind") == some 0) out.data.compress,
+       check "doctor --sync names the reconcile" (((((syncRow out).bind (jStr · "message")).getD "").splitOn "reconciled").length > 1) ""]
   | .error e => o := o ++ [{ name := "doctor --sync", passed := false, msg := e.message }]
   return o
 
