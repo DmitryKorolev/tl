@@ -1751,6 +1751,52 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "claim --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
   return o
 
+/-- E (tl-0vrqgndj): a push rejected (a pre-receive hook) AFTER the local CAS
+    advanced the ref self-heals — the failed sync left the local ref ahead, and a
+    later sync (hook removed) recovers and converges the remote. Plus a
+    G-adjacent (tl-a35ambwy) check: a remote-leg timeout surfaces as a clear
+    error, never misclassified as a push-rejected race. -/
+def cliSyncRecoveryTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
+  let hook := (bare / "hooks" / "pre-receive").toString
+  IO.FS.writeFile hook "#!/bin/sh\nexit 1\n"
+  let _ ← IO.Process.output { cmd := "chmod", args := #["+x", hook] }
+  let root ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
+  let dir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", dir]
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← mkIssue dir "Recover me"
+  match ← run' ["sync", "--dir", dir] with
+  | .error _ =>
+    let lt ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "rev-parse", "refs/tl/log"] }
+    o := o ++ [check "a hook-rejected push fails the sync but the local ref still advanced"
+      (!lt.stdout.trimAscii.isEmpty) lt.stdout]
+  | .ok out => o := o ++ [{ name := "hook-rejected sync should fail", passed := false, msg := out.data.compress }]
+  IO.FS.removeFile hook
+  match ← run' ["sync", "--dir", dir] with
+  | .ok _ =>
+    let ls ← IO.Process.output { cmd := "git", args := #["ls-remote", bare.toString, "refs/tl/log"] }
+    o := o ++ [check "the next sync recovers and converges the remote" (!ls.stdout.trimAscii.isEmpty) ls.stdout]
+  | .error e => o := o ++ [{ name := "sync recovery", passed := false, msg := e.message }]
+  -- G-adjacent: a remote timeout surfaces as a clear error, not a misclassified
+  -- race. A FRESH repo with the 1ms remote timeout set BEFORE its first git call
+  -- (the timeout is memoized per repo per process — fine for the one-shot CLI).
+  let root2 ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "init", "-q"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "config", "tl.gitRemoteTimeoutMs", "1"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "remote", "add", "origin", bare.toString] }
+  let dir2 := (root2 / ".tl").toString
+  let _ ← run' ["init", "--dir", dir2]
+  let _ ← mkIssue dir2 "timeout target"
+  match ← run' ["sync", "--dir", dir2] with
+  | .error e => o := o ++ [check "a remote timeout is a clear error, not a misclassified race"
+      (e.code != .pushRejected) s!"got {e.code.wire}: {e.message}"]
+  | .ok _ => o := o ++ [{ name := "remote timeout should error", passed := false, msg := "succeeded under a 1ms remote timeout" }]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1763,6 +1809,7 @@ def cliTests : IO (List Outcome) := do
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
-    ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
+    ++ (← cliBinaryTests)
 
 end Tl.Tests

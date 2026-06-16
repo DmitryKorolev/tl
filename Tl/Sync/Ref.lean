@@ -236,6 +236,9 @@ def writeRefCas (d : Dirs) (segs : List SegmentData) (expectedTip : Option Strin
   let commit ← buildCommit d segs expectedTip.toList
   let o ← (git d (casArgs commit expectedTip) : IO _)
   if o.exitCode == 0 then return some commit
+  -- a timeout (exit 124) is a hung git, NOT a CAS race — surface it as the
+  -- timeout it is rather than re-reading the tip and retrying as a lost race
+  else if o.exitCode == 124 then throw (gitErr "update-ref" o)
   else if (← refTip d) != expectedTip then return none  -- a sibling moved it: retry
   else throw (gitErr "update-ref" o)
 
@@ -293,6 +296,7 @@ def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String
   let commit ← buildCommit d segs parents
   let o ← (git d (casArgs commit expectedLocalTip) : IO _)
   if o.exitCode == 0 then return some commit
+  else if o.exitCode == 124 then throw (gitErr "update-ref" o)  -- timeout, not a race
   else if (← refTip d) != expectedLocalTip then return none  -- local race: retry
   else throw (gitErr "update-ref" o)
 

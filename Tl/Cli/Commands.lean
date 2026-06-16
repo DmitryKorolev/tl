@@ -188,6 +188,10 @@ private def ownOpsSince (d : Dirs) (own syncedTip : String) : TlM Nat := do
   let localLines := (segs.find? (·.replicaId == own)).elim 0 (fun sd => (completeLines sd.bytes).length)
   let syncedLines := ((← Tl.Sync.readRefAt d syncedTip).find? (·.replicaId == own)).elim 0
     (fun sd => (completeLines sd.bytes).length)
+  -- Nat subtraction clamps to 0 if the synced ref held MORE own-segment lines
+  -- than disk. That needs same-replica-id divergence (two working copies sharing
+  -- a replica id), which ADR-0007 rules out; the clamp is then a safe "not ahead"
+  -- rather than a wrong count, so no guard beyond this note (tl-a35ambwy sibling).
   return localLines - syncedLines
 
 def syncPostureOf (d : Dirs) : TlM SyncPosture := do
@@ -565,16 +569,6 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .claim ci _ => some ci | _ => none)
     | throw (.mk' .internal "claim wrote no claim record")
-  let current := (v.state.issueData i).assignee.value.getD none
-  let won := current == some actor
-  let data := (issueObj v i).setObjVal! "claim" (Json.mkObj
-    [("outcome", Json.str (if won then "won" else "superseded")),
-     ("currentAssignee", current.elim Json.null Json.str)])
-  -- mirror cmdClose: a folded foreign op can outstamp the fresh claim inside the
-  -- skew window, so the human line must disclose supersession — not assume "Claimed"
-  let human :=
-    if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
-    else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   let auto ← Tl.Sync.autoSyncLocal d replica
   -- publish-around-claim (ADR-0001 §5): with --sync, push the take to the remote
   -- right away (after it is in the local ref), closing the cross-clone race
@@ -584,6 +578,22 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
       (try (do let (_, _, pn) ← performSync d; pure pn)
        catch e => pure [s!"the take is recorded but could not be published to the remote ({e.message}) — run `tl sync`"])
     else pure []
+  -- with --sync, the post-push reconcile may have PULLED a competing claim, so
+  -- re-derive the outcome from the freshly-reconciled state (re-fold) — the echo
+  -- then reflects a sibling that won the race. The race can't be fully closed
+  -- (distributed), but the report is as fresh as the post-push fetch. Without
+  -- --sync, the just-written state is the freshest we have.
+  let vFinal ← if sync then loadView dirOverride else pure v
+  let current := (vFinal.state.issueData i).assignee.value.getD none
+  let won := current == some actor
+  let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
+    [("outcome", Json.str (if won then "won" else "superseded")),
+     ("currentAssignee", current.elim Json.null Json.str)])
+  -- mirror cmdClose: a folded foreign op can outstamp the fresh claim inside the
+  -- skew window, so the human line must disclose supersession — not assume "Claimed"
+  let human :=
+    if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
+    else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   return { data, human
            notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes }
 
