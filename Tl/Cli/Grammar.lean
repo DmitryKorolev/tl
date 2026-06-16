@@ -63,6 +63,10 @@ private def syncFlag : FlagSpec :=
   { name := "sync", value := false,
     summary := "reconcile via refs/tl/log first (= tl sync, then this command); contacts the remote" }
 
+private def verifyFlag : FlagSpec :=
+  { name := "verify", value := false,
+    summary := "re-check readiness against the freshest reachable state (fetch first) before taking; warns if no remote" }
+
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
   [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)" },
@@ -79,7 +83,8 @@ def commandSpecs : List CommandSpec :=
     { command := "ready", positionals := "",
       summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag, syncFlag] },
     { command := "claim", positionals := "<id>",
-      summary := "take a ready item (refused with structured reasons otherwise)", flags := [actorFlag] },
+      summary := "take a ready item (refused with structured reasons otherwise)",
+      flags := [actorFlag, syncFlag, verifyFlag] },
     { command := "close", positionals := "<id>",
       summary := "finish an issue; any closed status discharges its blockers",
       flags :=

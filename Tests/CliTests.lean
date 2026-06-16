@@ -1610,6 +1610,45 @@ def cliSyncPostureTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "doctor --sync", passed := false, msg := e.message }]
   return o
 
+/-- claim freshness (ADR-0001 §5): `--sync` reconciles around the take (fetch,
+    claim, push), `--verify` re-checks against the freshest reachable state first
+    (warn-and-degrade with no remote). Both keep the not-claimable guard. -/
+def cliClaimSyncTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- git repo + bare remote + a ready issue
+  let root ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
+  let tldir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", tldir]
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let a ← mkIssue tldir "Claimable"
+  match ← run' ["claim", "tl-" ++ a, "--dir", tldir, "--sync", "--assignee", "ann"] with
+  | .ok out =>
+    o := o ++ [check "claim --sync wins the take"
+                 ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress]
+  | .error e => o := o ++ [{ name := "claim --sync", passed := false, msg := e.message }]
+  let ls ← IO.Process.output { cmd := "git", args := #["ls-remote", bare.toString, "refs/tl/log"] }
+  o := o ++ [check "claim --sync published to the remote" (!ls.stdout.trimAscii.isEmpty) ls.stdout]
+  -- --verify with no remote: succeeds and warns it degraded to local
+  let dir ← freshDir
+  let b ← mkIssue dir "Local claimable"
+  match ← run' ["claim", "tl-" ++ b, "--dir", dir, "--verify", "--assignee", "ann"] with
+  | .ok out =>
+    o := o ++
+      [check "claim --verify succeeds with no remote"
+         ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress,
+       check "claim --verify warns it could not verify against a remote"
+         (out.notes.any (fun n => (n.splitOn "verified against local state only").length > 1)) (toString out.notes)]
+  | .error e => o := o ++ [{ name := "claim --verify (no remote)", passed := false, msg := e.message }]
+  -- the not-claimable guard still holds through the sync path
+  let c ← mkIssue dir "a blocker"
+  let blk ← mkIssue dir "blocked one" ["--blocked-by", "tl-" ++ c]
+  o := o ++ [← expectErr "claim --sync still refuses a non-ready item"
+    ["claim", "tl-" ++ blk, "--dir", dir, "--sync", "--assignee", "ann"] .notClaimable]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1621,6 +1660,6 @@ def cliTests : IO (List Outcome) := do
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
-    ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliBinaryTests)
+    ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

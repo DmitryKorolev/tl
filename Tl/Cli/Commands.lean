@@ -488,7 +488,19 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
            human := s!"Created {displayId newId}  {sanitizeSingle title}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
+def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
+    (sync verify : Bool) : TlM CmdOut := do
+  -- freshness preflight (ADR-0001 §5): with --sync/--verify, reconcile against
+  -- the remote BEFORE the take, so the not-claimable check sees the freshest
+  -- reachable state. --verify warns-and-degrades when no remote is configured
+  -- (it still checks against the freshest LOCAL state, via preWriteRefresh below).
+  let preNotes ← if sync || verify then do
+      let d0 ← discover dirOverride
+      let _ ← performSync d0
+      if verify && (← Tl.Sync.resolveRemote d0).isNone then
+        pure ["verified against local state only — no remote is configured to fetch from"]
+      else pure []
+    else pure []
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
@@ -527,8 +539,12 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String) : TlM
   let human :=
     if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
+  let auto ← Tl.Sync.autoSyncLocal d replica
+  -- publish-around-claim (ADR-0001 §5): with --sync, push the take to the remote
+  -- right away (after it is in the local ref), closing the cross-clone race window
+  let postNotes ← if sync then do let _ ← performSync d; pure [] else pure []
   return { data, human
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes }
 
 def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     (ofTok : Option String) (actor : String) : TlM CmdOut := do
