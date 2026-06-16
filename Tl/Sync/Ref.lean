@@ -173,12 +173,18 @@ def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) := do
     match line.splitOn "\t" with
     | [info, name] =>
       if name.endsWith ".jsonl" then
+        let rid := (name.dropEnd 6).toString
+        -- drop a non-canonical ref-borne name before it is materialized: locally
+        -- produced names are always valid, so this filters only junk/crafted tree
+        -- entries (mirroring `enumerateSegments`' on-disk check), stopping them
+        -- propagating through unions into a permanently-flagged on-disk file.
+        if !(Tl.Clock.Replica.mk rid).valid then return none
         match info.splitOn " " with
         | [_, "blob", oid] =>
           -- the blob is the raw segment bytes (may be non-UTF-8) — read them
           -- byte-faithfully, never through a String stdout
           let bytes ← runBytes d "cat-file" ["cat-file", "blob", oid]
-          return some { replicaId := (name.dropEnd 6).toString, bytes }
+          return some { replicaId := rid, bytes }
         | _ => return none
       else return none
     | _ => return none

@@ -153,8 +153,17 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome)
   let l ← Tl.Sync.syncLocal d ownId
   let r ← if l.ran then Tl.Sync.syncRemote d
           else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
-  if r.ran then
-    let _ ← Tl.Sync.syncLocal d ownId
+  -- a second local leg after a remote that ran materializes what the fetch added
+  -- (it can pull a NEW replica). Best-effort — the push already succeeded, so
+  -- never fail here; a failure self-heals on the next read's refresh. Fold its
+  -- absorb into the reported local outcome so a remote-pulled replica is not
+  -- silently dropped from `absorbed` (it would report `absorbed: []`).
+  let l ← if r.ran then
+      (try
+        let l2 ← Tl.Sync.syncLocal d ownId
+        pure { l with absorbed := (l.absorbed ++ l2.absorbed).eraseDups, tip := l2.tip }
+       catch _ => pure l)
+    else pure l
   if l.ran then
     let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
     try storeLastSync d now (if r.ran then r.tip else l.tip) catch _ => pure ()
@@ -983,7 +992,33 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
      -- behind needs the remote: 0 right after a --sync reconcile, else unknown (null)
      ("behind", if synced.isSome then jnum 0 else Json.null),
      ("message", Json.str syncMsg)], false)
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow, syncRow]
+  -- read-refresh marker vs on-disk segments (ADR-0016 §3 boundary): the marker
+  -- keys off the ref OID, so an externally deleted/truncated foreign cache file
+  -- under .tl/log/ stays unfixed until the ref next moves. Warn on a mismatch (a
+  -- `tl sync` re-materializes unconditionally). Low-pri: .tl/ is tl-managed.
+  let refMarkRow ← try
+      match ← loadRefMark d with
+      | none => pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "ok")], false)
+      | some mark =>
+        let refSegs ← Tl.Sync.readRefAt d mark
+        let (diskSegs, _) ← readSegments d
+        let ownId := own.map (·.id)
+        -- a foreign ref segment whose on-disk copy is missing or byte-differs
+        let stale := refSegs.filter (fun rs =>
+          ownId != some rs.replicaId &&
+            (match diskSegs.find? (·.replicaId == rs.replicaId) with
+             | some ds => ByteArray.hash ds.bytes != ByteArray.hash rs.bytes
+             | none => true))
+        pure (Json.mkObj
+          [("name", Json.str "refMark"),
+           ("status", Json.str (if stale.isEmpty then "ok" else "warn")),
+           ("staleSegments", jnum stale.length),
+           ("message", Json.str (if stale.isEmpty then "on-disk segments match the refresh marker"
+             else s!"{stale.length} on-disk segment(s) differ from the marked ref — run `tl sync` to re-materialize"))], false)
+    catch e =>
+      pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
+                        ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow, syncRow, refMarkRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),

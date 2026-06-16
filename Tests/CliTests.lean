@@ -1669,6 +1669,51 @@ def cliClaimSyncTests : IO (List Outcome) := do
     ["claim", "tl-" ++ blk, "--dir", dir, "--sync", "--assignee", "ann"] .notClaimable]
   return o
 
+/-- Two clones over a bare remote: a sync that pulls a NEW replica from the
+    remote reports it in `absorbed` (the post-remote second local leg, tl-45decmwx),
+    and `doctor`'s refMark check warns when a materialized foreign segment is
+    deleted on disk while the ref-mark stays put (tl-mrgjysh). -/
+def cliSyncTwoCloneTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let refMarkRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "refMark")
+  let mkClone : IO String := do
+    let root ← IO.FS.createTempDir
+    let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
+    pure root.toString
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
+  -- clone A: create an issue and push it
+  let rootA ← mkClone
+  let tlA := rootA ++ "/.tl"
+  let _ ← run' ["init", "--dir", tlA]
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA, "remote", "add", "origin", bare.toString] }
+  let _ ← mkIssue tlA "From clone A"
+  let _ ← run' ["sync", "--dir", tlA]
+  -- clone B: a sync pulls A's replica from the remote
+  let rootB ← mkClone
+  let tlB := rootB ++ "/.tl"
+  let _ ← run' ["init", "--dir", tlB]
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB, "remote", "add", "origin", bare.toString] }
+  let mut absorbedRep := ""
+  match ← run' ["sync", "--dir", tlB] with
+  | .ok out =>
+    let absorbed := jArr ((jGet out.data "local").getD Json.null) "absorbed"
+    absorbedRep := (absorbed.head?.bind (·.getStr?.toOption)).getD ""
+    o := o ++ [check "sync reports a remote-pulled replica in absorbed (not [])" (!absorbed.isEmpty) out.data.compress]
+  | .error e => o := o ++ [{ name := "B sync absorb", passed := false, msg := e.message }]
+  -- doctor refMark: ok while disk matches, warn after the foreign segment is deleted
+  match ← run' ["doctor", "--dir", tlB] with
+  | .ok out => o := o ++ [check "doctor refMark ok when on-disk matches the marker"
+      ((refMarkRow out).bind (jStr · "status") == some "ok") out.data.compress]
+  | .error e => o := o ++ [{ name := "refMark ok", passed := false, msg := e.message }]
+  if absorbedRep != "" then
+    IO.FS.removeFile (rootB ++ "/.tl/log/" ++ absorbedRep ++ ".jsonl")
+    match ← run' ["doctor", "--dir", tlB] with
+    | .ok out => o := o ++ [check "doctor refMark warns when a marked foreign segment is gone on disk"
+        ((refMarkRow out).bind (jStr · "status") == some "warn") out.data.compress]
+    | .error e => o := o ++ [{ name := "refMark warn", passed := false, msg := e.message }]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1680,6 +1725,7 @@ def cliTests : IO (List Outcome) := do
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
-    ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests) ++ (← cliBinaryTests)
+    ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
+    ++ (← cliSyncTwoCloneTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

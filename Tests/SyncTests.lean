@@ -438,8 +438,24 @@ def syncTimeoutTests : IO (List Outcome) := do
      check "unset config falls back to the built-in defaults" (lo2 == 5000 && re2 == 30000) s!"lo2={lo2} re2={re2}"]
   return o
 
+/-- A ref-borne segment with a non-canonical name (crafted/junk tree entry) is
+    dropped by `readRefAt` (the `Replica.valid` filter, tl-bzzgr49m), so junk
+    never propagates through a union into a permanently-flagged on-disk file. -/
+def syncRefNameValidationTests : IO (List Outcome) := do
+  let d ← gitRepo
+  let good := seg "0123456789abc" "{\"a\":1}\n"   -- a canonical 13-char replica id
+  let junk := seg "tooshort" "{\"x\":9}\n"         -- not a valid replica id
+  let _ ← runTl (writeRef d [good, junk] none)
+  match ← runTl (readRef d) with
+  | .ok back =>
+    return [check "readRef drops a non-canonical ref-borne segment name"
+      (back.length == 1 && back.head?.map (·.replicaId) == some "0123456789abc")
+      s!"got {back.map (·.replicaId)}"]
+  | .error e => return [{ name := "readRef junk-name filter", passed := false, msg := e.message }]
+
 def syncTests : IO (List Outcome) := do
   return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
     ++ (← syncRefreshTests) ++ (← syncRemoteTests) ++ (← syncTimeoutTests)
+    ++ (← syncRefNameValidationTests)
 
 end Tl.Tests
