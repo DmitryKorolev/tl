@@ -170,7 +170,7 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "ready"
       MonadExcept.ofExcept (noPositionals a "ready")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
-      cmdReady (a.get? "dir") limit (a.has "skip-bad")
+      cmdReady (a.get? "dir") limit (a.has "skip-bad") (a.has "sync")
     | "list" => do
       let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
@@ -274,7 +274,7 @@ def runVerb : List String → TlM CmdOut
     | "doctor" => do
       let a ← parse "doctor"
       MonadExcept.ofExcept (noPositionals a "doctor")
-      cmdDoctor (a.get? "dir")
+      cmdDoctor (a.get? "dir") (a.has "sync")
     | other =>
       if other.startsWith "-" then
         throw (usageErr s!"flags follow the verb (e.g. `tl ready {other}`); no command named '{other}'")

@@ -59,6 +59,11 @@ def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
     format impact: a stale/absent value only forces the full reconcile, never a
     wrong publish (it is written ONLY after the own segment is in the tip). -/
 def relSyncPub (d : Dirs) : String := d.tlRel ++ "/local/sync-pub"
+/-- The last-sync marker `<ms> <tip>`: wall-clock time of the last `tl sync`
+    (local epoch ms) and the `refs/tl/log` tip it left. Read by `doctor`'s sync
+    posture and `ready`'s staleness advisory; written only by a sync. Local-only,
+    gitignored, no log format impact — absent ⇒ "never synced", a safe default. -/
+def relLastSync (d : Dirs) : String := d.tlRel ++ "/local/last-sync"
 /-- The materialization fold cache (ADR-0022): the folded state keyed to
     per-segment log content. Local-only, never synced, no log format impact —
     absent/stale/corrupt only costs a rebuild from the segments, never a wrong

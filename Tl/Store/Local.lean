@@ -164,6 +164,25 @@ def loadSyncPub (d : Dirs) : TlM (Option (String × Nat × UInt64)) := do
 def storeSyncPub (d : Dirs) (oid : String) (ownBytes : ByteArray) : TlM Unit :=
   writeLocalFile d d.relSyncPub s!"{oid} {ownBytes.size} {ByteArray.hash ownBytes}\n"
 
+/-- The last-sync marker `(ms, tip)` (see `relLastSync`): when this clone last
+    ran `tl sync` and the `refs/tl/log` tip it left. Absent/unparsable → `none`
+    ("never synced"). `tip` is `none` when the marker records `-`. -/
+def loadLastSync (d : Dirs) : TlM (Option (Nat × Option String)) := do
+  match ← fileContents d d.relLastSync with
+  | none => return none
+  | some raw =>
+    match raw.trimAscii.toString.splitOn " " with
+    | [msS, tip] =>
+      match msS.toNat? with
+      | some ms => return some (ms, if tip == "-" then none else some tip)
+      | none => return none
+    | _ => return none
+
+/-- Record the last-sync marker (atomic-replace, best-effort like the other
+    `.tl/local` markers). Written only after a sync completes. -/
+def storeLastSync (d : Dirs) (ms : Nat) (tip : Option String) : TlM Unit :=
+  writeLocalFile d d.relLastSync s!"{ms} {tip.getD "-"}\n"
+
 /-- The `corrupt-clock` saturation error (ADR-0007: removing the clock file
     cannot clear range exhaustion — the reseed re-derives the same near-max
     value from the segments). -/

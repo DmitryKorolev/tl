@@ -59,6 +59,10 @@ private def limitFlag : FlagSpec :=
 private def logLimitFlag : FlagSpec :=
   { name := "limit", value := true, summary := "max entries shown (default 10; 0 = all)" }
 
+private def syncFlag : FlagSpec :=
+  { name := "sync", value := false,
+    summary := "reconcile via refs/tl/log first (= tl sync, then this command); contacts the remote" }
+
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
   [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)" },
@@ -73,7 +77,7 @@ def commandSpecs : List CommandSpec :=
           { name := "description", value := true, summary := "the body; pass `-` (or a trailing `-`) to read it from stdin" },
           actorFlag ] },
     { command := "ready", positionals := "",
-      summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag] },
+      summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag, syncFlag] },
     { command := "claim", positionals := "<id>",
       summary := "take a ready item (refused with structured reasons otherwise)", flags := [actorFlag] },
     { command := "close", positionals := "<id>",
@@ -124,7 +128,8 @@ def commandSpecs : List CommandSpec :=
     { command := "sync", positionals := "",
       summary := "reconcile via refs/tl/log: publish + absorb siblings, then fetch/union/push to a configured remote" },
     { command := "doctor", positionals := "",
-      summary := "local health checks (replica / clock / log / graph / stale claims / clock skew)" },
+      summary := "local health checks (replica / clock / log / graph / stale claims / clock skew / sync posture)",
+      flags := [syncFlag] },
     { command := "version", positionals := "", summary := "the product and log-format versions" },
     { command := "help", positionals := "[<command>]",
       summary := "this grammar — human, or machine-readable with --json" } ]

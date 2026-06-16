@@ -129,7 +129,7 @@ Work loop
 | Command | Effect |
 |---|---|
 | `tl create "<title>" [--blocked-by …] [--blocks …] [--related …] [--parent …] [-p PRIO]` | add an issue, wiring deps/links inline (no round-trips) |
-| `tl ready [--assignee] [--label] [--limit]` | ranked, filterable list of workable items — the core feature |
+| `tl ready [--assignee] [--label] [--limit] [--sync]` | ranked, filterable list of workable items — the core feature; flags a one-line staleness advisory when the local view may be behind upstream (`--sync` = reconcile first, then list — ADR-0011) |
 | `tl init [--stealth]` | create the (gitignored) `.tl/`, mint the replica-id, and (in a git repo) wire up sharing; `--stealth` = local-only, zero repo-visible trace. Grows across stages (ADR-0001 §4 / ADR-0012) |
 | `tl import <path> [--force]` | one-shot migration from an existing tracker's data; refuses existing task state (local `.tl/log/` segments or a local/remote `refs/tl/log`) without `--force` (ADR-0005) |
 | `tl sync` | publish/receive task state: fetch + union-merge + push the `refs/tl/log` ref (ADR-0001) — the transport, since `tl` never commits to your branch |
@@ -163,7 +163,7 @@ Read / visibility
 | `tl label add <id> <label>` / `label remove <id> <label>` / `label list [<id>]` | manage categorical label tags (filter-only; drive nothing) |
 | `tl meta set <id> <key> <value>` / `meta get <id> [<key>]` / `meta clear <id> <key>` / `meta list [<id>]` | manage the opaque metadata side-channel — `ext:<system>` refs, imported fields (ADR-0002/0005); drives nothing |
 | `tl stats` | counts by state, #ready, #blocked, #cycles |
-| `tl doctor` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints, `duplicate-of` hygiene (dangling/self/chained targets, ADR-0008); `refs/tl/log` sync status joins once sharing lands (ADR-0011/0001) |
+| `tl doctor [--sync]` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints, `duplicate-of` hygiene (dangling/self/chained targets, ADR-0008); plus a local sync-posture row (upstream / lastSync / ahead, no remote contact; `--sync` = reconcile first — ADR-0011/0001) |
 | `tl help [<cmd>]` / `tl <cmd> --help` | human help: top-level overview or per-command usage |
 | `tl help [<cmd>] --json` | the same grammar machine-readably, for agent introspection (ADR-0011) |
 | `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` also reports log/JSON schema versions, plus build provenance once the release pipeline exists (ADR-0006/0008/0020) |

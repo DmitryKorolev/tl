@@ -139,15 +139,78 @@ private def listRender (v : View) (rows : List IssueId) (total : Nat) (summary e
   else String.intercalate "\n" (rows.map (styledLine st v))
     ++ "\n" ++ footer st summary rows.length total
 
-def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) : TlM CmdOut := do
+/-- The freshness window after which `ready` nudges to sync (ADR-0011 §2):
+    a generous default — sync is opt-in (`--sync`), this only reminds. -/
+def syncStaleWindowMs : Nat := 60 * 60 * 1000
+
+/-- A full `tl sync` (local leg, the remote leg in a git repo, then a second
+    local leg to absorb the remote's additions), recording the last-sync marker
+    so `doctor`/`ready` never contact the remote themselves (ADR-0016). Shared by
+    `cmdSync` and the `--sync` flag. -/
+def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome) := do
+  let own ← loadReplica d
+  let ownId := own.map (·.id)
+  let l ← Tl.Sync.syncLocal d ownId
+  let r ← if l.ran then Tl.Sync.syncRemote d
+          else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
+  if r.ran then
+    let _ ← Tl.Sync.syncLocal d ownId
+  if l.ran then
+    let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
+    try storeLastSync d now (if r.ran then r.tip else l.tip) catch _ => pure ()
+  return (l, r)
+
+/-- The LOCAL-only sync posture (no remote contact): the resolved upstream name
+    (git config), the last-sync time, and how many `refs/tl/log` commits the local
+    ref sits ahead of that last sync (unpushed). The live *behind* count needs the
+    remote, so it is `--sync`'s job (sync then read), not this. -/
+structure SyncPosture where
+  upstream : Option String
+  lastSyncMs : Option Nat
+  ahead : Nat
+
+def syncPostureOf (d : Dirs) : TlM SyncPosture := do
+  let upstream ← Tl.Sync.resolveRemote d
+  let ls ← loadLastSync d
+  let ahead ← match ls with
+    | some (_, some syncedTip) =>
+      match ← Tl.Sync.refTip d with
+      | some cur => Tl.Sync.commitsBetween d syncedTip cur
+      | none => pure 0
+    | _ => pure 0
+  return { upstream, lastSyncMs := ls.map (·.1), ahead }
+
+/-- `ready`'s staleness advisory from the local posture (`now` = the view clock).
+    `none` ⇒ no advisory. Fires only with a configured remote, and reports the
+    first applicable reason: never-synced, unsynced local changes, or a stale
+    last-sync. -/
+def stalenessMsg (p : SyncPosture) (now : Nat) : Option String :=
+  match p.upstream with
+  | none => none
+  | some name =>
+    match p.lastSyncMs with
+    | none => some s!"view may be stale — never synced with '{name}'; run `tl sync` (or rerun with --sync)"
+    | some ms =>
+      if p.ahead > 0 then some s!"view may be stale — {p.ahead} local change(s) since last sync; run `tl sync`"
+      else if now - ms > syncStaleWindowMs then some s!"view may be stale — last synced {(now - ms) / 60000}m ago; run `tl sync`"
+      else none
+
+def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync : Bool) : TlM CmdOut := do
+  let d ← discover dirOverride
+  if sync then let _ ← performSync d
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let ranked := State.readyFast v.rollup v.state v.now
   let capped := if limit == 0 then ranked else ranked.take limit
-  let r := listRender v capped ranked.length
-    s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready"
-  return { data := listPayload "items" ranked.length (capped.map (issueRow v))
-           human := r Style.plain, render := some r, notes }
+  -- staleness advisory (ADR-0011 §2): local-only; suppressed when we just synced
+  let advisory ← if sync then pure none else (do pure (stalenessMsg (← syncPostureOf d) v.now))
+  let r : Style → String := fun st =>
+    (match advisory with | some a => st.paint "33" s!"({a})" ++ "\n" | none => "")
+      ++ (listRender v capped ranked.length
+            s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready") st
+  let data := (listPayload "items" ranked.length (capped.map (issueRow v))).setObjVal!
+                "staleness" (advisory.elim Json.null Json.str)
+  return { data, human := r Style.plain, render := some r, notes }
 
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
     (labels : List String) : TlM CmdOut := do
@@ -755,8 +818,9 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 
 /-! ## doctor / init / version -/
 
-def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
+def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
+  if sync then let _ ← performSync d
   -- doctor reports damage instead of failing on it (ADR-0008 exemption)
   let replicaRow ← try
       match ← loadReplica d with
@@ -859,7 +923,29 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
      ("clockLeadMs", jnum leadMs)]
     ++ (if skewSegs.isEmpty then [] else
         [("segments", Json.arr (skewSegs.map Json.str).toArray)]), false)
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow]
+  -- sync posture (ADR-0011 §2): LOCAL only — no remote contact unless `--sync`
+  -- just ran a `tl sync`. upstream/lastSync/ahead from git config + the marker;
+  -- the live behind-count is `doctor --sync`'s job (sync then read).
+  let posture ← syncPostureOf d
+  let neverSynced := posture.upstream.isSome && posture.lastSyncMs.isNone
+  let syncMsg :=
+    match posture.upstream with
+    | none => "no remote configured — sharing is local/stealth only"
+    | some name =>
+      match posture.lastSyncMs with
+      | none => s!"remote '{name}' configured but never synced — run `tl sync`"
+      | some ms =>
+        s!"last synced {Time.isoOfEpochMs ms}"
+          ++ (if posture.ahead > 0 then s!"; {posture.ahead} local commit(s) since" else "")
+          ++ "; run `tl doctor --sync` to reconcile with the remote"
+  let syncRow := (Json.mkObj
+    [("name", Json.str "sync"),
+     ("status", Json.str (if neverSynced then "warn" else "ok")),
+     ("upstream", posture.upstream.elim Json.null Json.str),
+     ("lastSync", posture.lastSyncMs.elim Json.null (fun ms => Json.str (Time.isoOfEpochMs ms))),
+     ("ahead", jnum posture.ahead),
+     ("message", Json.str syncMsg)], false)
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow, syncRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),
@@ -876,19 +962,7 @@ def cmdDoctor (dirOverride : Option String) : TlM CmdOut := do
     remote is configured. -/
 def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
-  let own ← loadReplica d
-  let ownId := own.map (·.id)
-  -- local-first leg: publish own + absorb same-machine siblings (ADR-0016 §1)
-  let l ← Tl.Sync.syncLocal d ownId
-  -- remote leg (only in a git repo): fetch → union → push (ADR-0001 §5)
-  let r ← if l.ran then Tl.Sync.syncRemote d
-          else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
-  -- after a remote leg that ran, materialize anything it added to the local ref
-  -- onto disk (a second local leg — its publish is a no-op, its absorb is the
-  -- work; run on `ran` not `pulled`, since a retry can under-report `pulled`
-  -- while still having advanced the ref)
-  if r.ran then
-    let _ ← Tl.Sync.syncLocal d ownId
+  let (l, r) ← performSync d
   let localLeg : Json :=
     if l.ran then
       Json.mkObj

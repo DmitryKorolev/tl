@@ -1550,6 +1550,66 @@ def cliShortIdTests : IO (List Outcome) := do
     (fun j => (jArr j "items").any (fun it => jStr it "id" == some ("tl-" ++ a)))]
   return o
 
+/-- Sync posture (ADR-0011 §2): `doctor` owns a local-only sync row (upstream /
+    lastSync / ahead, no remote contact), and `ready` shows a staleness advisory
+    when behind/never-synced. `--sync` (= sync-then-run) reconciles first and
+    suppresses the advisory. No remote is contacted except by an explicit sync. -/
+def cliSyncPostureTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let syncRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "sync")
+  -- (1) outside a git repo / no remote: doctor sync row = no-upstream, ready clean
+  let dir ← freshDir
+  let _ ← mkIssue dir "Solo task"
+  match ← run' ["doctor", "--dir", dir] with
+  | .ok out =>
+    o := o ++
+      [check "doctor has a sync row" (syncRow out).isSome "no sync row",
+       check "no remote ⇒ upstream null" ((syncRow out).bind (fun c => jGet c "upstream") == some Json.null)
+         (toString ((syncRow out).map (·.compress)))]
+  | .error e => o := o ++ [{ name := "doctor sync row (no remote)", passed := false, msg := e.message }]
+  o := o ++ [← expectData "ready: no advisory without a remote" ["ready", "--dir", dir]
+    (fun j => jGet j "staleness" == some Json.null)]
+  -- (2) a git repo with a bare remote, never synced
+  let root ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
+  let tldir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", tldir]
+  let bare ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← run' ["create", "Remote task", "--dir", tldir, "--assignee", "t"]
+  match ← run' ["doctor", "--dir", tldir] with
+  | .ok out =>
+    o := o ++
+      [check "doctor: upstream resolves to origin" ((syncRow out).bind (jStr · "upstream") == some "origin")
+         (toString ((syncRow out).map (·.compress))),
+       check "doctor: never-synced warns" ((syncRow out).bind (jStr · "status") == some "warn") "",
+       check "doctor: lastSync null before any sync" ((syncRow out).bind (fun c => jGet c "lastSync") == some Json.null) ""]
+  | .error e => o := o ++ [{ name := "doctor sync row (remote)", passed := false, msg := e.message }]
+  o := o ++ [← expectData "ready: never-synced advisory" ["ready", "--dir", tldir]
+    (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
+  -- (3) after a sync: lastSync recorded, doctor ok, ready clean
+  let _ ← run' ["sync", "--dir", tldir]
+  match ← run' ["doctor", "--dir", tldir] with
+  | .ok out =>
+    o := o ++
+      [check "doctor: lastSync set after sync" ((syncRow out).bind (jStr · "lastSync")).isSome "",
+       check "doctor: ok after sync" ((syncRow out).bind (jStr · "status") == some "ok") ""]
+  | .error e => o := o ++ [{ name := "doctor sync row (post-sync)", passed := false, msg := e.message }]
+  o := o ++ [← expectData "ready: advisory cleared after sync" ["ready", "--dir", tldir]
+    (fun j => jGet j "staleness" == some Json.null)]
+  -- (4) stale-by-time: age the marker, ready nudges (run tl sync)
+  IO.FS.writeFile (root / ".tl" / "local" / "last-sync") "1000 deadbeef\n"
+  o := o ++ [← expectData "ready: stale-by-time advisory" ["ready", "--dir", tldir]
+    (fun j => match jStr j "staleness" with | some s => (s.splitOn "ago").length > 1 | none => false)]
+  -- (5) --sync reconciles first and suppresses the advisory
+  o := o ++ [← expectData "ready --sync suppresses the advisory" ["ready", "--dir", tldir, "--sync"]
+    (fun j => jGet j "staleness" == some Json.null)]
+  match ← run' ["doctor", "--dir", tldir, "--sync"] with
+  | .ok out => o := o ++ [check "doctor --sync refreshes lastSync" ((syncRow out).bind (jStr · "lastSync")).isSome ""]
+  | .error e => o := o ++ [{ name := "doctor --sync", passed := false, msg := e.message }]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1561,6 +1621,6 @@ def cliTests : IO (List Outcome) := do
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
-    ++ (← cliShortIdTests) ++ (← cliBinaryTests)
+    ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

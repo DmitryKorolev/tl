@@ -85,15 +85,25 @@ demand.
 Sync-freshness — the "is my view stale before I trust `ready`?" signal —
 is rehomed onto these two commands rather than carried by a bundled snapshot:
 
-- Once sharing lands, `tl doctor` owns the authoritative sync posture:
-  `{ upstream: <name>|null, ahead, behind, lastSync }`, or a `no-upstream` /
-  `stealth` marker (ADR-0001), so an agent can ask "is my view fresh?"
-  directly. Before Stage 3, the minimal `doctor` reports only the local posture
-  it can know.
-- Once sharing lands, `tl ready` surfaces a one-line advisory when the local
-  view is behind upstream ("view may be stale — N behind; run `tl sync`"), so
-  an agent selecting work sees staleness *inline* without a second call. It is
-  advisory, derived state — it never blocks or alters the read.
+- `tl doctor` owns the sync posture row: `{ upstream: <name>|null, lastSync,
+  ahead }`, or a `no-upstream` / `stealth` marker (ADR-0001), so an agent can ask
+  "is my view fresh?" directly. **By default it contacts no remote** — `upstream`
+  is resolved from git config, `lastSync` from a local marker a sync writes, and
+  `ahead` is the local `refs/tl/log` commits since that last sync (all local). The
+  live *behind*-count needs the remote, so it is gated behind `--sync` (below),
+  not done on every `doctor`.
+- `tl ready` surfaces a one-line advisory when the local posture says the view
+  may be stale ("view may be stale — never synced / N local change(s) since last
+  sync / last synced N ago; run `tl sync`"), so an agent selecting work sees
+  staleness *inline* without a second call. It is advisory, derived, local-only
+  state — it never blocks, alters, or networks on the read.
+- **Amendment (2026-06-16, built): `--sync`.** Detecting how far *behind the
+  remote* you are requires the network, which `ready`/`doctor` must not do on
+  every (hot-path) call. So neither contacts the remote unless run with `--sync`,
+  which is exactly `tl sync` *then* the command (reconcile, then read the fresh
+  state) — the single opt-in freshness lever, also on `claim` (ADR-0001 §5). This
+  supersedes the original "doctor computes live ahead/behind every call": the
+  default posture is local; `--sync` is how you get a remote-fresh one.
 
 Untrusted content stays explicit. Any command that emits issue objects
 (`ready`, `show`, `list`) carries per-issue `provenance`
