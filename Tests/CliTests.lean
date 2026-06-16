@@ -1607,7 +1607,7 @@ def cliSyncPostureTests : IO (List Outcome) := do
     o := o ++
       [check "doctor: ahead counts unsynced local ops" (((syncRow out).bind (jNat · "ahead")).getD 0 > 0) out.data.compress,
        check "doctor: warns on unsynced ops" ((syncRow out).bind (jStr · "status") == some "warn") "",
-       check "doctor: behind null without a fetch" ((syncRow out).bind (fun c => jGet c "behind") == some Json.null) ""]
+       check "doctor: no degenerate behind field" ((syncRow out).bind (fun c => jGet c "behind")).isNone ""]
   | .error e => o := o ++ [{ name := "doctor ahead>0", passed := false, msg := e.message }]
   o := o ++ [← expectData "ready: unsynced-ops advisory" ["ready", "--dir", tldir]
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "local change").length > 1 | none => false)]
@@ -1625,7 +1625,7 @@ def cliSyncPostureTests : IO (List Outcome) := do
   | .ok out =>
     o := o ++
       [check "doctor --sync refreshes lastSync" ((syncRow out).bind (jStr · "lastSync")).isSome "",
-       check "doctor --sync reports behind 0 (reconciled)" ((syncRow out).bind (jNat · "behind") == some 0) out.data.compress,
+       check "doctor --sync reports the reconcile result" ((syncRow out).bind (jBool · "reconciled") == some true) out.data.compress,
        check "doctor --sync names the reconcile" (((((syncRow out).bind (jStr · "message")).getD "").splitOn "reconciled").length > 1) ""]
   | .error e => o := o ++ [{ name := "doctor --sync", passed := false, msg := e.message }]
   return o
@@ -1714,6 +1714,43 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     | .error e => o := o ++ [{ name := "refMark warn", passed := false, msg := e.message }]
   return o
 
+/-- An unreachable (configured-but-broken) remote: read `--sync` degrades and
+    never fails, `doctor --sync` never fails, `claim --sync` records the take and
+    discloses, but `claim --verify` FAILS `verify-failed` (the strict gate). -/
+def cliSyncDegradeTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let syncRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "sync")
+  let root ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
+  let dir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", dir]
+  -- a configured remote whose URL is not a git repo ⇒ fetch/push error (not a hang)
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", "/no/such/tl/remote"] }
+  let _ ← mkIssue dir "Workable"
+  match ← run' ["ready", "--dir", dir, "--sync"] with
+  | .ok out => o := o ++ [check "ready --sync degrades (no failure) on an unreachable remote"
+      (out.notes.any (fun n => (n.splitOn "could not reconcile").length > 1)) (toString out.notes)]
+  | .error e => o := o ++ [{ name := "ready --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
+  match ← run' ["doctor", "--dir", dir, "--sync"] with
+  | .ok out => o := o ++
+      [check "doctor --sync never fails on an unreachable remote" ((syncRow out).isSome) "",
+       check "doctor --sync warns + discloses the reconcile failure"
+         ((syncRow out).bind (jStr · "status") == some "warn"
+          && ((((syncRow out).bind (jStr · "message")).getD "").splitOn "failed").length > 1) out.data.compress]
+  | .error e => o := o ++ [{ name := "doctor --sync degrade", passed := false, msg := s!"failed: {e.message}" }]
+  let vid ← mkIssue dir "verify target"
+  o := o ++ [← expectErr "claim --verify fails verify-failed on an unreachable remote"
+    ["claim", "tl-" ++ vid, "--dir", dir, "--verify", "--assignee", "t"] .verifyFailed]
+  let sid ← mkIssue dir "sync target"
+  match ← run' ["claim", "tl-" ++ sid, "--dir", dir, "--sync", "--assignee", "t"] with
+  | .ok out => o := o ++
+      [check "claim --sync still records the take on an unreachable remote"
+         ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress,
+       check "claim --sync discloses the reconcile/publish failure"
+         (out.notes.any (fun n => (n.splitOn "could not").length > 1)) (toString out.notes)]
+  | .error e => o := o ++ [{ name := "claim --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1726,6 +1763,6 @@ def cliTests : IO (List Outcome) := do
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
-    ++ (← cliSyncTwoCloneTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

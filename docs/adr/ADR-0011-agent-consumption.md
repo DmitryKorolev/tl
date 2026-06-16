@@ -91,10 +91,11 @@ is rehomed onto these two commands rather than carried by a bundled snapshot:
   is resolved from git config, `lastSync` from a local marker a sync writes, and
   `ahead` is the count of local *ops* written since that last sync (the own
   segment on disk vs the synced ref's own-segment — so it is correct in the main
-  worktree, where writes don't move `refs/tl/log` until a sync). The live
-  *behind*-count needs the remote, so it is gated behind `--sync` (below) — which
-  also makes `doctor` report what reconciling did (pushed / pulled) — not done on
-  every `doctor`.
+  worktree, where writes don't move `refs/tl/log` until a sync). There is **no
+  `behind` field**: it cannot be observed without a fetch, and a `--sync`
+  reconcile converges it to 0 — so it would only ever read null/0, never a real
+  count. Instead `--sync` (below) makes `doctor` report what reconciling *did*
+  (`reconciled` / `pushed` / `pulled`); without `--sync`, no remote is contacted.
 - `tl ready` surfaces a one-line advisory when the local posture says the view
   may be stale ("view may be stale — never synced / N local change(s) since last
   sync / last synced N ago; run `tl sync`"), so an agent selecting work sees

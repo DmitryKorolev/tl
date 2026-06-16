@@ -61,11 +61,11 @@ private def logLimitFlag : FlagSpec :=
 
 private def syncFlag : FlagSpec :=
   { name := "sync", value := false,
-    summary := "reconcile via refs/tl/log first (= tl sync, then this command); contacts the remote" }
+    summary := "reconcile via refs/tl/log first, then run; best-effort — a remote failure degrades to a note, never fails the command" }
 
 private def verifyFlag : FlagSpec :=
   { name := "verify", value := false,
-    summary := "re-check readiness against the freshest reachable state (fetch first) before taking; warns if no remote" }
+    summary := "fetch + re-check readiness against the freshest state before taking; fails (verify-failed) if a configured remote is unreachable, degrades if none" }
 
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=

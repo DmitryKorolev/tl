@@ -40,6 +40,7 @@ inductive ErrorCode where
   | notClaimable
   | notCloseable
   | unsafePath
+  | verifyFailed
 deriving DecidableEq, Repr
 
 namespace ErrorCode
@@ -63,6 +64,7 @@ def wire : ErrorCode → String
   | .notClaimable => "not-claimable"
   | .notCloseable => "not-closeable"
   | .unsafePath => "unsafe-path"
+  | .verifyFailed => "verify-failed"
 
 /-- The stable nonzero process exit code (ADR-0008; `corrupt-clock` and
     `corrupt-replica` share `9` by that assignment). -/
@@ -84,13 +86,14 @@ def exitCode : ErrorCode → UInt32
   | .notClaimable => 14
   | .notCloseable => 15
   | .unsafePath => 16
+  | .verifyFailed => 17
 
 /-- Every code, for table-driven tests (kept in `wire`-table order). -/
 def all : List ErrorCode :=
   [.usage, .internal, .noProject, .notFound, .ambiguousId, .forceRequired,
    .malformedLine, .unknownVersion, .corruptClock, .corruptReplica,
    .pushRejected, .noUpstream, .stealthMode, .lockBusy,
-   .notClaimable, .notCloseable, .unsafePath]
+   .notClaimable, .notCloseable, .unsafePath, .verifyFailed]
 
 end ErrorCode
 

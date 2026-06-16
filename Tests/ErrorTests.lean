@@ -32,7 +32,8 @@ def errorCodeTable : List (ErrorCode × String × UInt32) :=
    (.lockBusy, "lock-busy", 13),
    (.notClaimable, "not-claimable", 14),
    (.notCloseable, "not-closeable", 15),
-   (.unsafePath, "unsafe-path", 16)]
+   (.unsafePath, "unsafe-path", 16),
+   (.verifyFailed, "verify-failed", 17)]
 
 def errorCodeTests : List Outcome :=
   -- the table covers the whole enum, and every wire string is distinct

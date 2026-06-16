@@ -314,7 +314,10 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   self-duplicate — see *Write-time guards* above), `unsafe-path` (the
   ADR-0015 §6 path-hardening refusals: a symlinked `.tl` component, an
   ownership mismatch, or a `--dir`/`TL_DIR` target failing the same
-  validation; ADR-0014 T4) (extend as new conditions arise). The enum
+  validation; ADR-0014 T4), `verify-failed` (`claim --verify` could not confirm
+  freshness because a configured remote was unreachable — the take is refused;
+  distinct from a best-effort `--sync` failure, which only degrades) (extend as
+  new conditions arise). The enum
   obeys the same additive-only
   rule: codes may be *added* within a `schemaVersion`, never renamed or
   removed, so a consumer matching a known code is never broken. Each code
@@ -324,7 +327,7 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   `5` ambiguous-id, `6` force-required, `7` malformed-line, `8` unknown-version,
   `9` corrupt-clock / corrupt-replica, `10` push-rejected, `11` no-upstream,
   `12` stealth-mode, `13` lock-busy, `14` not-claimable, `15` not-closeable,
-  `16` unsafe-path. `internal` is the
+  `16` unsafe-path, `17` verify-failed. `internal` is the
   catch-all for an otherwise-unclassified failure; known conditions must use
   their stable code instead of collapsing to `internal`.
 - Streams and usage failures are part of the contract. With `--json`, the

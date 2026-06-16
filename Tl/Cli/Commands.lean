@@ -147,7 +147,7 @@ def syncStaleWindowMs : Nat := 60 * 60 * 1000
     local leg to absorb the remote's additions), recording the last-sync marker
     so `doctor`/`ready` never contact the remote themselves (ADR-0016). Shared by
     `cmdSync` and the `--sync` flag. -/
-def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome) := do
+def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome × List String) := do
   let own ← loadReplica d
   let ownId := own.map (·.id)
   let l ← Tl.Sync.syncLocal d ownId
@@ -157,17 +157,17 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome)
   -- (it can pull a NEW replica). Best-effort — the push already succeeded, so
   -- never fail here; a failure self-heals on the next read's refresh. Fold its
   -- absorb into the reported local outcome so a remote-pulled replica is not
-  -- silently dropped from `absorbed` (it would report `absorbed: []`).
-  let l ← if r.ran then
+  -- silently dropped from `absorbed`; disclose a failure (loud-not-silent).
+  let (l, pnotes) ← if r.ran then
       (try
         let l2 ← Tl.Sync.syncLocal d ownId
-        pure { l with absorbed := (l.absorbed ++ l2.absorbed).eraseDups, tip := l2.tip }
-       catch _ => pure l)
-    else pure l
+        pure ({ l with absorbed := (l.absorbed ++ l2.absorbed).eraseDups, tip := l2.tip }, ([] : List String))
+       catch e => pure (l, [s!"reconciled with the remote, but materializing the pulled changes locally failed ({e.message}) — the next read or `tl sync` will catch up"]))
+    else pure (l, [])
   if l.ran then
     let now ← liftSys (fun e => .mk' .internal s!"{e}") nowMs
     try storeLastSync d now (if r.ran then r.tip else l.tip) catch _ => pure ()
-  return (l, r)
+  return (l, r, pnotes)
 
 /-- The LOCAL-only sync posture (no remote contact): the resolved upstream name
     (git config), the last-sync time, and how many `refs/tl/log` commits the local
@@ -216,7 +216,12 @@ def stalenessMsg (p : SyncPosture) (now : Nat) : Option String :=
 
 def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
-  if sync then let _ ← performSync d
+  -- --sync reconciles first, BEST-EFFORT: a read must not fail on a remote
+  -- hiccup, so a sync error degrades to a note and the (still-useful) listing.
+  let syncNotes ← if sync then
+      (try (do let (_, _, pn) ← performSync d; pure pn)
+       catch e => pure [s!"could not reconcile with the remote ({e.message}) — showing local state; run `tl sync`"])
+    else pure []
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let ranked := State.readyFast v.rollup v.state v.now
@@ -229,7 +234,7 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
             s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready") st
   let data := (listPayload "items" ranked.length (capped.map (issueRow v))).setObjVal!
                 "staleness" (advisory.elim Json.null Json.str)
-  return { data, human := r Style.plain, render := some r, notes }
+  return { data, human := r Style.plain, render := some r, notes := notes ++ syncNotes }
 
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
     (labels : List String) : TlM CmdOut := do
@@ -515,10 +520,22 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   -- (it still checks against the freshest LOCAL state, via preWriteRefresh below).
   let preNotes ← if sync || verify then do
       let d0 ← discover dirOverride
-      let _ ← performSync d0
-      if verify && (← Tl.Sync.resolveRemote d0).isNone then
-        pure ["verified against local state only — no remote is configured to fetch from"]
-      else pure []
+      let hasRemote := (← Tl.Sync.resolveRemote d0).isSome
+      -- --verify is a GATE: a configured-but-unreachable remote fails the claim
+      -- (verify-failed) so a take is never made against unverified state; with no
+      -- remote it degrades (claiming locally is fine). --sync alone is best-effort:
+      -- a reconcile failure degrades with a note, never blocking the take.
+      (try
+        let (_, _, pn) ← performSync d0
+        if verify && !hasRemote then
+          pure ("verified against local state only — no remote is configured to fetch from" :: pn)
+        else pure pn
+       catch e =>
+        if verify then
+          throw (.mk' .verifyFailed
+            s!"could not verify against the remote ({e.message}) — retry when it is reachable, or run `tl claim` without --verify to take against local state")
+        else
+          pure [s!"claimed against local state — could not reconcile with the remote first ({e.message}); run `tl sync`"])
     else pure []
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
@@ -560,8 +577,13 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   let auto ← Tl.Sync.autoSyncLocal d replica
   -- publish-around-claim (ADR-0001 §5): with --sync, push the take to the remote
-  -- right away (after it is in the local ref), closing the cross-clone race window
-  let postNotes ← if sync then do let _ ← performSync d; pure [] else pure []
+  -- right away (after it is in the local ref), closing the cross-clone race
+  -- window. Best-effort — the take is already recorded locally, so a publish
+  -- failure degrades with a note rather than failing the (successful) claim.
+  let postNotes ← if sync then
+      (try (do let (_, _, pn) ← performSync d; pure pn)
+       catch e => pure [s!"the take is recorded but could not be published to the remote ({e.message}) — run `tl sync`"])
+    else pure []
   return { data, human
            notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes }
 
@@ -855,9 +877,13 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 
 def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
-  -- --sync reconciles first; keep the remote leg's result so the sync row can
-  -- report what reconciling DID (pushed / pulled) instead of a bland 0/0
-  let synced ← if sync then (do let (_, r) ← performSync d; pure (some r)) else pure none
+  -- --sync reconciles first; BEST-EFFORT (doctor never fails — ADR-0008): keep
+  -- the remote leg's result to report what reconciling did, or the error to
+  -- disclose if it failed.
+  let (synced, syncErr, syncNotes) ← if sync then
+      (try (do let (_, r, pn) ← performSync d; pure (some r, none, pn))
+       catch e => pure (none, some e.message, ([] : List String)))
+    else pure (none, none, [])
   -- doctor reports damage instead of failing on it (ADR-0008 exemption)
   let replicaRow ← try
       match ← loadReplica d with
@@ -964,34 +990,41 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   -- just ran a `tl sync`. upstream/lastSync/ahead from git config + the marker;
   -- the live behind-count is `doctor --sync`'s job (sync then read).
   let posture ← syncPostureOf d
-  -- warn when there is something actionable AND we did not just reconcile:
-  -- a configured-but-never-synced remote, or unsynced local ops.
-  let warnSync := posture.upstream.isSome && synced.isNone
-                    && (posture.lastSyncMs.isNone || posture.ahead > 0)
+  -- No `behind` field: it cannot be observed without a fetch, and a --sync
+  -- reconcile converges it to 0 — so it would only ever be null/0, never a real
+  -- count. Report `ahead` (local unsynced ops) + lastSync always, and what a
+  -- --sync reconcile DID (reconciled/pushed/pulled) when it ran.
+  let warnSync := posture.upstream.isSome &&
+    (syncErr.isSome || (synced.isNone && (posture.lastSyncMs.isNone || posture.ahead > 0)))
   let syncMsg :=
     match posture.upstream with
     | none => "no remote configured — sharing is local/stealth only"
     | some name =>
-      match synced with
-      | some r =>  -- --sync just reconciled: report what it did
-        if !r.ran then s!"reconciled locally; remote '{name}' unreachable or not configured"
-        else s!"reconciled with '{name}': " ++ (if r.pushed then "pushed" else "nothing to push")
-               ++ (if r.pulled then ", pulled remote changes" else "")
+      match syncErr with
+      | some err => s!"tried to reconcile with '{name}' but it failed ({err}) — showing local posture; run `tl sync`"
       | none =>
-        match posture.lastSyncMs with
-        | none => s!"remote '{name}' configured but never synced — run `tl sync`"
-        | some _ =>
-          (if posture.ahead > 0 then s!"{posture.ahead} local op(s) not yet synced; " else "")
-            ++ "run `tl doctor --sync` to reconcile (the behind-count needs a fetch)"
-  let syncRow := (Json.mkObj
+        match synced with
+        | some r =>
+          if !r.ran then s!"reconciled locally; remote '{name}' not configured for this branch"
+          else s!"reconciled with '{name}': " ++ (if r.pushed then "pushed" else "nothing to push")
+                 ++ (if r.pulled then ", pulled remote changes" else "")
+        | none =>
+          match posture.lastSyncMs with
+          | none => s!"remote '{name}' configured but never synced — run `tl sync`"
+          | some _ =>
+            (if posture.ahead > 0 then s!"{posture.ahead} local op(s) not yet synced; " else "")
+              ++ "run `tl sync` to reconcile with the remote"
+  let syncRow := (Json.mkObj <|
     [("name", Json.str "sync"),
      ("status", Json.str (if warnSync then "warn" else "ok")),
      ("upstream", posture.upstream.elim Json.null Json.str),
      ("lastSync", posture.lastSyncMs.elim Json.null (fun ms => Json.str (Time.isoOfEpochMs ms))),
-     ("ahead", jnum posture.ahead),
-     -- behind needs the remote: 0 right after a --sync reconcile, else unknown (null)
-     ("behind", if synced.isSome then jnum 0 else Json.null),
-     ("message", Json.str syncMsg)], false)
+     ("ahead", jnum posture.ahead)]
+    ++ (match synced with
+        | some r => [("reconciled", Json.bool true), ("pushed", Json.bool r.pushed),
+                     ("pulled", Json.bool r.pulled)]
+        | none => [])
+    ++ [("message", Json.str syncMsg)], false)
   -- read-refresh marker vs on-disk segments (ADR-0016 §3 boundary): the marker
   -- keys off the ref OID, so an externally deleted/truncated foreign cache file
   -- under .tl/log/ stays unfixed until the ref next moves. Warn on a mismatch (a
@@ -1025,7 +1058,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
      ("checks", Json.arr (rows.map (·.1)).toArray)]
   let human := (if healthy then "healthy" else "PROBLEMS FOUND") ++
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
-  return { data, human }
+  return { data, human, notes := syncNotes }
 
 /-- `tl sync`: reconcile through the shared `refs/tl/log` — the local-first leg
     (ADR-0016 §1: publish the own segment, absorb same-machine siblings), then
@@ -1035,7 +1068,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     remote is configured. -/
 def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
-  let (l, r) ← performSync d
+  let (l, r, pnotes) ← performSync d
   let localLeg : Json :=
     if l.ran then
       Json.mkObj
@@ -1066,7 +1099,7 @@ def cmdSync (dirOverride : Option String) : TlM CmdOut := do
           let pulled := if r.pulled then ", pulled remote changes" else ""
           s!"; remote '{r.remote}': {pushed}{pulled}"
       s!"Synced: {localPart}{remotePart}"
-  return { data, human }
+  return { data, human, notes := pnotes }
 
 /-- The committed discovery pointer (ADR-0011 §3): the one line an agent file
     carries so any harness surfaces `tl` with zero config. -/
