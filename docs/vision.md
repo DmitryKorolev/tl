@@ -136,7 +136,7 @@ Work loop
 | `tl claim <id> [--sync] [--verify]` / `tl update <id> --claim` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
 | `tl update <id> [--assignee] [-p] [--slug] …` | scalar field edits via flags (lifecycle status uses `claim`/`close`/`reopen`; edges use `dep`/`parent`, never `update`) |
 | `tl edit <id>` | open title/description/notes in `$EDITOR` |
-| `tl close <id> --as done\|cancelled\|duplicate [--of <id>] [--cascade]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); `--cascade` cancels an epic's open children (ADR-0003) |
+| `tl close <id> --as done\|cancelled\|duplicate [--of <id>]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); cancelling an epic leaves its children open and reparentable — there is no `--cascade` (cut, ADR-0003 §3) |
 | `tl reopen <id>` | terminal → `open` |
 | `tl defer <id> --until <date>` / `--for <dur>` / `tl undefer <id>` | timed postponement; auto-resumes (ADR-0010) |
 
@@ -284,8 +284,8 @@ each stage shippable and testable on its own:
   (ADR-0016), so worktree-per-agent sharing wants that leg pulled forward.) Cross-clone coordination — the
   sync-bounded claim/"superseded" story — needs `tl sync` (Stage 3); pull a
   minimal `tl sync` forward if multi-clone sharing is wanted in the MVP.
-- Stage 2 — ergonomics + decomposition. epic display/cascade ergonomics
-  (the `[epic]` glyph, child-rollup views, auto-rollup UX, `--cascade` — the
+- Stage 2 — ergonomics + decomposition. epic display ergonomics
+  (the `[epic]` glyph, child-rollup views, auto-rollup UX — the
   kernel rollup itself is Stage 0), `defer` / `undefer`, `labels`, `meta`,
   `relate`, `dep path` and the `dep critical` *command* (its weight
   function is Stage 0), `unblocks`, `reopen`, `edit`, slugs, `stats`, `log`,

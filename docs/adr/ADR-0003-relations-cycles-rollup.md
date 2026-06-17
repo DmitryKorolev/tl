@@ -93,8 +93,10 @@ becomes done when its last child closes and reverts if a child
 reopens — so "epic closed only if all tasks closed" holds by construction and
 converges for free. A manual cancel takes precedence (an explicit "abandon
 this epic" is never silently overridden by children happening to close).
-Cancelling an epic does not cascade to its children by default (they become
-reparentable); `--cascade` cancels open children too (one `close` op per issue).
+Cancelling an epic does not cascade to its children (they become
+reparentable). (A `--cascade` flag to also cancel open children was considered
+and **cut** — it was the only read-snapshot-then-fan-out write in tl's single-op
+model; loop `close` per child instead.)
 `effectiveStatus` is total by well-founded recursion on a finite visited-set
 over the `parent` graph (a cycle-trapped epic falls back to not-done, reported).
 
