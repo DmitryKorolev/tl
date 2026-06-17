@@ -305,8 +305,11 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   return { data := listPayload "items" visible.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 
-/-- The `show` claim block: meaningful when this replica claimed recently
-    (the ADR-0013 24h staleness default bounds "recent"). -/
+/-- The `show` claim block: surfaces this replica's latest own claim on the
+    issue. Decoupled from staleness (ADR-0013, amended) — your own claim
+    provenance is shown regardless of age; the stale *window* is a `doctor`
+    concern (`tl.staleAfter`), not a display gate here. `outcome` is `won` when
+    the assignee is still this actor, else `superseded`. -/
 def claimBlock (v : View) (i : IssueId) : Option Json := do
   let own ← v.replica
   let ownVal ← own.toNat?
@@ -316,17 +319,14 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
     | _ => none)
   -- latest own claim by the FULL stamp order (the cross-op comparison rule,
   -- Tl/Cli/Project.lean §provenance)
-  let (st, actor) ← claims.foldl (fun acc c =>
+  let (_, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
     | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
-  let ageMs := v.now - st.hlc / 2 ^ 16
-  if ageMs > 24 * 3600 * 1000 then none
-  else
-    let current := (v.state.issueData i).assignee.value.getD none
-    some (Json.mkObj
-      [("outcome", Json.str (if current == some actor then "won" else "superseded")),
-       ("currentAssignee", current.elim Json.null Json.str)])
+  let current := (v.state.issueData i).assignee.value.getD none
+  some (Json.mkObj
+    [("outcome", Json.str (if current == some actor then "won" else "superseded")),
+     ("currentAssignee", current.elim Json.null Json.str)])
 
 def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
@@ -976,18 +976,33 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
                           else if multi + dangling + dupIssues > 0 then "warn" else "ok")),
      ("cycles", jnum cyc), ("multiParent", jnum multi),
      ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)], graphBad)
-  -- stale claims (ADR-0013 24h default)
-  let stale := v.present.filter (fun i =>
-    (v.issueData i).statusOf == .InProgress
-      && match (v.provFor i).claimedAt with
-         | some h => now > h / 2 ^ 16 + 24 * 3600 * 1000
-         | none => false)
-  let staleRow := (Json.mkObj <|
-    [("name", Json.str "staleClaims"),
-     ("status", Json.str (if stale.isEmpty then "ok" else "warn")),
-     ("count", jnum stale.length)]
-    ++ (if stale.isEmpty then [] else
-        [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)
+  -- stale claims: the window is the `tl.staleAfter` git config (a compact
+  -- duration like 1h / 45m / 24h) — there is NO hardcoded default (ADR-0013,
+  -- amended). Unset ⇒ no stale verdict at all, so the row is omitted; set but
+  -- unparseable ⇒ a row that teaches the format. A claim is stale when its
+  -- issue is still InProgress and the claim is older than the window.
+  let staleCfg ← Tl.Sync.gitConfig d "tl.staleAfter"
+  let staleRows : List (Json × Bool) := match staleCfg with
+    | none => []
+    | some raw =>
+      match Time.parseDurationMs? raw with
+      | none =>
+        [(Json.mkObj
+           [("name", Json.str "staleClaims"), ("status", Json.str "warn"),
+            ("message", Json.str s!"git config tl.staleAfter='{sanitizeSingle raw}' is not a valid duration — set e.g. 1h, 45m, or 24h")], false)]
+      | some w =>
+        let stale := v.present.filter (fun i =>
+          (v.issueData i).statusOf == .InProgress
+            && match (v.provFor i).claimedAt with
+               | some h => now > h / 2 ^ 16 + w
+               | none => false)
+        [(Json.mkObj <|
+           [("name", Json.str "staleClaims"),
+            ("status", Json.str (if stale.isEmpty then "ok" else "warn")),
+            ("window", Json.str raw),
+            ("count", jnum stale.length)]
+           ++ (if stale.isEmpty then [] else
+               [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)]
   -- clock skew (ADR-0007): foreign ops dated beyond the window are deferred
   -- (held back) until wall-clock catches up — never fatal (convergent and
   -- self-healing). The lead is over BOTH accepted and deferred ops (a deferred
@@ -1070,7 +1085,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     catch e =>
       pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow, staleRow, skewRow, syncRow, refMarkRow]
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),

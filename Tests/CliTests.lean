@@ -1841,6 +1841,60 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
   return o
 
+/-- `doctor`'s staleClaims check is driven entirely by the `tl.staleAfter` git
+    config (a compact duration) — there is NO hardcoded default. Unset ⇒ the row
+    is omitted; a set window flags in-progress claims older than it; an
+    unparseable value teaches the format. -/
+def cliDoctorStaleTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let findCheck (data : Json) (nm : String) : Option Json :=
+    (jArr data "checks").find? (fun c => jStr c "name" == some nm)
+  -- (1) unset ⇒ no staleClaims row at all (freshDir is not a git repo, so the
+  --     config is unset) — the headline of removing the hardcoded default
+  let bare ← freshDir
+  let _ ← mkIssue bare "open work"
+  o := o ++ [← expectData "doctor omits staleClaims when tl.staleAfter is unset"
+    ["doctor", "--json", "--dir", bare]
+    (fun j => (findCheck j "staleClaims").isNone)]
+  -- a git-backed project so `tl.staleAfter` is readable; inject a foreign
+  -- create+claim BOTH ~2h in the past (the claim must out-stamp its own create
+  -- to leave the issue InProgress, so both are dated old)
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let dir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", dir]
+  IO.FS.createDirAll (System.FilePath.mk dir / "log")
+  let base := (← nowMs) - 2 * 3600 * 1000   -- 2h ago, in ms
+  let issueId := "aaaabbbbccccdddd"
+  IO.FS.writeFile (System.FilePath.mk dir / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create issueId { title := some "claimed long ago" }) (base * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.claim issueId "eve") ((base + 1000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  -- (2) window 1h ⇒ the 2h-old claim is stale; row carries window + count + ids
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "tl.staleAfter", "1h"] } : IO _)
+  o := o ++ [← expectData "doctor flags a claim older than tl.staleAfter, naming the window"
+    ["doctor", "--json", "--dir", dir]
+    (fun j => match findCheck j "staleClaims" with
+      | some c => jStr c "status" == some "warn" && jNat c "count" == some 1
+          && jStr c "window" == some "1h"
+          && (jArr c "ids").any (fun x => x.getStr?.toOption == some ("tl-" ++ issueId))
+      | none => false)]
+  -- (3) window 3h ⇒ the same 2h-old claim is within the window (ok, count 0)
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "tl.staleAfter", "3h"] } : IO _)
+  o := o ++ [← expectData "a claim younger than the window is not stale"
+    ["doctor", "--json", "--dir", dir]
+    (fun j => match findCheck j "staleClaims" with
+      | some c => jStr c "status" == some "ok" && jNat c "count" == some 0
+      | none => false)]
+  -- (4) an unparseable tl.staleAfter ⇒ a row that teaches the format
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "tl.staleAfter", "soon"] } : IO _)
+  o := o ++ [← expectData "an invalid tl.staleAfter yields a teaching row"
+    ["doctor", "--json", "--dir", dir]
+    (fun j => match findCheck j "staleClaims" with
+      | some c => jStr c "status" == some "warn"
+          && (((jStr c "message").getD "").splitOn "valid duration").length == 2
+      | none => false)]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -1848,7 +1902,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
