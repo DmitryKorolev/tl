@@ -113,4 +113,20 @@ def epochMsOfIso? (s : String) : Option Nat := do
     else none
   | _ => none
 
+/-- Parse a compact relative duration — `45m`, `1h`, `24h`, `7d`, `30s`, `500ms`
+    — to milliseconds. The numeric part is digits-only and the unit is one of
+    `ms`/`s`/`m`/`h`/`d` (lowercase). There is no default unit: a bare number,
+    a fractional value, an unknown unit, or empty input all yield `none`. The
+    `ms` unit is matched before `s` so `500ms` is not read as `500m` + `s`. -/
+def parseDurationMs? (raw : String) : Option Nat :=
+  let s := raw.trim
+  let units : List (String × Nat) :=
+    [("ms", 1), ("s", 1000), ("m", 60000), ("h", 3600000), ("d", 86400000)]
+  units.findSome? (fun (u, mult) =>
+    if s.endsWith u && s.length > u.length then
+      let num := s.take (s.length - u.length)
+      if num.all Char.isDigit then (· * mult) <$> num.toNat?
+      else none
+    else none)
+
 end Tl.Format.Time

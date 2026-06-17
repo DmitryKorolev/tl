@@ -69,7 +69,25 @@ def timeRoundtripProp : List Outcome :=
   [check "render ∘ parse = id on 200 seeded instants"
      (samples.all (fun ms => Time.epochMsOfIso? (Time.isoOfEpochMs ms) = some ms))]
 
+/-- `parseDurationMs?` — compact relative durations (`tl.staleAfter`) and the
+    rejection rules (no default unit, digits-only, lowercase units, ms-before-s). -/
+def durationParseTests : List Outcome :=
+  let oks : List (String × Nat) :=
+    [("1h", 3600000), ("45m", 2700000), ("24h", 86400000), ("7d", 604800000),
+     ("30s", 30000), ("500ms", 500), ("0h", 0), ("  1h  ", 3600000)]
+  let bad : List (String × String) :=
+    [("", "empty"), ("h", "unit only"), ("10", "no unit"), ("1.5h", "fractional"),
+     ("10x", "unknown unit"), ("1hh", "doubled unit"), ("1H", "uppercase unit"),
+     ("abc", "non-numeric"), ("-1h", "negative sign"), ("1 h", "internal space"),
+     ("m500", "unit before number")]
+  (oks.map (fun (s, ms) =>
+    check s!"parseDurationMs? '{s}' = {ms}" (Time.parseDurationMs? s = some ms)
+      s!"got {repr (Time.parseDurationMs? s)}"))
+  ++ (bad.map (fun (s, why) =>
+    check s!"parseDurationMs? rejects {why} ('{s}')" (Time.parseDurationMs? s).isNone
+      s!"parsed to {repr (Time.parseDurationMs? s)}"))
+
 def timeTests : List Outcome :=
-  timeVectorTests ++ timeRejectTests ++ timeRoundtripProp
+  timeVectorTests ++ timeRejectTests ++ timeRoundtripProp ++ durationParseTests
 
 end Tl.Tests
