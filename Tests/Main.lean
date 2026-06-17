@@ -18,6 +18,7 @@ import Tests.GrammarTests
 import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
+import Tests.ImportsTests
 
 open Tl.Tests
 
@@ -31,7 +32,9 @@ def main : IO UInt32 := do
   let perf ← perfTests
   let perfPrim ← perfPrimitiveTests
   let perfBin ← perfBinaryTests
+  let imports ← importsTests
   runAll [
+    ("Root module imports every Tl/ source (AGENTS.md)", imports),
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
     ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp),

@@ -119,7 +119,7 @@ def epochMsOfIso? (s : String) : Option Nat := do
     a fractional value, an unknown unit, or empty input all yield `none`. The
     `ms` unit is matched before `s` so `500ms` is not read as `500m` + `s`. -/
 def parseDurationMs? (raw : String) : Option Nat :=
-  let s := raw.trim
+  let s := raw.trimAscii.toString
   let units : List (String × Nat) :=
     [("ms", 1), ("s", 1000), ("m", 60000), ("h", 3600000), ("d", 86400000)]
   units.findSome? (fun (u, mult) =>

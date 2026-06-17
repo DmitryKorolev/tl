@@ -5,6 +5,7 @@ only those transitively reached from the `tltest` exe's `Tests.Main`. The runner
 itself is `Tests.Main` (`lake exe tltest`).
 -/
 import Tests.Harness
+import Tests.ImportsTests
 import Tests.HlcTests
 import Tests.CrockfordTests
 import Tests.RecordTests
