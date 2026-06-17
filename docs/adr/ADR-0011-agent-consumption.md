@@ -72,15 +72,26 @@ different consumers and are deliberately not merged:
   dominant wake-up call for a self-dispatching agent.
 - `tl doctor` — the health/triage surface. Consumer: anyone checking *is
   anything wrong*. In Stage 1 it covers local replica-id/clock/log integrity,
-  graph diagnostics (cycles, multi-parent, dangling edges), and stale claims (the
-  same conditions `tl dep cycles` and `tl list --stale` expose individually,
-  ADR-0003). In Stage 3, once sharing lands, it also reports remote sync posture.
+  graph diagnostics (cycles, multi-parent, dangling edges), and — when a window
+  is configured — stale claims (the `tl.staleAfter` git config; **no default**,
+  so the check is silent until set; see the amendment below). In Stage 3, once
+  sharing lands, it also reports remote sync posture.
 
 Different cadence, different consumer, different question — folding them into
 one command would couple two things that evolve independently. The rest of the
-read surface (`tl show <id>`, `tl list --deferred`, `tl list --stale`,
-`tl dep cycles`, `tl why`/`tl unblocks`) covers the remaining queries on
-demand.
+read surface (`tl show <id>`, `tl list --deferred`, `tl dep cycles`,
+`tl why`/`tl unblocks`) covers the remaining queries on demand. (`tl list
+--stale` is planned but unbuilt — stale claims live on `tl doctor`.)
+
+> **Amendment (2026-06-16) — stale has no default window.** The original text
+> advertised `tl list --stale` as a present read facet and `doctor` baked a
+> 24-hour default. Removed: there is **no hardcoded default**. The stale window
+> is the `tl.staleAfter` git config (a compact relative duration — `45m`, `1h`,
+> `24h`). `tl doctor` omits the staleClaims check when it is unset, reports it
+> with the active `window` when set, and yields a row teaching the format on an
+> unparseable value. A dedicated `tl list --stale <duration>` facet —
+> **mandatory duration, also no default** — is planned but not yet built, so
+> `doctor` is the stale-claim surface for now.
 
 Sync-freshness — the "is my view stale before I trust `ready`?" signal —
 is rehomed onto these two commands rather than carried by a bundled snapshot:
