@@ -290,14 +290,25 @@ omit one it accepts — drift is structurally impossible, not merely tested.
 
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
-  "total": 23, "open": 19, "inProgress": 1, "done": 3, "cancelled": 0,
-  "ready": 10, "blocked": 8, "deferred": 0, "cycles": 0 } }
+  "total": 23, "open": 16, "openEpics": 2, "openTasks": 14, "inProgress": 1,
+  "done": 6, "cancelled": 0, "ready": 10, "blocked": 8, "deferred": 0,
+  "cycles": 0 } }
 ```
 
-`open`/`inProgress`/`done`/`cancelled` count *stored* status; `ready`/
-`blocked`/`deferred` are the derived views; `cycles` is the cycle-witness
-count (structural per kind plus the non-duplicate readiness deadlocks, as
-`doctor`'s graph check).
+`open`/`inProgress`/`done`/`cancelled` count *effective* status (rollup-aware —
+a rolled-up epic counts as `done`, exactly as `list` and the glyphs render it),
+so `stats` never disagrees with what `list` shows. `open` is split into
+`openEpics` (open epics — children not all closed) and `openTasks` (open
+non-epics), so an epic that is stored-`open` but effectively rolled-up is not
+miscounted as workable. `ready`/`blocked`/`deferred` are the derived views;
+`cycles` is the cycle-witness count (structural per kind plus the non-duplicate
+readiness deadlocks, as `doctor`'s graph check).
+
+> **Amendment (2026-06-17) — effective, not stored; epic/task split.** The
+> original counted *stored* status, so a rolled-up epic (stored `open`,
+> effectively `done`) inflated `open` and made `stats` disagree with `list`
+> (e.g. "15 open" while `list` showed 6). Pre-1.0, the counts move to effective
+> status and add `openEpics`/`openTasks`; the other keys are unchanged.
 
 **`tl log [<id>] --json`** — the op history, newest first (an HLC-ordered
 projection over the log, ADR-0008); `<id>` filters to ops touching that

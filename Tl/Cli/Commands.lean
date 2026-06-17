@@ -417,27 +417,37 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let notes ← cleanReadNotes v
   let s := v.state
   let issues := v.present
-  let byStored (st : Status) : Nat := (issues.filter (fun i => (v.issueData i).statusOf == st)).length
+  let byEff (st : Status) : Nat := (issues.filter (fun i => v.effStatus i == st)).length
   let ready := (State.readyFast v.rollup s v.now).length
   let blocked := (issues.filter v.blocked).length
   let deferred := (issues.filter v.deferred).length
   let cycles := cycleCount v
-  let openN := byStored .Open
-  let inProg := byStored .InProgress
-  let doneN := byStored .Done
-  let cancelledN := byStored .Cancelled
+  -- count EFFECTIVE status (rollup-aware): a rolled-up epic counts as done,
+  -- exactly as `list`/the glyphs render it — never the raw stored field, which
+  -- would report a finished epic as still "open" and disagree with `list`
+  -- (ADR-0020 §stats amendment). `open` is split into epics vs tasks so a
+  -- stored-open-but-rolled-up epic is never miscounted as workable.
+  let openIssues := issues.filter (fun i => v.effStatus i == .Open)
+  let openN := openIssues.length
+  let openEpics := (openIssues.filter v.isEpic).length
+  let openTasks := openN - openEpics
+  let inProg := byEff .InProgress
+  let doneN := byEff .Done
+  let cancelledN := byEff .Cancelled
   let data := Json.mkObj
     [("total", jnum issues.length),
-     ("open", jnum openN), ("inProgress", jnum inProg),
-     ("done", jnum doneN), ("cancelled", jnum cancelledN),
+     ("open", jnum openN), ("openEpics", jnum openEpics), ("openTasks", jnum openTasks),
+     ("inProgress", jnum inProg), ("done", jnum doneN), ("cancelled", jnum cancelledN),
      ("ready", jnum ready), ("blocked", jnum blocked),
      ("deferred", jnum deferred), ("cycles", jnum cycles)]
+  let plural := fun (n : Nat) (w : String) => toString n ++ " " ++ w ++ (if n == 1 then "" else "s")
+  let openBreak := plural openEpics "epic" ++ " · " ++ plural openTasks "task"
   -- a small labelled block (§5); §7: green marks the workable (ready) count, so
-  -- the stored-open row renders neutral and the derived ready count takes green
+  -- the open row renders neutral and the derived ready count takes green
   let r : Style → String := fun st =>
     let c (ds : DState) (n : Nat) : String := st.paint ds.colorCode s!"{ds.word} {n}"
     s!"{issues.length} issues\n"
-      ++ "  " ++ String.intercalate " · " [s!"open {openN}", c .inProgress inProg, c .done doneN, c .cancelled cancelledN] ++ "\n"
+      ++ "  " ++ String.intercalate " · " [s!"open {openN} ({openBreak})", c .inProgress inProg, c .done doneN, c .cancelled cancelledN] ++ "\n"
       ++ "  " ++ String.intercalate " · "
            [st.paint DState.ready.colorCode s!"ready {ready}", c .blocked blocked, c .deferred deferred,
             (if cycles > 0 then st.paint "31" s!"cycles {cycles}" else s!"cycles {cycles}")]

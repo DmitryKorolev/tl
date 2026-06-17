@@ -848,6 +848,24 @@ def cliFreeVerbTests : IO (List Outcome) := do
         ((colored.splitOn (escSeq ++ "[32mready ")).length == 2) colored,
        check "stats leaves the stored-open count neutral (not green)"
         ((colored.splitOn (escSeq ++ "[32mopen ")).length == 1) colored]
+  -- stats counts EFFECTIVE status and splits open into epics vs tasks: a
+  -- rolled-up epic (stored open, all children closed) counts as done, not open,
+  -- matching `list` (ADR-0020 §stats amendment).
+  let dir2 ← freshDir
+  let p ← mkIssue dir2 "Epic P" []
+  let c ← mkIssue dir2 "Child C" ["--parent", "tl-" ++ p]
+  let _ ← mkIssue dir2 "Task T" []
+  o := o ++
+    [← expectData "stats: open splits into epics vs tasks (effective status)"
+      ["stats", "--dir", dir2]
+      (fun j => jNat j "total" == some 3 && jNat j "open" == some 3
+        && jNat j "openEpics" == some 1 && jNat j "openTasks" == some 2)]
+  let _ ← run' ["close", "tl-" ++ c, "--dir", dir2, "--as", "done", "--assignee", "t"]
+  o := o ++
+    [← expectData "stats: a rolled-up epic counts as done, not open (effective, not stored)"
+      ["stats", "--dir", dir2]
+      (fun j => jNat j "open" == some 1 && jNat j "openEpics" == some 0
+        && jNat j "openTasks" == some 1 && jNat j "done" == some 2)]
   -- list defaults to open-only; --all includes closed
   let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
   o := o ++
