@@ -35,7 +35,7 @@ Implications of staying off Mathlib:
   `aesop`, and bare `simp` as closers. Core + `batteries` tactics suffice
   for a kernel this size.
 
-Escape hatch: adding Mathlib is a deliberate one-line `lakefile.toml`
+Escape hatch: adding Mathlib is a deliberate one-line `lakefile.lean`
 change, taken *only* if a proof genuinely needs it (e.g. nontrivial algebra)
 and recorded (a superseding note here). It is not banned — it is not the
 default.
@@ -61,14 +61,14 @@ to build fast off `batteries`; only the reachability-correctness proof modules
 `import Mathlib`. The tactic discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
-the Lake config itself migrates `lakefile.toml` → `lakefile.lean` when the
-ADR-0019 native shim lands — custom targets are Lean-DSL-only; the pin policy
-here is unaffected.)
+the Lake config itself migrated `lakefile.toml` → `lakefile.lean` with the
+ADR-0019 native shim (now landed) — custom targets are Lean-DSL-only; the pin
+policy here is unaffected.)
 
 ## Toolchain and test harness (pinned)
 
 - Pinned toolchain. A committed `lean-toolchain` pins an exact
-  `leanprover/lean4` release; `lakefile.toml` requires `batteries` (std4) at a
+  `leanprover/lean4` release; `lakefile.lean` requires `batteries` (std4) at a
   pinned git rev (an immutable commit, not a branch/tag); `lake-manifest.json`
   is checked in. CI installs that exact toolchain via `elan` on every target.
   Bumping any pin is a deliberate, reviewed change (recorded by a note here).

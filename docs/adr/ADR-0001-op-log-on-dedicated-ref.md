@@ -87,9 +87,10 @@ segment ownership, ADR-0007), which the `*` self-ignore enforces.
 
 `tl init` creates `.tl/`, writes the `*` self-ignore, mints the replica-id and
 seeds the clock (ADR-0007), and generates the local `.tl/README.md`. When a git
-repo is present, it configures the `+refs/tl/log:refs/tl/log` fetch refspec and
-offers (opt-in, each removable — all suppressed under `--stealth`, §7):
-the discovery pointer (ADR-0011) and auto-sync (below). There are no git
+repo is present, it offers (opt-in, each removable — all suppressed under
+`--stealth`, §7): the discovery pointer (ADR-0011) and auto-sync (below).
+`tl sync` fetches `refs/tl/log` explicitly each run — no persistent fetch
+refspec is configured. There are no git
 lifecycle hooks — task state
 never rides the user's commits. `init` is idempotent and does not require a
 git repo; outside one it warns that state is local-only until used under a git
@@ -105,8 +106,10 @@ Staging (vision §Staged implementation). `tl init` grows across stages — it
 does not ship whole in Stage 0: the Stage 0 core is local (create `.tl/`,
 write the `*` self-ignore, mint the replica-id, seed the clock); the generated
 `.tl/README.md` and the discovery-pointer offer are
-Stage 2 (the agent surface, ADR-0011); the `+refs/tl/log:refs/tl/log` refspec
-configuration and the auto-sync offer are Stage 3 (sharing).
+Stage 2 (the agent surface, ADR-0011); the auto-sync offer landed with the
+Stage-3 sharing work (now built). The persistent `+refs/tl/log:refs/tl/log`
+fetch-refspec configuration was dropped — `tl sync` fetches the ref explicitly
+instead — so `init` writes no refspec.
 
 Repo discovery — how a command run in a subdirectory *finds* `.tl/` — is
 ADR-0012.

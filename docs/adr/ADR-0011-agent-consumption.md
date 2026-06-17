@@ -80,8 +80,11 @@ different consumers and are deliberately not merged:
 Different cadence, different consumer, different question — folding them into
 one command would couple two things that evolve independently. The rest of the
 read surface (`tl show <id>`, `tl list --deferred`, `tl dep cycles`,
-`tl why`/`tl unblocks`) covers the remaining queries on demand. (`tl list
---stale` is planned but unbuilt — stale claims live on `tl doctor`.)
+`tl why`/`tl unblocks`) covers the remaining queries on demand. (Shipped today:
+`show`, `dep cycles`, `why`. `tl unblocks`, `tl list --deferred`, and `tl list
+--stale` are the planned read facets — not yet in the grammar; until they land,
+`why`/`show`/`doctor` are the surfaces. Shipped-vs-intended is tracked in the
+backlog and the tracker.)
 
 > **Amendment (2026-06-16) — stale has no default window.** The original text
 > advertised `tl list --stale` as a present read facet and `doctor` baked a

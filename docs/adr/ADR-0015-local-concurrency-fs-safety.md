@@ -62,12 +62,16 @@ folding), and does so atomically — write a temp file in `.tl/local/`, then
 Because the own segment is never rewritten, the "sync rewrite races a local
 append" hazard simply does not exist for the authoritative data.
 
-### 4. The push window re-snapshots (no lost mid-sync ops)
-A mutation may append to the own segment *during* a fetch→union→push round, so
-the candidate ref's own-segment blob is read immediately before each push
-attempt, under the mutation lock (a brief hold); on a push rejection the round
-re-fetches, re-unions, and re-reads the now-larger own segment before
-retrying. Ops appended mid-round are included in the next attempt, never dropped.
+### 4. Mid-sync ops are not lost
+A mutation may append to the own segment *during* a fetch→union→push round.
+The local-first leg (ADR-0016 §1) publishes the own segment into `refs/tl/log`
+under CAS before the remote leg runs, and the remote leg re-reads the local ref
+(`readRef`) at the start of each attempt — so on a non-fast-forward rejection it
+re-fetches, re-unions against the now-larger local ref, and retries. Ops
+appended mid-round are picked up by the next attempt, never dropped. (This
+supersedes the earlier own-segment-re-snapshot-under-lock sketch: the two-leg
+design of ADR-0016 moves publication into the CAS'd local leg, so the remote leg
+works at the ref level and holds no mutation lock.)
 
 ### 5. Readers are lock-free and see a consistent-enough snapshot
 `ready`/`show`/`list`/… take no lock. Atomic appends (§2) and atomic

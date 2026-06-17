@@ -7,13 +7,18 @@ can I work on right now, and is the dependency graph sane?"* — and proves
 that answer correct. It is deliberately small: the commands that drive an
 agent's work loop, and nothing else.
 
-> Status: Stages 0 and 1 are built — the verified kernel (the CRDT join laws
-> and the `ready`/cycles/rollup theorems) and the MVP work loop: the
-> record↔Op codec, the store (discovery, segments, the locked write path),
-> clock/id wiring, and the stage-1 CLI verbs (`init`, `create`, `ready`,
-> `claim`, `close`, `update`, `dep add/remove`, `why`, `dep cycles`, `show`,
-> `list`, `doctor`, `version`, plus `help`) with `--json` everywhere. Stage 2 (ergonomics)
-> and Stage 3 (import + the `refs/tl/log` sync transport) are next; see
+> Status: Stages 0–1 and most of Stage 2–3 are built. The verified kernel
+> (the CRDT join laws and the `ready`/cycles/rollup theorems) and the work
+> loop ship — the record↔Op codec, the store (discovery, segments, the
+> locked write path, a self-validating fold cache), clock/id wiring, and the
+> CLI verbs `init`, `create`, `ready`, `claim`, `close`, `update`, `reopen`,
+> `dep add/remove`, `dep cycles`, `parent set/remove`, `why`, `show`, `list`,
+> `label add/remove/list`, `log`, `stats`, `sync`, `doctor`, `version`, and
+> `help`, with `--json` everywhere. The full `refs/tl/log` sync transport
+> (local-first leg, read-time refresh, remote fetch/union/push) and auto-sync
+> are built. Remaining: the Stage-2 ergonomics verbs (`defer`/`undefer`,
+> `dep path`/`dep critical`, `unblocks`, `meta`, `edit`, richer `list`
+> facets) and the Stage-3 beads `import`; see
 > [docs/vision.md](docs/vision.md) §Staged implementation. Install
 > instructions below describe the full intended tool and are marked
 > *planned*; build from source with `lake build` meanwhile.

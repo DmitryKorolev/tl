@@ -164,9 +164,10 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   assumption (below), not a kernel obligation. The `actor` case is not a kernel `Op`
   field at all.
 
-**Tracked residuals** — defined and total in the kernel, soundness/completeness
-proof still outstanding (decomposed below; *not* downgraded to tests, per
-Definition-of-Done #5):
+**Residual history** — each was defined and total in the kernel with its
+soundness/completeness proof outstanding; all but one are now proved (struck
+through below), leaving a single live tier-3 carried assumption — the `unrelate`
+discharge (Trusted section). None was downgraded to a test (Definition-of-Done #5):
 
 - ~~**Ready-queue sortedness (ADR-0004 thm 4).**~~ **Now proved** (`Tl/Kernel/Ranking.lean`).
   Beyond determinism (free — `rankSort` is a pure function), `ready_sorted` shows the
@@ -263,7 +264,7 @@ discarded by any later rebuild; and
 clocks/IDs/actor entering as data — each discharged by a test or trusted by
 construction when implementation begins.
 
-On the efficiency axis (ADR-0023), the analogous tier-3 carried assumption is
+On the efficiency axis (ADR-0023/0024), the analogous tier-3 carried assumption is
 **constant factors**: cache locality, allocator behaviour, the constant in
 front of an `O(N)`, and per-syscall wall-clock are neither proved (the kernel
 pins the complexity *class*, not an operation count) nor pinned by the ratio

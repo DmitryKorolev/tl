@@ -1,10 +1,10 @@
 # Codebase map
 
-> Stages 0 and 1 are built: the verified kernel (`Tl/Crdt/`, `Tl/Kernel/`)
-> and the whole Stage-1 tested shell (`Tl/Error`, `Tl/Format/`, `Tl/Hash/`,
-> `Tl/Store/` with the `ffi/tlsys.c` shim, `Tl/Clock/`, `Tl/Cli/`). Entries
-> marked *(planned — Stage N)* do not exist yet; for those this map is the
-> module-layout contract, not a description of code. The line that matters:
+> Stages 0–1 and most of Stage 2–3 are built: the verified kernel (`Tl/Crdt/`,
+> `Tl/Kernel/`) and the tested shell — `Tl/Error`, `Tl/Format/`, `Tl/Hash/`,
+> `Tl/Store/` (with the `ffi/tlsys.c` shim), `Tl/Clock/`, `Tl/Sync/`, and
+> `Tl/Cli/`. Only `Tl/Import/` remains *(planned — Stage 3)*; for it this map is
+> the module-layout contract, not a description of code. The line that matters:
 > the verified kernel has no I/O, and everything that touches the world is a
 > separate, tested shell.
 
@@ -334,7 +334,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Error`,
 `Tl/Format`, `Tl/Hash`, `Tl/Store` (+ `ffi/tlsys.c`), `Tl/Clock`, `Tl/Sync`,
-`Tl/Import`, `Tl/Cli` are the tested shell outside it.
+`Tl/Import`, `Tl/Cli` are the tested shell outside it. The efficiency tiering
+that backs the proved tier (the `*Fast` refinements, `HashMapView`, and the
+ratio-asserted regression net) is recorded in
+[ADR-0023](adr/ADR-0023-efficiency-tiering-and-prevention.md) and
+[ADR-0024](adr/ADR-0024-indexed-views-bridge.md).
 
 ## Cross-cutting invariants (load-bearing across modules & ADRs)
 

@@ -128,7 +128,7 @@ Work loop
 
 | Command | Effect |
 |---|---|
-| `tl create "<title>" [--blocked-by …] [--blocks …] [--related …] [--parent …] [-p PRIO]` | add an issue, wiring deps/links inline (no round-trips) |
+| `tl create "<title>" [--blocked-by …] [--blocks …] [--related …] [--parent …] [-p PRIO] [--description <text>] [-]` | add an issue, wiring deps/links inline (no round-trips); body via `--description`, or a trailing `-` to read it from stdin (ADR-0017 §8) |
 | `tl ready [--assignee] [--label] [--limit] [--sync]` | ranked, filterable list of workable items — the core feature; flags a one-line staleness advisory when the local view may be behind upstream (`--sync` = reconcile first, then list — ADR-0011) |
 | `tl init [--stealth]` | create the (gitignored) `.tl/`, mint the replica-id, and (in a git repo) wire up sharing; `--stealth` = local-only, zero repo-visible trace. Grows across stages (ADR-0001 §4 / ADR-0012) |
 | `tl import <path> [--force]` | one-shot migration from an existing tracker's data; refuses existing task state (local `.tl/log/` segments or a local/remote `refs/tl/log`) without `--force` (ADR-0005) |
@@ -159,7 +159,7 @@ Read / visibility
 |---|---|
 | `tl show <id>` | one issue, with blockers + dependents + parent/children inline |
 | `tl log [<id>]` | chronological action history (HLC-ordered); per-issue when `<id>` given (ADR-0008) |
-| `tl list [filters]` | many: status / assignee / label / priority / text / `--blocked` / `--deferred` / `--stale [<dur>]` (default 24h, ADR-0013) |
+| `tl list [filters]` | many: status / assignee / label / priority / text / `--blocked` / `--deferred` / `--stale [<dur>]` (default 24h, ADR-0013); `--all` includes closed, `--flat` for rows (the rest are the destination surface — see §Staged implementation for what ships today) |
 | `tl label add <id> <label>` / `label remove <id> <label>` / `label list [<id>]` | manage categorical label tags (filter-only; drive nothing) |
 | `tl meta set <id> <key> <value>` / `meta get <id> [<key>]` / `meta clear <id> <key>` / `meta list [<id>]` | manage the opaque metadata side-channel — `ext:<system>` refs, imported fields (ADR-0002/0005); drives nothing |
 | `tl stats` | counts by state, #ready, #blocked, #cycles |
@@ -173,9 +173,9 @@ Read / visibility
 reason the edge set needs a remove-capable CRDT (ADR-0002).
 
 List-like commands use one limit convention: `ready` and `list`
-default to `--limit 10`; `--limit 0` means all; any truncation is disclosed in
-human output and represented as a full `count` plus capped `items`/`ids` in
-JSON.
+default to `--limit 50` (`log` to `--limit 10`); `--limit 0` means all; any
+truncation is disclosed in human output and represented as a full `count` plus
+capped `items`/`ids` in JSON.
 
 ### Ready ordering
 
@@ -455,6 +455,9 @@ exactly the thing to resist.)
 - ADR-0019 — Native primitives shim, and the FFI policy
 - ADR-0020 — `--json` data shapes (the stage-1 surface)
 - ADR-0021 — Auto-sync: a synchronous, best-effort local-leg publish
+- ADR-0022 — The materialization fold cache
+- ADR-0023 — Algorithmic efficiency: the proved/tested/assumed tiering and the prevention net
+- ADR-0024 — Indexed views: accelerating proved collections behind an equality bridge
 
 ## Open questions (for iteration)
 
