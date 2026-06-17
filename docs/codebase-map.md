@@ -257,8 +257,8 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   autoSyncInitDefault (init's linked-worktree default-
                         --   on). No CLI types — the write verbs just call it
 
-Tl/Import/              -- I/O shell: one-shot beads import (planned — Stage 3)
-  Beads.lean
+Tl/Import/              -- I/O shell: one-shot bulk import (planned — Stage 3)
+  Bulk.lean
 
 Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Envelope.lean         --   the --json envelope (schemaVersion/ok/data|error) in

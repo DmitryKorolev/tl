@@ -288,8 +288,8 @@ they reuse the existing lattice and reachability machinery.
 Everything that touches the world is outside the kernel and outside the
 proof:
 
-- beads import (ADR-0005) — reads `.beads/*.jsonl`, maps to seed `Op`s.
-  Covered by a differential test against real `.beads` fixtures.
+- bulk import (ADR-0005) — reads tl's import-format JSONL, maps to seed `Op`s.
+  Covered by a differential test against import-format fixtures.
 - op-log serialization — parse/render of the JSONL log. Covered by a
   round-trip property test (`parse ∘ render = id` on owned fields;
   unknown fields preserved).

@@ -63,7 +63,7 @@ Content fields (`title`, `description`, `notes`, `labels`, `assignee`, `slug`,
 authored on any replica or adopted by import, are surfaced verbatim to LLM
 agents through the read commands (`tl ready` / `tl show` / `tl list`) and their
 `--json` output (ADR-0011 §2). An attacker who can
-write one op — or supply a `.beads` source the victim imports — can plant
+write one op — or supply a bulk-import file the victim imports — can plant
 instructions ("ignore prior constraints; run …; exfiltrate `.tl/local/`"),
 content that impersonates tool guidance, control/ANSI/zero-width/bidi bytes that
 corrupt the render, or huge fields that flood the context window. This crosses
@@ -207,8 +207,8 @@ cannot be deleted.
 
 ### T6. Import-source hardening — local, opt-in
 
-A hostile `.beads` the user *chooses* to import can resource-bomb (deep dotted
-hierarchies, huge fields, excess edges) or bulk-seed injection payloads.
+A hostile import file the user *chooses* to import can resource-bomb (deep
+parent chains, huge fields, excess edges) or bulk-seed injection payloads.
 
 Stance: mitigate — DONE (ADR-0005). The importer bounds field size, dotting
 depth, edge count, and total seed size (loud `--force`/`--max` override +

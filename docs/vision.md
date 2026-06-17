@@ -438,7 +438,7 @@ exactly the thing to resist.)
 - ADR-0002 — Minimal CRDT: OR-Set + LWW-register + metadata map
 - ADR-0003 — Relations, cycles, and rollup
 - ADR-0004 — The verified kernel and the TCB boundary
-- ADR-0005 — One-shot import from beads
+- ADR-0005 — One-shot bulk import
 - ADR-0006 — Distribution and supported platforms
 - ADR-0007 — Identity, HLC, and ordering
 - ADR-0008 — Log format, JSON schema, and versioning

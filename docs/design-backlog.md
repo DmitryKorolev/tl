@@ -18,7 +18,7 @@ post-write local publish, plus the symmetric pre-transact absorb that refreshes
 a write's view before its guards — ADR-0016 §3 amendment) have landed. Still
 open: the Stage-2 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical`
 — the dependency trees render on `why`/`unblocks`, not a separate `dep tree`
-verb — and `edit`), and beads `import` (Stage 3).
+verb — and `edit`), and bulk `import` (Stage 3).
 The items Stage 1 touched have graduated: `duplicate-of`
 semantics, the write-time guard inventory + idempotent re-close, the
 `not-closeable` / `unsafe-path` error codes, the canonical string-escaping
@@ -124,13 +124,13 @@ Kernel theorems still to decide whether to commit to:
   files exist (create a minimal one? which? skip — leaving no committed
   discovery?) — ADR-0011 / ADR-0001 §4.
 
-## Import / beads
+## Import (bulk)
 
-- Complete the beads field inventory [low] — every source field maps to a tl
-  destination or an explicit, disclosed drop (ADR-0005).
+- Pin the bulk-import record schema [low] — finalize the import-format fields,
+  each mapping to a tl field or an explicit, disclosed drop (ADR-0005).
 - Differential-import fixtures, equality relation, and mapping matrix [low] —
-  the differential-import test is mandated but these aren't pinned; commit `.beads`
-  fixtures + an expected-state oracle under `Tests/fixtures/`, one row per mapping
+  the differential-import test is mandated but these aren't pinned; commit
+  import-format fixtures + an expected-state oracle under `Tests/fixtures/`, one row per mapping
   (ADR-0005 / overview).
 - Import's deterministic per-op nonce derivation is informal [low] — the
   import-seed id and import replica-id are pinned to full precision (named SHA-256
@@ -140,9 +140,8 @@ Kernel theorems still to decide whether to commit to:
   for re-import idempotence (the differential-import oracle above). Pin it like its
   siblings (e.g. `crockford32(SHA-256("import-nonce:" ++ … ))[0..128]` → 26 chars) —
   ADR-0005.
-- beads `priority` source scale and the `pinned` collision [low] — beads
-  `priority` → 0–4 cites an undocumented source scale and `pinned` collides;
-  document the exact table and resolve `pinned` (ADR-0005).
+- Priority on import [low] — the format's `priority` is 0–4 directly; an
+  out-of-range value clamps with disclosure (ADR-0002/0005).
 - Import `--force` is overloaded; the bounds-override flag is inconsistent [low]
   — ADR-0005 uses `--force` both to override import-into-existing state *and* (as
   `force-required`) to override the resource bounds; ADR-0014 T6 names the bounds
@@ -160,7 +159,7 @@ Kernel theorems still to decide whether to commit to:
   theorems — in an ADR so the gate is contractual rather than incidental
   (ADR-0004 / a test ADR).
 - "No task-ID leakage" lint pattern/scope [low] — pin the regex and excluded
-  paths (`docs/`, `Tests/.../fixtures/`, the importer's `ext:beads`) — AGENTS.md /
+  paths (`docs/`, `Tests/.../fixtures/`, the importer's `ext:*` source refs) — AGENTS.md /
   a lint spec.
 
 ## Distribution (before release)

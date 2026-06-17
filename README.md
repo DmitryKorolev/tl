@@ -18,7 +18,7 @@ agent's work loop, and nothing else.
 > (local-first leg, read-time refresh, remote fetch/union/push) and auto-sync
 > are built. Remaining: the Stage-2 ergonomics verbs (`defer`/`undefer`,
 > `dep path`/`dep critical`, `unblocks`, `meta`, `edit`, richer `list`
-> facets) and the Stage-3 beads `import`; see
+> facets) and the Stage-3 bulk `import`; see
 > [docs/vision.md](docs/vision.md) §Staged implementation. Install
 > instructions below describe the full intended tool and are marked
 > *planned*; build from source with `lake build` meanwhile.
@@ -43,7 +43,7 @@ agent's work loop, and nothing else.
 |---|---|---|
 | a markdown TODO | no dependency graph, no "what's ready," and two agents editing it conflict in git | dependency-aware `ready`, and a CRDT that merges concurrent edits without conflicts or lost ops |
 | GitHub Issues | a server/API, auth, rate limits, network round-trips; lives outside the repo and the agent's git workflow | local, serverless, git-native — state travels with the repo on its own ref, no daemon |
-| beads | the closest peer, but a dolt/SQL server underneath and no verified core | import your beads data one-shot, then a serverless file format with a proved kernel ([how](docs/adr/ADR-0005-import-from-beads.md)) |
+| a DB-backed tracker (SQL/dolt) | a server/engine underneath, and no verified core | a serverless file format with a proved kernel; bulk-import your existing data one-shot ([how](docs/adr/ADR-0005-bulk-import.md)) |
 | the agent's own context | task state evaporates on compaction/clear; no cross-session or cross-agent sharing | durable, shared task state with a stable `tl ready` an agent re-reads on waking |
 
 Honestly: `tl` earns its keep only if you need the dependency-aware *"what can I
@@ -87,7 +87,7 @@ queries is the part that's proved.
 
 ```sh
 tl init               # initialize task state for this repo
-tl import .beads      # one-shot migration from an existing beads repo
+tl import issues.jsonl # one-shot bulk import from another tracker
 tl create "Write the parser" --blocked-by tl-a1b2
 tl ready --json       # unblocked, ranked candidates — the agent picks one
 tl claim tl-9f3c      # take a ready item (LWW; contention is reported)
@@ -108,10 +108,10 @@ See [ADR-0006](docs/adr/ADR-0006-distribution-and-platforms.md).
 
 ## Migrating existing data
 
-`tl` can do a one-shot import from an existing
-[beads](https://github.com/gastownhall/beads) `.beads` repository and then
-owns its own format — a migration, not an ongoing integration. See
-[ADR-0005](docs/adr/ADR-0005-import-from-beads.md).
+`tl` can do a one-shot bulk import from another tracker — you transform its
+export into tl's import format — and then owns its own format: a migration, not
+an ongoing integration. See
+[ADR-0005](docs/adr/ADR-0005-bulk-import.md).
 
 ## Documentation
 

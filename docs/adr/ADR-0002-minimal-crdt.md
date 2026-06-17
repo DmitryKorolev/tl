@@ -80,8 +80,8 @@ reuses the same join law:
    (its join is the register join applied key-wise; convergence follows from
    (2) by a one-line lift, no new theory). It carries opaque, uninterpreted
    text values that `tl` does not model as first-class fields: an
-   `ext:<system>` reference back to a source/parallel tracker (`ext:beads`,
-   `ext:jira`, … — preserved on import, ADR-0005), an opaque `due_at`,
+   `ext:<system>` reference back to a source/parallel tracker (`ext:jira`,
+   `ext:gh`, … — preserved on import, ADR-0005), an opaque `due_at`,
    imported comments, and any future per-key machine state. An earlier draft
    cut this for lack of a use case; imports and cross-tracker integration are
    that use case. It is a side-channel: no theorem depends on it (a frame

@@ -61,9 +61,8 @@ to build fast off `batteries`; only the reachability-correctness proof modules
 `import Mathlib`. The tactic discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
-the Lake config itself migrated `lakefile.toml` → `lakefile.lean` with the
-ADR-0019 native shim (now landed) — custom targets are Lean-DSL-only; the pin
-policy here is unaffected.)
+the Lake config is `lakefile.lean` (the ADR-0019 native shim needs custom
+targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 
 ## Toolchain and test harness (pinned)
 

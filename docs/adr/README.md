@@ -17,7 +17,7 @@ not reference task-tracker IDs.
 | 0002 | [Minimal CRDT: OR-Set + LWW-register + metadata map](ADR-0002-minimal-crdt.md) |
 | 0003 | [Relations, cycles, and rollup](ADR-0003-relations-cycles-rollup.md) |
 | 0004 | [The verified kernel and the TCB boundary](ADR-0004-verified-kernel-tcb-boundary.md) |
-| 0005 | [One-shot import from beads](ADR-0005-import-from-beads.md) |
+| 0005 | [One-shot bulk import](ADR-0005-bulk-import.md) |
 | 0006 | [Distribution and supported platforms](ADR-0006-distribution-and-platforms.md) |
 | 0007 | [Identity, HLC, and ordering](ADR-0007-identity-hlc-ids.md) |
 | 0008 | [Log format, JSON schema, and versioning](ADR-0008-log-format-versioning-compaction.md) |

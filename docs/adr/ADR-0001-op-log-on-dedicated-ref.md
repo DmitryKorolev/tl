@@ -106,10 +106,9 @@ Staging (vision §Staged implementation). `tl init` grows across stages — it
 does not ship whole in Stage 0: the Stage 0 core is local (create `.tl/`,
 write the `*` self-ignore, mint the replica-id, seed the clock); the generated
 `.tl/README.md` and the discovery-pointer offer are
-Stage 2 (the agent surface, ADR-0011); the auto-sync offer landed with the
-Stage-3 sharing work (now built). The persistent `+refs/tl/log:refs/tl/log`
-fetch-refspec configuration was dropped — `tl sync` fetches the ref explicitly
-instead — so `init` writes no refspec.
+Stage 2 (the agent surface, ADR-0011); auto-sync is part of the Stage-3 sharing
+surface. `init` configures no persistent `+refs/tl/log:refs/tl/log` fetch
+refspec — `tl sync` fetches the ref explicitly.
 
 Repo discovery — how a command run in a subdirectory *finds* `.tl/` — is
 ADR-0012.

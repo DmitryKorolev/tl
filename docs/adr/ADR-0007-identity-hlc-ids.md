@@ -68,8 +68,8 @@ an optional slug gives a memorable display handle without becoming identity.
   hashed from the *source* id so re-import is byte-stable, keeping the source
   reference in the `ext:<system>` metadata key (ADR-0002/0005). The `source-tag`
   is a short lowercase `[a-z0-9]+` system name that excludes the `:` delimiter
-  (so the preimage is unambiguous) — `beads` for the beads importer, matching
-  the `ext:beads` key; `source-id` is the source's id as raw UTF-8 bytes. The
+  (so the preimage is unambiguous), set by `--source <name>` (default `import`)
+  and matching the `ext:<source>` key; `source-id` is the source's id as raw UTF-8 bytes. The
   importer checks the seeded set for the (astronomically unlikely) collision and
   lengthens deterministically rather than fusing two source issues.
 
@@ -327,9 +327,9 @@ component.
   concurrent collision, renumbering-breaks-references.
 - Colon id form `tl:<hash>`, or a configurable per-project prefix. Rejected:
   `:` is already a structural separator across the data model — metadata keys
-  (`ext:beads`, `type:bug`, `waiting:*`, ADR-0002) and the import-id preimage
+  (`ext:jira`, `type:bug`, `waiting:*`, ADR-0002) and the import-id preimage
   `import:<tag>:<id>` (ADR-0005) — so `tl:q7rk`
-  reads as a sibling of `ext:beads` and collides with the `ext:*` source-id
+  reads as a sibling of `ext:jira` and collides with the `ext:*` source-id
   resolution path; it also loses on git-native ergonomics (`<ref>:<path>`, scp
   `host:path`), URI-scheme/markdown parsing, and terminal word-selection. The
   hyphen `tl-` gives the same "prefix is separable" signal at no cost. A

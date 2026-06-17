@@ -19,7 +19,7 @@ into one another:
 
 The third — timed, auto-resuming postponement — is the one not yet covered.
 Importing an existing tracker's "deferred-until-date" tasks losslessly
-([ADR-0005](ADR-0005-import-from-beads.md)) also needs a timestamp field, so
+([ADR-0005](ADR-0005-bulk-import.md)) also needs a timestamp field, so
 the model and the import line up.
 
 (An earlier draft split this into a `snooze` field *and* a separate

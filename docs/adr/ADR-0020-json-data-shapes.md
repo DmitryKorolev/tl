@@ -304,12 +304,6 @@ miscounted as workable. `ready`/`blocked`/`deferred` are the derived views;
 `cycles` is the cycle-witness count (structural per kind plus the non-duplicate
 readiness deadlocks, as `doctor`'s graph check).
 
-> **Amendment (2026-06-17) — effective, not stored; epic/task split.** The
-> original counted *stored* status, so a rolled-up epic (stored `open`,
-> effectively `done`) inflated `open` and made `stats` disagree with `list`
-> (e.g. "15 open" while `list` showed 6). Pre-1.0, the counts move to effective
-> status and add `openEpics`/`openTasks`; the other keys are unchanged.
-
 **`tl log [<id>] --json`** — the op history, newest first (an HLC-ordered
 projection over the log, ADR-0008); `<id>` filters to ops touching that
 issue. `--limit` caps `entries` (default 10, `0` = all); `count` is the total
