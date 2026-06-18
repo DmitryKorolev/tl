@@ -203,6 +203,21 @@ def cliWorkLoopTests : IO (List Outcome) := do
       (fun j => jStr j "title" == some "Parser v2"),
      ← expectErr "update without flags is usage"
        ["update", "tl-" ++ blocked, "--dir", dir] .usage]
+  -- append-notes: seeds when empty, then joins onto the prior notes with a newline;
+  -- --notes still replaces wholesale; the two flags conflict
+  o := o ++
+    [← expectData "append-notes seeds notes when empty"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "first", "--assignee", "t"]
+       (fun j => jStr j "notes" == some "first"),
+     ← expectData "append-notes joins onto existing notes with a newline"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "second", "--assignee", "t"]
+       (fun j => jStr j "notes" == some "first\nsecond"),
+     ← expectData "--notes replaces the accumulated notes wholesale"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "reset", "--assignee", "t"]
+       (fun j => jStr j "notes" == some "reset"),
+     ← expectErr "--notes and --append-notes together is usage"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "x", "--append-notes", "y",
+        "--assignee", "t"] .usage]
   return o
 
 def cliCloseGuardTests : IO (List Outcome) := do

@@ -223,7 +223,7 @@ def runVerb : List String → TlM CmdOut
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
       cmdUpdate (a.get? "dir") tok (a.get? "title") (a.get? "description")
-        (a.get? "notes") (a.get? "slug") prio actor
+        (a.get? "notes") (a.get? "append-notes") (a.get? "slug") prio actor
     | "parent" => do
       match rest with
       | "set" :: rest' => do

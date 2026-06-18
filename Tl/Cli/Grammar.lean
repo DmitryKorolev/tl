@@ -99,6 +99,7 @@ def commandSpecs : List CommandSpec :=
           { name := "priority", value := true, summary := "0–4; also -p" },
           { name := "description", value := true, summary := "replace the body" },
           { name := "notes", value := true, summary := "replace the notes" },
+          { name := "append-notes", value := true, summary := "append a line to the notes (read-modify-write; not atomic under concurrent writers)" },
           { name := "slug", value := true, summary := "set the display handle (kebab-case; not identity)" },
           actorFlag ] },
     { command := "reopen", positionals := "<id>",

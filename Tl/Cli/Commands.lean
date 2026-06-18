@@ -718,17 +718,38 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-def cmdUpdate (dirOverride : Option String) (tok : String) (title description notes slug : Option String)
+/-- `tl update`'s `--append-notes` is a NON-ATOMIC read-modify-write: it reads the
+    issue's current `notes` register from the materialized state, joins the new line
+    with a `\n`, and writes the whole string back as one LWW value. `notes` is a
+    single register (ADR-0008 LWW), so two appends racing across replicas resolve by
+    the join's triple key — the loser's line is dropped, not merged. For a serial
+    agent loop (the documented primary use) this is exactly the intended accumulate;
+    concurrent appenders should `sync` between writes. `--notes` (replace) and
+    `--append-notes` are mutually exclusive. -/
+def cmdUpdate (dirOverride : Option String) (tok : String)
+    (title description notes appendNotes slug : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
-  if title.isNone && description.isNone && notes.isNone && slug.isNone && priority.isNone then
-    throw (.mk' .usage "update needs at least one of --title, --priority, --description, --notes, --slug")
+  if title.isNone && description.isNone && notes.isNone && appendNotes.isNone
+      && slug.isNone && priority.isNone then
+    throw (.mk' .usage
+      "update needs at least one of --title, --priority, --description, --notes, --append-notes, --slug")
+  if notes.isSome && appendNotes.isSome then
+    throw (.mk' .usage "use one of --notes (replace) or --append-notes (append a line), not both")
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
+    -- replace (--notes) wins by writing the value verbatim; append reads the current
+    -- notes off the same materialized state and writes current ++ "\n" ++ line.
+    let notesWrite : Option (Option String) := match appendNotes with
+      | some line =>
+        match (ctx.loaded.state.issueData i).notes.value.getD none with
+        | some cur => some (some (cur ++ "\n" ++ line))
+        | none     => some (some line)
+      | none => notes.map some
     .ok [.update i { title, priority := prio,
                      description := description.map some,
-                     notes := notes.map some, slug := slug.map some }])
+                     notes := notesWrite, slug := slug.map some }])
   let v := writeNow ctx parsed
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .update ui _ => some ui | _ => none)
