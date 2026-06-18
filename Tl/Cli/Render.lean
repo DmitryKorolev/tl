@@ -127,21 +127,24 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
   let title := if ds == .done || ds == .cancelled then st.paint "2" titleRaw else titleRaw
   s!"{glyph} {id} {prio}{epic} {title}"
 
-/-! ## Children tree (ADR-0017 §2) — total on cyclic/dangling parent graphs -/
+/-! ## Edge tree (ADR-0017 §2) — total on cyclic/dangling graphs -/
 
-/-- The tree walk. Two distinct markers, checked in this order per kid: a kid
-    on the current descent `path` closes a parent CYCLE and renders the "↺"
-    line (the path check must come first — every path member is also emitted,
-    so the other order would disguise a reportable cycle as a benign diamond);
-    a kid merely in the forest-global `emitted` set is a multi-parent diamond
-    re-encounter and renders the already-shown marker instead of re-walking
-    its subtree (which is what made diamonds exponential). Children come from
-    the hoisted view (the per-node `presentChildren` re-derived `presentEdges`
-    each call). Returns the lines and the grown emitted set. -/
+/-- The tree walk over a caller-supplied `children` accessor, so the same
+    renderer draws the parent→children hierarchy (`v.kids`, for `show`/`list`),
+    the upward blocks-blocker chain (`v.blockers`, for `why`), or a downward
+    blocks-dependent view (`v.dependents`) — all over the hoisted view's indexed
+    edge buckets. Two distinct markers, checked in this order per kid: a kid on
+    the current descent `path` closes a CYCLE and renders the "↺" line (the path
+    check must come first — every path member is also emitted, so the other
+    order would disguise a reportable cycle as a benign diamond); a kid merely in
+    the forest-global `emitted` set is a shared-node (diamond) re-encounter and
+    renders the already-shown marker instead of re-walking its subtree (which is
+    what made diamonds exponential). Returns the lines and the grown emitted set. -/
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
     (pre : String) (path : Std.HashSet IssueId) (emitted : Std.HashSet IssueId)
-    (keep : IssueId → Bool) : List String × Std.HashSet IssueId := Id.run do
-  let kids := (v.kids i).filter keep
+    (keep : IssueId → Bool) (children : IssueId → List IssueId) :
+    List String × Std.HashSet IssueId := Id.run do
+  let kids := (children i).filter keep
   let n := kids.length
   let mut lines : List String := []
   let mut em := emitted
@@ -162,7 +165,7 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
       lines := lines ++ [node ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
       em := em.insert c
-      let (sub, em') := treeLines st v c childPre (path.insert i) em keep
+      let (sub, em') := treeLines st v c childPre (path.insert i) em keep children
       lines := lines ++ (node :: sub)
       em := em'
     idx := idx + 1
@@ -174,7 +177,8 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     one marked line, like any other re-encounter. Cycles get the per-path "↺"
     marker; shared (multi-parent) nodes render once and mark later
     encounters, across the whole forest. -/
-def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId → Bool) : List String := Id.run do
+def treeForest (st : Style) (v : View) (roots : List IssueId)
+    (keep : IssueId → Bool) (children : IssueId → List IssueId) : List String := Id.run do
   let mut lines : List String := []
   -- emitted/path are forest-global membership sets: a HashSet (was List.contains,
   -- O(N) per node ⇒ O(N²) over the forest). Order is immaterial (membership only),
@@ -186,7 +190,7 @@ def treeForest (st : Style) (v : View) (roots : List IssueId) (keep : IssueId �
         ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
       em := em.insert r
-      let (sub, em') := treeLines st v r "" ∅ em keep
+      let (sub, em') := treeLines st v r "" ∅ em keep children
       lines := lines ++ (styledLine st v r :: sub)
       em := em'
   return lines
@@ -231,7 +235,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   let childrenBlock :=
     if (v.kids i).isEmpty then []
     else st.paint "1" "children:"
-      :: (treeLines st v i "  " ∅ ((∅ : Std.HashSet IssueId).insert i) (fun _ => true)).1
+      :: (treeLines st v i "  " ∅ ((∅ : Std.HashSet IssueId).insert i) (fun _ => true) v.kids).1
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))

@@ -1446,7 +1446,7 @@ def treeCycleRenderTests : List Outcome :=
     Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
     Op.edgeAdd (a, b, .Parent) stE1, Op.edgeAdd (b, a, .Parent) stE2]
   let vCyc := mkView sCyc
-  let cycOut := String.intercalate "\n" (treeForest Style.plain vCyc [a] (fun _ => true))
+  let cycOut := String.intercalate "\n" (treeForest Style.plain vCyc [a] (fun _ => true) vCyc.kids)
   -- a shared root: r1 and r2 both roots, r2 also a child of r1
   let r1 := "c000000000000000"
   let r2 := "d000000000000000"
@@ -1454,14 +1454,32 @@ def treeCycleRenderTests : List Outcome :=
     Op.create r1 stA { title := some "R1" }, Op.create r2 stB { title := some "R2" },
     Op.edgeAdd (r1, r2, .Parent) stE1]
   let vShared := mkView sShared
-  let sharedOut := String.intercalate "\n" (treeForest Style.plain vShared [r1, r2] (fun _ => true))
+  let sharedOut := String.intercalate "\n" (treeForest Style.plain vShared [r1, r2] (fun _ => true) vShared.kids)
+  -- the SAME renderer over the blocks-blocker accessor (`why`'s direction): a
+  -- transitive blocker nests under its direct blocker. Chain a → b → c (a blocks
+  -- b, b blocks c); `why c`'s roots are c's blockers ([b]), b's blockers ([a]).
+  let c := "e000000000000000"
+  let stC := (⟨14, 7, 5⟩ : Tl.Crdt.Stamp)
+  let stEc1 := (⟨15, 7, 6⟩ : Tl.Crdt.Stamp)
+  let stEc2 := (⟨16, 7, 7⟩ : Tl.Crdt.Stamp)
+  let sChain := Tl.Kernel.fold [
+    Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
+    Op.create c stC { title := some "C" },
+    Op.edgeAdd (a, b, .Blocks) stEc1, Op.edgeAdd (b, c, .Blocks) stEc2]
+  let vChain := mkView sChain
+  let chainOut := String.intercalate "\n"
+    (treeForest Style.plain vChain (vChain.blockers c) (fun _ => true) vChain.blockers)
   [ check "a parent cycle renders the ↺ marker, not the diamond marker"
       (((cycOut.splitOn "↺").length - 1 ≥ 1) && !(cycOut.splitOn "(shown above)").length.blt 0) cycOut,
     check "the cycle marker is distinct from the already-shown marker"
       (!((cycOut.splitOn "(shown above)").length - 1 ≥ 1)) cycOut,
     check "a root already shown in an earlier subtree renders one marked line"
       (((sharedOut.splitOn "(shown above)").length - 1 == 1)
-        && ((sharedOut.splitOn "R2").length - 1 == 2)) sharedOut ]
+        && ((sharedOut.splitOn "R2").length - 1 == 2)) sharedOut,
+    check "the blocker tree nests a transitive blocker under its direct blocker"
+      ((chainOut.splitOn "\\-- ").length - 1 == 1) chainOut,
+    check "the blocker tree shows both the direct and the transitive blocker"
+      (((chainOut.splitOn "A").length - 1 ≥ 1) && ((chainOut.splitOn "B").length - 1 ≥ 1)) chainOut ]
 
 /-- The canonical-parent LWW tie-break: with two surviving parent edges the
     display parent is the one whose greatest add-tag is LWW-greater — on both

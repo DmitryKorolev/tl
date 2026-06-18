@@ -308,7 +308,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
           -- forest in reading order, then take the first `limit` lines; the footer
           -- discloses how many rows are hidden (a truncated subtree's dangling
           -- `├──` together with "Showing X of Y" reads as "more below").
-          let allLines := treeForest st v roots keep
+          let allLines := treeForest st v roots keep v.kids
           let shown := if limit == 0 then allLines else allLines.take limit
           String.intercalate "\n" shown
             ++ "\n" ++ footer st summary shown.length allLines.length
@@ -360,7 +360,13 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
   let trans := State.whyFast v.rollup s i
-  let direct := (State.blockersOfE v.edges i).filter (fun b => !State.blockerDischargedWith v.rollup s b)
+  -- a node's children in the why-tree are its LIVE direct blockers (present and
+  -- not effectively-closed) — the same liveSuccE relation whyFast's transitive
+  -- closure is built from, so the tree's node set equals `trans` (the JSON set),
+  -- just with the clear-this-first order, diamonds, and depth made visible.
+  let liveBlockers : IssueId → List IssueId := fun x =>
+    (State.blockersOfE v.edges x).filter (fun b => !State.blockerDischargedWith v.rollup s b)
+  let direct := liveBlockers i
   let rows := trans.map (fun b =>
     let bd := s.issueData b
     Json.mkObj <|
@@ -379,11 +385,15 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
     ++ (match d.deferUntilOf with
         | some t => if v.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
         | none => [])
-  let human :=
+  -- human: the blocker chain as a tree (ADR-0017 §2) — single-rooted at `i`'s
+  -- direct live blockers, each expanded over the same liveBlockers accessor;
+  -- cycles render "↺", shared blockers render once and mark re-encounters.
+  -- JSON stays the flat blockedBy refs above (agents don't read the tree).
+  let r : Style → String := fun st =>
     if trans.isEmpty then s!"{displayId i} is not ready (no open blockers — check status/epic/defer)"
     else s!"{displayId i} waits on:\n" ++
-      String.intercalate "\n" (trans.map (fun b => "  " ++ issueLine v b))
-  return { data, human, notes }
+      String.intercalate "\n" (treeForest st v direct (fun _ => true) liveBlockers)
+  return { data, human := r Style.plain, render := some r, notes }
 
 /-- `unblocks <id>` — the downward mirror of `why`: the issues that would
     become ready if `<id>` closed (the proved ready-diff `unblocksFast`,
