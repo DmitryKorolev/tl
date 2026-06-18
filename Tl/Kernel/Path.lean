@@ -23,6 +23,7 @@ edges (the issues `i` blocks), consistent with `blocksSucc`/`unblocks`/critical;
 reachability/cardinality zone (ADR-0009) extends to this `Reach` dependent.
 -/
 import Tl.Kernel.Reach
+import Mathlib.Data.List.Chain
 
 namespace Tl.Kernel
 
@@ -48,6 +49,58 @@ def wbPath (succ : IssueId → List IssueId) (seed present : List IssueId) :
       (present.find? (fun x =>
           decide (x ∈ State.reachClosure succ fuel seed) && decide (cur ∈ succ x))).bind
         (fun x => (wbPath succ seed present fuel x).map (· ++ [cur]))
+
+/-- **Soundness**: a returned path is real — nonempty, ends at `cur`, starts at
+    a `seed` member, and every consecutive pair is a `succ`-edge. Structural
+    induction on `fuel`. -/
+theorem wbPath_sound (succ : IssueId → List IssueId) (seed present : List IssueId) :
+    ∀ (fuel : Nat) (cur : IssueId) (p : List IssueId),
+      wbPath succ seed present fuel cur = some p →
+        p ≠ [] ∧ p.getLast? = some cur ∧
+        (∀ h, p.head? = some h → h ∈ seed) ∧
+        List.IsChain (fun u v => v ∈ succ u) p := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro cur p hp
+    rw [wbPath] at hp
+    by_cases hc : cur ∈ seed
+    · rw [if_pos hc, Option.some.injEq] at hp; subst hp
+      refine ⟨List.cons_ne_nil _ _, rfl, ?_, List.isChain_singleton _⟩
+      intro h hh
+      rw [List.head?_cons, Option.some.injEq] at hh; subst hh; exact hc
+    · rw [if_neg hc] at hp; exact absurd hp (by simp)
+  | succ fuel ih =>
+    intro cur p hp
+    rw [wbPath] at hp
+    by_cases hc : cur ∈ seed
+    · rw [if_pos hc, Option.some.injEq] at hp; subst hp
+      refine ⟨List.cons_ne_nil _ _, rfl, ?_, List.isChain_singleton _⟩
+      intro h hh
+      rw [List.head?_cons, Option.some.injEq] at hh; subst hh; exact hc
+    · rw [if_neg hc] at hp
+      by_cases hr : cur ∈ State.reachClosure succ fuel seed
+      · rw [if_pos hr] at hp; exact ih cur p hp
+      · rw [if_neg hr, Option.bind_eq_some_iff] at hp
+        obtain ⟨x, hfind, hmap⟩ := hp
+        rw [Option.map_eq_some_iff] at hmap
+        obtain ⟨p', hwb, hpeq⟩ := hmap
+        have hx := List.find?_some hfind
+        rw [Bool.and_eq_true, decide_eq_true_eq, decide_eq_true_eq] at hx
+        obtain ⟨_, hcsx⟩ := hx
+        obtain ⟨hne, hlast, hhead, hchain⟩ := ih x p' hwb
+        subst hpeq
+        refine ⟨by simp, ?_, ?_, ?_⟩
+        · rw [List.getLast?_append_of_ne_nil _ (by simp)]; rfl
+        · intro h hh
+          rw [List.head?_append_of_ne_nil _ hne] at hh
+          exact hhead h hh
+        · refine List.IsChain.append hchain (List.isChain_singleton _) ?_
+          intro u hu v hv
+          rw [hlast, Option.mem_some_iff] at hu
+          rw [List.head?_cons, Option.mem_some_iff] at hv
+          subst hu; subst hv
+          exact hcsx
 
 namespace State
 
