@@ -374,6 +374,35 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
       String.intercalate "\n" (trans.map (fun b => "  " ++ issueLine v b))
   return { data, human, notes }
 
+/-- `unblocks <id>` — the downward mirror of `why`: the issues that would
+    become ready if `<id>` closed (the proved ready-diff `unblocksFast`,
+    ADR-0004 thm 10). A dependent still pinned by another blocker is not freed
+    and so does not appear. -/
+def cmdUnblocks (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  let s := v.state
+  let freed := State.unblocksFast s v.now i
+  let rows := freed.map (fun b =>
+    let bd := s.issueData b
+    Json.mkObj <|
+      [("id", Json.str (displayId b)),
+       ("status", Json.str (statusWire bd.statusOf)),
+       ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s b)))]
+      ++ (match bd.title.value with
+          | some t => [("title", Json.str (sanitizeSingle t))]
+          | none => []))
+  let data := Json.mkObj
+    [("id", Json.str (displayId i)),
+     ("freed", Json.arr rows.toArray),
+     ("count", jnum freed.length)]
+  let human :=
+    if freed.isEmpty then s!"closing {displayId i} would free nothing right now (no dependent becomes ready)"
+    else s!"closing {displayId i} unblocks:\n" ++
+      String.intercalate "\n" (freed.map (fun b => "  " ++ issueLine v b))
+  return { data, human, notes }
+
 def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v

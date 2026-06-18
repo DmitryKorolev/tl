@@ -137,6 +137,12 @@ def cliWorkLoopTests : IO (List Outcome) := do
     (fun j => jBool j "ready" == some false
       && (jArr j "blockedBy").all (fun r =>
             jStr r "id" == some ("tl-" ++ blocker) && jBool r "direct" == some true))]
+  -- unblocks: the downward mirror — closing the blocker frees the blocked issue
+  o := o ++ [← expectData "unblocks names the freed dependent" ["unblocks", "tl-" ++ blocker, "--dir", dir]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "freed").all (fun r => jStr r "id" == some ("tl-" ++ blocked))),
+   ← expectData "unblocks of a leaf frees nothing" ["unblocks", "tl-" ++ blocked, "--dir", dir]
+    (fun j => jNat j "count" == some 0 && (jArr j "freed").length == 0)]
   -- claim refusals: not-ready target, with blockedBy reasons
   o := o ++ [← expectErr "claim of a blocked issue is not-claimable"
     ["claim", "tl-" ++ blocked, "--dir", dir, "--assignee", "carol"] .notClaimable

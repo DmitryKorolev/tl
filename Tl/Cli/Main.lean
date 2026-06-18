@@ -201,6 +201,10 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "why"
       let tok ← MonadExcept.ofExcept (onePositional a "why" "an issue id")
       cmdWhy (a.get? "dir") tok (a.has "skip-bad")
+    | "unblocks" => do
+      let a ← parse "unblocks"
+      let tok ← MonadExcept.ofExcept (onePositional a "unblocks" "an issue id")
+      cmdUnblocks (a.get? "dir") tok (a.has "skip-bad")
     | "claim" => do
       let a ← parse "claim"
       let tok ← MonadExcept.ofExcept (onePositional a "claim" "an issue id")
