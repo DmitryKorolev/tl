@@ -102,6 +102,47 @@ theorem wbPath_sound (succ : IssueId → List IssueId) (seed present : List Issu
           subst hu; subst hv
           exact hcsx
 
+/-- **Completeness**: if `cur` is in the layer-`k` closure, `wbPath` at fuel `k`
+    finds a path. The seed/universe hypotheses keep every layer inside `present`,
+    so the predecessor search succeeds. Induction on the layer index `k`. -/
+theorem wbPath_complete (succ : IssueId → List IssueId) (seed present : List IssueId)
+    (hsU : seed ⊆ present) (hU : ∀ x ∈ present, succ x ⊆ present) :
+    ∀ (k : Nat) (cur : IssueId), cur ∈ State.reachClosure succ k seed →
+      (wbPath succ seed present k cur).isSome := by
+  intro k
+  induction k with
+  | zero =>
+    intro cur hcur
+    have hcs : cur ∈ seed := hcur
+    rw [wbPath, if_pos hcs]; rfl
+  | succ k ih =>
+    intro cur hcur
+    rw [wbPath]
+    by_cases hc : cur ∈ seed
+    · rw [if_pos hc]; rfl
+    · rw [if_neg hc]
+      by_cases hr : cur ∈ State.reachClosure succ k seed
+      · rw [if_pos hr]; exact ih cur hr
+      · rw [if_neg hr]
+        rw [reachClosure_succ, mem_reachStep] at hcur
+        rcases hcur with hcur | ⟨y, hy, hyc⟩
+        · exact absurd hcur hr
+        · have hyp : y ∈ present := reachClosure_subset_universe hsU hU k hy
+          set P : IssueId → Bool := fun x =>
+            decide (x ∈ State.reachClosure succ k seed) && decide (cur ∈ succ x) with hPdef
+          have hPy : P y = true := by
+            rw [hPdef]; rw [Bool.and_eq_true, decide_eq_true_eq, decide_eq_true_eq]; exact ⟨hy, hyc⟩
+          cases hf : present.find? P with
+          | none =>
+            exact absurd ((List.find?_eq_none.mp hf) y hyp) (by rw [hPy]; simp)
+          | some x' =>
+            have hP' := List.find?_some hf
+            rw [hPdef, Bool.and_eq_true, decide_eq_true_eq, decide_eq_true_eq] at hP'
+            obtain ⟨hx'layer, _⟩ := hP'
+            obtain ⟨p'', hp''⟩ := Option.isSome_iff_exists.mp (ih x' hx'layer)
+            show ((wbPath succ seed present k x').map (· ++ [cur])).isSome = true
+            rw [hp'']; rfl
+
 namespace State
 
 /-- `blocksPath s a b` (ADR-0004 thm 10 companion): a witness path `[a, …, b]`
