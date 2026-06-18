@@ -783,6 +783,77 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
              else s!"{displayId a} is no longer blocked by {displayId b}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
+/-- `dep critical` — rank open issues by transitive dependent-count (the proved
+    critical-path `weight`, ADR-0004 thm 4): the most-unblocking work first. Only
+    issues that block at least one other appear. The weight is computed over the
+    hoisted blocks adjacency — the same metric `ready` ranks by. -/
+def cmdDepCritical (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let bsrc := State.blocksBySource v.edges
+  let pset := v.idx.presentH
+  let n := v.present.length
+  let weighted := (v.present.filter (fun i => v.effStatus i == .Open)).filterMap (fun i =>
+    let w := State.weightFast bsrc pset n i
+    if w == 0 then none else some (i, w))
+  let le := fun (a b : IssueId × Nat) =>
+    if a.2 != b.2 then decide (b.2 < a.2) else decide (TotalOrd.le a.1 b.1)
+  let ranked := weighted.mergeSort le
+  let rows := ranked.map (fun (i, w) =>
+    Json.mkObj
+      [("id", Json.str (displayId i)), ("weight", jnum w),
+       ("status", Json.str (statusWire (v.effStatus i))),
+       ("title", Json.str (sanitizeSingle ((v.issueData i).title.value.getD "")))])
+  let data := Json.mkObj [("items", Json.arr rows.toArray), ("count", jnum ranked.length)]
+  let human :=
+    if ranked.isEmpty then "no open issue blocks another"
+    else String.intercalate "\n" (ranked.map (fun (i, w) => s!"  {issueLine v i}  (blocks {w})"))
+  return { data, human, notes }
+
+/-- `dep relate A B` — a symmetric informational link (canonicalized on the
+    sorted endpoint pair, since `related` is undirected). Drives nothing (frame
+    lemma); filter/display only. -/
+def cmdDepRelate (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let a ← resolveToken s aTok
+    let b ← resolveToken s bTok
+    if a == b then .error (.mk' .usage "cannot relate an issue to itself — give two different ids")
+    else .ok [.relate (if decide (a ≤ b) then (a, b, EdgeKind.Related) else (b, a, EdgeKind.Related))])
+  let _ := parsed
+  let s := ctx.loaded.state
+  let a ← MonadExcept.ofExcept (resolveToken s aTok)
+  let b ← MonadExcept.ofExcept (resolveToken s bTok)
+  return { data := Json.mkObj
+            [("type", Json.str "related"), ("from", Json.str (displayId a)),
+             ("to", Json.str (displayId b)), ("status", Json.str "added")]
+           human := s!"{displayId a} and {displayId b} are now related"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `dep unrelate A B` — retract the `related` link. A noop (nothing appended)
+    when the pair is not currently related (ADR-0020). -/
+def cmdDepUnrelate (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let a ← resolveToken s aTok
+    let b ← resolveToken s bTok
+    let e : Edge := if decide (a ≤ b) then (a, b, EdgeKind.Related) else (b, a, EdgeKind.Related)
+    if !decide (s.edges.Present e) then .ok []
+    else .ok [.unrelate e (s.edges.tagsOf e)])
+  let s := ctx.loaded.state
+  let a ← MonadExcept.ofExcept (resolveToken s aTok)
+  let b ← MonadExcept.ofExcept (resolveToken s bTok)
+  let status := if parsed.isEmpty then "noop" else "removed"
+  return { data := Json.mkObj
+            [("type", Json.str "related"), ("from", Json.str (displayId a)),
+             ("to", Json.str (displayId b)), ("status", Json.str status)]
+           human :=
+             if parsed.isEmpty then s!"{displayId a} and {displayId b} were not related — nothing to do"
+             else s!"{displayId a} and {displayId b} are no longer related"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
 /-! ## parent verbs (reparenting) -/
 
 /-- `tl parent set <child> <parent>`: move `<child>` under `<parent>` (the

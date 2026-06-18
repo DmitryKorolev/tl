@@ -143,6 +143,21 @@ def cliWorkLoopTests : IO (List Outcome) := do
       && (jArr j "freed").all (fun r => jStr r "id" == some ("tl-" ++ blocked))),
    ← expectData "unblocks of a leaf frees nothing" ["unblocks", "tl-" ++ blocked, "--dir", dir]
     (fun j => jNat j "count" == some 0 && (jArr j "freed").length == 0)]
+  -- dep critical: the blocker outranks the leaf (weight = transitive dependents)
+  o := o ++ [← expectData "dep critical ranks the blocker first" ["dep", "critical", "--dir", dir]
+    (fun j => jNat j "count" == some 1
+      && ((jArr j "items").head?.bind (fun r => jStr r "id")) == some ("tl-" ++ blocker))]
+  -- dep relate / unrelate: a symmetric link, visible in dependencies, retractable
+  o := o ++ [← expectData "dep relate links two issues"
+      ["dep", "relate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--assignee", "t"]
+    (fun j => jStr j "status" == some "added"),
+   ← expectData "the related edge shows in dependencies" ["show", "tl-" ++ blocker, "--dir", dir]
+    (fun j => (jArr j "dependencies").any (fun e => jStr e "type" == some "related")),
+   ← expectData "dep unrelate retracts it"
+      ["dep", "unrelate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--assignee", "t"]
+    (fun j => jStr j "status" == some "removed"),
+   ← expectData "the related edge is gone" ["show", "tl-" ++ blocker, "--dir", dir]
+    (fun j => !((jArr j "dependencies").any (fun e => jStr e "type" == some "related")))]
   -- claim refusals: not-ready target, with blockedBy reasons
   o := o ++ [← expectErr "claim of a blocked issue is not-claimable"
     ["claim", "tl-" ++ blocked, "--dir", dir, "--assignee", "carol"] .notClaimable

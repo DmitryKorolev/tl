@@ -29,7 +29,8 @@ private def jStr (j : Json) (k : String) : Option String :=
     test below proves it matches the schema both ways). -/
 private def dispatchVerbs : List String :=
   ["init", "create", "ready", "claim", "close", "update", "reopen",
-   "dep add", "dep remove", "dep cycles", "parent set", "parent remove",
+   "dep add", "dep remove", "dep cycles", "dep critical", "dep relate", "dep unrelate",
+   "parent set", "parent remove",
    "label add", "label remove", "label list",
    "why", "unblocks", "show", "list", "log", "stats", "sync", "doctor", "version", "help"]
 
@@ -59,7 +60,7 @@ def grammarSchemaTests : List Outcome := Id.run do
           && ((jArr one "commands").head?.bind (fun c => jStr c "command")) == some "close"
           && (jArr one "globalFlags").length == 6),
      check "help <group> expands to its subcommands"
-       ((jArr (helpJson (some "dep")) "commands").length == 3)]
+       ((jArr (helpJson (some "dep")) "commands").length == 6)]
 
 /-- The drift guard, exercised through the real parser: for every command,
     each flag the schema lists is accepted, and an invented flag is rejected

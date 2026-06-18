@@ -253,7 +253,21 @@ def runVerb : List String → TlM CmdOut
         let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep cycles" ++ globalVal) (boolFlagsOf "dep cycles" ++ globalBool) rest')
         MonadExcept.ofExcept (noPositionals a "dep cycles")
         cmdDepCycles (a.get? "dir") (a.has "skip-bad")
-      | _ => throw (usageErr "dep takes add|remove|cycles")
+      | "critical" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep critical" ++ globalVal) (boolFlagsOf "dep critical" ++ globalBool) rest')
+        MonadExcept.ofExcept (noPositionals a "dep critical")
+        cmdDepCritical (a.get? "dir") (a.has "skip-bad")
+      | "relate" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep relate" ++ globalVal) (boolFlagsOf "dep relate" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdDepRelate (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "dep relate takes <id> <id>")
+      | "unrelate" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep unrelate" ++ globalVal) (boolFlagsOf "dep unrelate" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdDepUnrelate (a.get? "dir") x y (← actorOf a)
+        | _ => throw (usageErr "dep unrelate takes <id> <id>")
+      | _ => throw (usageErr "dep takes add|remove|cycles|critical|relate|unrelate")
     | "label" => do
       match rest with
       | "add" :: rest' => do

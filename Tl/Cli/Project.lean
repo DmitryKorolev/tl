@@ -321,6 +321,11 @@ def View.isEpic (v : View) (i : IssueId) : Bool := !(v.kids i).isEmpty
 def View.blockers (v : View) (i : IssueId) : List IssueId := (v.idx.btgt[i]?.getD []).reverse
 /-- `dependentsOfE v.edges i` via the blocks-by-source bucket (`blocksBySource_eq`). -/
 def View.dependents (v : View) (i : IssueId) : List IssueId := (v.idx.bsrc[i]?.getD []).reverse
+/-- The issues symmetrically related to `i` — the other endpoint of every present
+    `Related` edge touching it (the link drives nothing; it is filter/display only). -/
+def View.relatedOf (v : View) (i : IssueId) : List IssueId :=
+  v.edges.filterMap (fun (f, t, k) =>
+    if k == EdgeKind.Related then (if f == i then some t else if t == i then some f else none) else none)
 /-- The parents of `i` via the parent-by-child bucket (the canonical-parent
     candidates / the multi-parent count) — the swapped-pair `getD_bucketBy`. -/
 def View.parents (v : View) (i : IssueId) : List IssueId := (v.idx.pbc[i]?.getD []).reverse

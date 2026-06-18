@@ -223,6 +223,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   -- relationships
   let blockers := v.blockers i
   let deps := v.dependents i
+  let related := v.relatedOf i
   let rel (label : String) (ids : List IssueId) : List String :=
     if ids.isEmpty then [] else [label ++ ": " ++ String.intercalate ", " (ids.map displayId)]
   let parentLine := match canonicalParentE v i with
@@ -235,7 +236,7 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
     ++ fence st "NOTES" (sanitizeMulti ((d.notes.value.getD none).getD ""))
-    ++ rel "blocked by" blockers ++ rel "blocks" deps ++ parentLine
+    ++ rel "blocked by" blockers ++ rel "blocks" deps ++ rel "related" related ++ parentLine
     ++ childrenBlock
   return String.intercalate "\n" body
 
