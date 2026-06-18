@@ -303,6 +303,30 @@ def cliDepTests : IO (List Outcome) := do
                && jNat c "cycles" == some 1)),
      ← expectData "neither cycle member is ready" ["ready", "--dir", dir]
       (fun j => jNat j "count" == some 0)]
+  -- dep path (over the proved blocksPath extractor): a chain c blocks d blocks e
+  -- (`dep add X Y` makes Y block X, so add d⊣c and e⊣d)
+  let c ← mkIssue dir "C"
+  let dd ← mkIssue dir "D"
+  let e ← mkIssue dir "E"
+  let _ ← run' ["dep", "add", "tl-" ++ dd, "tl-" ++ c, "--dir", dir, "--assignee", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ e, "tl-" ++ dd, "--dir", dir, "--assignee", "t"]
+  o := o ++
+    [← expectData "dep path finds the transitive blocks chain"
+      ["dep", "path", "tl-" ++ c, "tl-" ++ e, "--dir", dir]
+      (fun j => jBool j "found" == some true
+        && jStr j "from" == some ("tl-" ++ c) && jStr j "to" == some ("tl-" ++ e)
+        && (jArr j "path").map (·.getStr?.toOption)
+             == [some ("tl-" ++ c), some ("tl-" ++ dd), some ("tl-" ++ e)]),
+     ← expectData "dep path reports no path in the reverse direction"
+      ["dep", "path", "tl-" ++ e, "tl-" ++ c, "--dir", dir]
+      (fun j => jBool j "found" == some false && (jArr j "path").isEmpty),
+     ← expectData "dep path A A is empty when A is on no cycle"
+      ["dep", "path", "tl-" ++ c, "tl-" ++ c, "--dir", dir]
+      (fun j => jBool j "found" == some false),
+     -- total on a CYCLIC graph: the a↔b blocks cycle built above still terminates
+     ← expectData "dep path terminates and finds a path inside a blocks cycle"
+      ["dep", "path", "tl-" ++ a, "tl-" ++ b, "--dir", dir]
+      (fun j => jBool j "found" == some true && !(jArr j "path").isEmpty)]
   return o
 
 /-- Reparenting (ADR-0003 §4): `parent set` is a courtesy replace (move under a

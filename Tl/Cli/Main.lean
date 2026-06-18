@@ -257,6 +257,11 @@ def runVerb : List String → TlM CmdOut
         let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep critical" ++ globalVal) (boolFlagsOf "dep critical" ++ globalBool) rest')
         MonadExcept.ofExcept (noPositionals a "dep critical")
         cmdDepCritical (a.get? "dir") (a.has "skip-bad")
+      | "path" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep path" ++ globalVal) (boolFlagsOf "dep path" ++ globalBool) rest')
+        match a.positionals with
+        | [x, y] => cmdDepPath (a.get? "dir") x y (a.has "skip-bad")
+        | _ => throw (usageErr "dep path takes <id> <id>")
       | "relate" :: rest' => do
         let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep relate" ++ globalVal) (boolFlagsOf "dep relate" ++ globalBool) rest')
         match a.positionals with
@@ -267,7 +272,7 @@ def runVerb : List String → TlM CmdOut
         match a.positionals with
         | [x, y] => cmdDepUnrelate (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep unrelate takes <id> <id>")
-      | _ => throw (usageErr "dep takes add|remove|cycles|critical|relate|unrelate")
+      | _ => throw (usageErr "dep takes add|remove|cycles|critical|path|relate|unrelate")
     | "label" => do
       match rest with
       | "add" :: rest' => do

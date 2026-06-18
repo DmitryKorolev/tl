@@ -112,6 +112,8 @@ def commandSpecs : List CommandSpec :=
       summary := "report dependency cycles (blocks / parent / readiness)" },
     { command := "dep critical", positionals := "",
       summary := "rank open issues by how many others they transitively block" },
+    { command := "dep path", positionals := "<id> <id>",
+      summary := "a blocks-edge path from the first issue to the second (cycle-breaking aid)" },
     { command := "dep relate", positionals := "<id> <id>",
       summary := "add a symmetric informational link between two issues", flags := [actorFlag] },
     { command := "dep unrelate", positionals := "<id> <id>",

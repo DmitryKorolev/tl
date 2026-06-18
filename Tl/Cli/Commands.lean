@@ -15,6 +15,7 @@ import Tl.Cli.Project
 import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
+import Tl.Kernel.Path
 import Tl.Sync.Local
 import Tl.Sync.Remote
 import Tl.Sync.AutoSync
@@ -850,6 +851,28 @@ def cmdDepCritical (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut :
   let human :=
     if ranked.isEmpty then "no open issue blocks another"
     else String.intercalate "\n" (ranked.map (fun (i, w) => s!"  {issueLine v i}  (blocks {w})"))
+  return { data, human, notes }
+
+/-- `dep path A B` — a witness `blocks`-edge path from A to B (A transitively
+    blocks B), the cycle-breaking aid. Over the proved kernel extractor
+    `State.blocksPath` (Tl/Kernel/Path.lean): `found` is true iff B is
+    reach+-reachable from A over present blocks edges, and `path` is then a real
+    consecutive-edge chain `[A, …, B]` (empty when none). Total on cyclic and
+    dangling graphs. JSON `{from,to,path:[ids],found}`; human is an arrow line. -/
+def cmdDepPath (dirOverride : Option String) (aTok bTok : String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let a ← MonadExcept.ofExcept (resolveToken v.state aTok)
+  let b ← MonadExcept.ofExcept (resolveToken v.state bTok)
+  let pathOpt := v.state.blocksPath a b
+  let p := pathOpt.getD []
+  let data := Json.mkObj
+    [("from", Json.str (displayId a)), ("to", Json.str (displayId b)),
+     ("path", Json.arr (p.map (Json.str ∘ displayId)).toArray),
+     ("found", Json.bool pathOpt.isSome)]
+  let human :=
+    if pathOpt.isSome then String.intercalate " → " (p.map displayId)
+    else s!"no blocks path from {displayId a} to {displayId b}"
   return { data, human, notes }
 
 /-- `dep relate A B` — a symmetric informational link (canonicalized on the
