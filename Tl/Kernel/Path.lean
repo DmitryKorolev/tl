@@ -154,6 +154,59 @@ def blocksPath (s : State) (a b : IssueId) : Option (List IssueId) :=
   (wbPath (s.kindSucc .Blocks) (s.kindSucc .Blocks a) s.presentIssues
       s.presentIssues.length b).map (a :: ·)
 
+/-- **`blocksPath` path validity**: a returned path is a real `blocks`-edge path
+    `a ⇝ b` — head `a`, last `b`, every consecutive pair connected by a present
+    `blocks` edge. -/
+theorem blocksPath_valid (s : State) (a b : IssueId) (p : List IssueId)
+    (h : s.blocksPath a b = some p) :
+    p.head? = some a ∧ p.getLast? = some b ∧
+      List.IsChain (fun u v => v ∈ s.kindSucc .Blocks u) p := by
+  unfold State.blocksPath at h
+  rw [Option.map_eq_some_iff] at h
+  obtain ⟨q, hq, hpe⟩ := h
+  obtain ⟨hne, hlast, hhead, hchain⟩ := wbPath_sound _ _ _ _ _ _ hq
+  subst hpe
+  refine ⟨rfl, ?_, ?_⟩
+  · change ([a] ++ q).getLast? = some b
+    rw [List.getLast?_append_of_ne_nil _ hne]; exact hlast
+  · rw [List.isChain_cons]
+    refine ⟨?_, hchain⟩
+    intro y hy
+    rw [Option.mem_def] at hy
+    exact hhead y hy
+
+/-- **`blocksPath` reachability** (mirrors `mem_why_iff`, ADR-0004 thm 10): a
+    path exists iff `b` is reach+-reachable from `a` over present `blocks` edges —
+    i.e. reachable from a direct `blocks`-successor of `a`. Total on
+    cyclic/dangling graphs. -/
+theorem blocksPath_isSome_iff (s : State) (a b : IssueId) :
+    (s.blocksPath a b).isSome ↔
+      ∃ c ∈ s.kindSucc .Blocks a,
+        Relation.ReflTransGen (StepRel (s.kindSucc .Blocks)) c b := by
+  have hsU : s.kindSucc .Blocks a ⊆ s.presentIssues := kindSucc_subset_present s .Blocks a
+  have hU : ∀ x ∈ s.presentIssues, s.kindSucc .Blocks x ⊆ s.presentIssues :=
+    fun x _ => kindSucc_subset_present s .Blocks x
+  constructor
+  · intro hs
+    obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp hs
+    unfold State.blocksPath at hp
+    rw [Option.map_eq_some_iff] at hp
+    obtain ⟨q, hq, -⟩ := hp
+    obtain ⟨hne, hlast, hhead, hchain⟩ := wbPath_sound _ _ _ _ _ _ hq
+    refine ⟨q.head hne, hhead _ (List.head?_eq_some_head hne), ?_⟩
+    have hrtg := List.relationReflTransGen_of_exists_isChain q hchain hne
+    have hgl : q.getLast hne = b := by
+      rw [List.getLast?_eq_some_getLast hne] at hlast; exact Option.some.inj hlast
+    rwa [hgl] at hrtg
+  · rintro ⟨c, hc, hrtg⟩
+    have hmem : b ∈ State.reachClosure (s.kindSucc .Blocks) s.presentIssues.length
+        (s.kindSucc .Blocks a) := reachable_mem_reachClosure hsU hU c hc hrtg
+    have hwb := wbPath_complete (s.kindSucc .Blocks) (s.kindSucc .Blocks a) s.presentIssues
+      hsU hU s.presentIssues.length b hmem
+    unfold State.blocksPath
+    obtain ⟨q, hq⟩ := Option.isSome_iff_exists.mp hwb
+    rw [hq]; rfl
+
 end State
 
 end Tl.Kernel
