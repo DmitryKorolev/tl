@@ -270,6 +270,17 @@ private def decState (j : Json) : Option State := do
   let edges ← decOrSet decEdge (← (j.getObjVal? "edges").toOption)
   some ⟨issues, data, edges⟩
 
+/-- A stable, version-INDEPENDENT digest of a materialized `State` under the
+    cache codec (`encState`). The cacheVersion-bump guard (Tests.CacheTests)
+    pins this against the current `cacheVersion`: any change to the fold
+    semantics (`decodeSegment` / the owner check / `WireOp.toOp` / kernel
+    `apply`/`merge`) or to the cache codec moves the digest, so the ADR-0022 §3
+    obligation to bump `cacheVersion` on a semantics change becomes a failing
+    test rather than reviewer memory. Version-independent on purpose, so the
+    guard can tell an unbumped semantics drift from an honest bump. -/
+def stateFoldDigest (s : State) : String :=
+  toString (ByteArray.hash (encState s).compress.toUTF8)
+
 private def encSegMeta (m : CacheSegMeta) : Json :=
   Json.mkObj [
     ("replica", Json.str m.replicaId),

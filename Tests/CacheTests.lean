@@ -479,6 +479,79 @@ private def readsAgree (name : String) (d : Dirs) (skipBad : Bool := false)
       pure (a, b))
     (fun (a, b) => check name (loadedEq a b))
 
+/-- The cacheVersion-bump guard (ADR-0022 §3). A fixed corpus of wire lines —
+    every WireOp kind, across two segments so the per-segment owner check, the
+    cross-segment LWW tie-break, and the OR-Set/observed-tag removes all run — is
+    folded through the production read path (`materialize` = decodeSegment + the
+    kernel fold). Its `stateFoldDigest` (version-independent) is pinned against
+    the current `cacheVersion`. Any change to per-line classification, the owner
+    check, `WireOp.toOp`, kernel apply/merge, or the cache codec moves the
+    digest; the guard then FAILS, turning ADR-0022's "bump cacheVersion on a
+    semantics change" obligation into a CI gate instead of reviewer memory. -/
+def cacheVersionGuardTests : List Outcome :=
+  -- the recorded (cacheVersion, digest) the guard is pinned to. On an INTENDED
+  -- semantics change, bump Tl.Store.cacheVersion AND set this to the printed value.
+  let expectedFold : Nat × String :=
+    (2, "7194777635966312595")
+  -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
+  let stamp (idx : Nat) (stem : String) : Stamp :=
+    ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
+  -- own segment: the full lifecycle + both edge kinds + a relate + labels + meta
+  -- + REAL removes (observed = the matching add-tag)
+  let own : List String :=
+    [ mkLine (.create idA { title := some "Alpha", priority := some (1 : Fin 5) }) 0 ownStem,
+      mkLine (.create idB { title := some "Beta" }) 1 ownStem,
+      mkLine (.create idC { title := some "Gamma" }) 2 ownStem,
+      mkLine (.claim idA "alice") 3 ownStem,
+      mkLine (.update idA { description := some (some "the body"),
+                            notes := some (some "a note") }) 4 ownStem,
+      mkLine (.close idA .Done) 5 ownStem,
+      mkLine (.reopen idA) 6 ownStem,
+      mkLine (.defer idB 2100000000000) 7 ownStem,
+      mkLine (.undefer idB) 8 ownStem,
+      mkLine (.depAdd (idC, idB, .Blocks)) 9 ownStem,
+      mkLine (.depAdd (idA, idC, .Parent)) 10 ownStem,
+      mkLine (.relate (idA, idB, .Related)) 11 ownStem,
+      mkLine (.metaSet idA "owner" (some "team-x")) 12 ownStem,
+      mkLine (.metaSet idA "owner" none) 13 ownStem,
+      mkLine (.labelAdd idA "urgent") 14 ownStem,
+      mkLine (.labelAdd idB "backend") 15 ownStem,
+      mkLine (.labelRemove idB "backend" (FinSet.singleton (stamp 15 ownStem))) 16 ownStem,
+      mkLine (.depRemove (idC, idB, .Blocks) (FinSet.singleton (stamp 9 ownStem))) 17 ownStem,
+      mkLine (.unrelate (idA, idB, .Related) (FinSet.singleton (stamp 11 ownStem))) 18 ownStem,
+      mkLine (.close idC .Cancelled) 19 ownStem ]
+  -- forStem segment: a higher-stamped title write WINS the LWW on idA.title
+  -- (cross-segment merge over the create at idx 0)
+  let foreign : List String :=
+    [ mkLine (.update idA { title := some "Alpha-merged" }) 20 forStem ]
+  -- a SEPARATE segment whose one line is stamped by ownStem (not newStem): the
+  -- per-segment owner check refuses the whole segment, so it folds nothing. A
+  -- regression that accepted it would re-take idA.title at the higher hlc 21 and
+  -- move the digest. (One bad line refuses its segment wholesale, ADR-0001 — so
+  -- this sentinel must live alone, not poison the real forStem merge.)
+  let refused : List String :=
+    [ craftLine (.update idA { title := some "REFUSED" }) (now0 * 2 ^ 16 + 21) 5021 ownStem ]
+  let st := (materialize
+    [segOf ownStem own, segOf forStem foreign, segOf newStem refused]).state
+  let live := stateFoldDigest st
+  (if expectedFold.1 != cacheVersion then
+    [{ name := "cacheVersion-bump guard is pinned to the live cacheVersion",
+       passed := false,
+       msg := s!"guard pinned to cacheVersion {expectedFold.1}, but Tl.Store.cacheVersion is "
+         ++ s!"{cacheVersion} — set expectedFold := ({cacheVersion}, \"{live}\")" }]
+  else
+    [check "the fixed-corpus fold digest is unchanged under cacheVersion (else bump it)"
+       (live == expectedFold.2)
+       (s!"semantics/codec drift under cacheVersion {cacheVersion}: a stale cache could fold "
+         ++ s!"mismatched ops across two builds sharing a worktree. If intended, bump "
+         ++ s!"Tl.Store.cacheVersion AND set expectedFold to ({cacheVersion + 1}, \"{live}\"); "
+         ++ s!"else revert. live={live}")])
+  -- the merge/owner-check outcome pinned explicitly: the higher-stamped foreign
+  -- title wins, and the foreign-owned line was refused (not folded at idx 21)
+  ++ [check "cross-segment LWW takes the higher-stamped title; the foreign-owned line is refused"
+       (((st.issueData idA).title.value) == some "Alpha-merged")
+       (toString ((st.issueData idA).title.value))]
+
 def cacheIoTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let (root, d) ← mkProject

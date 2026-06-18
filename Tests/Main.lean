@@ -55,6 +55,7 @@ def main : IO UInt32 := do
     ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
     ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),
     ("Fold cache: cached fold ≡ fresh fold (seeded property)", cacheSuffixFoldProp),
+    ("Fold cache: cacheVersion-bump guard (ADR-0022 §3)", cacheVersionGuardTests),
     ("Fold cache: file lifecycle, healing, doctor non-persist", cacheIo),
     ("Perf: ×4-op scaling stays near-linear on every fast path", perf),
     ("Perf: native-primitive fast paths (String compare, content hash)", perfPrim),
