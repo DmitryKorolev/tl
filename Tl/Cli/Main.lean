@@ -125,7 +125,7 @@ def runVerb : List String → TlM CmdOut
     let parse (cmd : String) : TlM Argv :=
       MonadExcept.ofExcept (parseArgs (valFlagsOf cmd ++ globalVal) (boolFlagsOf cmd ++ globalBool) rest)
     match verb with
-    | "help" | "--help" => do
+    | "help" | "--help" | "-h" => do
       let a ← parse "help"
       match a.positionals with
       | [] => return { data := helpJson none, human := helpText none }
@@ -134,7 +134,7 @@ def runVerb : List String → TlM CmdOut
           throw (usageErr s!"no command '{name}' to describe")
         else return { data := helpJson (some name), human := helpText (some name) }
       | _ => throw (usageErr "help takes at most one command name")
-    | "version" => do
+    | "version" | "--version" | "-v" => do
       let a ← parse "version"
       MonadExcept.ofExcept (noPositionals a "version")
       return cmdVersion
@@ -322,7 +322,15 @@ def runVerb : List String → TlM CmdOut
       if other.startsWith "-" then
         throw (usageErr s!"flags follow the verb (e.g. `tl ready {other}`); no command named '{other}'")
       else
-        throw (usageErr s!"unknown command '{other}'")
+        -- did-you-mean: suggest the top-level verbs that share a prefix or first
+        -- two characters with the typo, else point at `tl help` (teach the fix)
+        let cmds := (commandSpecs.map (fun c => (c.command.splitOn " ").headD "")).eraseDups
+        let near := cmds.filter (fun c =>
+          c.startsWith other || other.startsWith c
+            || (c.length ≥ 2 && other.length ≥ 2 && c.take 2 == other.take 2))
+        let hint := if near.isEmpty then "run `tl help` for the command list"
+                    else s!"did you mean: {String.intercalate ", " near.eraseDups}?"
+        throw (usageErr s!"unknown command '{other}' — {hint}")
 
 /-- Sanitize a JSON tree's string leaves (error-context values can embed raw
     log bytes). Strings and array elements are sanitized; nested objects in

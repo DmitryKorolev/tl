@@ -914,6 +914,13 @@ def cliFreeVerbTests : IO (List Outcome) := do
       (fun j => jStr j "status" == some "cleared"),
      ← expectData "meta get after clear is null" ["meta", "get", "tl-" ++ mId, "ext:jira", "--dir", dirMeta]
       (fun j => (jStr j "value").isNone)]
+  -- CLI conveniences: -v/--version and -h aliases; did-you-mean on a typo
+  o := o ++
+    [← expectData "--version is a version alias" ["--version"] (fun _ => true),
+     ← expectData "-v is a version alias" ["-v"] (fun _ => true),
+     ← expectData "-h is a help alias" ["-h"] (fun j => (jArr j "commands").length > 0),
+     ← expectErr "an unknown command suggests the closest" ["creat", "x"] .usage
+       (fun e => (e.message.splitOn "did you mean").length > 1)]
   -- list defaults to open-only; --all includes closed
   let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
   o := o ++
