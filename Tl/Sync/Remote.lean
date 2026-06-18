@@ -87,10 +87,19 @@ private def reconcileRemote (d : Dirs) (remote : String) (pulledAcc : Bool) :
 
 /-- The remote leg: resolve a remote and `fetch → union → push` (ADR-0001 §5).
     No remote ⇒ a reported no-op (`ran := false`, `no-upstream`), never an error
-    — the local leg is the success on a remote-less worktree (ADR-0016 §1). -/
-def syncRemote (d : Dirs) : TlM RemoteOutcome := do
+    — the local leg is the success on a remote-less worktree (ADR-0016 §1).
+
+    `announce` is a caller-supplied sink fired once with the resolved remote name
+    immediately BEFORE the first network call, so an interactive sync over a slow
+    remote is not silent. It runs only when a remote actually resolves (a
+    no-upstream leg stays quiet). The default is a no-op, so the core stays free
+    of any UX/stream policy — the CLI layer injects the (sanitized, stderr) printer. -/
+def syncRemote (d : Dirs) (announce : String → IO Unit := fun _ => pure ()) :
+    TlM RemoteOutcome := do
   match ← resolveRemote d with
   | none => return { ran := false, remote := "", pushed := false, pulled := false, tip := none }
-  | some remote => reconcileRemote d remote false maxRemoteAttempts
+  | some remote =>
+    announce remote
+    reconcileRemote d remote false maxRemoteAttempts
 
 end Tl.Sync

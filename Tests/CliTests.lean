@@ -112,6 +112,12 @@ def cliBasicTests : IO (List Outcome) := do
   -- default priority is 2
   o := o ++ [← expectData "create defaults priority 2" ["create", "x", "--dir", dir, "--assignee", "t"]
     (fun j => jNat j "priority" == some 2)]
+  -- sync progress notice (stderr-only, sanitized before it bypasses Main's chokepoint)
+  o := o ++
+    [check "remoteSyncNotice names the resolved remote"
+       (remoteSyncNotice "origin" == "syncing with remote 'origin'…"),
+     check "the surfaced sync notice strips control/ANSI bytes from the remote name"
+       (sanitizeSingle (remoteSyncNotice "ev\x1b[31mil") == "syncing with remote 'evil'…")]
   return o
 
 def cliWorkLoopTests : IO (List Outcome) := do

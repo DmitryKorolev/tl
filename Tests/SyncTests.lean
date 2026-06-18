@@ -328,16 +328,22 @@ def syncRemoteTests : IO (List Outcome) := do
   o := o ++ [match ← runTl (resolveRemote dn) with
     | .ok none => { name := "resolveRemote is none with no remote (no-upstream)", passed := true }
     | _ => { name := "resolveRemote none", passed := false, msg := "expected none" }]
-  o := o ++ [match ← runTl (syncRemote dn) with
+  let noteN ← IO.mkRef ([] : List String)
+  o := o ++ [match ← runTl (syncRemote dn (announce := fun rm => noteN.modify (· ++ [rm]))) with
     | .ok r => check "syncRemote is a reported no-op with no remote" (!r.ran && !r.pushed && !r.pulled) (toString (repr r))
     | .error e => { name := "syncRemote no-upstream", passed := false, msg := e.message }]
+  o := o ++ [check "no progress notice fires when no remote resolves"
+      ((← noteN.get).isEmpty) (String.intercalate "," (← noteN.get))]
   -- (B) push to a fresh remote: a local ref's segment lands on the bare
   let (d, bare) ← repoWithRemote
   let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] none)
-  o := o ++ [match ← runTl (syncRemote d) with
+  let noteB ← IO.mkRef ([] : List String)
+  o := o ++ [match ← runTl (syncRemote d (announce := fun rm => noteB.modify (· ++ [rm]))) with
     | .ok r => check "syncRemote pushes the local ref to a fresh remote"
         (r.ran && r.remote == "origin" && r.pushed) (toString (repr r))
     | .error e => { name := "syncRemote pushes", passed := false, msg := e.message }]
+  o := o ++ [check "the progress notice fires once with the resolved remote before the network leg"
+      ((← noteB.get) == ["origin"]) (String.intercalate "," (← noteB.get))]
   let dBare : Dirs := { base := bare, tlRel := ".tl" }
   o := o ++ [match ← runTl (readRefAt dBare "refs/tl/log") with
     | .ok segs => check "the bare remote now carries the pushed segment"

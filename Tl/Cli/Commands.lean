@@ -143,6 +143,12 @@ private def listRender (v : View) (rows : List IssueId) (total : Nat) (summary e
     a generous default — sync is opt-in (`--sync`), this only reminds. -/
 def syncStaleWindowMs : Nat := 60 * 60 * 1000
 
+/-- The plain stderr line emitted right before `tl sync`'s network leg, so an
+    interactive sync over a slow remote is not silent. A one-shot notice, not a
+    spinner or a timer; the resolved remote name interpolated for context. -/
+def remoteSyncNotice (remote : String) : String :=
+  s!"syncing with remote '{remote}'…"
+
 /-- A full `tl sync` (local leg, the remote leg in a git repo, then a second
     local leg to absorb the remote's additions), recording the last-sync marker
     so `doctor`/`ready` never contact the remote themselves (ADR-0016). Shared by
@@ -151,7 +157,12 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
   let own ← loadReplica d
   let ownId := own.map (·.id)
   let l ← Tl.Sync.syncLocal d ownId
-  let r ← if l.ran then Tl.Sync.syncRemote d
+  -- announce the remote leg to stderr before the (possibly multi-second) network
+  -- fetch/push. The notice fires only when a remote resolves; stdout JSON stays a
+  -- single atomic object (progress is stderr-only). Sanitized — the remote name is
+  -- attacker-influenceable git-config data, and this bypasses Main's stderr chokepoint.
+  let r ← if l.ran then Tl.Sync.syncRemote d (announce := fun remote =>
+            IO.eprintln s!"tl: {sanitizeSingle (remoteSyncNotice remote)}")
           else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
   -- a second local leg after a remote that ran materializes what the fetch added
   -- (it can pull a NEW replica). Best-effort — the push already succeeded, so
