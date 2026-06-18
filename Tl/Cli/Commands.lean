@@ -531,7 +531,7 @@ private def writeNow (v : TxContext) (parsed : List ParsedOp) : View :=
   postView v parsed v.now
 
 def cmdCreate (dirOverride : Option String) (title : String) (priority : Option Nat)
-    (description : Option String) (actor : String)
+    (description slug : Option String) (actor : String)
     (blockedBy blocks parents related : List String) : TlM CmdOut := do
   let edgeCount := blockedBy.length + blocks.length + parents.length + related.length
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
@@ -554,7 +554,7 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
             .relate (if decide (id ≤ r) then (id, r, EdgeKind.Related)
                      else (r, id, EdgeKind.Related)))
       .ok (WireOp.create id
-        { title := some title, priority := prio, description := description.map some }
+        { title := some title, priority := prio, description := description.map some, slug := slug.map some }
         :: edgeOps))
   let v := writeNow ctx parsed
   let some newId := parsed.head?.bind (fun p =>
@@ -707,17 +707,17 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-def cmdUpdate (dirOverride : Option String) (tok : String) (title description notes : Option String)
+def cmdUpdate (dirOverride : Option String) (tok : String) (title description notes slug : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
-  if title.isNone && description.isNone && notes.isNone && priority.isNone then
-    throw (.mk' .usage "update needs at least one of --title, --priority, --description, --notes")
+  if title.isNone && description.isNone && notes.isNone && slug.isNone && priority.isNone then
+    throw (.mk' .usage "update needs at least one of --title, --priority, --description, --notes, --slug")
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     .ok [.update i { title, priority := prio,
                      description := description.map some,
-                     notes := notes.map some }])
+                     notes := notes.map some, slug := slug.map some }])
   let v := writeNow ctx parsed
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .update ui _ => some ui | _ => none)
@@ -1001,6 +1001,96 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
            human := if counted.isEmpty then "no labels"
                     else String.intercalate "\n" (counted.map (fun (l, n) => s!"{sanitizeSingle l}  {n}"))
            notes }
+
+/-! ## meta (the opaque per-key side-channel — drives nothing, ADR-0002) -/
+
+/-- `tl meta set <id> <key> <value>`: write an opaque metadata value (per-key
+    LWW). No theorem touches it (frame lemma); filter/cross-ref only. -/
+def cmdMetaSet (dirOverride : Option String) (tok key value : String) (actor : String) : TlM CmdOut := do
+  if key.trimAscii.isEmpty then
+    throw (.mk' .usage "a meta key must be non-empty — `tl meta set <id> <key> <value>`")
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, _) ← transact d (some actor) 1 (fun ctx _ => do
+    let i ← resolveToken ctx.loaded.state tok
+    .ok [.metaSet i key (some value)])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  return { data := Json.mkObj
+            [("id", Json.str (displayId i)), ("key", Json.str (sanitizeSingle key)),
+             ("value", Json.str (sanitizeSingle value)), ("status", Json.str "set")]
+           human := s!"set {sanitizeSingle key} on {displayId i}"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `tl meta clear <id> <key>`: tombstone a metadata key. A disclosed noop when
+    the key carries no current value. -/
+def cmdMetaClear (dirOverride : Option String) (tok key : String) (actor : String) : TlM CmdOut := do
+  if key.trimAscii.isEmpty then
+    throw (.mk' .usage "a meta key must be non-empty — `tl meta clear <id> <key>`")
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let i ← resolveToken s tok
+    if (((s.issueData i).metadata.find key).bind (·.value)).join.isNone then .ok []
+    else .ok [.metaSet i key none])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  let status := if parsed.isEmpty then "noop" else "cleared"
+  return { data := Json.mkObj
+            [("id", Json.str (displayId i)), ("key", Json.str (sanitizeSingle key)), ("status", Json.str status)]
+           human := if parsed.isEmpty then s!"{displayId i} had no {sanitizeSingle key} — nothing to do"
+                    else s!"cleared {sanitizeSingle key} on {displayId i}"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `tl meta get <id> [<key>]`: read one metadata value, or all of an issue's. -/
+def cmdMetaGet (dirOverride : Option String) (tok : String) (key : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  let dta := v.issueData i
+  match key with
+  | some k =>
+    let val := ((dta.metadata.find k).bind (·.value)).join
+    return { data := Json.mkObj
+              [("id", Json.str (displayId i)), ("key", Json.str (sanitizeSingle k)),
+               ("value", val.elim Json.null (Json.str ∘ sanitizeSingle))]
+             human := val.elim s!"(no {sanitizeSingle k})" sanitizeSingle, notes }
+  | none =>
+    let pairs := (AMap.keys dta.metadata).filterMap (fun k =>
+      ((dta.metadata.find k).bind (·.value)).join.map (fun val => (k, val)))
+    let rows := pairs.map (fun (k, val) =>
+      Json.mkObj [("key", Json.str (sanitizeSingle k)), ("value", Json.str (sanitizeSingle val))])
+    return { data := Json.mkObj
+              [("id", Json.str (displayId i)), ("count", jnum pairs.length), ("meta", Json.arr rows.toArray)]
+             human := if pairs.isEmpty then s!"{displayId i} has no meta"
+                      else String.intercalate "\n" (pairs.map (fun (k, val) => s!"{sanitizeSingle k}: {sanitizeSingle val}")), notes }
+
+/-- `tl meta list [<id>]`: the metadata keys in use — for one issue, or every key
+    with how many issues carry it. -/
+def cmdMetaList (dirOverride : Option String) (idTok : Option String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  match idTok with
+  | some tok =>
+    let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+    let keys := (AMap.keys (v.issueData i).metadata).filter (fun k =>
+      (((v.issueData i).metadata.find k).bind (·.value)).join.isSome)
+    return { data := Json.mkObj
+              [("id", Json.str (displayId i)), ("count", jnum keys.length),
+               ("keys", Json.arr (keys.map (Json.str ∘ sanitizeSingle)).toArray)]
+             human := if keys.isEmpty then s!"{displayId i} has no meta"
+                      else String.intercalate "\n" (keys.map sanitizeSingle), notes }
+  | none =>
+    let counted : List (String × Nat) := Id.run do
+      let mut acc : List (String × Nat) := []
+      for i in v.present do
+        let dta := v.issueData i
+        for k in (AMap.keys dta.metadata) do
+          if (((dta.metadata.find k).bind (·.value)).join.isSome) then
+            acc := AssocList.insertWith (· + ·) k 1 acc
+      return acc
+    let rows := counted.map (fun (k, n) =>
+      Json.mkObj [("key", Json.str (sanitizeSingle k)), ("count", jnum n)])
+    return { data := Json.mkObj [("count", jnum counted.length), ("keys", Json.arr rows.toArray)]
+             human := if counted.isEmpty then "no meta in use"
+                      else String.intercalate "\n" (counted.map (fun (k, n) => s!"{sanitizeSingle k}  {n}")), notes }
 
 /-! ## doctor / init / version -/
 

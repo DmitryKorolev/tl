@@ -164,7 +164,7 @@ def runVerb : List String → TlM CmdOut
             let body := if body.endsWith "\n" then (body.dropEnd 1).toString else body
             pure (if body.trimAscii.toString.isEmpty then none else some body)
         else pure descFlag
-      cmdCreate (a.get? "dir") title prio desc actor
+      cmdCreate (a.get? "dir") title prio desc (a.get? "slug") actor
         (a.getAll "blocked-by") (a.getAll "blocks") (a.getAll "parent") (a.getAll "related")
     | "ready" => do
       let a ← parse "ready"
@@ -223,7 +223,7 @@ def runVerb : List String → TlM CmdOut
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
       cmdUpdate (a.get? "dir") tok (a.get? "title") (a.get? "description")
-        (a.get? "notes") prio actor
+        (a.get? "notes") (a.get? "slug") prio actor
     | "parent" => do
       match rest with
       | "set" :: rest' => do
@@ -285,6 +285,31 @@ def runVerb : List String → TlM CmdOut
         MonadExcept.ofExcept (noPositionals a "label list")
         cmdLabelList (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "label takes add|remove|list")
+    | "meta" => do
+      match rest with
+      | "set" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta set" ++ globalVal) (boolFlagsOf "meta set" ++ globalBool) rest')
+        match a.positionals with
+        | [x, k, val] => cmdMetaSet (a.get? "dir") x k val (← actorOf a)
+        | _ => throw (usageErr "meta set takes <id> <key> <value>")
+      | "get" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta get" ++ globalVal) (boolFlagsOf "meta get" ++ globalBool) rest')
+        match a.positionals with
+        | [x] => cmdMetaGet (a.get? "dir") x none (a.has "skip-bad")
+        | [x, k] => cmdMetaGet (a.get? "dir") x (some k) (a.has "skip-bad")
+        | _ => throw (usageErr "meta get takes <id> [<key>]")
+      | "clear" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta clear" ++ globalVal) (boolFlagsOf "meta clear" ++ globalBool) rest')
+        match a.positionals with
+        | [x, k] => cmdMetaClear (a.get? "dir") x k (← actorOf a)
+        | _ => throw (usageErr "meta clear takes <id> <key>")
+      | "list" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta list" ++ globalVal) (boolFlagsOf "meta list" ++ globalBool) rest')
+        match a.positionals with
+        | [] => cmdMetaList (a.get? "dir") none (a.has "skip-bad")
+        | [x] => cmdMetaList (a.get? "dir") (some x) (a.has "skip-bad")
+        | _ => throw (usageErr "meta list takes an optional <id>")
+      | _ => throw (usageErr "meta takes set|get|clear|list")
     | "sync" => do
       let a ← parse "sync"
       MonadExcept.ofExcept (noPositionals a "sync")

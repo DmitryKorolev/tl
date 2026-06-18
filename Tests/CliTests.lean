@@ -887,6 +887,33 @@ def cliFreeVerbTests : IO (List Outcome) := do
       ["stats", "--dir", dir2]
       (fun j => jNat j "open" == some 1 && jNat j "openEpics" == some 0
         && jNat j "openTasks" == some 1 && jNat j "done" == some 2)]
+  -- slug: create/update set the display handle, which resolves like an id
+  let dirS ← freshDir
+  let sId ← mkIssue dirS "Sluggable" ["--slug", "my-slug"]
+  o := o ++
+    [← expectData "create --slug sets the slug" ["show", "tl-" ++ sId, "--dir", dirS]
+      (fun j => jStr j "slug" == some "my-slug"),
+     ← expectData "the slug resolves like an id" ["show", "my-slug", "--dir", dirS]
+      (fun j => jStr j "id" == some ("tl-" ++ sId)),
+     ← expectData "update --slug replaces it"
+        ["update", "tl-" ++ sId, "--slug", "new-slug", "--dir", dirS, "--assignee", "t"]
+      (fun j => jStr j "slug" == some "new-slug")]
+  -- meta: the opaque side-channel — set/get/list/clear round-trip
+  let dirMeta ← freshDir
+  let mId ← mkIssue dirMeta "Has meta" []
+  o := o ++
+    [← expectData "meta set writes a key"
+        ["meta", "set", "tl-" ++ mId, "ext:jira", "PROJ-1", "--dir", dirMeta, "--assignee", "t"]
+      (fun j => jStr j "status" == some "set" && jStr j "value" == some "PROJ-1"),
+     ← expectData "meta get reads it back" ["meta", "get", "tl-" ++ mId, "ext:jira", "--dir", dirMeta]
+      (fun j => jStr j "value" == some "PROJ-1"),
+     ← expectData "meta list counts the issue's keys" ["meta", "list", "tl-" ++ mId, "--dir", dirMeta]
+      (fun j => jNat j "count" == some 1),
+     ← expectData "meta clear retracts it"
+        ["meta", "clear", "tl-" ++ mId, "ext:jira", "--dir", dirMeta, "--assignee", "t"]
+      (fun j => jStr j "status" == some "cleared"),
+     ← expectData "meta get after clear is null" ["meta", "get", "tl-" ++ mId, "ext:jira", "--dir", dirMeta]
+      (fun j => (jStr j "value").isNone)]
   -- list defaults to open-only; --all includes closed
   let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
   o := o ++

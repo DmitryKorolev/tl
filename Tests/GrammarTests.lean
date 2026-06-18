@@ -32,6 +32,7 @@ private def dispatchVerbs : List String :=
    "dep add", "dep remove", "dep cycles", "dep critical", "dep relate", "dep unrelate",
    "parent set", "parent remove",
    "label add", "label remove", "label list",
+   "meta set", "meta get", "meta clear", "meta list",
    "why", "unblocks", "show", "list", "log", "stats", "sync", "doctor", "version", "help"]
 
 def grammarSchemaTests : List Outcome := Id.run do
