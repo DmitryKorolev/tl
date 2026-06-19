@@ -27,20 +27,28 @@ variable {α : Type _} [DecidableEq α]
 theorem dedup_mem {a : α} : (l : List α) → (a ∈ dedup l ↔ a ∈ l)
   | [] => Iff.rfl
   | x :: xs => by
-    show a ∈ (if x ∈ dedup xs then dedup xs else x :: dedup xs) ↔ a ∈ x :: xs
-    by_cases hx : x ∈ dedup xs
-    · rw [if_pos hx, List.mem_cons, dedup_mem xs]
-      have hxs : x ∈ xs := (dedup_mem xs).mp hx
-      exact ⟨fun h => Or.inr h, fun h => h.elim (fun he => he ▸ hxs) id⟩
-    · rw [if_neg hx, List.mem_cons, List.mem_cons, dedup_mem xs]
+    show a ∈ x :: (dedup xs).filter (fun y => decide (y ≠ x)) ↔ a ∈ x :: xs
+    rw [List.mem_cons, List.mem_filter, dedup_mem xs, decide_eq_true_eq, List.mem_cons]
+    constructor
+    · rintro (h | ⟨h, _⟩)
+      · exact Or.inl h
+      · exact Or.inr h
+    · rintro (h | h)
+      · exact Or.inl h
+      · by_cases hax : a = x
+        · exact Or.inl hax
+        · exact Or.inr ⟨h, hax⟩
 
 theorem dedup_nodup : (l : List α) → (dedup l).Nodup
   | [] => List.nodup_nil
   | x :: xs => by
-    show (if x ∈ dedup xs then dedup xs else x :: dedup xs).Nodup
-    by_cases hx : x ∈ dedup xs
-    · rw [if_pos hx]; exact dedup_nodup xs
-    · rw [if_neg hx]; exact List.nodup_cons.mpr ⟨hx, dedup_nodup xs⟩
+    show (x :: (dedup xs).filter (fun y => decide (y ≠ x))).Nodup
+    rw [List.nodup_cons]
+    refine ⟨?_, (dedup_nodup xs).filter _⟩
+    rw [List.mem_filter]
+    rintro ⟨_, h⟩
+    rw [decide_eq_true_eq] at h
+    exact h rfl
 
 /-! ## `reachStep` membership, no-dup, inflation -/
 

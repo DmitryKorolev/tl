@@ -24,9 +24,16 @@ namespace Tl.Kernel
 
 open Tl.Crdt
 
-/-- Deduplicate, keeping the first occurrence (no Mathlib `List.dedup`, ADR-0009). -/
-def dedup {α : Type _} [DecidableEq α] (l : List α) : List α :=
-  l.foldr (fun x acc => if x ∈ acc then acc else x :: acc) []
+/-- Deduplicate, keeping the *first* occurrence in left-to-right order. A prefix
+    that is already duplicate-free is preserved verbatim, so `reachStep` grows its
+    accumulator by appending and `reachClosure` is a stable BFS-ordered layering
+    (the frontier engine in `ReachBFS` is then list-equal to it). The recursive
+    form `x :: (dedup xs).filter (· ≠ x)` makes `dedup (x :: xs)` and the
+    append/filter algebra the equivalence proof needs into clean inductions — no
+    Mathlib `List.dedup` (ADR-0009). -/
+def dedup {α : Type _} [DecidableEq α] : List α → List α
+  | [] => []
+  | x :: xs => x :: (dedup xs).filter (fun y => decide (y ≠ x))
 
 /-- Iterate `f` `n` times (total, structural on `n`). -/
 def iterateN {α : Type _} (f : α → α) : Nat → α → α
