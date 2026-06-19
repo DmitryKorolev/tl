@@ -353,6 +353,49 @@ theorem reachBFS_eq (succ : IssueId → List IssueId) (n : Nat) (seed : List Iss
       List.reverse_reverse]
   exact reachBFSL_eq succ n seed hseed
 
+/-! ## Nodup of the adjacency seeds (so `reachBFS_eq` applies at the call sites)
+
+The present edge set is duplicate-free (an OR-Set's present elements are distinct),
+and the adjacency projections map an edge to one endpoint after fixing the other
+endpoint and the kind, so the map is injective on the filtered edges — hence the
+single-source/single-target adjacency lists are themselves duplicate-free. -/
+
+theorem presentEdges_nodup (s : State) : s.presentEdges.Nodup := by
+  show (s.edges.presentElements).Nodup
+  rw [OrSet.presentElements_eq_keys_filter]
+  exact List.Nodup.filter _ (AMap.keys_nodup s.edges.adds)
+
+theorem blockersOf_nodup (s : State) (i : IssueId) : (s.blockersOf i).Nodup := by
+  unfold State.blockersOf
+  apply List.Nodup.map_on _ (List.Nodup.filter _ (presentEdges_nodup s))
+  intro e1 h1 e2 h2 hfst
+  rw [List.mem_filter] at h1 h2
+  obtain ⟨hc1, hb1⟩ := of_decide_eq_true h1.2
+  obtain ⟨hc2, hb2⟩ := of_decide_eq_true h2.2
+  exact Prod.ext hfst (Prod.ext (hb1.trans hb2.symm) (hc1.trans hc2.symm))
+
+theorem dependentsOf_nodup (s : State) (i : IssueId) : (s.dependentsOf i).Nodup := by
+  unfold State.dependentsOf
+  apply List.Nodup.map_on _ (List.Nodup.filter _ (presentEdges_nodup s))
+  intro e1 h1 e2 h2 hsnd
+  rw [List.mem_filter] at h1 h2
+  obtain ⟨hc1, ha1⟩ := of_decide_eq_true h1.2
+  obtain ⟨hc2, ha2⟩ := of_decide_eq_true h2.2
+  exact Prod.ext (ha1.trans ha2.symm) (Prod.ext hsnd (hc1.trans hc2.symm))
+
+theorem liveBlockersSucc_nodup (s : State) (i : IssueId) : (s.liveBlockersSucc i).Nodup :=
+  List.Nodup.filter _ (blockersOf_nodup s i)
+
+theorem kindSucc_nodup (s : State) (k : EdgeKind) (i : IssueId) : (s.kindSucc k i).Nodup := by
+  unfold State.kindSucc
+  apply List.Nodup.filter
+  apply List.Nodup.map_on _ (List.Nodup.filter _ (presentEdges_nodup s))
+  intro e1 h1 e2 h2 hsnd
+  rw [List.mem_filter] at h1 h2
+  obtain ⟨hc1, ha1⟩ := of_decide_eq_true h1.2
+  obtain ⟨hc2, ha2⟩ := of_decide_eq_true h2.2
+  exact Prod.ext (ha1.trans ha2.symm) (Prod.ext hsnd (hc1.trans hc2.symm))
+
 end State
 
 end Tl.Kernel

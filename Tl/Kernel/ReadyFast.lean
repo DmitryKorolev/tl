@@ -20,6 +20,7 @@ unblocked echo shares the win through `unblocksFast`.
 -/
 import Tl.Kernel.RollupFast
 import Tl.Kernel.HashMapView
+import Tl.Kernel.ReachBFS
 
 namespace Tl.Kernel
 
@@ -176,13 +177,13 @@ theorem blocksSuccB_eq (s : State) (i : IssueId) :
     an O(N) `hasIssue` per node. -/
 def weightFast (bsrc : Std.HashMap IssueId (List IssueId))
     (pset : Std.HashSet IssueId) (n : Nat) (i : IssueId) : Nat :=
-  ((reachFix (blocksSuccB bsrc pset) n [i]).erase i).length
+  ((reachBFS (blocksSuccB bsrc pset) n [i]).erase i).length
 
 theorem weightFast_eq (s : State) (i : IssueId) :
     weightFast (blocksBySource s.presentEdges) (hashSetOf s.presentIssues)
         s.presentIssues.length i = s.weight i := by
   unfold State.weightFast State.weight State.reachableBlocks
-  rw [reachFix_eq, reachClosure_congr (fun x => blocksSuccB_eq s x)]
+  rw [reachBFS_eq _ _ _ (List.nodup_singleton i), reachClosure_congr (fun x => blocksSuccB_eq s x)]
 
 /-- Per-issue field data via the data hash copy (= `issueData`). -/
 theorem issueDataH_eq (s : State) (i : IssueId) :
@@ -337,17 +338,26 @@ theorem liveSuccE_eq (s : State) (x : IssueId) :
   intro b _
   rw [effClosedWith_eq]
 
+/-- The hoisted live-blocker seed is duplicate-free (it filters the nodup
+    `blockersOfE = blockersOf`), so `reachBFS_eq` applies to `whyFast`'s seed. -/
+theorem liveSuccE_nodup (m : AMap IssueId Status) (s : State) (x : IssueId) :
+    (liveSuccE m s.presentEdges s x).Nodup := by
+  unfold State.liveSuccE
+  rw [blockersOfE_eq]
+  exact List.Nodup.filter _ (blockersOf_nodup s x)
+
 /-- `why` over the hoisted views and the rollup map: live blockers read the
     batched rollup, the closure saturates early. -/
 def whyFast (m : AMap IssueId Status) (s : State) (i : IssueId) : List IssueId :=
   let edges := s.presentEdges
-  reachFix (liveSuccE m edges s) s.presentIssues.length (liveSuccE m edges s i)
+  reachBFS (liveSuccE m edges s) s.presentIssues.length (liveSuccE m edges s i)
 
 theorem whyFast_eq (s : State) (i : IssueId) :
     whyFast (s.effStatusAll) s i = s.why i := by
   unfold State.whyFast State.why
   dsimp only
-  rw [reachFix_eq, reachClosure_congr (liveSuccE_eq s), liveSuccE_eq s i]
+  rw [reachBFS_eq _ _ _ (liveSuccE_nodup (s.effStatusAll) s i),
+    reachClosure_congr (liveSuccE_eq s), liveSuccE_eq s i]
 
 end State
 
