@@ -39,6 +39,7 @@ fast-branch-taken tests in `CrossTests` catch it sooner and by name.
 import Tl.Store.Cache
 import Tl.Kernel.ReadyFast
 import Tl.Kernel.CyclesFast
+import Tl.Kernel.Path
 import Tl.Cli.Project
 import Tl.Sync.Merge
 import Tl.Hash.Sha256
@@ -102,6 +103,30 @@ private def ringOps (n : Nat) : List ParsedOp :=
   (List.range n).flatMap (fun k =>
     [mk (2 * k) (.create (synthId k) { title := some s!"r{k}" }),
      mk (2 * k + 1) (.depAdd (synthId k, synthId ((k + 1) % n), EdgeKind.Blocks))])
+
+/-- A WIDE blocks graph for the dep-path witness extractor (`blocksPath`): a source
+    `a` (id 0) fans into a width-`n` middle layer X (ids `1..n`), and each `x_i`
+    blocks two DISTINCT next-layer nodes `y_i` and `y_{i+1 mod n}` (ids `n+1..2n`),
+    so one round's frontier (all of X) expands to a list of `2n` successors with `n`
+    distinct targets and duplicate in-edges. This is the shape the retired engine was
+    Θ(n²) on — the round's list `dedup` over `n` distinct successors, and the
+    per-discovered-node `parentOf` rescan of the `n`-wide frontier — while `V+E` is
+    Θ(n). The target `b` is `y_{n-1}` (id `2n`). -/
+private def wideOps (n : Nat) : List ParsedOp :=
+  let replicaVal := (ofCrockford? stem).getD 0
+  let mk (idx : Nat) (op : WireOp) : ParsedOp :=
+    { v := supportedVersion, op
+      stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
+      actor := some "perf" }
+  let creates := (List.range (2 * n + 1)).map (fun k =>
+    mk k (.create (synthId k) { title := some s!"w{k}" }))
+  let aToX := (List.range n).map (fun i =>
+    mk (2 * n + 1 + i) (.depAdd (synthId 0, synthId (i + 1), EdgeKind.Blocks)))
+  let xToY := (List.range n).flatMap (fun i =>
+    [mk (3 * n + 1 + 2 * i) (.depAdd (synthId (i + 1), synthId (n + 1 + i), EdgeKind.Blocks)),
+     mk (3 * n + 2 + 2 * i)
+       (.depAdd (synthId (i + 1), synthId (n + 1 + ((i + 1) % n)), EdgeKind.Blocks))])
+  creates ++ aToX ++ xToY
 
 private def segsOf (ops : List ParsedOp) : List SegmentData :=
   [{ replicaId := stem
@@ -237,6 +262,21 @@ def perfTests : IO (List Outcome) := do
     let canon ← bench 2500 (fun _ =>
       present.foldl (fun acc i =>
         acc + (match Tl.Cli.canonicalParentE v i with | some _ => 1 | none => 0)) 0)
+    -- the dep-path witness extractor (`blocksPath`) over a WIDE blocks graph: a round
+    -- whose frontier expands to a wide layer with `n` distinct successors and
+    -- duplicate in-edges (`wideOps`). The retired engine was Θ(n²) here — the round's
+    -- list `dedup` over the distinct successors and the per-discovered-node `parentOf`
+    -- frontier rescan; the shipped engine (one `bfsStepFn` HashSet fold + the one-pass
+    -- `firstPred` index, over the bucketed `blocksSuccB`) is O(V+E). A revert to the
+    -- list `dedup`, the `parentOf` rescan, or the un-indexed successor turns this row
+    -- quadratic and the ratio jumps. Measured on the COMPILED kernel (not the
+    -- interpreter), which is the tier this bound is asserted at (ADR-0023).
+    let wsegs := segsOf (wideOps n)
+    let (wloaded, _) := materializeCached wsegs none false (some synthNow) (some stem)
+    let ws := wloaded.state
+    let wa := synthId 0
+    let wb := synthId (2 * n)
+    let wide ← bench 700 (fun _ => ((ws.blocksPath wa wb).map (·.length)).getD 0)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
@@ -244,7 +284,8 @@ def perfTests : IO (List Outcome) := do
       ("giant-SCC diagnostics (machinery)", rcyc),
       ("provenance map", prov), ("sync line-union", uni),
       ("cli per-row projections (issueRow fields)", row),
-      ("cli tree canonical-parent per row", canon)])]
+      ("cli tree canonical-parent per row", canon),
+      ("dep-path blocksPath (wide graph)", wide)])]
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
