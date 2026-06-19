@@ -205,6 +205,154 @@ theorem reachBFSL_eq (succ : IssueId → List IssueId) (n : Nat) (seed : List Is
   exact reachBFSLgo_eq succ n seed [] seed hseed (List.nil_append seed).symm
     (by intro y hy; rw [List.mem_flatMap] at hy; obtain ⟨a, ha, _⟩ := hy; exact nomatch ha)
 
+/-! ## The shipped HashSet engine -/
+
+/-- One expansion step (HashSet, shipped): cons a genuinely-new successor onto the
+    reverse-output and mark it visited; skip a node already seen (O(1) membership). -/
+def bfsStepFn (p : Std.HashSet IssueId × List IssueId) (y : IssueId) :
+    Std.HashSet IssueId × List IssueId :=
+  if p.1.contains y then p else (p.1.insert y, y :: p.2)
+
+/-- A node is new for the next-round filter iff it is outside the current seen set
+    and distinct from the just-added node. -/
+theorem decide_notMem_cons_mid (z y : IssueId) (S r : List IssueId) :
+    (decide (z ∉ S ++ r) && decide (z ≠ y)) = decide (z ∉ S ++ (y :: r)) := by
+  rw [← Bool.decide_and]
+  apply decide_eq_decide.mpr
+  rw [List.mem_append, List.mem_append, List.mem_cons]
+  constructor
+  · rintro ⟨hnsr, hny⟩ (hs | he | hr)
+    · exact hnsr (Or.inl hs)
+    · exact hny he
+    · exact hnsr (Or.inr hr)
+  · intro hn
+    exact ⟨fun h => h.elim (fun hs => hn (Or.inl hs)) (fun hr => hn (Or.inr (Or.inr hr))),
+           fun he => hn (Or.inr (Or.inl he))⟩
+
+/-- **The expansion fold.** Against a visited set representing the seen list
+    `S ++ r`, folding the successors `ys` collects (reversed) exactly the deduped
+    not-yet-seen nodes, and the resulting visited set represents the extended seen
+    list. The HashSet's O(1) membership stands in for the spec's list `∉`. -/
+theorem bfsFold_spec : ∀ (ys S r : List IssueId) (v : Std.HashSet IssueId),
+    (∀ z, v.contains z = true ↔ z ∈ S ++ r) →
+    (ys.foldl bfsStepFn (v, r)).2
+        = (dedup (ys.filter (fun y => decide (y ∉ S ++ r)))).reverse ++ r
+      ∧ ∀ z, (ys.foldl bfsStepFn (v, r)).1.contains z = true
+          ↔ z ∈ S ++ (ys.foldl bfsStepFn (v, r)).2
+  | [], S, r, v, hv => by
+    refine ⟨?_, ?_⟩
+    · show r = (dedup (([] : List IssueId).filter _)).reverse ++ r
+      rw [List.filter_nil]; rfl
+    · intro z
+      show v.contains z = true ↔ z ∈ S ++ r
+      exact hv z
+  | y :: ys, S, r, v, hv => by
+    rw [List.foldl_cons]
+    show (ys.foldl bfsStepFn (bfsStepFn (v, r) y)).2 = _
+       ∧ ∀ z, (ys.foldl bfsStepFn (bfsStepFn (v, r) y)).1.contains z = true ↔ _
+    by_cases hc : v.contains y = true
+    · -- y already seen: the step is a no-op, and the filter drops y
+      have hceq : bfsStepFn (v, r) y = (v, r) := by unfold bfsStepFn; rw [if_pos hc]
+      rw [hceq]
+      have hyin : y ∈ S ++ r := (hv y).mp hc
+      have hpy : decide (y ∉ S ++ r) = false := by
+        rw [decide_eq_false_iff_not]; exact fun h => h hyin
+      rw [List.filter_cons_of_neg (by rw [hpy]; exact Bool.false_ne_true)]
+      exact bfsFold_spec ys S r v hv
+    · -- y new: cons it, recurse with the extended seen list
+      rw [Bool.not_eq_true] at hc
+      have hceq : bfsStepFn (v, r) y = (v.insert y, y :: r) := by
+        unfold bfsStepFn
+        rw [if_neg (show ¬ v.contains y = true by rw [hc]; exact Bool.false_ne_true)]
+      rw [hceq]
+      have hynotin : y ∉ S ++ r := by
+        intro h
+        have hcy : v.contains y = true := (hv y).mpr h
+        rw [hc] at hcy
+        exact Bool.noConfusion hcy
+      have hpy : decide (y ∉ S ++ r) = true := by rw [decide_eq_true_eq]; exact hynotin
+      -- new visited represents S ++ (y :: r)
+      have hv' : ∀ z, (v.insert y).contains z = true ↔ z ∈ S ++ (y :: r) := by
+        intro z
+        rw [Std.HashSet.contains_insert, Bool.or_eq_true, beq_iff_eq, hv z,
+          List.mem_append, List.mem_append, List.mem_cons]
+        constructor
+        · rintro (he | hs | hr)
+          · exact Or.inr (Or.inl he.symm)
+          · exact Or.inl hs
+          · exact Or.inr (Or.inr hr)
+        · rintro (hs | he | hr)
+          · exact Or.inr (Or.inl hs)
+          · exact Or.inl he.symm
+          · exact Or.inr (Or.inr hr)
+      have hfeq : ys.filter (fun w => decide (w ∉ S ++ y :: r))
+                = (ys.filter (fun w => decide (w ∉ S ++ r))).filter (fun w => decide (w ≠ y)) := by
+        rw [List.filter_filter]
+        apply List.filter_congr
+        intro w _
+        rw [← decide_notMem_cons_mid w y S r, Bool.and_comm]
+      obtain ⟨ih1, ih2⟩ := bfsFold_spec ys S (y :: r) (v.insert y) hv'
+      refine ⟨?_, ih2⟩
+      rw [ih1, List.filter_cons_of_pos (by rw [hpy]), hfeq, ← dedup_filter,
+        show dedup (y :: ys.filter (fun w => decide (w ∉ S ++ r)))
+           = y :: (dedup (ys.filter (fun w => decide (w ∉ S ++ r)))).filter (fun w => decide (w ≠ y))
+           from rfl,
+        List.reverse_cons, List.append_assoc, List.singleton_append]
+
+/-- The shipped frontier closure (HashSet visited, reverse-built output). -/
+def reachBFSgo (succ : IssueId → List IssueId) :
+    Nat → Std.HashSet IssueId → List IssueId → List IssueId → List IssueId
+  | 0, _vis, accRev, _frontier => accRev.reverse
+  | n + 1, vis, accRev, frontier =>
+    let p := (frontier.flatMap succ).foldl bfsStepFn (vis, [])
+    reachBFSgo succ n p.1 (p.2 ++ accRev) p.2.reverse
+
+/-- **The shipped O(V+E) reachability engine** (ADR-0024 indexed views): each
+    round expands only the frontier, walking each node's out-edges once and
+    testing membership against the visited `Std.HashSet`. -/
+def reachBFS (succ : IssueId → List IssueId) (n : Nat) (seed : List IssueId) : List IssueId :=
+  reachBFSgo succ n (hashSetOf seed) seed.reverse seed
+
+/-- The HashSet engine reproduces the list reference (a representation refinement:
+    the visited set stands in for the `∉ acc` list scan). -/
+theorem reachBFSgo_eq (succ : IssueId → List IssueId) :
+    (n : Nat) → (vis : Std.HashSet IssueId) → (accRev frontier : List IssueId) →
+    (∀ z, vis.contains z = true ↔ z ∈ accRev.reverse) →
+    reachBFSgo succ n vis accRev frontier = reachBFSLgo succ n accRev.reverse frontier
+  | 0, _, _, _, _ => rfl
+  | n + 1, vis, accRev, frontier, hvis => by
+    obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
+      (fun z => by rw [List.append_nil]; exact hvis z)
+    have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2
+                = (bfsLayer succ accRev.reverse frontier).reverse := by
+      rw [hout, List.append_nil]
+      unfold State.bfsLayer
+      congr 2
+      apply List.filter_congr
+      intro w _
+      rw [List.append_nil]
+    have hp1 : ∀ z, ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1.contains z = true
+                  ↔ z ∈ (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev).reverse := by
+      intro z
+      rw [hvis' z, List.reverse_append, List.mem_append, List.mem_append, List.mem_reverse,
+        List.mem_reverse]
+    show reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+        (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+        ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse
+       = reachBFSLgo succ n (accRev.reverse ++ bfsLayer succ accRev.reverse frontier)
+           (bfsLayer succ accRev.reverse frontier)
+    rw [reachBFSgo_eq succ n _ _ _ hp1, hlayer,
+      List.reverse_append, List.reverse_reverse]
+
+/-- **The shipped engine is `reachClosure`.** -/
+theorem reachBFS_eq (succ : IssueId → List IssueId) (n : Nat) (seed : List IssueId)
+    (hseed : seed.Nodup) : reachBFS succ n seed = reachClosure succ n seed := by
+  unfold State.reachBFS
+  rw [reachBFSgo_eq succ n (hashSetOf seed) seed.reverse seed
+        (by intro z; rw [List.reverse_reverse]; rw [Std.HashSet.contains_iff_mem, mem_hashSetOf]),
+      List.reverse_reverse]
+  exact reachBFSL_eq succ n seed hseed
+
 end State
 
 end Tl.Kernel
