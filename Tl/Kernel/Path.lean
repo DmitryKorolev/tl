@@ -70,6 +70,128 @@ theorem find_foldl_insert {K V : Type _} [TotalOrd K] (val : K → V) :
       · rw [if_pos hza, if_pos (List.mem_cons.mpr (Or.inl hza)), hza]
       · rw [if_neg hza, if_neg (fun h => (List.mem_cons.mp h).elim hza hz)]
 
+/-- A discovering frontier predecessor of `y`: the first frontier node that lists
+    `y` as a successor. -/
+def parentOf (succ : IssueId → List IssueId) (frontier : List IssueId) (y : IssueId) :
+    Option IssueId :=
+  frontier.find? (fun u => decide (y ∈ succ u))
+
+/-! ## First-predecessor index (one O(E) pass, no per-node rescan)
+
+`parentOf succ fr y = fr.find? (y ∈ succ ·)` re-walks the whole frontier per
+discovered node (Θ(|layer|·|fr|) per round). `firstPred` precomputes, in ONE pass
+over the frontier's out-edges, the first predecessor of every child; a lookup is
+then O(1)-amortized and `firstPred[y]? = parentOf succ fr y`. -/
+
+/-- The frontier's out-edges as `(predecessor, successor)` pairs, in frontier×succ
+    order. -/
+def frontierEdges (succ : IssueId → List IssueId) (fr : List IssueId) : List (IssueId × IssueId) :=
+  fr.flatMap (fun u => (succ u).map (fun y => (u, y)))
+
+/-- First-writer-wins batch insert: a child already mapped keeps its first
+    predecessor. -/
+def firstPredStep (m : Std.HashMap IssueId IssueId) (e : IssueId × IssueId) :
+    Std.HashMap IssueId IssueId :=
+  if m.contains e.2 then m else m.insert e.2 e.1
+
+/-- The first-predecessor map of the frontier (one O(E) pass). -/
+def firstPred (succ : IssueId → List IssueId) (fr : List IssueId) : Std.HashMap IssueId IssueId :=
+  (frontierEdges succ fr).foldl firstPredStep ∅
+
+/-- First-writer-wins fold lookup: a key already in `m0` keeps its value; else the
+    first edge with that child supplies the predecessor. -/
+theorem getElem?_foldl_firstPredStep (y : IssueId) :
+    ∀ (L : List (IssueId × IssueId)) (m0 : Std.HashMap IssueId IssueId),
+      (L.foldl firstPredStep m0)[y]?
+        = match m0[y]? with
+          | some v => some v
+          | none => (L.find? (fun e => decide (e.2 = y))).map (·.1)
+  | [], m0 => by
+    show m0[y]? = match m0[y]? with
+      | some v => some v
+      | none => (([] : List (IssueId × IssueId)).find? (fun e => decide (e.2 = y))).map (·.1)
+    cases hm : m0[y]? with
+    | some _ => rfl
+    | none => rfl
+  | e :: L', m0 => by
+    show (L'.foldl firstPredStep (firstPredStep m0 e))[y]? = _
+    rw [getElem?_foldl_firstPredStep y L' (firstPredStep m0 e), List.find?_cons]
+    by_cases hc : m0.contains e.2 = true
+    · -- m0 already maps e.2: the step is a no-op
+      have hfp : firstPredStep m0 e = m0 := by unfold firstPredStep; rw [if_pos hc]
+      rw [hfp]
+      cases hm : m0[y]? with
+      | some _ => rfl
+      | none =>
+        have hey : ¬ (e.2 = y) := by
+          intro he; subst he
+          rw [Std.HashMap.contains_eq_isSome_getElem?, hm] at hc
+          exact Bool.noConfusion hc
+        rw [show decide (e.2 = y) = false from decide_eq_false hey]
+    · -- m0 does not map e.2: e.2 ↦ e.1 is the first writer
+      rw [Bool.not_eq_true] at hc
+      have hfp : firstPredStep m0 e = m0.insert e.2 e.1 := by
+        unfold firstPredStep
+        rw [if_neg (show ¬ (m0.contains e.2 = true) by rw [hc]; exact Bool.false_ne_true)]
+      rw [hfp, Std.HashMap.getElem?_insert]
+      by_cases hey : e.2 = y
+      · subst hey
+        have hm : m0[e.2]? = none := by
+          rw [Std.HashMap.contains_eq_isSome_getElem?] at hc
+          cases hmm : m0[e.2]? with
+          | none => rfl
+          | some v => rw [hmm] at hc; exact Bool.noConfusion hc
+        rw [if_pos (beq_self_eq_true e.2), hm,
+          show decide (e.2 = e.2) = true from decide_eq_true rfl]
+        rfl
+      · rw [if_neg (show ¬ ((e.2 == y) = true) by rw [beq_iff_eq]; exact hey),
+          show decide (e.2 = y) = false from decide_eq_false hey]
+
+/-- The first frontier out-edge into `y` carries exactly `parentOf`'s predecessor. -/
+theorem frontierEdges_find?_parentOf (succ : IssueId → List IssueId) (y : IssueId) :
+    ∀ (fr : List IssueId),
+      ((frontierEdges succ fr).find? (fun e => decide (e.2 = y))).map (·.1)
+        = parentOf succ fr y
+  | [] => rfl
+  | u :: fr' => by
+    have hinner : (((succ u).map (fun s => (u, s))).find? (fun e => decide (e.2 = y))).map (·.1)
+        = if y ∈ succ u then some u else none := by
+      rw [List.find?_map, Option.map_map]
+      show ((succ u).find? (fun s => decide (s = y))).map (fun _ => u) = _
+      cases h : (succ u).find? (fun s => decide (s = y)) with
+      | none =>
+        rw [List.find?_eq_none] at h
+        rw [Option.map_none, if_neg (fun hy => absurd (decide_eq_true (rfl : y = y)) (h y hy))]
+      | some v =>
+        have hmem : v ∈ succ u := List.mem_of_find?_eq_some h
+        have hpv := List.find?_some h
+        have hvy : v = y := of_decide_eq_true hpv
+        rw [if_pos (hvy ▸ hmem)]
+        rfl
+    have hLHS : ((frontierEdges succ (u :: fr')).find? (fun e => decide (e.2 = y))).map (·.1)
+        = (if y ∈ succ u then some u else none).or
+            (((frontierEdges succ fr').find? (fun e => decide (e.2 = y))).map (·.1)) := by
+      unfold frontierEdges
+      rw [List.flatMap_cons, List.find?_append, Option.map_or, hinner]
+    have hpar : parentOf succ (u :: fr') y
+        = if y ∈ succ u then some u else parentOf succ fr' y := by
+      unfold parentOf
+      rw [List.find?_cons]
+      cases hy : decide (y ∈ succ u) with
+      | true => rw [if_pos (of_decide_eq_true hy)]
+      | false => rw [if_neg (of_decide_eq_false hy)]
+    rw [hLHS, hpar, frontierEdges_find?_parentOf succ y fr']
+    by_cases hy : y ∈ succ u
+    · rw [if_pos hy, if_pos hy, Option.some_or]
+    · rw [if_neg hy, if_neg hy, Option.none_or]
+
+/-- **The one-pass index equals `parentOf`.** -/
+theorem firstPred_getElem? (succ : IssueId → List IssueId) (fr : List IssueId) (y : IssueId) :
+    (firstPred succ fr)[y]? = parentOf succ fr y := by
+  unfold firstPred
+  rw [getElem?_foldl_firstPredStep y (frontierEdges succ fr) ∅, Std.HashMap.getElem?_empty]
+  exact frontierEdges_find?_parentOf succ y fr
+
 /-! ## O(V+E) parent-recording frontier BFS
 
 The path is extracted from a parent map recorded *at discovery* during a single
@@ -79,12 +201,6 @@ path) together with the round it was found (`depth`). The witness path to `b` is
 then a one-shot parent walk from `b` back to a seed root — strictly decreasing
 `depth`, so it terminates. This replaces the materialized full-path map (whose
 per-node `path ++ [node]` append was a further O(N²) over the shared closure). -/
-
-/-- A discovering frontier predecessor of `y`: the first frontier node that lists
-    `y` as a successor. -/
-def parentOf (succ : IssueId → List IssueId) (frontier : List IssueId) (y : IssueId) :
-    Option IssueId :=
-  frontier.find? (fun u => decide (y ∈ succ u))
 
 /-- A single forward sweep recording a parent map (`IssueId → IssueId`, at
     discovery) and a discovery-depth map. Carries `(acc, frontier, parent, depth)`:
