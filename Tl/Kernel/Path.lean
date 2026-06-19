@@ -32,16 +32,20 @@ edges (the issues `i` blocks), consistent with `blocksSucc`/`unblocks`/critical;
 reachability/cardinality zone (ADR-0009) extends to this `Reach`/`ReachBFS`
 dependent.
 
-Cost (ADR-0023 tiering): the shipped engine is `parentSweepH` — a `Std.HashSet`
-visited set (O(1)-amortized membership for the frontier filter), `Std.HashMap`
-parent/depth maps (O(1)-amortized), and a REVERSED accumulator (per-round prepend
-is O(layer), not an O(N) append), so each node's out-edges are expanded once, the
-walk runs once, saturation is early (an empty frontier costs O(1) per remaining
-round), and the whole sweep is O(V+E). The list/`AMap` `parentSweep` is the proof
-REFERENCE (its `∉ acc`/`AMap.find` are O(N)); `parentSweepH_eq` proves the two
-agree pointwise, so the soundness/completeness proofs transfer to the shipped
-`blocksPath` unchanged (structure proved, wall-clock tested — ADR-0023; indexed-
-view substrate — ADR-0024).
+Cost (ADR-0023 tiering): the shipped engine is `parentSweepH`, carrying only what
+the witness walk reads — `(frontier, parent, visited)`. Each round expands the
+frontier's out-edges once via a single `bfsStepFn` fold (a `Std.HashSet` visited
+set, O(1)-amortized membership, drops intra-round duplicates with no O(layer²) list
+`dedup`) and records the discovery parent from `firstPred` (one O(E) pass, O(1)
+per-child lookup, not a per-node `parentOf` frontier rescan). The successor itself
+is bucketed (`blocksSuccB`, O(deg)/node). Each node's out-edges are thus expanded
+once; an empty frontier costs O(1) per remaining round, so the whole sweep is
+O(V+E). The list/`AMap` `parentSweep` is the proof REFERENCE (its `∉ acc`/`AMap.find`
+and per-discovery `parentOf` are O(N), and it additionally keeps a depth map and the
+full accumulator for the termination/soundness proofs); `parentSweepH_eq` proves the
+two agree pointwise on the frontier, parent map, and visited set, so the
+soundness/completeness proofs transfer to the shipped `blocksPath` unchanged
+(structure proved, wall-clock tested — ADR-0023; indexed-view substrate — ADR-0024).
 -/
 import Tl.Kernel.Reach
 import Tl.Kernel.ReachBFS
@@ -531,15 +535,29 @@ theorem bfsPath_complete (succ : IssueId → List IssueId) (seed : List IssueId)
 
 /-! ## True O(V+E): the shipped `Std.HashSet` / `Std.HashMap` engine
 
-`parentSweep` above is the list/`AMap` proof REFERENCE (its `∉ acc` test and
-`AMap.find` are O(N), and `acc ++ layer` per round is O(N²)). The shipped
-`parentSweepH` carries a `Std.HashSet` visited set (O(1)-amortized membership for
-the frontier filter), `Std.HashMap` parent/depth maps (O(1)-amortized), and a
-REVERSED accumulator (per-round prepend is O(layer), not the O(N) append), so the
-whole sweep is O(V+E). `parentSweepH_eq` proves it agrees pointwise with
-`parentSweep`, so the soundness/completeness proofs transfer to `blocksPath`
-unchanged (ADR-0024 indexed-view substrate; ADR-0023 tiering: structure proved,
-wall-clock tested). -/
+`parentSweep` above is the list/`AMap` proof REFERENCE: its `∉ acc` test and
+`AMap.find` are O(N), the per-discovery `parentOf` rescans the whole frontier, and
+`acc ++ layer` per round is O(N²). The shipped `parentSweepH` carries only what the
+witness walk reads — `(frontier, parent, visited)` — and spends O(deg) per node per
+round:
+
+* the layer is one `bfsStepFn` fold over the frontier's out-edges (the proven
+  `Std.HashSet` dedup of `ReachBFS`), which also returns the extended visited set,
+  so a membership test is O(1)-amortized and intra-round duplicates cost O(1) each
+  (no O(layer²) list `dedup`);
+* the parent at discovery comes from `firstPred` — one O(E) pass over the frontier's
+  out-edges building a first-writer-wins child→predecessor map — so a per-child
+  parent lookup is O(1)-amortized, not an O(|frontier|) `parentOf` walk.
+
+Each node's out-edges are thus expanded once and the whole sweep is O(V+E). An empty
+frontier makes every remaining round O(1) (the out-edge list is empty and every fold
+is a no-op), so the saturating `|presentIssues|`-round bound adds only O(V) — no
+explicit early-exit guard is needed for the O(V+E) bound. The reference keeps the
+depth map and the full forward accumulator for the termination/soundness proofs; the
+shipped engine carries neither. `parentSweepH_eq` proves the two agree pointwise on
+the frontier, the parent map, and the visited set, so the soundness/completeness
+proofs transfer to `blocksPath` unchanged (ADR-0024 indexed-view substrate; ADR-0023
+tiering: structure proved, wall-clock tested). -/
 
 /-- The hash parent walk — `parentWalk` with a `Std.HashMap` lookup. -/
 def parentWalkH (parent : Std.HashMap IssueId IssueId) : Nat → IssueId → List IssueId → List IssueId
@@ -566,133 +584,119 @@ theorem parentWalkH_eq (parentH : Std.HashMap IssueId IssueId) (parentL : AMap I
     | none => rfl
     | some u => exact parentWalkH_eq parentH parentL h f u (cur :: acc)
 
-/-- The frontier layer via a `Std.HashSet` membership test. -/
-def bfsLayerH (succ : IssueId → List IssueId) (visited : Std.HashSet IssueId)
-    (fr : List IssueId) : List IssueId :=
-  dedup ((fr.flatMap succ).filter (fun y => !visited.contains y))
+/-- One shipped expansion step: folding `bfsStepFn` over the frontier's out-edges
+    against a visited set mirroring `acc` yields the reference layer (first-occurrence
+    order) and a visited set mirroring `acc ++ layer`. The `Std.HashSet` membership
+    test stands in for the spec's list `∉ acc`, and intra-round duplicates are dropped
+    in O(1) each (no list `dedup`). -/
+theorem bfsStep_layer (succ : IssueId → List IssueId) (acc fr : List IssueId)
+    (v : Std.HashSet IssueId) (hv : ∀ z, v.contains z = decide (z ∈ acc)) :
+    ((fr.flatMap succ).foldl State.bfsStepFn (v, [])).2.reverse = State.bfsLayer succ acc fr
+    ∧ (∀ z, ((fr.flatMap succ).foldl State.bfsStepFn (v, [])).1.contains z
+        = decide (z ∈ acc ++ State.bfsLayer succ acc fr)) := by
+  have hv' : ∀ z, v.contains z = true ↔ z ∈ acc ++ [] := by
+    intro z; rw [hv z, List.append_nil, decide_eq_true_eq]
+  obtain ⟨h1, h2⟩ := State.bfsFold_spec (fr.flatMap succ) acc [] v hv'
+  have hlayer : ((fr.flatMap succ).foldl State.bfsStepFn (v, [])).2.reverse
+      = State.bfsLayer succ acc fr := by
+    rw [h1, List.append_nil, List.reverse_reverse]
+    unfold State.bfsLayer
+    apply congrArg dedup
+    apply List.filter_congr
+    intro y _
+    rw [List.append_nil]
+  refine ⟨hlayer, fun z => ?_⟩
+  have hmem : z ∈ ((fr.flatMap succ).foldl State.bfsStepFn (v, [])).2
+      ↔ z ∈ State.bfsLayer succ acc fr := by
+    rw [← hlayer, List.mem_reverse]
+  rw [Bool.eq_iff_iff, h2 z, decide_eq_true_eq, List.mem_append, List.mem_append, hmem]
 
-theorem bfsLayerH_eq (succ : IssueId → List IssueId) (visited : Std.HashSet IssueId)
-    (acc fr : List IssueId) (h : ∀ z, visited.contains z = decide (z ∈ acc)) :
-    bfsLayerH succ visited fr = State.bfsLayer succ acc fr := by
-  unfold bfsLayerH State.bfsLayer
-  congr 1
-  apply List.filter_congr
-  intro y _
-  rw [h y, decide_not]
-
-/-- The shipped O(V+E) sweep: `(accRev, frontier, parent, depth, visited)` —
-    `accRev` is the reversed reachable list, `visited` mirrors its membership for
-    the O(1) frontier filter, `parent`/`depth` are `Std.HashMap`s. -/
+/-- The shipped O(V+E) sweep: `(frontier, parent, visited)`. `visited` mirrors the
+    reachable set for the O(1)-amortized frontier filter; `parent` is the discovery
+    map. The layer and the extended visited set come from a single `bfsStepFn` fold;
+    the parent at discovery comes from the one-pass `firstPred` index. -/
 def parentSweepH (succ : IssueId → List IssueId) (seed : List IssueId) :
-    Nat → List IssueId × List IssueId × Std.HashMap IssueId IssueId
-        × Std.HashMap IssueId Nat × Std.HashSet IssueId
-  | 0 => (seed.reverse, seed, ∅, seed.foldl (fun m y => m.insert y 0) ∅, hashSetOf seed)
+    Nat → List IssueId × Std.HashMap IssueId IssueId × Std.HashSet IssueId
+  | 0 => (seed, ∅, hashSetOf seed)
   | k + 1 =>
     let p := parentSweepH succ seed k
-    let layer := bfsLayerH succ p.2.2.2.2 p.2.1
-    (layer.reverse ++ p.1, layer,
-     layer.foldl (fun m y => m.insert y ((parentOf succ p.2.1 y).getD y)) p.2.2.1,
-     layer.foldl (fun m y => m.insert y (k + 1)) p.2.2.2.1,
-     layer.foldl (fun s y => s.insert y) p.2.2.2.2)
+    let step := (p.1.flatMap succ).foldl State.bfsStepFn (p.2.2, [])
+    let layer := step.2.reverse
+    let fp := firstPred succ p.1
+    (layer,
+     layer.foldl (fun m y => m.insert y ((fp[y]?).getD y)) p.2.1,
+     step.1)
 
-/-- The shipped sweep agrees pointwise with the list/`AMap` reference. -/
+/-- The shipped sweep agrees pointwise with the list/`AMap` reference on the frontier,
+    the parent map, and the visited set — the projections the witness walk reads. -/
 theorem parentSweepH_eq (succ : IssueId → List IssueId) (seed : List IssueId) :
     (n : Nat) →
-    (parentSweepH succ seed n).1.reverse = (parentSweep succ seed n).1
-    ∧ (parentSweepH succ seed n).2.1 = (parentSweep succ seed n).2.1
-    ∧ (∀ z, (parentSweepH succ seed n).2.2.1[z]? = (parentSweep succ seed n).2.2.1.find z)
-    ∧ (∀ z, (parentSweepH succ seed n).2.2.2.1[z]? = (parentSweep succ seed n).2.2.2.find z)
-    ∧ (∀ z, (parentSweepH succ seed n).2.2.2.2.contains z = decide (z ∈ (parentSweep succ seed n).1))
+    (parentSweepH succ seed n).1 = (parentSweep succ seed n).2.1
+    ∧ (∀ z, (parentSweepH succ seed n).2.1[z]? = (parentSweep succ seed n).2.2.1.find z)
+    ∧ (∀ z, (parentSweepH succ seed n).2.2.contains z = decide (z ∈ (parentSweep succ seed n).1))
   | 0 => by
-    refine ⟨List.reverse_reverse seed, rfl, ?_, ?_, ?_⟩
+    refine ⟨rfl, ?_, ?_⟩
     · intro z
-      rw [show (parentSweepH succ seed 0).2.2.1 = (∅ : Std.HashMap IssueId IssueId) from rfl,
+      rw [show (parentSweepH succ seed 0).2.1 = (∅ : Std.HashMap IssueId IssueId) from rfl,
         show (parentSweep succ seed 0).2.2.1 = AMap.empty from rfl,
         Std.HashMap.getElem?_empty, AMap.find_empty]
     · intro z
-      rw [show (parentSweepH succ seed 0).2.2.2.1
-            = seed.foldl (fun m y => m.insert y 0) ∅ from rfl,
-        show (parentSweep succ seed 0).2.2.2
-            = seed.foldl (fun m y => m.insert y 0) AMap.empty from rfl,
-        getElem?_foldl_insert_keys (fun _ => 0) seed ∅ z,
-        find_foldl_insert (fun _ => 0) seed AMap.empty z]
-      by_cases hz : z ∈ seed
-      · rw [if_pos hz, if_pos hz]
-      · rw [if_neg hz, if_neg hz, Std.HashMap.getElem?_empty, AMap.find_empty]
-    · intro z
-      rw [show (parentSweepH succ seed 0).2.2.2.2 = hashSetOf seed from rfl,
+      rw [show (parentSweepH succ seed 0).2.2 = hashSetOf seed from rfl,
         show (parentSweep succ seed 0).1 = seed from rfl, Bool.eq_iff_iff, decide_eq_true_eq,
         Std.HashSet.contains_iff_mem, mem_hashSetOf]
   | k + 1 => by
-    obtain ⟨ih1, ih2, ih3, ih4, ih5⟩ := parentSweepH_eq succ seed k
+    obtain ⟨ih1, ih2, ih3⟩ := parentSweepH_eq succ seed k
     set accL := (parentSweep succ seed k).1 with haccL
     set frL := (parentSweep succ seed k).2.1 with hfrL
-    have hlayer : bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1
-                = State.bfsLayer succ accL frL := by
-      rw [ih2, bfsLayerH_eq succ (parentSweepH succ seed k).2.2.2.2 accL frL ih5]
-    -- the (k+1) projections
+    -- the shipped layer / visited set from the bfsStepFn fold matches the reference
+    obtain ⟨hLay, hVis⟩ :=
+      bfsStep_layer succ accL (parentSweepH succ seed k).1 (parentSweepH succ seed k).2.2 ih3
+    -- the (k+1) projections of each engine
     have hH1 : (parentSweepH succ seed (k + 1)).1
-        = (bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1).reverse
-            ++ (parentSweepH succ seed k).1 := rfl
+        = (((parentSweepH succ seed k).1.flatMap succ).foldl State.bfsStepFn
+            ((parentSweepH succ seed k).2.2, [])).2.reverse := rfl
     have hH2 : (parentSweepH succ seed (k + 1)).2.1
-        = bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1 := rfl
-    have hH3 : (parentSweepH succ seed (k + 1)).2.2.1
-        = (bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1).foldl
-            (fun m y => m.insert y ((parentOf succ (parentSweepH succ seed k).2.1 y).getD y))
-            (parentSweepH succ seed k).2.2.1 := rfl
-    have hH4 : (parentSweepH succ seed (k + 1)).2.2.2.1
-        = (bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1).foldl
-            (fun m y => m.insert y (k + 1)) (parentSweepH succ seed k).2.2.2.1 := rfl
-    have hH5 : (parentSweepH succ seed (k + 1)).2.2.2.2
-        = (bfsLayerH succ (parentSweepH succ seed k).2.2.2.2 (parentSweepH succ seed k).2.1).foldl
-            (fun s y => s.insert y) (parentSweepH succ seed k).2.2.2.2 := rfl
-    have hL1 : (parentSweep succ seed (k + 1)).1 = accL ++ State.bfsLayer succ accL frL := rfl
-    have hL2 : (parentSweep succ seed (k + 1)).2.1 = State.bfsLayer succ accL frL := rfl
-    have hL3 : (parentSweep succ seed (k + 1)).2.2.1
+        = ((((parentSweepH succ seed k).1.flatMap succ).foldl State.bfsStepFn
+              ((parentSweepH succ seed k).2.2, [])).2.reverse).foldl
+            (fun m y => m.insert y (((firstPred succ (parentSweepH succ seed k).1)[y]?).getD y))
+            (parentSweepH succ seed k).2.1 := rfl
+    have hH3 : (parentSweepH succ seed (k + 1)).2.2
+        = (((parentSweepH succ seed k).1.flatMap succ).foldl State.bfsStepFn
+            ((parentSweepH succ seed k).2.2, [])).1 := rfl
+    have hL1 : (parentSweep succ seed (k + 1)).2.1 = State.bfsLayer succ accL frL := rfl
+    have hL2 : (parentSweep succ seed (k + 1)).2.2.1
         = (State.bfsLayer succ accL frL).foldl
             (fun m y => m.insert y ((parentOf succ frL y).getD y)) (parentSweep succ seed k).2.2.1 := rfl
-    have hL4 : (parentSweep succ seed (k + 1)).2.2.2
-        = (State.bfsLayer succ accL frL).foldl
-            (fun m y => m.insert y (k + 1)) (parentSweep succ seed k).2.2.2 := rfl
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩
-    · rw [hH1, hL1, List.reverse_append, List.reverse_reverse, hlayer, ih1]
-    · rw [hH2, hL2, hlayer]
+    have hL3 : (parentSweep succ seed (k + 1)).1 = accL ++ State.bfsLayer succ accL frL := rfl
+    refine ⟨?_, ?_, ?_⟩
+    · rw [hH1, hLay, hL1, ih1]
     · intro z
-      rw [hH3, hL3, hlayer, ih2,
-        getElem?_foldl_insert_keys (fun y => (parentOf succ frL y).getD y) _ _ z,
+      rw [hH2, hLay, ih1, hL2,
+        getElem?_foldl_insert_keys (fun y => ((firstPred succ frL)[y]?).getD y) _ _ z,
         find_foldl_insert (fun y => (parentOf succ frL y).getD y) _ _ z]
       by_cases hz : z ∈ State.bfsLayer succ accL frL
-      · rw [if_pos hz, if_pos hz]
-      · rw [if_neg hz, if_neg hz]; exact ih3 z
+      · rw [if_pos hz, if_pos hz, firstPred_getElem?]
+      · rw [if_neg hz, if_neg hz]; exact ih2 z
     · intro z
-      rw [hH4, hL4, hlayer, getElem?_foldl_insert_keys (fun _ => k + 1) _ _ z,
-        find_foldl_insert (fun _ => k + 1) _ _ z]
-      by_cases hz : z ∈ State.bfsLayer succ accL frL
-      · rw [if_pos hz, if_pos hz]
-      · rw [if_neg hz, if_neg hz]; exact ih4 z
-    · intro z
-      rw [hH5, hL1, hlayer, Bool.eq_iff_iff, decide_eq_true_eq, Std.HashSet.contains_iff_mem,
-        mem_foldl_insert, List.mem_append]
-      rw [← Std.HashSet.contains_iff_mem, ih5 z, decide_eq_true_eq]
-      exact Or.comm
+      rw [hH3, hVis z, hL3, ih1]
 
 /-- The shipped witness-path extractor: the parent walk over the hash sweep. -/
 def bfsPathH (succ : IssueId → List IssueId) (seed : List IssueId)
     (fuel : Nat) (cur : IssueId) : Option (List IssueId) :=
-  if (parentSweepH succ seed fuel).2.2.2.2.contains cur
-  then some (parentWalkH (parentSweepH succ seed fuel).2.2.1 (fuel + 1) cur [])
+  if (parentSweepH succ seed fuel).2.2.contains cur
+  then some (parentWalkH (parentSweepH succ seed fuel).2.1 (fuel + 1) cur [])
   else none
 
 theorem bfsPathH_eq (succ : IssueId → List IssueId) (seed : List IssueId)
     (fuel : Nat) (cur : IssueId) : bfsPathH succ seed fuel cur = bfsPath succ seed fuel cur := by
   unfold bfsPathH bfsPath
-  obtain ⟨_, _, hpar, _, hvis⟩ := parentSweepH_eq succ seed fuel
+  obtain ⟨_, hpar, hvis⟩ := parentSweepH_eq succ seed fuel
   by_cases hc : cur ∈ (parentSweep succ seed fuel).1
-  · rw [if_pos (show (parentSweepH succ seed fuel).2.2.2.2.contains cur = true by
+  · rw [if_pos (show (parentSweepH succ seed fuel).2.2.contains cur = true by
         rw [hvis cur, decide_eq_true_eq]; exact hc),
       if_pos hc,
-      parentWalkH_eq (parentSweepH succ seed fuel).2.2.1 (parentSweep succ seed fuel).2.2.1 hpar]
-  · rw [if_neg (show ¬ (parentSweepH succ seed fuel).2.2.2.2.contains cur = true by
+      parentWalkH_eq (parentSweepH succ seed fuel).2.1 (parentSweep succ seed fuel).2.2.1 hpar]
+  · rw [if_neg (show ¬ (parentSweepH succ seed fuel).2.2.contains cur = true by
         rw [hvis cur, decide_eq_true_eq]; exact hc),
       if_neg hc]
 
