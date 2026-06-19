@@ -45,6 +45,7 @@ view substrate — ADR-0024).
 -/
 import Tl.Kernel.Reach
 import Tl.Kernel.ReachBFS
+import Tl.Kernel.ReadyFast
 import Mathlib.Data.List.Chain
 
 namespace Tl.Kernel
@@ -581,14 +582,27 @@ theorem bfsPathH_eq (succ : IssueId → List IssueId) (seed : List IssueId)
 
 namespace State
 
+/-- The bucketed `Blocks` successor (O(deg)-amortized per node via the
+    source-adjacency bucket + present-set hash) is the spec `kindSucc .Blocks`
+    (`blocksSucc` = present `Blocks`-dependents, defeq `kindSucc .Blocks`), so
+    feeding it to the engine keeps the engine's O(V+E) per-node cost. -/
+theorem blocksSuccB_kindSucc (s : State) :
+    blocksSuccB (blocksBySource s.presentEdges) (hashSetOf s.presentIssues)
+      = s.kindSucc .Blocks :=
+  funext fun i => (blocksSuccB_eq s i).trans (by
+    unfold State.blocksSucc State.kindSucc State.dependentsOf; rfl)
+
 /-- `blocksPath s a b` (ADR-0004 thm 10 companion): a witness path `[a, …, b]`
     of present `blocks` edges (`a` transitively blocks `b`) when `b` is
     reach+-reachable from `a`, else `none`. Total on cyclic and dangling graphs.
     The seed is `a`'s direct blocks-successors and the bound is `|presentIssues|`
-    (the saturating layer), so it agrees with `reachClosure`/`why`'s reach+. -/
+    (the saturating layer), so it agrees with `reachClosure`/`why`'s reach+. The
+    engine runs over the *bucketed* `blocks` successor (`blocksSuccB`, O(deg) per
+    node) — proved equal to `kindSucc .Blocks` — so a per-node successor query is
+    not an O(E) edge rescan. -/
 def blocksPath (s : State) (a b : IssueId) : Option (List IssueId) :=
-  (bfsPathH (s.kindSucc .Blocks) (s.kindSucc .Blocks a)
-      s.presentIssues.length b).map (a :: ·)
+  let succB := blocksSuccB (blocksBySource s.presentEdges) (hashSetOf s.presentIssues)
+  (bfsPathH succB (succB a) s.presentIssues.length b).map (a :: ·)
 
 /-- **`blocksPath` path validity**: a returned path is a real `blocks`-edge path
     `a ⇝ b` — head `a`, last `b`, every consecutive pair connected by a present
@@ -598,6 +612,7 @@ theorem blocksPath_valid (s : State) (a b : IssueId) (p : List IssueId)
     p.head? = some a ∧ p.getLast? = some b ∧
       List.IsChain (fun u v => v ∈ s.kindSucc .Blocks u) p := by
   unfold State.blocksPath at h
+  simp only [blocksSuccB_kindSucc] at h
   rw [bfsPathH_eq, Option.map_eq_some_iff] at h
   obtain ⟨q, hq, hpe⟩ := h
   obtain ⟨hne, hlast, hhead, hchain⟩ := bfsPath_sound _ _ _ _ _ hq
@@ -626,6 +641,7 @@ theorem blocksPath_isSome_iff (s : State) (a b : IssueId) :
   · intro hs
     obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp hs
     unfold State.blocksPath at hp
+    simp only [blocksSuccB_kindSucc] at hp
     rw [bfsPathH_eq, Option.map_eq_some_iff] at hp
     obtain ⟨q, hq, -⟩ := hp
     obtain ⟨hne, hlast, hhead, hchain⟩ := bfsPath_sound _ _ _ _ _ hq
@@ -640,6 +656,7 @@ theorem blocksPath_isSome_iff (s : State) (a b : IssueId) :
     have hwb := bfsPath_complete (s.kindSucc .Blocks) (s.kindSucc .Blocks a)
       s.presentIssues.length b hmem
     unfold State.blocksPath
+    simp only [blocksSuccB_kindSucc]
     rw [bfsPathH_eq]
     obtain ⟨q, hq⟩ := Option.isSome_iff_exists.mp hwb
     rw [hq]; rfl
