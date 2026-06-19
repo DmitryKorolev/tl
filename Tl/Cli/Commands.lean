@@ -365,8 +365,11 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   -- not effectively-closed) — the same liveSuccE relation whyFast's transitive
   -- closure is built from, so the tree's node set equals `trans` (the JSON set),
   -- just with the clear-this-first order, diamonds, and depth made visible.
+  -- Every read indexed (btgt bucket + hashed discharge, like `View.blocked`), so
+  -- the per-node tree descent stays O(deg) — never an O(E) edge rescan per node.
   let liveBlockers : IssueId → List IssueId := fun x =>
-    (State.blockersOfE v.edges x).filter (fun b => !State.blockerDischargedWith v.rollup s b)
+    (v.blockers x).filter (fun b =>
+      !State.blockerDischargedH v.idx.presentH v.idx.rollupH v.state b)
   let direct := liveBlockers i
   let rows := trans.map (fun b =>
     let bd := s.issueData b

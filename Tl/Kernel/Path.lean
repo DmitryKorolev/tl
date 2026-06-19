@@ -21,6 +21,14 @@ Direction (recorded): `kindSucc .Blocks i` is the present OUTGOING blocks
 edges (the issues `i` blocks), consistent with `blocksSucc`/`unblocks`/critical;
 `blocksPath a b` is therefore a chain `a` blocks … blocks `b`. The Mathlib
 reachability/cardinality zone (ADR-0009) extends to this `Reach` dependent.
+
+Cost (ADR-0023 tiering — an ACCEPTED, recorded compromise, not silent): the
+per-frame closure is bound once (no per-candidate / per-frame recompute), but
+the back-walk still re-derives `reachClosure` at each decreasing layer index, so
+`blocksPath` is ~O(N³) on a project of N present issues. `dep path` is a
+one-shot, rarely-run cycle-breaking aid (not a hot read path like
+`list`/`ready`/`why`), so this is acceptable; the single-pass forward
+BFS-with-parent-map (O(V+E)) that would retire it is a tracked follow-up.
 -/
 import Tl.Kernel.Reach
 import Mathlib.Data.List.Chain
@@ -41,14 +49,18 @@ def wbPath (succ : IssueId → List IssueId) (seed present : List IssueId) :
   | 0, cur => if cur ∈ seed then some [cur] else none
   | fuel + 1, cur =>
     if cur ∈ seed then some [cur]
-    else if cur ∈ State.reachClosure succ fuel seed then
-      -- `cur` was already reachable in ≤ `fuel` steps: peel a layer, same node
-      wbPath succ seed present fuel cur
     else
-      -- `cur` first appears at layer `fuel+1`: a predecessor sits in layer `fuel`
-      (present.find? (fun x =>
-          decide (x ∈ State.reachClosure succ fuel seed) && decide (cur ∈ succ x))).bind
-        (fun x => (wbPath succ seed present fuel x).map (· ++ [cur]))
+      -- bind the layer-`fuel` closure ONCE per frame: it is loop-invariant across
+      -- the `find?` candidate scan, so recomputing it per candidate (or twice per
+      -- frame) would make the back-walk needlessly super-quadratic (ADR-0023).
+      let layer := State.reachClosure succ fuel seed
+      if cur ∈ layer then
+        -- `cur` was already reachable in ≤ `fuel` steps: peel a layer, same node
+        wbPath succ seed present fuel cur
+      else
+        -- `cur` first appears at layer `fuel+1`: a predecessor sits in layer `fuel`
+        (present.find? (fun x => decide (x ∈ layer) && decide (cur ∈ succ x))).bind
+          (fun x => (wbPath succ seed present fuel x).map (· ++ [cur]))
 
 /-- **Soundness**: a returned path is real — nonempty, ends at `cur`, starts at
     a `seed` member, and every consecutive pair is a `succ`-edge. Structural

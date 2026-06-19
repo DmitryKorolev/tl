@@ -326,7 +326,24 @@ def cliDepTests : IO (List Outcome) := do
      -- total on a CYCLIC graph: the a↔b blocks cycle built above still terminates
      ← expectData "dep path terminates and finds a path inside a blocks cycle"
       ["dep", "path", "tl-" ++ a, "tl-" ++ b, "--dir", dir]
-      (fun j => jBool j "found" == some true && !(jArr j "path").isEmpty)]
+      (fun j => jBool j "found" == some true && !(jArr j "path").isEmpty),
+     -- wrong arity is a usage error (the new dep path dispatch branch)
+     ← expectErr "dep path with one positional is usage"
+      ["dep", "path", "tl-" ++ c, "--dir", dir] .usage]
+  -- why renders the human blocker TREE over the production liveBlockers accessor
+  -- (the JSON tests don't read the rendered human; this covers that branch).
+  -- why e: its blocker d, with d's blocker c nested under it (e⊣d⊣c).
+  let whyOut ← run' ["why", "tl-" ++ e, "--dir", dir]
+  o := o ++ [(match whyOut with
+    | .ok out =>
+      let h := (out.render.map (· Style.plain)).getD out.human
+      -- styledLine renders the SHORT id (tl- + first 4 chars); the tree nests c
+      -- (d's blocker) under d (e's direct blocker) with the ascii last-connector
+      check "why renders the nested blocker tree (production render path)"
+        ((h.splitOn "\\-- ").length != 1
+          && (h.splitOn ("tl-" ++ dd.take 4)).length != 1
+          && (h.splitOn ("tl-" ++ c.take 4)).length != 1) h
+    | .error er => { name := "why renders the nested blocker tree", passed := false, msg := er.message })]
   return o
 
 /-- Reparenting (ADR-0003 §4): `parent set` is a courtesy replace (move under a
