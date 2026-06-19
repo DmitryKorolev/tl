@@ -112,8 +112,9 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   `AssocList.sorted_of_ascending`/`ascending_of_sorted` (`Tl/Crdt/Map.lean`).
 - **The fast-queue refinement bridge** (`Tl/Kernel/ReadyFast.lean`). The shipped
   `ready`/`unblocks`/`why` forms — hoisted present/edge views, rollups through the
-  batched map, one cached `RankKey` per candidate, and the saturating closure
-  `reachFix` (exact by fixpoint stability, `iterateN_of_fixed`/`reachFix_eq`) —
+  batched map, one cached `RankKey` per candidate, and the O(V+E) frontier closure
+  `reachBFS` (proved list-equal to the spec `reachClosure`, `reachBFS_eq`, on the
+  nodup adjacency/singleton seeds) —
   are pointwise EQUAL to the spec (`readyFast_eq`/`unblocksFast_eq`/`whyFast_eq`,
   composed from `weightFast_eq`, `isReadyFast_eq`, `keyLe_keyOf_eq`, and the
   sort-map commutation `rankSortK_map`), so ready soundness/completeness/ordering

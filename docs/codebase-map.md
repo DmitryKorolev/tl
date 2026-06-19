@@ -44,8 +44,8 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   find = getElem? lookup bridge to the AMap spec
   ReadyFast.lean        --   the SHIPPED queue: hoisted present/edge views,
                         --   rollups through the batched map, one RankKey per
-                        --   candidate, sort on cached keys, saturating closure
-                        --   (reachFix + fixpoint stability); refinement bridge
+                        --   candidate, sort on cached keys, the O(V+E) frontier
+                        --   closure (reachBFS, ReachBFS.lean); refinement bridge
                         --   readyFast_eq / unblocksFast_eq / whyFast_eq — the
                         --   fast forms EQUAL the spec, so thm 4/10 transfer
   Cycles.lean           --   per-kind cycle detection (bounded reachClosure
@@ -82,6 +82,19 @@ Tl/Kernel/              -- the verified core (NO I/O)
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's Mathlib zone starts here, ADR-0009)
+  ReachBFS.lean         --   the SHIPPED O(V+E) reachability engine: a Std.HashSet
+                        --   frontier/worklist closure (reachBFS), proved list-equal
+                        --   to the spec reachClosure (reachBFS_eq, nodup seed) and
+                        --   membership-equal unconditionally (mem_reachBFS_iff);
+                        --   backs why/weight (ReadyFast) + dep cycles (CyclesFast).
+                        --   Reach + HashMapView dependent (ADR-0009 reach zone, 0024)
+  Path.lean             --   blocksPath: a TOTAL witness-path extractor over present
+                        --   blocks edges (the ORDERED companion to why's reach⁺ set,
+                        --   ADR-0004 thm 10 companion). A parent-recording frontier
+                        --   BFS — shipped Std.HashSet visited + Std.HashMap parent
+                        --   /depth engine (parentSweepH/bfsPathH), bridged to the
+                        --   list/AMap reference (parentSweepH_eq); blocksPath_valid
+                        --   / blocksPath_isSome_iff. Reach/ReachBFS dependent
   Tarjan.lean           --   UNVERIFIED fuel-total iterative Tarjan: proposes the
                         --   SCC partition in emission order; never trusted — its
                         --   output is runtime-validated by SccFast's checker, so

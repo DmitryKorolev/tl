@@ -28,9 +28,14 @@ case-by-case; a wholesale substrate swap simply is not such a case. The list
 *is* the semantic, canonical, proved representation; it stays.
 
 The pattern that resolves the tension is already established and load-bearing
-— used by the ready queue, the cycle diagnostics, and the CLI's per-row
-projections — and it deserves a recorded contract because every new fast path
-now incurs it.
+— used by the ready queue, the cycle diagnostics, the CLI's per-row
+projections, and the O(V+E) reachability/path engines `reachBFS`
+(`Std.HashSet` visited) and `parentSweepH` (`Std.HashSet` visited +
+`Std.HashMap` parent/depth) — and it deserves a recorded contract because every
+new fast path now incurs it. The reach/path engines are an instance of §4 (the
+recursion itself is indexed): they carry the visited-set↔list and HashMap↔AMap
+equalities as engine-scale `*_eq` refinements (`reachBFS_eq_reachBFSL`,
+`parentSweepH_eq`) rather than a per-row accessor lemma.
 
 ## Decision
 

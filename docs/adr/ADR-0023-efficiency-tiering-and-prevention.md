@@ -50,9 +50,10 @@ just performance" never licenses leaving a hot path uncovered, exactly as
   semantics and deliberately does not add one). The provable shape is "each
   node is evaluated once per query" (`rollupVisit_find_hit` — the memo-hit
   short-circuit returns a completed node without re-descending), "the
-  reachability closure saturates at its first fixed point rather than burning
-  `|present|` iterations" (`reachFix` / `iterateN_of_fixed`), "the batched
-  fold equals the iterated fold" (`foldFast` / `joinFast`). These are
+  reachability closure walks each node's out-edges exactly once via a
+  hash-visited frontier rather than re-scanning the accumulator each round"
+  (`reachBFS` / `reachBFS_eq`), "the batched fold equals the iterated fold"
+  (`foldFast` / `joinFast`). These are
   invariants about the *algorithm's shape*. The efficient form *is* the
   production code and the theorems are proved about it — directly where that is
   cheapest, or through a refinement bridge to a reference where the bridge is

@@ -128,9 +128,9 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 > squarely inside this ADR's recorded reachability/cardinality zone — the same
 > finite-graph correctness it refines. This is the scope already anticipated by
 > the 2026-06-12 note (a `Reach.lean` dependent); recorded here per the "do not
-> widen without recording" rule. The shipped fast paths (`why`/`weight`/`dep
-> cycles`/`dep path`) move onto `reachBFS`, retiring the iterated `reachFix`,
-> which stays inside the same import cone. As before, Mathlib is used for its
-> *lemmas* (and `Std.HashSet` membership facts), not to license heavy
-> automation; the runtime semantics stay pinned by the `*_eq` agreement
-> theorems and the axiom probes stay clean.
+> widen without recording" rule. The shipped fast paths run on these frontier
+> engines — `why`/`weight`/`dep cycles` on `reachBFS`, `dep path` on the sibling
+> parent-recording BFS in `Tl/Kernel/Path.lean` — all inside the same import
+> cone. As before, Mathlib is used for its *lemmas* (and `Std.HashSet` membership
+> facts), not to license heavy automation; the runtime semantics stay pinned by
+> the `*_eq` agreement theorems and the axiom probes stay clean.
