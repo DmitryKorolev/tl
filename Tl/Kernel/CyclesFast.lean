@@ -37,23 +37,24 @@ namespace State
 
 /-! ## Cached saturating SCC detection over an explicit successor function -/
 
-/-- `onCycle` with the saturating closure. -/
+/-- `onCycle` with the O(V+E) frontier closure. -/
 def onCycleF (n : Nat) (succ : IssueId → List IssueId) (v : IssueId) : Bool :=
-  decide (v ∈ reachFix succ n (succ v))
+  decide (v ∈ reachBFS succ n (succ v))
 
 theorem onCycleF_eq (s : State) (succ : IssueId → List IssueId) (v : IssueId) :
     onCycleF s.presentIssues.length succ v = s.onCycle succ v := by
   unfold State.onCycleF State.onCycle
-  rw [reachFix_eq]
+  exact decide_eq_decide.mpr (mem_reachBFS_iff s.presentIssues.length (succ v) v)
 
-/-- `sameSCC` with the saturating closure. -/
+/-- `sameSCC` with the O(V+E) frontier closure. -/
 def sameSCCF (n : Nat) (succ : IssueId → List IssueId) (u v : IssueId) : Bool :=
-  decide (u ∈ reachFix succ n [v]) && decide (v ∈ reachFix succ n [u])
+  decide (u ∈ reachBFS succ n [v]) && decide (v ∈ reachBFS succ n [u])
 
 theorem sameSCCF_eq (s : State) (succ : IssueId → List IssueId) (u v : IssueId) :
     sameSCCF s.presentIssues.length succ u v = s.sameSCC succ u v := by
   unfold State.sameSCCF State.sameSCC State.reachSet
-  rw [reachFix_eq, reachFix_eq]
+  rw [decide_eq_decide.mpr (mem_reachBFS_iff s.presentIssues.length [v] u),
+    decide_eq_decide.mpr (mem_reachBFS_iff s.presentIssues.length [u] v)]
 
 /-- Lookup in a precomputed closure cache, falling back to the exact closure if
     the key is absent. The fallback makes the cache extensionally transparent. -/
@@ -90,49 +91,47 @@ theorem succCached_succCache_eq (nodes : List IssueId)
 /-- One cached closure per node. -/
 def reachCache (nodes : List IssueId) (n : Nat)
     (succ : IssueId → List IssueId) : List (IssueId × List IssueId) :=
-  nodes.map (fun v => (v, reachFix succ n [v]))
+  nodes.map (fun v => (v, reachBFS succ n [v]))
 
 def reachCached (n : Nat) (succ : IssueId → List IssueId)
     (cache : List (IssueId × List IssueId)) (v : IssueId) : List IssueId :=
-  lookupCached (fun x => reachFix succ n [x]) v cache
+  lookupCached (fun x => reachBFS succ n [x]) v cache
 
 theorem reachCached_reachCache_eq (nodes : List IssueId) (n : Nat)
     (succ : IssueId → List IssueId) (v : IssueId) :
-    reachCached n succ (reachCache nodes n succ) v = reachFix succ n [v] := by
+    reachCached n succ (reachCache nodes n succ) v = reachBFS succ n [v] := by
   unfold State.reachCached State.reachCache
-  exact lookupCached_map_self (fun x => reachFix succ n [x]) v nodes
+  exact lookupCached_map_self (fun x => reachBFS succ n [x]) v nodes
 
 /-- Closure from a seed list is the union of closures from each seed, at the
-    saturated `presentIssues.length` fuel used by cycle diagnostics. -/
-theorem mem_reachFix_seed_iff (s : State) {succ : IssueId → List IssueId}
+    saturated `presentIssues.length` fuel used by cycle diagnostics. Stated over
+    `reachBFS` membership (the cycle check reads only membership), so it holds for
+    the possibly-duplicated `precSucc` seed. -/
+theorem mem_reachBFS_seed_iff (s : State) {succ : IssueId → List IssueId}
     (hsucc : ∀ x, succ x ⊆ s.presentIssues) (seed : List IssueId)
     (hseed : seed ⊆ s.presentIssues) (a : IssueId) :
-    a ∈ reachFix succ s.presentIssues.length seed
-      ↔ ∃ b ∈ seed, a ∈ reachFix succ s.presentIssues.length [b] := by
+    a ∈ reachBFS succ s.presentIssues.length seed
+      ↔ ∃ b ∈ seed, a ∈ reachBFS succ s.presentIssues.length [b] := by
   constructor
   · intro h
-    rw [reachFix_eq,
-      mem_reachClosure_iff hseed (fun x _ => hsucc x)] at h
+    rw [mem_reachBFS_iff, mem_reachClosure_iff hseed (fun x _ => hsucc x)] at h
     obtain ⟨b, hb, hba⟩ := h
     refine ⟨b, hb, ?_⟩
     have hsingle : [b] ⊆ s.presentIssues := by
       intro x hx
       rw [List.mem_singleton] at hx
       exact hx ▸ hseed hb
-    rw [reachFix_eq,
-      mem_reachClosure_iff hsingle (fun x _ => hsucc x)]
+    rw [mem_reachBFS_iff, mem_reachClosure_iff hsingle (fun x _ => hsucc x)]
     exact ⟨b, List.mem_singleton.mpr rfl, hba⟩
   · rintro ⟨b, hb, hbfix⟩
     have hsingle : [b] ⊆ s.presentIssues := by
       intro x hx
       rw [List.mem_singleton] at hx
       exact hx ▸ hseed hb
-    rw [reachFix_eq,
-      mem_reachClosure_iff hsingle (fun x _ => hsucc x)] at hbfix
+    rw [mem_reachBFS_iff, mem_reachClosure_iff hsingle (fun x _ => hsucc x)] at hbfix
     obtain ⟨x, hx, hxa⟩ := hbfix
     rw [List.mem_singleton] at hx
-    rw [reachFix_eq,
-      mem_reachClosure_iff hseed (fun x _ => hsucc x)]
+    rw [mem_reachBFS_iff, mem_reachClosure_iff hseed (fun x _ => hsucc x)]
     exact ⟨b, hb, hx ▸ hxa⟩
 
 /-- `onCycle` through the cached one-root closures. -/
@@ -148,7 +147,7 @@ theorem onCycleCached_reachCache_eq (s : State) {succ : IssueId → List IssueId
   apply Bool.eq_iff_iff.mpr
   unfold State.onCycleCached State.onCycleF
   rw [List.any_eq_true, decide_eq_true_iff,
-    mem_reachFix_seed_iff s hsucc (succ v) (hsucc v) v]
+    mem_reachBFS_seed_iff s hsucc (succ v) (hsucc v) v]
   constructor
   · rintro ⟨b, hb, hbmem⟩
     rw [reachCached_reachCache_eq] at hbmem

@@ -8,9 +8,9 @@ with no saturation exit, and every `blockersOf`/`isEpic` re-derives
 `presentEdges` — superlinear per `ready` even on an edgeless graph. The fast
 form hoists the present issues/edges once per call, reads rollups through
 the batched map (`RollupFast`), computes each candidate's ranking key once
-(`RankKey`), merge-sorts by the cached keys, and saturates the reachability
-closure early (`reachFix` stops at the first fixed point — justified by
-`iterateN_of_fixed`, fixpoint stability).
+(`RankKey`), merge-sorts by the cached keys, and runs the reachability closure
+on the O(V+E) frontier engine (`reachBFS`, `ReachBFS.lean`) instead of
+re-scanning the whole accumulator each round.
 
 The refinement bridge is `readyFast_eq` / `unblocksFast_eq` / `whyFast_eq`:
 the fast forms are pointwise EQUAL to the spec, so the proved `ready`
@@ -28,43 +28,7 @@ open Tl.Crdt
 
 namespace State
 
-/-! ## Saturating reachability -/
-
-/-- `reachClosure` with a saturation exit: stop at the first fixed point of
-    `reachStep` — on real graphs the closure stabilizes in diameter-many
-    steps, not `|presentIssues|`-many. -/
-def reachFix (succ : IssueId → List IssueId) : Nat → List IssueId → List IssueId
-  | 0, acc => acc
-  | n + 1, acc =>
-    let next := reachStep succ acc
-    if next == acc then acc else reachFix succ n next
-
-/-- Fixpoint stability: iterating from a fixed point goes nowhere. -/
-theorem iterateN_of_fixed {α : Type _} (f : α → α) {a : α} (h : f a = a) :
-    (n : Nat) → iterateN f n a = a
-  | 0 => rfl
-  | n + 1 => by
-    unfold iterateN
-    rw [h]
-    exact iterateN_of_fixed f h n
-
-/-- The saturation exit is exact: `reachFix` equals the bounded iteration. -/
-theorem reachFix_eq (succ : IssueId → List IssueId) :
-    (n : Nat) → (acc : List IssueId) → reachFix succ n acc = reachClosure succ n acc
-  | 0, _ => rfl
-  | n + 1, acc => by
-    unfold reachFix
-    show (if reachStep succ acc == acc then acc else reachFix succ n (reachStep succ acc))
-       = reachClosure succ (n + 1) acc
-    by_cases h : (reachStep succ acc == acc) = true
-    · rw [if_pos h]
-      have hfix : reachStep succ acc = acc := eq_of_beq h
-      show acc = iterateN (reachStep succ) (n + 1) acc
-      rw [show iterateN (reachStep succ) (n + 1) acc
-            = iterateN (reachStep succ) n (reachStep succ acc) from rfl,
-        hfix, iterateN_of_fixed (reachStep succ) hfix n]
-    · rw [if_neg h]
-      exact reachFix_eq succ n (reachStep succ acc)
+/-! ## Reachability congruence -/
 
 /-- Pointwise-equal successor functions give equal closures. -/
 theorem reachClosure_congr {f g : IssueId → List IssueId} (h : ∀ x, f x = g x)

@@ -396,6 +396,96 @@ theorem kindSucc_nodup (s : State) (k : EdgeKind) (i : IssueId) : (s.kindSucc k 
   obtain ⟨hc2, ha2⟩ := of_decide_eq_true h2.2
   exact Prod.ext (ha1.trans ha2.symm) (Prod.ext hsnd (hc1.trans hc2.symm))
 
+/-! ## Membership characterization (unconditional — handles non-nodup seeds)
+
+`reachBFS_eq` needs a nodup seed; the cycle diagnostics seed `precSucc v`, which
+may repeat a node (a child that also blocks its parent). For those the
+membership of `reachBFS` is what matters, and it agrees with `reachClosure`
+regardless of seed duplicates — only the spec's *order* (a duplicate-free
+prefix) needs the seed nodup, and a cycle check reads only membership. -/
+
+/-- `reachStep` membership depends only on the accumulator's membership. -/
+theorem reachStep_mem_congr {succ : IssueId → List IssueId} {X Y : List IssueId}
+    (h : ∀ b, b ∈ X ↔ b ∈ Y) (a : IssueId) :
+    a ∈ reachStep succ X ↔ a ∈ reachStep succ Y := by
+  rw [mem_reachStep, mem_reachStep]
+  constructor
+  · rintro (ha | ⟨x, hx, hxa⟩)
+    · exact Or.inl ((h a).mp ha)
+    · exact Or.inr ⟨x, (h x).mp hx, hxa⟩
+  · rintro (ha | ⟨x, hx, hxa⟩)
+    · exact Or.inl ((h a).mpr ha)
+    · exact Or.inr ⟨x, (h x).mpr hx, hxa⟩
+
+/-- Hence iterating `reachStep` respects membership-equality of the seed. -/
+theorem mem_iterateN_reachStep_congr {succ : IssueId → List IssueId} :
+    (n : Nat) → {X Y : List IssueId} → (∀ b, b ∈ X ↔ b ∈ Y) →
+    ∀ a, (a ∈ iterateN (reachStep succ) n X ↔ a ∈ iterateN (reachStep succ) n Y)
+  | 0, _, _, h => h
+  | n + 1, X, Y, h => by
+    intro a
+    show a ∈ iterateN (reachStep succ) n (reachStep succ X)
+       ↔ a ∈ iterateN (reachStep succ) n (reachStep succ Y)
+    exact mem_iterateN_reachStep_congr n (fun b => reachStep_mem_congr h b) a
+
+/-- The frontier-engine membership invariant — like `reachBFSLgo_eq` but needs no
+    nodup (membership of `acc ++ layer` matches `reachStep acc` unconditionally). -/
+theorem mem_reachBFSLgo {succ : IssueId → List IssueId} (a : IssueId) :
+    (n : Nat) → (acc below frontier : List IssueId) →
+    acc = below ++ frontier → (∀ y ∈ below.flatMap succ, y ∈ acc) →
+    (a ∈ reachBFSLgo succ n acc frontier ↔ a ∈ iterateN (reachStep succ) n acc)
+  | 0, _, _, _, _, _ => Iff.rfl
+  | n + 1, acc, below, frontier, hsplit, hclosed => by
+    have hstepmem : ∀ b, b ∈ acc ++ bfsLayer succ acc frontier ↔ b ∈ reachStep succ acc := by
+      intro b
+      rw [List.mem_append, mem_bfsLayer, mem_reachStep]
+      constructor
+      · rintro (hb | ⟨hbf, _⟩)
+        · exact Or.inl hb
+        · obtain ⟨x, hx, hxb⟩ := List.mem_flatMap.mp hbf
+          exact Or.inr ⟨x, by rw [hsplit, List.mem_append]; exact Or.inr hx, hxb⟩
+      · rintro (hb | ⟨x, hx, hxb⟩)
+        · exact Or.inl hb
+        · by_cases hba : b ∈ acc
+          · exact Or.inl hba
+          · refine Or.inr ⟨?_, hba⟩
+            rw [hsplit, List.mem_append] at hx
+            rcases hx with hxb' | hxf
+            · exact absurd (hclosed b (List.mem_flatMap.mpr ⟨x, hxb', hxb⟩)) hba
+            · exact List.mem_flatMap.mpr ⟨x, hxf, hxb⟩
+    show a ∈ reachBFSLgo succ n (acc ++ bfsLayer succ acc frontier) (bfsLayer succ acc frontier)
+       ↔ a ∈ iterateN (reachStep succ) n (reachStep succ acc)
+    rw [mem_reachBFSLgo a n (acc ++ bfsLayer succ acc frontier) acc (bfsLayer succ acc frontier) rfl
+      (by
+        intro y hy
+        rw [List.mem_append]
+        by_cases hyacc : y ∈ acc
+        · exact Or.inl hyacc
+        · refine Or.inr (mem_bfsLayer.mpr ⟨?_, hyacc⟩)
+          rw [hsplit, List.flatMap_append, List.mem_append] at hy
+          rcases hy with hb | hf
+          · exact absurd (hclosed y hb) hyacc
+          · exact hf)]
+    exact mem_iterateN_reachStep_congr n hstepmem a
+
+/-- `reachBFS` reproduces the list reference unconditionally (no nodup needed —
+    `reachBFSgo_eq` is a pure representation refinement). -/
+theorem reachBFS_eq_reachBFSL (succ : IssueId → List IssueId) (n : Nat) (seed : List IssueId) :
+    reachBFS succ n seed = reachBFSL succ n seed := by
+  unfold State.reachBFS State.reachBFSL
+  rw [reachBFSgo_eq succ n (hashSetOf seed) seed.reverse seed
+        (by intro z; rw [List.reverse_reverse, Std.HashSet.contains_iff_mem, mem_hashSetOf]),
+      List.reverse_reverse]
+
+/-- **Unconditional membership characterization**: the shipped engine reaches
+    exactly `reachClosure`'s nodes, for any (possibly duplicated) seed. -/
+theorem mem_reachBFS_iff {succ : IssueId → List IssueId} (n : Nat) (seed : List IssueId)
+    (a : IssueId) : a ∈ reachBFS succ n seed ↔ a ∈ reachClosure succ n seed := by
+  rw [reachBFS_eq_reachBFSL]
+  show a ∈ reachBFSLgo succ n seed seed ↔ a ∈ iterateN (reachStep succ) n seed
+  exact mem_reachBFSLgo a n seed [] seed (List.nil_append seed).symm
+    (by intro y hy; rw [List.mem_flatMap] at hy; obtain ⟨x, hx, _⟩ := hy; exact nomatch hx)
+
 end State
 
 end Tl.Kernel

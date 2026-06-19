@@ -43,9 +43,9 @@ open Tl.Crdt
 /-! ## Frontier reachability (the only reachability the checker trusts) -/
 
 /-- Frontier BFS with a hash visited set: each node expands at most once
-    (`reachFix` re-derives the whole accumulated set per step; this does
-    not). Fuel-total; the checker never needs completeness, so exhausted
-    fuel merely under-covers and the certificate is rejected. -/
+    (the iterated `reachStep` closure re-derives the whole accumulated set per
+    step; this does not). Fuel-total; the checker never needs completeness, so
+    exhausted fuel merely under-covers and the certificate is rejected. -/
 def bfsGo (succ : IssueId → List IssueId) :
     Nat → List IssueId → Std.HashSet IssueId → Std.HashSet IssueId
   | 0, _, vis => vis
