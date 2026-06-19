@@ -296,8 +296,11 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- top level, §2); closed children are pruned unless --all.
   let r : Style → String :=
     if tree then
+      -- the visible set as a hash for O(1) "is the parent visible?" — the root
+      -- test runs per visible issue, so a List `contains` here would be Θ(N²)
+      let visSet := Tl.Kernel.hashSetOf visible
       let isRoot (i : IssueId) : Bool := match canonicalParentE v i with
-        | none => true | some p => !(visible.contains p)
+        | none => true | some p => !visSet.contains p
       let roots := visible.filter isRoot
       let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !v.effClosed i)
       fun st =>
@@ -836,7 +839,7 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
 def cmdDepCritical (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let bsrc := State.blocksBySource v.edges
+  let bsrc := v.idx.bsrc  -- already = blocksBySource v.edges (built once in the index)
   let pset := v.idx.presentH
   let n := v.present.length
   let weighted := (v.present.filter (fun i => v.effStatus i == .Open)).filterMap (fun i =>
