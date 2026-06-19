@@ -120,6 +120,25 @@ theorem getElem?_hashAssoc_amap {V : Type _} (m : AMap IssueId V) (k : IssueId) 
     (hashAssoc m.toList)[k]? = m.find k :=
   getElem?_hashAssoc m.toList (AMap.keys_nodup m) k
 
+/-- `getElem?` after folding a batch of `insert k (val k)` over a key list: a key
+    in the batch reads its `val`, anything else falls through to the starting map.
+    The `val` is a function of the key, so duplicate keys in the batch are harmless
+    (the `Std.HashMap` twin of `AMap`'s `find_foldl_insert`). -/
+theorem getElem?_foldl_insert_keys {V : Type _} (val : IssueId → V) :
+    ∀ (l : List IssueId) (m0 : Std.HashMap IssueId V) (z : IssueId),
+      (l.foldl (fun m k => m.insert k (val k)) m0)[z]? = if z ∈ l then some (val z) else m0[z]?
+  | [], m0, z => by rw [List.foldl_nil, if_neg List.not_mem_nil]
+  | a :: rest, m0, z => by
+    show (rest.foldl (fun m k => m.insert k (val k)) (m0.insert a (val a)))[z]? = _
+    rw [getElem?_foldl_insert_keys val rest (m0.insert a (val a)) z, Std.HashMap.getElem?_insert]
+    by_cases hz : z ∈ rest
+    · rw [if_pos hz, if_pos (List.mem_cons.mpr (Or.inr hz))]
+    · rw [if_neg hz]
+      by_cases hza : z = a
+      · rw [if_pos (beq_iff_eq.mpr hza.symm), if_pos (List.mem_cons.mpr (Or.inl hza)), hza]
+      · rw [if_neg (fun h => hza (beq_iff_eq.mp h).symm),
+          if_neg (fun h => (List.mem_cons.mp h).elim hza hz)]
+
 /-! ## The inverse: an `AMap` materialized from a `HashMap`
 
 The rollup builds its memo in a `Std.HashMap` (O(1)-amortized), then materializes

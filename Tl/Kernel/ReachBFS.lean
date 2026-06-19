@@ -65,16 +65,6 @@ theorem dedup_filter (p : α → Bool) : (l : List α) →
       · rw [Bool.not_eq_true] at h
         rw [h, Bool.false_and]
 
-omit [DecidableEq α] in
-/-- `filter` with an always-true predicate over a list is the identity. -/
-theorem filter_self_of_all (p : α → Bool) {l : List α} (h : ∀ y ∈ l, p y = true) :
-    l.filter p = l := by
-  induction l with
-  | nil => rfl
-  | cons x xs ih =>
-    rw [List.filter_cons_of_pos (h x List.mem_cons_self),
-      ih (fun y hy => h y (List.mem_cons_of_mem x hy))]
-
 /-- **Lemma A** (append/dedup): a duplicate-free prefix survives `dedup` verbatim,
     and the tail is the deduped suffix with the prefix removed. -/
 theorem dedup_append_nodup : (acc : List α) → acc.Nodup → (rest : List α) →
@@ -83,7 +73,7 @@ theorem dedup_append_nodup : (acc : List α) → acc.Nodup → (rest : List α) 
     rw [List.nil_append, List.nil_append]
     congr 1
     symm
-    apply filter_self_of_all
+    apply List.filter_eq_self.mpr
     intro y _
     rw [decide_eq_true_eq]
     exact fun h => nomatch h
@@ -95,7 +85,7 @@ theorem dedup_append_nodup : (acc : List α) → acc.Nodup → (rest : List α) 
        = a :: (acc' ++ dedup (rest.filter (fun y => decide (y ∉ a :: acc'))))
     rw [dedup_append_nodup acc' hnd' rest, List.filter_append]
     have hacc'fil : acc'.filter (fun y => decide (y ≠ a)) = acc' := by
-      apply filter_self_of_all
+      apply List.filter_eq_self.mpr
       intro y hy
       rw [decide_eq_true_eq]
       exact fun he => haacc' (he ▸ hy)
@@ -373,28 +363,6 @@ theorem blockersOf_nodup (s : State) (i : IssueId) : (s.blockersOf i).Nodup := b
   obtain ⟨hc1, hb1⟩ := of_decide_eq_true h1.2
   obtain ⟨hc2, hb2⟩ := of_decide_eq_true h2.2
   exact Prod.ext hfst (Prod.ext (hb1.trans hb2.symm) (hc1.trans hc2.symm))
-
-theorem dependentsOf_nodup (s : State) (i : IssueId) : (s.dependentsOf i).Nodup := by
-  unfold State.dependentsOf
-  apply List.Nodup.map_on _ (List.Nodup.filter _ (presentEdges_nodup s))
-  intro e1 h1 e2 h2 hsnd
-  rw [List.mem_filter] at h1 h2
-  obtain ⟨hc1, ha1⟩ := of_decide_eq_true h1.2
-  obtain ⟨hc2, ha2⟩ := of_decide_eq_true h2.2
-  exact Prod.ext (ha1.trans ha2.symm) (Prod.ext hsnd (hc1.trans hc2.symm))
-
-theorem liveBlockersSucc_nodup (s : State) (i : IssueId) : (s.liveBlockersSucc i).Nodup :=
-  List.Nodup.filter _ (blockersOf_nodup s i)
-
-theorem kindSucc_nodup (s : State) (k : EdgeKind) (i : IssueId) : (s.kindSucc k i).Nodup := by
-  unfold State.kindSucc
-  apply List.Nodup.filter
-  apply List.Nodup.map_on _ (List.Nodup.filter _ (presentEdges_nodup s))
-  intro e1 h1 e2 h2 hsnd
-  rw [List.mem_filter] at h1 h2
-  obtain ⟨hc1, ha1⟩ := of_decide_eq_true h1.2
-  obtain ⟨hc2, ha2⟩ := of_decide_eq_true h2.2
-  exact Prod.ext (ha1.trans ha2.symm) (Prod.ext hsnd (hc1.trans hc2.symm))
 
 /-! ## Membership characterization (unconditional — handles non-nodup seeds)
 

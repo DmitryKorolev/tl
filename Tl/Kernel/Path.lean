@@ -424,22 +424,6 @@ whole sweep is O(V+E). `parentSweepH_eq` proves it agrees pointwise with
 unchanged (ADR-0024 indexed-view substrate; ADR-0023 tiering: structure proved,
 wall-clock tested). -/
 
-/-- HashMap analog of `find_foldl_insert`. -/
-theorem getElem?_foldl_insert_keys {V : Type _} (val : IssueId → V) :
-    ∀ (l : List IssueId) (m0 : Std.HashMap IssueId V) (z : IssueId),
-      (l.foldl (fun m k => m.insert k (val k)) m0)[z]? = if z ∈ l then some (val z) else m0[z]?
-  | [], m0, z => by rw [List.foldl_nil, if_neg List.not_mem_nil]
-  | a :: rest, m0, z => by
-    show (rest.foldl (fun m k => m.insert k (val k)) (m0.insert a (val a)))[z]? = _
-    rw [getElem?_foldl_insert_keys val rest (m0.insert a (val a)) z, Std.HashMap.getElem?_insert]
-    by_cases hz : z ∈ rest
-    · rw [if_pos hz, if_pos (List.mem_cons.mpr (Or.inr hz))]
-    · rw [if_neg hz]
-      by_cases hza : z = a
-      · rw [if_pos (beq_iff_eq.mpr hza.symm), if_pos (List.mem_cons.mpr (Or.inl hza)), hza]
-      · rw [if_neg (fun h => hza (beq_iff_eq.mp h).symm),
-          if_neg (fun h => (List.mem_cons.mp h).elim hza hz)]
-
 /-- The hash parent walk — `parentWalk` with a `Std.HashMap` lookup. -/
 def parentWalkH (parent : Std.HashMap IssueId IssueId) : Nat → IssueId → List IssueId → List IssueId
   | 0, cur, acc => cur :: acc

@@ -101,20 +101,12 @@ def cidxFrom : Nat → List (List IssueId) → Std.HashMap IssueId Nat →
 def cidxOf (comps : List (List IssueId)) : Std.HashMap IssueId Nat :=
   cidxFrom 0 comps ∅
 
+/-- The constant-value batch insert is the `(fun _ => i)` case of the shared
+    `getElem?_foldl_insert_keys` (HashMapView). -/
 theorem getElem?_foldl_insertConst (c : List IssueId) (i : Nat)
     (m : Std.HashMap IssueId Nat) (u : IssueId) :
-    (c.foldl (fun m x => m.insert x i) m)[u]? = if u ∈ c then some i else m[u]? := by
-  induction c generalizing m with
-  | nil => rw [List.foldl_nil, if_neg (fun h => nomatch h)]
-  | cons a as ih =>
-    rw [List.foldl_cons, ih]
-    by_cases hu : u ∈ as
-    · rw [if_pos hu, if_pos (List.mem_cons_of_mem a hu)]
-    · rw [if_neg hu, Std.HashMap.getElem?_insert]
-      by_cases ha : a = u
-      · rw [if_pos (beq_iff_eq.mpr ha), if_pos (ha ▸ List.mem_cons_self ..)]
-      · rw [if_neg (fun h => ha (beq_iff_eq.mp h)),
-          if_neg (fun h => (List.mem_cons.mp h).elim (fun he => ha he.symm) hu)]
+    (c.foldl (fun m x => m.insert x i) m)[u]? = if u ∈ c then some i else m[u]? :=
+  getElem?_foldl_insert_keys (fun _ => i) c m u
 
 theorem cidxFrom_sound : (j : Nat) → (cs : List (List IssueId)) →
     (m : Std.HashMap IssueId Nat) → (u : IssueId) → (i : Nat) →
