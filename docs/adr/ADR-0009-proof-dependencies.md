@@ -57,8 +57,11 @@ Scope discipline preserved: the dependency is confined to the proof files that
 need it. The whole CRDT layer (`Tl/Crdt/*`) and the kernel's *definitions* and
 already-proved convergence/frame/close theorems (`State`/`Op`/`Apply`/`Rollup`/
 `Ready`/`Cycles`/`Theorems`/`Frame`/`CloseMono`) remain Mathlib-free and continue
-to build fast off `batteries`; only the reachability-correctness proof modules
-`import Mathlib`. The tactic discipline (explicit `calc`/`cases`/named lemmas;
+to build fast off `batteries`; only the reachability/cardinality proof modules
+`import Mathlib` — `Reach.lean` and its dependents, which include the O(V+E)
+frontier engines `ReachBFS.lean` (`reachBFS`, the closure behind a `Std.HashSet`
+view) and `Path.lean` (the `dep path` parent-recording BFS). The tactic
+discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
 the Lake config is `lakefile.lean` (the ADR-0019 native shim needs custom
@@ -118,19 +121,3 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 > mechanical fix is splitting each fast module into a definition file
 > (batteries-only) and a proof file (Mathlib zone), at the cost of some
 > duplication of private helpers.
-
-> **Amendment (2026-06-19) — the O(V+E) frontier reach engine is a `Reach`
-> dependent.** Making the whole reachability cone O(V+E) adds
-> `Tl/Kernel/ReachBFS.lean`: a frontier/worklist closure (`reachBFS`) over a
-> `Std.HashSet` visited-set, proved list-equal to the spec `reachClosure`
-> (`reachBFS_eq`). It imports `Reach` (the closure characterization) and
-> `HashMapView` (the `Std.HashSet`/`Std.HashMap` view bridges), so it sits
-> squarely inside this ADR's recorded reachability/cardinality zone — the same
-> finite-graph correctness it refines. This is the scope already anticipated by
-> the 2026-06-12 note (a `Reach.lean` dependent); recorded here per the "do not
-> widen without recording" rule. The shipped fast paths run on these frontier
-> engines — `why`/`weight`/`dep cycles` on `reachBFS`, `dep path` on the sibling
-> parent-recording BFS in `Tl/Kernel/Path.lean` — all inside the same import
-> cone. As before, Mathlib is used for its *lemmas* (and `Std.HashSet` membership
-> facts), not to license heavy automation; the runtime semantics stay pinned by
-> the `*_eq` agreement theorems and the axiom probes stay clean.
