@@ -118,3 +118,19 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 > mechanical fix is splitting each fast module into a definition file
 > (batteries-only) and a proof file (Mathlib zone), at the cost of some
 > duplication of private helpers.
+
+> **Amendment (2026-06-19) — the O(V+E) frontier reach engine is a `Reach`
+> dependent.** Making the whole reachability cone O(V+E) adds
+> `Tl/Kernel/ReachBFS.lean`: a frontier/worklist closure (`reachBFS`) over a
+> `Std.HashSet` visited-set, proved list-equal to the spec `reachClosure`
+> (`reachBFS_eq`). It imports `Reach` (the closure characterization) and
+> `HashMapView` (the `Std.HashSet`/`Std.HashMap` view bridges), so it sits
+> squarely inside this ADR's recorded reachability/cardinality zone — the same
+> finite-graph correctness it refines. This is the scope already anticipated by
+> the 2026-06-12 note (a `Reach.lean` dependent); recorded here per the "do not
+> widen without recording" rule. The shipped fast paths (`why`/`weight`/`dep
+> cycles`/`dep path`) move onto `reachBFS`, retiring the iterated `reachFix`,
+> which stays inside the same import cone. As before, Mathlib is used for its
+> *lemmas* (and `Std.HashSet` membership facts), not to license heavy
+> automation; the runtime semantics stay pinned by the `*_eq` agreement
+> theorems and the axiom probes stay clean.
