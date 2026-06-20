@@ -323,6 +323,66 @@ theorem whyFast_eq (s : State) (i : IssueId) :
   rw [reachBFS_eq _ _ _ (liveSuccE_nodup (s.effStatusAll) s i),
     reachClosure_congr (liveSuccE_eq s), liveSuccE_eq s i]
 
+/-! ## Bucket-backed `why` successor — O(deg) per cone node
+
+`whyFast`'s successor `liveSuccE` recomputes `blockersOfE edges x` (an O(E) edge
+filter) per cone node, so the `why` walk is O(K·E). `liveSuccB` reads the same
+live blockers through the prebuilt `blocksByTarget` bucket (`btgt`) and the
+present-set/rollup hashes — one bucket lookup + an O(1)-amortized discharge test
+per blocker (O(deg) per node) — mirroring `blocksSuccB`. The live filter is the
+exact negation of `blockerDischargedH` (`!present || closed`), so the bridge
+`liveSuccB_eq` reuses `blockerDischargedH_eq`, and `whyFast_eq` (hence thm 10
+`mem_why_iff`) transfers untouched. -/
+
+/-- `liveBlockersSucc` via the prebuilt target-adjacency bucket (`blocksByTarget`),
+    the present-issue hash set, and the rollup hash: the present, not-effectively-
+    closed blockers of `x`, every read O(1)-amortized instead of an O(E) edge filter
+    (the old `liveSuccE`). The keep-predicate is `!blockerDischargedH` — exactly
+    `liveSuccE`'s `hasIssue ∧ ¬effClosed`. -/
+def liveSuccB (btgt : Std.HashMap IssueId (List IssueId)) (pset : Std.HashSet IssueId)
+    (mh : Std.HashMap IssueId Status) (s : State) (x : IssueId) : List IssueId :=
+  ((btgt[x]?.getD []).reverse).filter (fun b => !blockerDischargedH pset mh s b)
+
+theorem liveSuccB_eq (m : AMap IssueId Status) (s : State) (x : IssueId) :
+    liveSuccB (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
+        (hashAssoc m.toList) s x
+      = liveSuccE m s.presentEdges s x := by
+  unfold State.liveSuccB State.liveSuccE
+  rw [blocksByTarget_eq]
+  apply List.filter_congr
+  intro b _
+  rw [blockerDischargedH_eq]
+  unfold State.blockerDischargedWith
+  rw [Bool.not_or, Bool.not_not]
+
+/-- The bucketed live-blocker seed is duplicate-free (it equals the nodup
+    `liveSuccE`), so `reachBFS_eq` applies to `whyFastH`'s seed. -/
+theorem liveSuccB_nodup (m : AMap IssueId Status) (s : State) (x : IssueId) :
+    (liveSuccB (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
+        (hashAssoc m.toList) s x).Nodup := by
+  rw [liveSuccB_eq]
+  exact liveSuccE_nodup m s x
+
+/-- `why` over the prebuilt buckets (the shipped CLI path): the live-blocker cone
+    runs on the O(V+E) frontier engine over the O(deg)-per-node `liveSuccB`, so the
+    whole walk is O(V+E) instead of `whyFast`'s O(K·E). -/
+def whyFastH (btgt : Std.HashMap IssueId (List IssueId)) (pset : Std.HashSet IssueId)
+    (mh : Std.HashMap IssueId Status) (s : State) (n : Nat) (i : IssueId) : List IssueId :=
+  reachBFS (liveSuccB btgt pset mh s) n (liveSuccB btgt pset mh s i)
+
+/-- **The bridge.** The bucketed `why` IS the spec's `why` — `whyFast_eq` (thm 10,
+    `mem_why_iff`) transfers untouched, routed through `liveSuccB_eq`. -/
+theorem whyFastH_eq (s : State) (i : IssueId) :
+    whyFastH (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
+        (hashAssoc (s.effStatusAll).toList) s s.presentIssues.length i
+      = s.why i := by
+  unfold State.whyFastH
+  rw [show liveSuccB (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
+            (hashAssoc (s.effStatusAll).toList) s
+          = liveSuccE (s.effStatusAll) s.presentEdges s
+        from funext (liveSuccB_eq (s.effStatusAll) s)]
+  exact whyFast_eq s i
+
 end State
 
 end Tl.Kernel

@@ -149,7 +149,10 @@ def kernelSpecTests : List Outcome :=
     let readyFastAgrees := State.readyFast rollupMap s now == s.ready now
     let echoFastAgrees := s.presentIssues.all (fun i =>
       State.unblocksFast s now i == s.unblocks now i
-      && State.whyFast rollupMap s i == s.why i)
+      && State.whyFast rollupMap s i == s.why i
+      -- the shipped bucketed `why` (what the CLI calls) agrees too
+      && State.whyFastH (State.blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
+           (hashAssoc rollupMap.toList) s s.presentIssues.length i == s.why i)
     let cyclesFastAgrees :=
       State.cyclesFast s .Blocks == s.cycles .Blocks
       && State.cyclesFast s .Parent == s.cycles .Parent
