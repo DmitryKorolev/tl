@@ -61,8 +61,14 @@ private def maxRemoteAttempts : Nat := 2
 
 /-- `pulledAcc` carries the pull signal across retries: once an attempt absorbs
     remote content into the local ref, a later attempt (whose freshly-read local
-    ref already has it) must not report `pulled := false`. -/
-private def reconcileRemote (d : Dirs) (remote : String) (pulledAcc : Bool) :
+    ref already has it) must not report `pulled := false`. `push` is the push
+    primitive, injected (default `pushRefLog`) so a test can drive the retry budget
+    to exhaustion deterministically — reaching the fuel-0 `push-rejected` arm — by
+    returning the non-fast-forward signal on every attempt, instead of a flaky
+    concurrent-writer race (the design always builds a fast-forward merge, so a
+    single real rejection always recovers). -/
+private def reconcileRemote (d : Dirs) (remote : String)
+    (push : Dirs → String → String → TlM Bool) (pulledAcc : Bool) :
     Nat → TlM RemoteOutcome
   | 0 => throw (.mk' .pushRejected
       s!"the remote '{remote}' refs/tl/log moved during the push and it was rejected after a retry — run `tl sync` again")
@@ -82,13 +88,13 @@ private def reconcileRemote (d : Dirs) (remote : String) (pulledAcc : Bool) :
     -- local ref agree), retrying if a concurrent local writer moved it
     let parents := ([localTip, remoteTip].filterMap id).eraseDups
     match ← writeRefMergeCas d merged parents localTip with
-    | none => reconcileRemote d remote pulled fuel  -- local ref moved under us: retry
+    | none => reconcileRemote d remote push pulled fuel  -- local ref moved under us: retry
     | some commit =>
       if needPush then
-        if ← pushRefLog d remote commit then
+        if ← push d remote commit then
           return { ran := true, remote, pushed := true, pulled, tip := some commit }
         else
-          reconcileRemote d remote pulled fuel  -- non-fast-forward: re-fetch and retry
+          reconcileRemote d remote push pulled fuel  -- non-fast-forward: re-fetch and retry
       else
         return { ran := true, remote, pushed := false, pulled := true, tip := some commit }
 
@@ -100,13 +106,18 @@ private def reconcileRemote (d : Dirs) (remote : String) (pulledAcc : Bool) :
     immediately BEFORE the first network call, so an interactive sync over a slow
     remote is not silent. It runs only when a remote actually resolves (a
     no-upstream leg stays quiet). The default is a no-op, so the core stays free
-    of any UX/stream policy — the CLI layer injects the (sanitized, stderr) printer. -/
-def syncRemote (d : Dirs) (announce : String → IO Unit := fun _ => pure ()) :
+    of any UX/stream policy — the CLI layer injects the (sanitized, stderr) printer.
+
+    `push` is the push primitive, defaulting to the real `pushRefLog`; it is a
+    parameter only so a test can force the non-fast-forward retry budget to
+    exhaustion (the `push-rejected` throw). Production callers omit it. -/
+def syncRemote (d : Dirs) (announce : String → IO Unit := fun _ => pure ())
+    (push : Dirs → String → String → TlM Bool := pushRefLog) :
     TlM RemoteOutcome := do
   match ← resolveRemote d with
   | none => return { ran := false, remote := "", pushed := false, pulled := false, tip := none }
   | some remote =>
     announce remote
-    reconcileRemote d remote false maxRemoteAttempts
+    reconcileRemote d remote push false maxRemoteAttempts
 
 end Tl.Sync

@@ -425,6 +425,22 @@ def syncRemoteTests : IO (List Outcome) := do
     | .ok none => { name := "the fresh remote still has no refs/tl/log", passed := true }
     | .ok (some t) => { name := "fresh remote unchanged", passed := false, msg := s!"unexpected ref {t}" }
     | .error e => { name := "fresh remote unchanged", passed := false, msg := e.message }]
+  -- (H) the bounded retry is EXHAUSTED → the POSITIVE push-rejected throw (E/F only
+  -- assert the negative). A push that signals non-fast-forward on EVERY attempt
+  -- (another clone winning the race each time) drives reconcileRemote through both
+  -- attempts to the fuel-0 arm. The push is injected to return the race signal
+  -- deterministically — the real fetch/union/CAS legs still run; a concurrent-writer
+  -- race is avoided because the leg always builds a fast-forward merge, so a single
+  -- genuine rejection recovers (case E) and only never-converging races reach here.
+  let (dh, _) ← repoWithRemote
+  let _ ← runTl (writeRef dh [seg ridA "{\"a\":1}\n"] none)  -- local content worth pushing
+  o := o ++ [match ← runTl (syncRemote dh (push := fun _ _ _ => pure false)) with
+    | .error e => check "an unrecoverable non-fast-forward race surfaces push-rejected once the retry budget is spent"
+        (e.code == .pushRejected && e.code.wire == "push-rejected" && e.code.exitCode == 10
+          && (e.message.splitOn "moved during the push").length > 1
+          && (e.message.splitOn "run `tl sync` again").length > 1)
+        s!"code={e.code.wire} exit={e.code.exitCode} msg={e.message}"
+    | .ok r => { name := "push-rejected throw after retry exhaustion", passed := false, msg := s!"unexpectedly ok: {repr r}" }]
   return o
 
 /-- The git wall-clock timeout: `runBounded` kills a process that overruns
