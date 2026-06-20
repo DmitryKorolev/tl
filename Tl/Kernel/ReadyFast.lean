@@ -138,7 +138,13 @@ theorem blocksSuccB_eq (s : State) (i : IssueId) :
 /-- `weight` with the bucket-backed successor view and the saturation exit: the
     blocks-reachability closure reads the once-built adjacency and present set, so
     each step is O(1)-amortized per successor instead of an O(E) edge filter with
-    an O(N) `hasIssue` per node. -/
+    an O(N) `hasIssue` per node.
+
+    ACCEPTED COMPROMISE (ADR-0023): `keyOf` calls this once per ready candidate
+    (`readyFast`), so the weight phase is O(R·(V+E)) — each candidate's blocks-cone
+    is computed independently, with no shared-cone memo across candidates. The
+    per-cone engine is O(V+E) (the just-landed reach work); cross-candidate sharing
+    is not attempted. -/
 def weightFast (bsrc : Std.HashMap IssueId (List IssueId))
     (pset : Std.HashSet IssueId) (n : Nat) (i : IssueId) : Nat :=
   ((reachBFS (blocksSuccB bsrc pset) n [i]).erase i).length

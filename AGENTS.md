@@ -60,7 +60,8 @@ for the decisions and their rationale, read the ADRs in
   *stated* theorems.
 - Tests (outside the TCB) validate the compiled binary: round-trip
   serialization (`parse ∘ render = id`), the differential import check
-  (against source-format fixtures), and a property-based cross-check that the
+  (against source-format fixtures — planned, once `Tl/Import` ships in Stage 3),
+  and a property-based cross-check that the
   *compiled* kernel agrees with its proved spec — a regression net over the
   executable (does compilation preserve the theorems?), **never a substitute
   for the `Tl/Kernel` + `Tl/Crdt` theorems** themselves (ADR-0004).
@@ -70,8 +71,9 @@ CI gates (mirror these locally before declaring done):
 - No `sorry`, `admit`, or new `axiom` under `Tl/`; theorem completion reports
   must include a `#print axioms` check for new theorem names, with only the
   standard Lean allowances already accepted by the project.
-- Round-trip + differential-import + ref-sync (fetch/union/push, push-rejection,
-  no-upstream) + property tests pass. For shell code, "covered" means discrete
+- Round-trip + ref-sync (fetch/union/push, push-rejection, no-upstream) +
+  property tests pass (differential-import joins once `Tl/Import` ships — Stage 3).
+  For shell code, "covered" means discrete
   tests for each documented branch/error path touched by the change, including
   each error code it can emit; do not rely on an unspecified
   coverage percentage.

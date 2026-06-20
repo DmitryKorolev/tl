@@ -517,6 +517,23 @@ def cliReviewTests : IO (List Outcome) := do
     [← expectData "create echo sanitizes the title"
       ["create", "Red " ++ esc ++ "[31mtext" ++ zwsp ++ "!", "--dir", dir, "--assignee", "t"]
       (fun j => jStr j "title" == some "Red text!")]
+  -- `tl log` human output sanitizes the (attacker-controllable, ADR-0014 T1) actor
+  -- field: a foreign op whose actor carries an OSC title-set escape must not reach a
+  -- terminal raw (the human render must match the --json arm, which already wraps it).
+  let dirLog ← freshDir
+  let _ ← mkIssue dirLog "Mine"
+  let evilActor := esc ++ "]0;pwn" ++ String.singleton (Char.ofNat 0x07)
+  IO.FS.writeFile (System.FilePath.mk dirLog / "log" / "1zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbccccdddd" { title := some "F" }) 50 "1zzzzzzzzzzzz" evilActor ++ "\n")
+  let logRes ← run' ["log", "--dir", dirLog]
+  o := o ++ [match logRes with
+    | .ok out =>
+      check "tl log human output strips the actor field's escape bytes (ADR-0014)"
+        (!((out.render.map (· Style.plain)).getD out.human).contains (Char.ofNat 0x1b))
+        ((out.render.map (· Style.plain)).getD out.human)
+    | .error e =>
+      { name := "tl log over a seeded escape-actor segment succeeds", passed := false,
+        msg := e.message }]
   -- '=' in flag values, both spellings
   let a ← mkIssue dir "EqTarget"
   o := o ++

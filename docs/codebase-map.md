@@ -304,6 +304,9 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Resolve.lean          --   id/slug resolution (tl- discriminator, case-fold +
                         --   symbol aliases, prefix/ambiguity — ADR-0007) and the
                         --   ADR-0013 actor chain
+  Grammar.lean          --   commandSpecs: the single source of truth for the verb/
+                        --   flag grammar — drives the arg parser, `tl help`, and the
+                        --   `--json` help schema (root-imported; GrammarTests covers it)
   Commands.lean         --   the stage-1 verbs + the agent-surface/ergonomics
                         --   verbs (reopen/stats/log, sync, label add/remove/list,
                         --   parent set/remove reparenting, list --label facet);
@@ -338,11 +341,16 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   marker), the cached≡fresh seeded property, file
                         --   lifecycle (healing, doctor non-persist, skip-bad
                         --   bypass, symlink refusal)
+  SyncTests.lean        --   the ref-sync legs (fetch/union/push, push-rejection,
+                        --   no-upstream) over a local bare remote — the primary
+                        --   cover overview.md leans on for the remote sync claim
   CliTests.lean         --   per-verb contract rows + spawned-binary envelope/
                         --   exit/env tests (TL_DIR, ceiling dirs) + the tree
                         --   diamond/cycle/shared-root tree fixtures (shared
                         --   nodes render once and are marked on re-encounter;
                         --   parent cycles keep the distinct cycle marker)
+  GrammarTests.lean     --   the commandSpecs grammar: per-verb spec coverage,
+                        --   help-text/`--json` schema generation, flag parsing
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
@@ -350,6 +358,8 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
                         --   compiled-kernel-vs-spec property cross-check
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class
+  ImportsTests.lean     --   structural: every `.lean` under Tl/ is imported by the
+                        --   root module (guards the "invisible to lake build" class)
   Main.lean             --   tltest entry point
 ```
 

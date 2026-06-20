@@ -62,7 +62,13 @@ private def pad4 (n : Nat) : String :=
 
 /-- Render epoch ms as the canonical ISO-8601 UTC instant: second precision,
     plus `.mmm` exactly when the value has sub-second precision (ADR-0008's
-    `2026-06-15T09:00:00Z` and ADR-0020's `….296Z` forms). -/
+    `2026-06-15T09:00:00Z` and ADR-0020's `….296Z` forms).
+
+    ROUND-TRIP PRECONDITION: `epochMsOfIso? ∘ isoOfEpochMs = some` only for
+    `ms < 253402300800000` (year ≤ 9999) — above that `pad4` emits a 5-digit year
+    the strict parser rejects. Latent today (every value enters via the clamped
+    `epochMsOfIso?`; no defer-write surface or importer produces a larger `ms`),
+    but a future write path must clamp before rendering. -/
 def isoOfEpochMs (ms : Nat) : String :=
   let (secs, milli) := (ms / 1000, ms % 1000)
   let (days, daySecs) := (secs / 86400, secs % 86400)

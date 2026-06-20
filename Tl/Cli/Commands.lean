@@ -543,7 +543,9 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
        ("actor", p.actor.elim Json.null (Json.str ∘ sanitizeSingle)),
        ("targets", Json.arr ((opTargets p.op).map (Json.str ∘ displayId)).toArray)]
   let line (p : ParsedOp) : String :=
-    s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.getD "—")}  " ++
+    -- actor is attacker-controllable (ADR-0014 T1) — sanitize for the human terminal,
+    -- mirroring the `--json` arm above (titles/labels/meta all wrap it too)
+    s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.elim "—" sanitizeSingle)}  " ++
       String.intercalate "," ((opTargets p.op).map displayId)
   return { data := Json.mkObj [("count", jnum filtered.length),
                                ("entries", Json.arr (capped.map entry).toArray)]
