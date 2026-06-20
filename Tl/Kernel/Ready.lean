@@ -95,12 +95,16 @@ def isReady (s : State) (now : Instant) (i : IssueId) : Bool :=
 
 /-! ### Deterministic ranking (ADR-0004 thm 4, vision §Ready ordering) -/
 
-/-- `createdAt` (ADR-0008): the HLC of the issue's `create` add-tag (the min add-tag
-    HLC, for determinism if duplicated). -/
-def createdAtOf (s : State) (i : IssueId) : Nat :=
-  match (s.issues.tagsOf i).toList.map (fun p => p.1.hlc) with
+/-- The min add-tag HLC of a tag set (`0` if empty) — the determinism choice for
+    `createdAt` when an issue carries duplicate `create` add-tags. -/
+def minHlcOf (tags : FinSet Stamp) : Nat :=
+  match tags.toList.map (fun p => p.1.hlc) with
   | [] => 0
   | h :: t => t.foldl Nat.min h
+
+/-- `createdAt` (ADR-0008): the HLC of the issue's `create` add-tag (the min add-tag
+    HLC, for determinism if duplicated). -/
+def createdAtOf (s : State) (i : IssueId) : Nat := minHlcOf (s.issues.tagsOf i)
 
 /-- The ranking order (`a` ranks before `b`): priority ↑, then weight ↓, then
     createdAt ↑, then the unique id ↑ — a total order. The queue is reproducible
