@@ -595,6 +595,18 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
            human := s!"Created {displayId newId}  {sanitizeSingle title}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
+/-- After a durable claim, re-derive the echo from the freshly-synced state via
+    `reload`; if that reload fails (a transient FS / clock-read error), fall back to
+    the post-write `fallback` view with a disclosure note — a durable claim must
+    never report failure (an exit-code-branching agent would spuriously retry into a
+    second claim). Extracted so the fallback branch is unit-testable without
+    injecting a real FS failure. -/
+def reloadOrFallback (reload : TlM View) (fallback : View) (i : IssueId) :
+    TlM (View × List String) :=
+  try (do let vf ← reload; pure (vf, ([] : List String)))
+  catch e =>
+    pure (fallback, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"])
+
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     (sync verify : Bool) : TlM CmdOut := do
   -- freshness preflight (ADR-0001 §5): with --sync/--verify, reconcile against
@@ -662,15 +674,8 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   -- then reflects a sibling that won the race. The race can't be fully closed
   -- (distributed), but the report is as fresh as the post-push fetch. Without
   -- --sync, the just-written state is the freshest we have.
-  let (vFinal, reloadNotes) ← if sync then
-      (try (do let vf ← loadView dirOverride; pure (vf, ([] : List String)))
-       catch e =>
-         -- the claim is durably recorded; a failed post-sync reload (transient FS /
-         -- clock-read error) must NOT turn a successful claim into a nonzero exit — an
-         -- exit-code-branching agent would spuriously retry into a second claim. Fall
-         -- back to the post-write view and disclose that this echo is local-only.
-         pure (v, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"]))
-    else pure (v, ([] : List String))
+  let (vFinal, reloadNotes) ←
+    if sync then reloadOrFallback (loadView dirOverride) v i else pure (v, ([] : List String))
   let current := (vFinal.state.issueData i).assignee.value.getD none
   let won := current == some actor
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj

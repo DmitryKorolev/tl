@@ -564,6 +564,29 @@ def cliReviewTests : IO (List Outcome) := do
     | .error e =>
       { name := "tl log over a seeded escape-actor segment succeeds", passed := false,
         msg := e.message }]
+  -- claim --sync post-reload fallback (reloadOrFallback): a throwing reload yields
+  -- the FALLBACK view + a disclosure note (never a thrown error — a durable claim
+  -- must not report failure); a succeeding reload yields the reloaded view, no note.
+  -- Two views with distinct issue counts (fallback=1, reload=2) prove which is used.
+  let dFb ← freshDir; let _ ← mkIssue dFb "fallback-only"
+  let dRe ← freshDir; let _ ← mkIssue dRe "r1"; let _ ← mkIssue dRe "r2"
+  let rFb ← (loadView (some dFb)).run
+  let rRe ← (loadView (some dRe)).run
+  match rFb, rRe with
+  | .ok vFb, .ok vRe =>
+    let onThrow ← (reloadOrFallback (throw (.mk' .internal "boom")) vFb "tl-x").run
+    let onOk ← (reloadOrFallback (pure vRe) vFb "tl-x").run
+    o := o ++ [
+      check "reloadOrFallback: a throwing reload returns the fallback view + a disclosure note"
+        (match onThrow with
+         | .ok (vf, notes) => vf.present.length == 1
+             && notes.any (fun n => (n.splitOn "reload failed").length > 1)
+         | .error _ => false) "threw instead of falling back",
+      check "reloadOrFallback: a succeeding reload returns the reloaded view, no note"
+        (match onOk with
+         | .ok (vf, notes) => vf.present.length == 2 && notes.isEmpty
+         | .error _ => false) "did not return the reloaded view"]
+  | _, _ => o := o ++ [check "reloadOrFallback setup: both views load" false "loadView failed"]
   -- '=' in flag values, both spellings
   let a ← mkIssue dir "EqTarget"
   o := o ++
