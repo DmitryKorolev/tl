@@ -188,7 +188,38 @@ def storeAdversityTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectCode "corrupt clock is corrupt-clock" .corruptClock
         (transact d none 1 (buildCreate "x"))]
+  -- the saturated-clock bridge: mintStamps at the 48-bit physical ceiling throws the
+  -- STRUCTURED corrupt-clock(reason:"saturated") — distinct from the unreadable path
+  -- above (which is reason:"unreadable"); assert the context, not just the code
+  outcomes := outcomes ++
+    [← (do
+        match ← runTl (mintStamps 1
+            (⟨Tl.Clock.Hlc.physMax, Tl.Clock.Hlc.logMax⟩ : Tl.Clock.Hlc) Tl.Clock.Hlc.physMax 1) with
+        | .error e =>
+          let satCtx := e.context.any (fun p => p.1 == "reason" &&
+            (match p.2 with | .str s => s == "saturated" | _ => false))
+          pure (check "mintStamps at saturation throws corrupt-clock(reason:saturated)"
+            (decide (e.code = .corruptClock) && satCtx) s!"got {e.code.wire}, ctx {e.context.length} entries")
+        | .ok _ =>
+          pure (check "mintStamps at saturation throws corrupt-clock(reason:saturated)"
+            false "unexpectedly succeeded"))]
   IO.FS.removeFile (root / ".tl" / "local" / "clock")
+  -- writeLocalFile's rename-failure .error arm: a non-empty DIRECTORY at the clock
+  -- target makes `rename` fail (regardless of uid — unlike a chmod, bypassed under
+  -- root); assert (a) a structured throw (the under-lock callers rethrow, unlike the
+  -- best-effort saveCache), (b) the CSPRNG-suffixed .tmp is removed, not stranded (a
+  -- persistent failure would otherwise pile up one temp per attempt).
+  IO.FS.createDirAll (root / ".tl" / "local" / "clock")
+  IO.FS.writeFile (root / ".tl" / "local" / "clock" / "blocker") "x"
+  let wres ← runTl (writeLocalFile d d.relClock "0000000000000000\n")
+  let entries ← (root / ".tl" / "local").readDir
+  let stranded := entries.filter (fun e => e.fileName.endsWith ".tmp")
+  outcomes := outcomes ++ [
+    check "writeLocalFile over a directory target throws (not swallowed)"
+      (match wres with | .error _ => true | .ok _ => false) "unexpectedly succeeded",
+    check "no .tmp stranded by the failed rename" stranded.isEmpty
+      s!"stranded {stranded.size} temp file(s)"]
+  IO.FS.removeDirAll (root / ".tl" / "local" / "clock")
   -- corrupt replica fails closed
   IO.FS.writeFile (root / ".tl" / "local" / "replica") "NOT!VALID!ID!\n"
   outcomes := outcomes ++
