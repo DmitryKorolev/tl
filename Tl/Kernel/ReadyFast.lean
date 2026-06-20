@@ -376,12 +376,10 @@ theorem whyFastH_eq (s : State) (i : IssueId) :
     whyFastH (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
         (hashAssoc (s.effStatusAll).toList) s s.presentIssues.length i
       = s.why i := by
-  unfold State.whyFastH
-  rw [show liveSuccB (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)
-            (hashAssoc (s.effStatusAll).toList) s
-          = liveSuccE (s.effStatusAll) s.presentEdges s
-        from funext (liveSuccB_eq (s.effStatusAll) s)]
-  exact whyFast_eq s i
+  unfold State.whyFastH State.why
+  rw [reachBFS_eq _ _ _ (liveSuccB_nodup (s.effStatusAll) s i),
+    reachClosure_congr (fun x => (liveSuccB_eq (s.effStatusAll) s x).trans (liveSuccE_eq s x)),
+    (liveSuccB_eq (s.effStatusAll) s i).trans (liveSuccE_eq s i)]
 
 end State
 

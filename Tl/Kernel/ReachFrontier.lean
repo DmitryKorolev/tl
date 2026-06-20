@@ -15,21 +15,25 @@ its complexity class as a PLAIN PROPOSITION (no cost semantics):
     layer is in no other. With the concatenation above, every reachable node lands
     in EXACTLY ONE frontier (`reachClosure_mem_unique_frontier`).
   - `reachFrontier_subset_present` — each frontier ⊆ `presentIssues`.
-  - `reachExpanded_nodup` — the nodes the engine ever *expands* (folds `succ` over)
-    across a run are duplicate-free ⇒ each node's out-edges are folded exactly once
-    (total edge-work ≤ E, node-work ≤ V).
-  - `reachBFSLgo_step_frontier` — the engine genuinely threads `reachFrontier`: one
-    round at state `(reachClosure k, reachFrontier k)` advances to
-    `(reachClosure (k+1), reachFrontier (k+1))`.
+  - `reachExpanded_nodup` — across a run the layers expanded are duplicate-free.
+  - `reachExpandTrace_eq` / `reachExpandTrace_flatten_nodup` — the ENGINE-coupled
+    statements: the engine's actual per-round `flatMap succ` input list (traced from
+    `reachBFSLgo`'s recursion) equals `reachFrontier 0 … (n-1)`, and those flatten
+    to a duplicate-free list ⇒ each node's out-edges folded exactly once (≤ E, ≤ V).
 
-Why this is a *self-enforcing* guard, not a restatement of correctness: the
-disjointness rests on `bfsLayer`'s `∉ acc` filter (`mem_bfsLayer`), and the
-engine-threading lemma pins `reachFrontier` to the engine's actual per-round
-frontier. A regression to a whole-accumulator re-scan (the retired `reachStep`
-shape, or a per-round re-dedup) would make the "per-round inputs are pairwise
-disjoint" claim FALSE — the accumulator is not disjoint from itself — so it cannot
-be proved about a Θ(V·E) engine. The build fails, not just a perf test (the defect
-that shipped under the dep-path work existed precisely because this was tested-only).
+Two layers of claim, kept distinct to avoid overstating (a prior review caught a
+*false* O(V+E) structural claim in this epic):
+  • The partition theorems hold of the reachable set's BFS layering and so of any
+    correct engine's *output* — they do NOT by themselves forbid a Θ(V·E) engine.
+    The guard against an output-changing regression remains `reachBFSgo_eq`.
+  • The *work-shape* guard is `reachExpandTrace_eq`: it is an equation over the
+    engine's per-round fold-INPUT list. A whole-accumulator re-scan (the retired
+    `reachStep` shape, or a per-round re-dedup) folds `succ` over the entire
+    `reachClosure k` each round, so its faithful trace is the nested closures, not
+    the fresh `reachFrontier` layers — and the equation fails to compile. That is
+    the build-time tooth; it bites because `reachExpandTrace` copies `reachBFSLgo`'s
+    recursion verbatim (`reachBFSgo` shares the same per-round layer via
+    `reachBFSgo_eq`).
 
 Tier boundary (ADR-0023): this proves the operation STRUCTURE (each node/edge
 processed once). The per-operation → wall-clock gap, and `Std.HashSet`/`HashMap`
@@ -192,24 +196,68 @@ theorem reachExpanded_nodup (succ : IssueId → List IssueId) (seed : List Issue
     rw [← reachClosure_eq_flatMap_frontier succ seed hnd m]
     exact reachClosure_nodup succ seed hnd m
 
-/-! ## The engine genuinely threads `reachFrontier` -/
+/-! ## Engine-coupled: the per-round fold inputs ARE the frontiers
 
-/-- **Engine ⇄ frontier sequence.** One round of the list-reference engine at state
-    `(reachClosure k, reachFrontier k)` advances to `(reachClosure (k+1),
-    reachFrontier (k+1))` — so the per-round frontier the engine folds `succ` over
-    is exactly `reachFrontier k`, and the disjointness above is a statement about the
-    engine's actual inputs (`reachBFSgo` shares this layering via `reachBFSgo_eq`). -/
-theorem reachBFSLgo_step_frontier (succ : IssueId → List IssueId) (seed : List IssueId)
-    (hnd : seed.Nodup) (n k : Nat) :
-    reachBFSLgo succ (n + 1) (reachClosure succ k seed) (reachFrontier succ seed k)
-      = reachBFSLgo succ n (reachClosure succ (k + 1) seed) (reachFrontier succ seed (k + 1)) := by
-  show reachBFSLgo succ n
-        (reachClosure succ k seed
-          ++ bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k))
-        (bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k))
-     = reachBFSLgo succ n (reachClosure succ (k + 1) seed) (reachFrontier succ seed (k + 1))
-  rw [show bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k)
-        = reachFrontier succ seed (k + 1) from rfl, ← reach_frontier_decomp succ seed hnd k]
+The theorems above are about `reachFrontier` and `reachClosure` — true of the
+reachable-set's BFS layering, hence of any correct engine's *output*. The guard
+that distinguishes the O(V+E) frontier engine from a Θ(V·E) whole-accumulator
+re-scan is an equation over the engine's *per-round `flatMap succ` input list*:
+`reachExpandTrace` instruments `reachBFSLgo`'s recursion (the `acc ++ bfsLayer …`
+/ `bfsLayer …` threading and the recorded `frontier` are copied verbatim from
+`reachBFSLgo`; `reachBFSgo` folds the same layer per round via `reachBFSgo_eq`).
+`reachExpandTrace_eq` then proves those inputs are exactly the disjoint
+`reachFrontier`s — a statement a re-scan recursion (per-round input = the whole
+`reachClosure k`) cannot satisfy, so regressing the recursion breaks this proof.
+(The output-correctness guard remains `reachBFSgo_eq`; this adds the work-shape
+guard on top.) -/
+
+/-- The per-round `flatMap succ` input the list-reference engine expands, traced in
+    round order — `reachBFSLgo`'s recursion with the expanded `frontier` recorded. -/
+def reachExpandTrace (succ : IssueId → List IssueId) :
+    Nat → List IssueId → List IssueId → List (List IssueId)
+  | 0, _, _ => []
+  | n + 1, acc, frontier =>
+    frontier :: reachExpandTrace succ n (acc ++ bfsLayer succ acc frontier)
+      (bfsLayer succ acc frontier)
+
+/-- The engine's per-round inputs from state `(reachClosure k, reachFrontier k)` are
+    `reachFrontier k, reachFrontier (k+1), …` — the fresh layers, not the closures. -/
+theorem reachExpandTrace_frontier (succ : IssueId → List IssueId) (seed : List IssueId)
+    (hnd : seed.Nodup) :
+    (n k : Nat) →
+    reachExpandTrace succ n (reachClosure succ k seed) (reachFrontier succ seed k)
+      = (List.range' k n).map (reachFrontier succ seed)
+  | 0, _ => rfl
+  | n + 1, k => by
+    show reachFrontier succ seed k :: reachExpandTrace succ n
+          (reachClosure succ k seed
+            ++ bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k))
+          (bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k))
+       = (List.range' k (n + 1)).map (reachFrontier succ seed)
+    rw [show bfsLayer succ (reachClosure succ k seed) (reachFrontier succ seed k)
+          = reachFrontier succ seed (k + 1) from rfl,
+      ← reach_frontier_decomp succ seed hnd k,
+      reachExpandTrace_frontier succ seed hnd n (k + 1), List.range'_succ, List.map_cons]
+
+/-- **The engine expands exactly `reachFrontier 0 … (n-1)`** — an equation over the
+    actual per-round fold inputs. A whole-accumulator re-scan recursion expands the
+    nested `reachClosure k` instead, so it fails this equation. -/
+theorem reachExpandTrace_eq (succ : IssueId → List IssueId) (seed : List IssueId)
+    (hnd : seed.Nodup) (n : Nat) :
+    reachExpandTrace succ n seed seed = (List.range n).map (reachFrontier succ seed) := by
+  rw [List.range_eq_range']
+  exact reachExpandTrace_frontier succ seed hnd n 0
+
+/-- **Each node's out-edges folded once (engine-coupled).** The flattened per-round
+    expansion inputs are duplicate-free — each reachable node is expanded in exactly
+    one round (≤ E edge-examinations, ≤ V node-insertions). FALSE for a re-scan
+    engine, whose per-round inputs are the overlapping nested closures. -/
+theorem reachExpandTrace_flatten_nodup (succ : IssueId → List IssueId) (seed : List IssueId)
+    (hnd : seed.Nodup) (n : Nat) :
+    (reachExpandTrace succ n seed seed).flatten.Nodup := by
+  rw [reachExpandTrace_eq succ seed hnd n]
+  show ((List.range n).flatMap (reachFrontier succ seed)).Nodup
+  exact reachExpanded_nodup succ seed hnd n
 
 end State
 
