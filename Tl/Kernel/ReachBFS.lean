@@ -195,6 +195,17 @@ theorem reachBFSL_eq (succ : IssueId → List IssueId) (n : Nat) (seed : List Is
   exact reachBFSLgo_eq succ n seed [] seed hseed (List.nil_append seed).symm
     (by intro y hy; rw [List.mem_flatMap] at hy; obtain ⟨a, ha, _⟩ := hy; exact nomatch ha)
 
+/-- An empty frontier is a fixpoint: with nothing to expand, the layer is empty
+    (`bfsLayer succ acc [] = []`), so every remaining round leaves the accumulator
+    unchanged. This is the equational core of the shipped engine's early-exit. -/
+theorem reachBFSLgo_nil_frontier (succ : IssueId → List IssueId) :
+    (n : Nat) → (acc : List IssueId) → reachBFSLgo succ n acc [] = acc
+  | 0, _ => rfl
+  | n + 1, acc => by
+    show reachBFSLgo succ n (acc ++ bfsLayer succ acc []) (bfsLayer succ acc []) = acc
+    rw [show bfsLayer succ acc ([] : List IssueId) = [] from rfl, List.append_nil]
+    exact reachBFSLgo_nil_frontier succ n acc
+
 /-! ## The shipped HashSet engine -/
 
 /-- One expansion step (HashSet, shipped): cons a genuinely-new successor onto the
@@ -289,13 +300,19 @@ theorem bfsFold_spec : ∀ (ys S r : List IssueId) (v : Std.HashSet IssueId),
            from rfl,
         List.reverse_cons, List.append_assoc, List.singleton_append]
 
-/-- The shipped frontier closure (HashSet visited, reverse-built output). -/
+/-- The shipped frontier closure (HashSet visited, reverse-built output). The
+    `frontier.isEmpty` guard makes the `fuel` a totality BACKSTOP rather than the
+    iteration count: at saturation the frontier is empty, so the worklist stops
+    instead of spinning the remaining `~V` trivial rounds (`reachBFSgo_eq` proves
+    this preserves the result — the reference is stationary on an empty frontier). -/
 def reachBFSgo (succ : IssueId → List IssueId) :
     Nat → Std.HashSet IssueId → List IssueId → List IssueId → List IssueId
   | 0, _vis, accRev, _frontier => accRev.reverse
   | n + 1, vis, accRev, frontier =>
-    let p := (frontier.flatMap succ).foldl bfsStepFn (vis, [])
-    reachBFSgo succ n p.1 (p.2 ++ accRev) p.2.reverse
+    if frontier.isEmpty then accRev.reverse
+    else
+      let p := (frontier.flatMap succ).foldl bfsStepFn (vis, [])
+      reachBFSgo succ n p.1 (p.2 ++ accRev) p.2.reverse
 
 /-- **The shipped O(V+E) reachability engine** (ADR-0024 indexed views): each
     round expands only the frontier, walking each node's out-edges once and
@@ -311,28 +328,45 @@ theorem reachBFSgo_eq (succ : IssueId → List IssueId) :
     reachBFSgo succ n vis accRev frontier = reachBFSLgo succ n accRev.reverse frontier
   | 0, _, _, _, _ => rfl
   | n + 1, vis, accRev, frontier, hvis => by
-    obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
-      (fun z => by rw [List.append_nil]; exact hvis z)
-    have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2
-                = (bfsLayer succ accRev.reverse frontier).reverse := by
-      rw [hout, List.append_nil]
-      unfold State.bfsLayer
-      congr 2
-      apply List.filter_congr
-      intro w _
-      rw [List.append_nil]
-    have hp1 : ∀ z, ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1.contains z = true
-                  ↔ z ∈ (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev).reverse := by
-      intro z
-      rw [hvis' z, List.reverse_append, List.mem_append, List.mem_append, List.mem_reverse,
-        List.mem_reverse]
-    show reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
-        (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
-        ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse
-       = reachBFSLgo succ n (accRev.reverse ++ bfsLayer succ accRev.reverse frontier)
-           (bfsLayer succ accRev.reverse frontier)
-    rw [reachBFSgo_eq succ n _ _ _ hp1, hlayer,
-      List.reverse_append, List.reverse_reverse]
+    by_cases hfe : frontier.isEmpty = true
+    · -- empty frontier: the early-exit returns the accumulated output, and the
+      -- reference is stationary on an empty frontier (`reachBFSLgo_nil_frontier`).
+      have hfnil : frontier = [] := List.isEmpty_iff.mp hfe
+      show (if frontier.isEmpty then accRev.reverse else
+              reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+                (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+                ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse)
+         = reachBFSLgo succ (n + 1) accRev.reverse frontier
+      rw [if_pos hfe, hfnil, reachBFSLgo_nil_frontier succ (n + 1) accRev.reverse]
+    · -- non-empty frontier: the representation refinement (visited set ⇄ list `∉`).
+      show (if frontier.isEmpty then accRev.reverse else
+              reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+                (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+                ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse)
+         = reachBFSLgo succ (n + 1) accRev.reverse frontier
+      rw [if_neg hfe]
+      obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
+        (fun z => by rw [List.append_nil]; exact hvis z)
+      have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2
+                  = (bfsLayer succ accRev.reverse frontier).reverse := by
+        rw [hout, List.append_nil]
+        unfold State.bfsLayer
+        congr 2
+        apply List.filter_congr
+        intro w _
+        rw [List.append_nil]
+      have hp1 : ∀ z, ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1.contains z = true
+                    ↔ z ∈ (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev).reverse := by
+        intro z
+        rw [hvis' z, List.reverse_append, List.mem_append, List.mem_append, List.mem_reverse,
+          List.mem_reverse]
+      show reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+          (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+          ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse
+         = reachBFSLgo succ n (accRev.reverse ++ bfsLayer succ accRev.reverse frontier)
+             (bfsLayer succ accRev.reverse frontier)
+      rw [reachBFSgo_eq succ n _ _ _ hp1, hlayer,
+        List.reverse_append, List.reverse_reverse]
 
 /-- **The shipped engine is `reachClosure`.** -/
 theorem reachBFS_eq (succ : IssueId → List IssueId) (n : Nat) (seed : List IssueId)
