@@ -57,7 +57,13 @@ theorem sameSCCF_eq (s : State) (succ : IssueId → List IssueId) (u v : IssueId
     decide_eq_decide.mpr (mem_reachBFS_iff s.presentIssues.length [u] v)]
 
 /-- Lookup in a precomputed closure cache, falling back to the exact closure if
-    the key is absent. The fallback makes the cache extensionally transparent. -/
+    the key is absent. The fallback makes the cache extensionally transparent.
+    COST NOTE (ADR-0023, accepted): this assoc-list scan + per-miss `fallback`
+    closure is super-quadratic, but it is only on the witness-reconstruction path
+    that runs when Tarjan's SCC certificate is REJECTED — which the certificate
+    tests pin does not occur on real graphs; the hot path uses the hash views. The
+    fallback's cost is accepted as correctness-only (a transparent reference), not
+    optimized. -/
 def lookupCached (fallback : IssueId → List IssueId) (v : IssueId) :
     List (IssueId × List IssueId) → List IssueId
   | [] => fallback v

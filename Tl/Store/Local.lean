@@ -51,13 +51,23 @@ private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
     (no-follow), fsync it, then `rename` over the target (ADR-0015 §3 — the
     atomic-replace pattern, so a crash mid-write never leaves a torn
     clock/replica that would read as corrupt and wedge every later command).
-    The temp open is no-follow; `rename` replaces a symlink at the target
-    name rather than following it. -/
+    The temp open is no-follow; `rename` replaces a symlink at the target NAME
+    rather than following it. NOTE: `rename` follows symlinks in the INTERMEDIATE
+    path components — it is NOT a per-component no-follow like `Sys.openNoFollow`.
+    Intermediate-component safety here rests on the temp open below having JUST
+    validated the identical sibling prefix (the same `.tl/local/` parent) no-follow
+    microseconds earlier — a swapper would need mid-call write access to the
+    already-validated tree. A `renameat`-based no-follow shim would close even that
+    window (ADR-0015 §6); the residual is accepted as tiny. -/
 def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
   -- a per-call CSPRNG temp suffix so concurrent lock-free writers never collide
   -- on one `.tmp` inode (the read-time `ref-mark` refresh writes here without
   -- the mutation lock — ADR-0016 §3); harmless for the under-lock callers
-  -- (clock/replica), matching `Tl.Sync.writeForeignSegment`'s discipline
+  -- (clock/replica), matching `Tl.Sync.writeForeignSegment`'s discipline. Unlike
+  -- `mintStamps`/`mintReplica` (which throw on a short entropy read — a nonce/replica
+  -- must be full-width), a short read here only shortens a transient temp name:
+  -- non-fatal (no `O_EXCL`, but the atomic rename and unique-per-call suffix still
+  -- hold, no panic), so it is deliberately tolerated, not checked.
   let entropy ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}") (Sys.entropy 8)
   let tmpRel := rel ++ "." ++ toCrockford (Sys.natOfBytesBE entropy) 13 ++ ".tmp"
   liftSys (mapSysError tmpRel) do

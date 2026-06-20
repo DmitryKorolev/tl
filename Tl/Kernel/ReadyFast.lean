@@ -210,20 +210,23 @@ def keyLe (a b : RankKey) : Bool :=
   else if a.createdAt ≠ b.createdAt then decide (a.createdAt < b.createdAt)
   else decide (TotalOrd.le a.id b.id)
 
-/-- A candidate's key over the hoisted views. -/
-def keyOf (bsrc : Std.HashMap IssueId (List IssueId)) (pset : Std.HashSet IssueId)
-    (s : State) (n : Nat) (i : IssueId) : RankKey :=
-  { prio := (s.issueData i).priorityOf.val
+/-- A candidate's key over the hoisted views: `prio` reads the once-built data hash
+    (`dataH`) — O(1)-amortized — instead of an O(N) `issueData` find per candidate.
+    (`createdAt` still does an O(N) `createdAtOf` find — a hoisted min-create-HLC view
+    is the remaining half of this hoist, pending a `hashAssoc`-over-mapped-list bridge.) -/
+def keyOf (dataH : Std.HashMap IssueId IssueData) (bsrc : Std.HashMap IssueId (List IssueId))
+    (pset : Std.HashSet IssueId) (s : State) (n : Nat) (i : IssueId) : RankKey :=
+  { prio := ((dataH[i]?).getD IssueData.empty).priorityOf.val
     weight := weightFast bsrc pset n i
     createdAt := s.createdAtOf i
     id := i }
 
 theorem keyLe_keyOf_eq (s : State) (a b : IssueId) :
-    keyLe (keyOf (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length a)
-          (keyOf (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length b)
+    keyLe (keyOf (hashAssoc s.data.toList) (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length a)
+          (keyOf (hashAssoc s.data.toList) (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length b)
       = s.readyLe a b := by
   unfold State.keyLe State.keyOf State.readyLe
-  rw [weightFast_eq, weightFast_eq]
+  rw [weightFast_eq, weightFast_eq, issueDataH_eq, issueDataH_eq]
 
 /-- Near-linear sort on cached keys. -/
 def rankSortK (l : List RankKey) : List RankKey :=
@@ -231,12 +234,12 @@ def rankSortK (l : List RankKey) : List RankKey :=
 
 theorem rankSortK_map (st : State) :
     (l : List IssueId) →
-    rankSortK (l.map (keyOf (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length))
-      = (st.rankSort l).map (keyOf (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length)
+    rankSortK (l.map (keyOf (hashAssoc st.data.toList) (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length))
+      = (st.rankSort l).map (keyOf (hashAssoc st.data.toList) (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length)
   | l => by
     unfold State.rankSortK State.rankSort
     exact (List.map_mergeSort
-      (f := keyOf (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length)
+      (f := keyOf (hashAssoc st.data.toList) (blocksBySource st.presentEdges) (hashSetOf st.presentIssues) st st.presentIssues.length)
       (r := fun a b => st.readyLe a b)
       (s := fun a b => keyLe a b)
       (l := l) (fun a _ b _ => (keyLe_keyOf_eq st a b).symm)).symm
@@ -259,7 +262,7 @@ def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List Issue
   let bsrc := blocksBySource edges
   let pbk := bucketBy pe
   let cands := present.filter (isReadyFastH pset mh dataH btgt pbk s now ·)
-  (rankSortK (cands.map (keyOf bsrc pset s present.length))).map (·.id)
+  (rankSortK (cands.map (keyOf dataH bsrc pset s present.length))).map (·.id)
 
 /-- **The bridge.** The fast queue IS the spec's ranked queue — `ready`
     soundness, completeness, and the proved ordering transfer untouched. -/
@@ -275,8 +278,8 @@ theorem readyFast_eq (s : State) (now : Instant) :
       (isReadyFastH_eq (s.effStatusAll) s now i).trans (isReadyFast_eq s now i))
   rw [hf, rankSortK_map]
   rw [List.map_map]
-  show (s.rankSort _).map ((·.id) ∘ keyOf (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length) = _
-  have : ((·.id) ∘ keyOf (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length) = (id : IssueId → IssueId) := by
+  show (s.rankSort _).map ((·.id) ∘ keyOf (hashAssoc s.data.toList) (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length) = _
+  have : ((·.id) ∘ keyOf (hashAssoc s.data.toList) (blocksBySource s.presentEdges) (hashSetOf s.presentIssues) s s.presentIssues.length) = (id : IssueId → IssueId) := by
     funext i
     rfl
   rw [this, List.map_id]

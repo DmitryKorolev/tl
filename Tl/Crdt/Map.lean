@@ -229,7 +229,10 @@ theorem ascending_of_sorted : {l : List (K × V)} → Sorted l → ascending l =
     rw [Bool.and_eq_true, decide_eq_true_iff]
     exact ⟨hlb q (List.mem_cons_self ..), ascending_of_sorted hs⟩
 
-/-- Outer-join two sorted maps, combining overlapping keys with `f`. -/
+/-- Outer-join two sorted maps, combining overlapping keys with `f`. Generic and
+    O(|l2|·|result|) (a fold of `insertWith`); the WARM CRDT path merges a singleton
+    and the COLD path is bridged to the linear merge-join `joinFast` (ADR-0023). BATCH
+    callers should route through `joinFast`, not this directly. -/
 def merge (f : V → V → V) (l1 l2 : List (K × V)) : List (K × V) :=
   l2.foldr (fun p acc => insertWith f p.1 p.2 acc) l1
 
