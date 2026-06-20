@@ -120,6 +120,33 @@ theorem getElem?_hashAssoc_amap {V : Type _} (m : AMap IssueId V) (k : IssueId) 
     (hashAssoc m.toList)[k]? = m.find k :=
   getElem?_hashAssoc m.toList (AMap.keys_nodup m) k
 
+/-- `lookup` distributes over a value-map that preserves keys: looking up `k` in
+    `l.map (fun p => (p.1, g p.2))` is the lookup in `l` with `g` applied. -/
+theorem lookup_map_val {V W : Type _} (g : V → W) (k : IssueId) :
+    (l : List (IssueId × V)) →
+      AssocList.lookup k (l.map (fun p => (p.1, g p.2))) = (AssocList.lookup k l).map g
+  | [] => rfl
+  | p :: ps => by
+    show (if k = p.1 then some (g p.2) else AssocList.lookup k (ps.map (fun q => (q.1, g q.2))))
+       = (if k = p.1 then some p.2 else AssocList.lookup k ps).map g
+    by_cases hk : k = p.1
+    · rw [if_pos hk, if_pos hk]; rfl
+    · rw [if_neg hk, if_neg hk, lookup_map_val g k ps]
+
+/-- The mapped-list instance of the bridge: a hash copy of an `AMap` whose values
+    have been mapped by `g` looks up exactly `find`, with `g` applied — the
+    `hashAssoc`-over-mapped-list companion of `getElem?_hashAssoc_amap` (which is
+    value-copy only). Lets a *derived* per-issue view (e.g. the min-create-HLC
+    ranking key) hoist into a hash while staying provably equal to its `find`. -/
+theorem getElem?_hashAssoc_map_amap {V W : Type _} (g : V → W) (m : AMap IssueId V) (k : IssueId) :
+    (hashAssoc (m.toList.map (fun p => (p.1, g p.2))))[k]? = (m.find k).map g := by
+  have hnd : ((m.toList.map (fun p => (p.1, g p.2))).map Prod.fst).Nodup := by
+    have hkeys : (m.toList.map (fun p => (p.1, g p.2))).map Prod.fst = m.toList.map Prod.fst := by
+      rw [List.map_map]; rfl
+    rw [hkeys]
+    exact AMap.keys_nodup m
+  rw [getElem?_hashAssoc _ hnd k, lookup_map_val g k m.toList]; rfl
+
 /-- `getElem?` after folding a batch of `insert k (val k)` over a key list: a key
     in the batch reads its `val`, anything else falls through to the starting map.
     The `val` is a function of the key, so duplicate keys in the batch are harmless
