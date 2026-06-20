@@ -16,24 +16,26 @@ its complexity class as a PLAIN PROPOSITION (no cost semantics):
     in EXACTLY ONE frontier (`reachClosure_mem_unique_frontier`).
   - `reachFrontier_subset_present` — each frontier ⊆ `presentIssues`.
   - `reachExpanded_nodup` — across a run the layers expanded are duplicate-free.
-  - `reachExpandTrace_eq` / `reachExpandTrace_flatten_nodup` — the ENGINE-coupled
-    statements: the engine's actual per-round `flatMap succ` input list (traced from
-    `reachBFSLgo`'s recursion) equals `reachFrontier 0 … (n-1)`, and those flatten
-    to a duplicate-free list ⇒ each node's out-edges folded exactly once (≤ E, ≤ V).
+  - `reachExpandTrace_eq` — the reference engine's actual per-round `flatMap succ`
+    input list equals `reachFrontier 0 … (n-1)`.
+  - `reachBFSgoTrace_flatten_nodup` — the SHIPPED engine's actual per-round fold
+    inputs flatten to a duplicate-free list ⇒ each node's out-edges folded once.
 
-Two layers of claim, kept distinct to avoid overstating (a prior review caught a
-*false* O(V+E) structural claim in this epic):
+Three layers of claim, kept distinct to avoid overstating (a prior review caught a
+*false* O(V+E) structural claim in this epic, and a follow-up caught the work-shape
+guard being stated only over the reference engine):
   • The partition theorems hold of the reachable set's BFS layering and so of any
     correct engine's *output* — they do NOT by themselves forbid a Θ(V·E) engine.
     The guard against an output-changing regression remains `reachBFSgo_eq`.
-  • The *work-shape* guard is `reachExpandTrace_eq`: it is an equation over the
-    engine's per-round fold-INPUT list. A whole-accumulator re-scan (the retired
-    `reachStep` shape, or a per-round re-dedup) folds `succ` over the entire
-    `reachClosure k` each round, so its faithful trace is the nested closures, not
-    the fresh `reachFrontier` layers — and the equation fails to compile. That is
-    the build-time tooth; it bites because `reachExpandTrace` copies `reachBFSLgo`'s
-    recursion verbatim (`reachBFSgo` shares the same per-round layer via
-    `reachBFSgo_eq`).
+  • `reachExpandTrace_eq` is the *work-shape* guard over the list-reference engine
+    `reachBFSLgo`: an equation over its per-round fold-INPUT list, which a
+    whole-accumulator re-scan recursion (folding over the entire `reachClosure k`)
+    cannot satisfy — its faithful trace is the nested closures, not the fresh layers.
+  • `reachBFSgoTrace_flatten_nodup` carries the same tooth to the SHIPPED HashSet
+    engine `reachBFSgo` (`reachBFSgoTrace` instruments its real recursion, early-exit
+    and all): the actual fold inputs of the engine that RUNS flatten to a
+    duplicate-free list. Since `reachBFSgo_eq` is output-only, this — not it — is what
+    forbids a re-scan rewrite of the shipped recursion.
 
 Tier boundary (ADR-0023): this proves the operation STRUCTURE (each node/edge
 processed once). The per-operation → wall-clock gap, and `Std.HashSet`/`HashMap`
@@ -203,13 +205,13 @@ reachable-set's BFS layering, hence of any correct engine's *output*. The guard
 that distinguishes the O(V+E) frontier engine from a Θ(V·E) whole-accumulator
 re-scan is an equation over the engine's *per-round `flatMap succ` input list*:
 `reachExpandTrace` instruments `reachBFSLgo`'s recursion (the `acc ++ bfsLayer …`
-/ `bfsLayer …` threading and the recorded `frontier` are copied verbatim from
-`reachBFSLgo`; `reachBFSgo` folds the same layer per round via `reachBFSgo_eq`).
+/ `bfsLayer …` threading and the recorded `frontier` are copied verbatim).
 `reachExpandTrace_eq` then proves those inputs are exactly the disjoint
 `reachFrontier`s — a statement a re-scan recursion (per-round input = the whole
 `reachClosure k`) cannot satisfy, so regressing the recursion breaks this proof.
-(The output-correctness guard remains `reachBFSgo_eq`; this adds the work-shape
-guard on top.) -/
+This is the work-shape guard over the LIST-REFERENCE engine; the next section
+(`reachBFSgoTrace_*`) carries it to the SHIPPED `reachBFSgo`, since `reachBFSgo_eq`
+relates the two only by output. -/
 
 /-- The per-round `flatMap succ` input the list-reference engine expands, traced in
     round order — `reachBFSLgo`'s recursion with the expanded `frontier` recorded. -/
@@ -258,6 +260,101 @@ theorem reachExpandTrace_flatten_nodup (succ : IssueId → List IssueId) (seed :
   rw [reachExpandTrace_eq succ seed hnd n]
   show ((List.range n).flatMap (reachFrontier succ seed)).Nodup
   exact reachExpanded_nodup succ seed hnd n
+
+/-! ## The SHIPPED HashSet engine expands the same frontiers
+
+The trace above is over the list-reference `reachBFSLgo`; `reachBFSgo_eq` couples
+`reachBFSgo` to it only by OUTPUT equality, so on its own it would not catch a
+`reachBFSgo` rewritten to re-scan whole closures while returning the same list.
+This section closes that gap: `reachBFSgoTrace` instruments the SHIPPED engine's
+recursion (HashSet visited, early-exit), and `reachBFSgoTrace_flatten_nodup` proves
+its actual per-round fold inputs are duplicate-free — the work-shape guard over the
+engine that really runs. A re-scan rewrite of `reachBFSgo`'s recursion records the
+nested closures, whose flatten is not duplicate-free, so it fails to compile. -/
+
+/-- A trailing empty frontier contributes nothing: every later layer is empty. -/
+theorem reachExpandTrace_nil_flatten (succ : IssueId → List IssueId) :
+    (n : Nat) → (acc : List IssueId) → (reachExpandTrace succ n acc []).flatten = []
+  | 0, _ => rfl
+  | n + 1, acc => by
+    show (([] : List IssueId)
+          :: reachExpandTrace succ n (acc ++ bfsLayer succ acc []) (bfsLayer succ acc [])).flatten = []
+    rw [show bfsLayer succ acc ([] : List IssueId) = [] from rfl, List.append_nil,
+      List.flatten_cons, List.nil_append, reachExpandTrace_nil_flatten succ n acc]
+
+/-- The per-round `flatMap succ` input the SHIPPED engine `reachBFSgo` expands, traced
+    in round order — `reachBFSgo`'s recursion (HashSet visited, early-exit) with the
+    expanded `frontier` recorded. -/
+def reachBFSgoTrace (succ : IssueId → List IssueId) :
+    Nat → Std.HashSet IssueId → List IssueId → List IssueId → List (List IssueId)
+  | 0, _, _, _ => []
+  | n + 1, vis, accRev, frontier =>
+    if frontier.isEmpty then []
+    else frontier :: reachBFSgoTrace succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+      (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+      ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse
+
+/-- The shipped engine's recorded inputs flatten to the same nodes as the reference's
+    (the early-exit only drops trailing empty layers) — a representation refinement
+    reusing `reachBFSgo_eq`'s visited-set invariant (`bfsFold_spec`). -/
+theorem reachBFSgoTrace_flatten (succ : IssueId → List IssueId) :
+    (n : Nat) → (vis : Std.HashSet IssueId) → (accRev frontier : List IssueId) →
+    (∀ z, vis.contains z = true ↔ z ∈ accRev.reverse) →
+    (reachBFSgoTrace succ n vis accRev frontier).flatten
+      = (reachExpandTrace succ n accRev.reverse frontier).flatten
+  | 0, _, _, _, _ => rfl
+  | n + 1, vis, accRev, frontier, hvis => by
+    by_cases hfe : frontier.isEmpty = true
+    · have hfnil : frontier = [] := List.isEmpty_iff.mp hfe
+      show (if frontier.isEmpty then [] else
+              frontier :: reachBFSgoTrace succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+                (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+                ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse).flatten
+         = (reachExpandTrace succ (n + 1) accRev.reverse frontier).flatten
+      rw [if_pos hfe, hfnil]
+      exact (reachExpandTrace_nil_flatten succ (n + 1) accRev.reverse).symm
+    · show (if frontier.isEmpty then [] else
+              frontier :: reachBFSgoTrace succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
+                (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
+                ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse).flatten
+         = (reachExpandTrace succ (n + 1) accRev.reverse frontier).flatten
+      rw [if_neg hfe]
+      obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
+        (fun z => by rw [List.append_nil]; exact hvis z)
+      have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2
+                  = (bfsLayer succ accRev.reverse frontier).reverse := by
+        rw [hout, List.append_nil]
+        unfold State.bfsLayer
+        congr 2
+        apply List.filter_congr
+        intro w _
+        rw [List.append_nil]
+      have hp1 : ∀ z, ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1.contains z = true
+                    ↔ z ∈ (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev).reverse := by
+        intro z
+        rw [hvis' z, List.reverse_append, List.mem_append, List.mem_append, List.mem_reverse,
+          List.mem_reverse]
+      rw [List.flatten_cons,
+        show reachExpandTrace succ (n + 1) accRev.reverse frontier
+            = frontier :: reachExpandTrace succ n (accRev.reverse ++ bfsLayer succ accRev.reverse frontier)
+                (bfsLayer succ accRev.reverse frontier) from rfl,
+        List.flatten_cons]
+      congr 1
+      rw [reachBFSgoTrace_flatten succ n _ _ _ hp1, hlayer, List.reverse_append,
+        List.reverse_reverse]
+
+/-- **Each node's out-edges folded once — over the SHIPPED engine.** The actual
+    per-round fold inputs of `reachBFSgo` flatten to a duplicate-free list. A
+    whole-accumulator re-scan recursion records the nested `reachClosure k` instead,
+    whose flatten repeats nodes, so this proof fails — the build-time work-shape guard
+    over the engine that runs. -/
+theorem reachBFSgoTrace_flatten_nodup (succ : IssueId → List IssueId) (seed : List IssueId)
+    (hnd : seed.Nodup) (n : Nat) :
+    (reachBFSgoTrace succ n (hashSetOf seed) seed.reverse seed).flatten.Nodup := by
+  rw [reachBFSgoTrace_flatten succ n (hashSetOf seed) seed.reverse seed
+        (by intro z; rw [List.reverse_reverse, Std.HashSet.contains_iff_mem, mem_hashSetOf]),
+      List.reverse_reverse]
+  exact reachExpandTrace_flatten_nodup succ seed hnd n
 
 end State
 

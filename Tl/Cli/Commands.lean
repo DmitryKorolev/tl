@@ -363,7 +363,8 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   if State.isReadyWith v.rollup s v.now i then
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
-  let trans := State.whyFastH v.idx.btgt v.idx.presentH v.idx.rollupH s s.presentIssues.length i
+  -- fuel = |presentIssues|; reuse the view's hoisted scan (presentElements is Θ(N²))
+  let trans := State.whyFastH v.idx.btgt v.idx.presentH v.idx.rollupH s v.present.length i
   -- a node's children in the why-tree are its LIVE direct blockers (present and
   -- not effectively-closed) — the same liveSuccE relation whyFast's transitive
   -- closure is built from, so the tree's node set equals `trans` (the JSON set),

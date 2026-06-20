@@ -276,14 +276,18 @@ the reachable set — pairwise disjoint, union = the closure, each ⊆ `presentI
 — so every reachable node lands in exactly one frontier. That partition
 characterizes any correct engine's *output*, so the guard against an
 output-changing regression is the pre-existing `reachBFSgo_eq`. The *work-shape*
-tooth on top is `reachExpandTrace_eq`: an equation stating the engine's actual
-per-round `flatMap succ` input list equals those disjoint frontiers (flattening to
-a duplicate-free list, so each node's out-edges fold exactly once, ≤ E / ≤ V). A
-whole-accumulator re-scan (Θ(V·E)) recursion folds over the entire `reachClosure k`
-each round, so its faithful trace is the nested closures, not the fresh layers, and
-this equation fails to compile — regressing the engine's recursion to one breaks
-the build, not just a perf row. What remains carried is only the step from that
-per-operation count to wall-clock — the amortized-O(1) hash primitives above. An accepted constant-factor
+tooth on top is over the engine's actual per-round `flatMap succ` input list:
+`reachExpandTrace_eq` proves it equals those disjoint frontiers for the
+list-reference engine, and `reachBFSgoTrace_flatten_nodup` carries the same to the
+SHIPPED `reachBFSgo` (instrumenting its real recursion, early-exit and all) — the
+fold inputs of the engine that runs flatten to a duplicate-free list, so each
+node's out-edges fold exactly once (≤ E / ≤ V). A whole-accumulator re-scan
+(Θ(V·E)) recursion folds over the entire `reachClosure k` each round, so its
+faithful trace is the nested closures, not the fresh layers, and these proofs fail
+to compile — regressing the engine's recursion to one breaks the build, not just a
+perf row (`reachBFSgo_eq` is output-only and would not catch it). What remains
+carried is only the step from that per-operation count to wall-clock — the
+amortized-O(1) hash primitives above. An accepted constant-factor
 compromise is recorded explicitly — an ADR or a tracked task — never silently.
 
 The trust boundary and threat model (who may read/write, and the threats

@@ -92,11 +92,11 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   (ADR-0023 provable-shape tier): the BFS frontiers
                         --   (reachFrontier) partition the reachable set — disjoint,
                         --   union = reachClosure, each ⊆ presentIssues — so each node
-                        --   lands in exactly one frontier. Work-shape tooth:
-                        --   reachExpandTrace_eq — the engine's per-round fold-input
-                        --   list = the disjoint frontiers (flatten dup-free), an
-                        --   equation a Θ(V·E) re-scan recursion fails. Output guard
-                        --   stays reachBFSgo_eq.
+                        --   lands in exactly one frontier. Work-shape tooth over the
+                        --   shipped engine: reachBFSgoTrace_flatten_nodup — reachBFSgo's
+                        --   real per-round fold inputs flatten dup-free; a Θ(V·E)
+                        --   re-scan recursion (nested closures) fails it. (reachBFSgo_eq
+                        --   is output-only.) reachExpandTrace_eq is the reference twin.
   Path.lean             --   blocksPath: a TOTAL witness-path extractor over present
                         --   blocks edges (the ORDERED companion to why's reach⁺ set,
                         --   ADR-0004 thm 10 companion). A parent-recording frontier

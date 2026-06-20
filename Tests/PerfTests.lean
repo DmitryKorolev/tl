@@ -277,6 +277,20 @@ def perfTests : IO (List Outcome) := do
     let wa := synthId 0
     let wb := synthId (2 * n)
     let wide ← bench 700 (fun _ => ((ws.blocksPath wa wb).map (·.length)).getD 0)
+    -- the `why` blocker-cone over the wide graph: `why a` is the FULL transitive live
+    -- blocker set (X ∪ Y = all 2n nodes over 3n edges). whyFastH runs the O(V+E)
+    -- frontier engine over the bucket-backed `liveSuccB` (the `btgt` target bucket +
+    -- hashed discharge), built once like the view index. The retired `liveSuccE`
+    -- rescanned `presentEdges` per cone node (O(K·E)); a revert to that per-node edge
+    -- filter turns this row quadratic and the ratio jumps. Buckets hoisted out of the
+    -- loop so the row measures the cone traversal, not the one-time index build. Reps
+    -- sized so the small scale clears ratioRow's 30ms floor (de-masked) — the cone
+    -- traversal is sub-µs/call, so it needs many reps; re-tune if hardware shifts.
+    let wbtgt := State.blocksByTarget ws.presentEdges
+    let wpset := hashSetOf ws.presentIssues
+    let wmh := hashAssoc (ws.effStatusAll).toList
+    let wwhy ← bench 250000 (fun _ =>
+      (State.whyFastH wbtgt wpset wmh ws ws.presentIssues.length wa).length)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
@@ -285,7 +299,8 @@ def perfTests : IO (List Outcome) := do
       ("provenance map", prov), ("sync line-union", uni),
       ("cli per-row projections (issueRow fields)", row),
       ("cli tree canonical-parent per row", canon),
-      ("dep-path blocksPath (wide graph)", wide)])]
+      ("dep-path blocksPath (wide graph)", wide),
+      ("why blocker-cone (wide graph)", wwhy)])]
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
