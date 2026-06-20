@@ -266,10 +266,19 @@ clocks/IDs/actor entering as data — each discharged by a test or trusted by
 construction when implementation begins.
 
 On the efficiency axis (ADR-0023/0024), the analogous tier-3 carried assumption is
-**constant factors**: cache locality, allocator behaviour, the constant in
-front of an `O(N)`, and per-syscall wall-clock are neither proved (the kernel
-pins the complexity *class*, not an operation count) nor pinned by the ratio
-tests (which bound growth, not absolutes). An accepted constant-factor
+**constant factors and the per-operation → wall-clock gap**: cache locality,
+allocator behaviour, the constant in front of an `O(N)`, `Std.HashSet`/`HashMap`
+amortized-O(1) (hash distribution, resizing), and per-syscall wall-clock are
+neither proved nor pinned by the ratio tests (which bound growth, not absolutes).
+For the shared reachability engine the operation *structure* is now proved, not
+merely tested: `Tl/Kernel/ReachFrontier.lean` shows the BFS frontiers partition
+the reachable set — pairwise disjoint, union = the closure, each ⊆ `presentIssues`
+— so every reachable node lands in exactly one frontier and its out-edges are
+folded exactly once (≤ E edge-work, ≤ V node-work). This is the *provable-shape*
+tier of ADR-0023: a plain proposition, unprovable about a whole-accumulator
+re-scan (Θ(V·E)) engine, so a regression to one fails the build, not just a perf
+row. What remains carried is only the step from that per-operation count to
+wall-clock — the amortized-O(1) hash primitives above. An accepted constant-factor
 compromise is recorded explicitly — an ADR or a tracked task — never silently.
 
 The trust boundary and threat model (who may read/write, and the threats

@@ -88,6 +88,13 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   membership-equal unconditionally (mem_reachBFS_iff);
                         --   backs why/weight (ReadyFast) + dep cycles (CyclesFast).
                         --   Reach + HashMapView dependent (ADR-0009 reach zone, 0024)
+  ReachFrontier.lean    --   PROVED "processed-once" structure of the reach engine
+                        --   (ADR-0023 provable-shape tier): the BFS frontiers
+                        --   (reachFrontier) partition the reachable set — disjoint,
+                        --   union = reachClosure, each ⊆ presentIssues — so each node
+                        --   lands in exactly one frontier and its out-edges fold once
+                        --   (reachExpanded_nodup). reachBFSLgo_step_frontier ties the
+                        --   sequence to the engine. Unprovable about a Θ(V·E) re-scan.
   Path.lean             --   blocksPath: a TOTAL witness-path extractor over present
                         --   blocks edges (the ORDERED companion to why's reach⁺ set,
                         --   ADR-0004 thm 10 companion). A parent-recording frontier

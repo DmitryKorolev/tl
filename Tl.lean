@@ -31,6 +31,7 @@ import Tl.Kernel.Frame
 import Tl.Kernel.CloseMono
 import Tl.Kernel.Reach
 import Tl.Kernel.ReachBFS
+import Tl.Kernel.ReachFrontier
 import Tl.Kernel.Path
 import Tl.Kernel.RollupAcyclic
 import Tl.Kernel.SccProps
