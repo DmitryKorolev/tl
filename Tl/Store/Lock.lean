@@ -43,8 +43,12 @@ def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs) : TlM UInt3
     | n + 1 => do
       if ← liftSys (mapSysError rel) (Sys.tryLock fd true) then
         return fd
-      liftSys (fun e => .mk' .internal s!"{e}") (IO.sleep lockPollMs.toUInt32)
-      loop n
+      -- don't sleep into the terminal poll: the next call would be `loop 0` (which
+      -- only throws), so sleeping first overshoots the timeout by one poll interval
+      if n == 0 then loop 0
+      else do
+        liftSys (fun e => .mk' .internal s!"{e}") (IO.sleep lockPollMs.toUInt32)
+        loop n
   -- close the fd on EVERY non-success exit (timeout or an unexpected errno)
   try loop attempts
   catch e =>
@@ -83,8 +87,10 @@ def mintStamps (replicaVal : Nat) (clock0 : Hlc) (now : Nat) (n : Nat) :
     unless bytes.size == 16 do
       throw (.mk' .internal
         "the entropy source returned a short read — this is a bug in tl; please report it")
-    stamps := stamps ++ [⟨clock.pack, replicaVal, Sys.natOfBytesBE bytes⟩]
-  return (stamps, clock)
+    stamps := ⟨clock.pack, replicaVal, Sys.natOfBytesBE bytes⟩ :: stamps
+  -- built in reverse (cons, not the O(n²) right-append); restore mint order so
+  -- stamp i pairs with wireOp i and the HLCs stay ascending (`transact`)
+  return (stamps.reverse, clock)
 
 /-- The locked critical section (ADR-0015 §1). `build` receives the state and
     `nStamps` fresh stamps and returns the records to append — at most one
@@ -115,17 +121,19 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
     -- wrong fold, and the segment needs repair anyway (ADR-0008 §corruption)
     if let some r := loaded.refused.find? (·.replicaId == replica.id) then
       throw r.error
-    -- the max HLC the OWN segment already carries — the floor every minted
-    -- stamp must clear so this replica's new writes always beat its past
-    -- ones (ADR-0007 monotonicity); the own segment is never skew-checked.
-    let ownMax : Nat := match segs.find? (·.replicaId == replica.id) with
-      | some sd => (decodeSegment sd true).maxHlc
-      | none => 0
+    -- the max HLC the OWN segment already carries — the floor the present clock must
+    -- clear so this replica's new writes beat its PAST ones even if the persisted
+    -- clock is stale (a crash in the §1 window, or a stray `init` zeroing it). It is
+    -- DELIBERATELY not floored past within-window FOREIGN HLCs: a folded foreign op
+    -- with a higher HLC may win LWW — pure last-writer-wins, eventual consistency;
+    -- there is no causal-safety-across-transport (that is why no `observeRemote` rule
+    -- exists). The absent arm below floors by the all-segment max only because it has
+    -- no persisted clock to trust. `materializeCached` already decoded the own
+    -- segment, so its max is threaded out as `loaded.ownMaxHlc` — no re-decode.
+    let ownMax : Nat := loaded.ownMaxHlc
     let clock0 ← match ← loadClock d with
-      -- a present clock can be STALE — a crash in the §1 window after
-      -- append+fsync but before persist-clock leaves it below the segment,
-      -- and a stray `init` can zero it — so floor it by the own-segment max
-      -- regardless; localEvent then advances past `now` as usual.
+      -- present clock: floor by the own-segment max (crash/`init`-zero recovery);
+      -- localEvent then advances past `now`.
       | some h => pure (unpackHlc (max h.pack ownMax))
       | none =>
         -- the pinned absent-clock reseed (ADR-0007): max over all segments'

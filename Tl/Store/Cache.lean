@@ -400,29 +400,36 @@ def materializeCached (segs : List SegmentData) (cache : Option FoldCache)
     (skipBad : Bool := false) (now : Option Nat := none)
     (ownReplica : Option String := none) : Loaded × Option FoldCache :=
   let pairs := decodeAll segs skipBad now ownReplica
-  if skipBad then
-    let loaded := assemble pairs State.empty
-    ({ loaded with state := Tl.Kernel.foldFast (loaded.ops.map ParsedOp.kernelOp) }, none)
-  else
-    match cache with
-    | none => refold pairs
-    | some c =>
-      if cacheValid c pairs then
-        let extras := extraOps c pairs
-        let state := extras.foldl (fun s p => Tl.Kernel.apply s p.kernelOp) c.state
-        -- exactly-fresh detection without re-hashing: validity already pinned
-        -- the prefix bytes, so an equal byteLen implies an equal sha — compare
-        -- only the cheap key fields (in order; both lists ascend by replica)
-        let fresh := extras.isEmpty
-          && c.segments.length == pairs.length
-          && (c.segments.zip pairs).all (fun (m, sd, dec) =>
-               m.replicaId == sd.replicaId && m.byteLen == sd.bytes.size
-               && m.lineCount == dec.lineCount && m.refused == dec.refusal.isSome
-               && m.deferred == dec.deferred)
-        let refreshed := if fresh then none else some { segments := liveMeta pairs, state }
-        (assemble pairs state, refreshed)
-      else
-        refold pairs
+  -- the own segment's max HLC, already decoded here — threaded onto `Loaded` so
+  -- `transact` need not re-decode the own segment for its present-clock floor
+  let ownMax : Nat := match ownReplica with
+    | some rid => (pairs.find? (fun p => p.1.replicaId == rid)).elim 0 (fun p => p.2.maxHlc)
+    | none => 0
+  let (loaded, refreshed) :=
+    if skipBad then
+      let loaded := assemble pairs State.empty
+      ({ loaded with state := Tl.Kernel.foldFast (loaded.ops.map ParsedOp.kernelOp) }, none)
+    else
+      match cache with
+      | none => refold pairs
+      | some c =>
+        if cacheValid c pairs then
+          let extras := extraOps c pairs
+          let state := extras.foldl (fun s p => Tl.Kernel.apply s p.kernelOp) c.state
+          -- exactly-fresh detection without re-hashing: validity already pinned
+          -- the prefix bytes, so an equal byteLen implies an equal sha — compare
+          -- only the cheap key fields (in order; both lists ascend by replica)
+          let fresh := extras.isEmpty
+            && c.segments.length == pairs.length
+            && (c.segments.zip pairs).all (fun (m, sd, dec) =>
+                 m.replicaId == sd.replicaId && m.byteLen == sd.bytes.size
+                 && m.lineCount == dec.lineCount && m.refused == dec.refusal.isSome
+                 && m.deferred == dec.deferred)
+          let refreshed := if fresh then none else some { segments := liveMeta pairs, state }
+          (assemble pairs state, refreshed)
+        else
+          refold pairs
+  ({ loaded with ownMaxHlc := ownMax }, refreshed)
 
 /-! ## The cache file -/
 

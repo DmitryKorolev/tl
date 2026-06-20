@@ -141,9 +141,14 @@ CSPRNG, not a code path.
   id's own: in the auto-mint case the working copy's past writes sit in the
   *old* id's now-orphaned segment, which the freshly minted id does not own —
   an own-segment-only scan would be vacuous exactly when the reseed matters —
-  and exceeding foreign HLCs is harmless (observe-remote does that on every
-  sync fold). With no segments at all (a fresh `init`, no prior state) it
-  seeds from `now()`. The scan is line-scoped like every reader (ADR-0015
+  and exceeding foreign HLCs is harmless here: this is a one-time recovery reseed
+  with no persisted clock to trust, so a conservative max-over-all-segments seed
+  cannot regress below any absorbed op. (The steady-state *present*-clock arm,
+  ADR-0015 §1, floors only by the own-segment max — so a within-window foreign op
+  with a higher HLC may still win LWW; this is pure last-writer-wins, eventual
+  consistency, NOT causal-safety-across-transport. There is no fold-time
+  observe-remote merge step.) With no segments at all (a fresh `init`, no prior
+  state) it seeds from `now()`. The scan is line-scoped like every reader (ADR-0015
   §5): it takes the max over the well-formed lines and skips a torn tail or
   malformed line — a damaged line's HLC is unrecoverable either way, and
   `now()` still floors the seed. The whole branch — absent-check, scan,

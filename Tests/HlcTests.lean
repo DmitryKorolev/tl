@@ -1,7 +1,7 @@
 /-
 `Tests.HlcTests` — exercises every branch of the HLC shell (ADR-0007): hex
-round-trip, the local-event and observe-remote update rules including the
-backward-clock and overflow paths, and the fail-closed parse (ADR-0004/0009).
+round-trip, the local-event update rule including the backward-clock and overflow
+paths, and the fail-closed parse (ADR-0004/0009).
 -/
 import Tl.Clock.Hlc
 import Tests.Harness
@@ -30,12 +30,7 @@ def hlcUnitTests : List Outcome := [
   checkOk "advance resets logical" (Hlc.localEvent ⟨100, 5⟩ 200) ⟨200, 0⟩,
   checkOk "backward clock absorbed into logical" (Hlc.localEvent ⟨100, 5⟩ 50) ⟨100, 6⟩,
   checkOk "logical overflow bumps physical" (Hlc.localEvent ⟨100, Hlc.logMax⟩ 100) ⟨101, 0⟩,
-  checkError "exhausted clock errors" (Hlc.localEvent ⟨Hlc.physMax, Hlc.logMax⟩ Hlc.physMax),
-  -- observe remote
-  checkOk "remote ahead advances past it" (Hlc.observeRemote ⟨100, 2⟩ ⟨200, 3⟩ 150) ⟨200, 4⟩,
-  checkOk "now ahead of both resets" (Hlc.observeRemote ⟨100, 2⟩ ⟨150, 3⟩ 300) ⟨300, 0⟩,
-  checkOk "tie takes max logical + 1" (Hlc.observeRemote ⟨200, 5⟩ ⟨200, 9⟩ 100) ⟨200, 10⟩,
-  checkOk "local ahead advances past it" (Hlc.observeRemote ⟨300, 7⟩ ⟨100, 9⟩ 50) ⟨300, 8⟩
+  checkError "exhausted clock errors" (Hlc.localEvent ⟨Hlc.physMax, Hlc.logMax⟩ Hlc.physMax)
 ]
 
 /-- A seeded property check: `ofHex? ∘ toHex = some` on random in-range HLCs. -/

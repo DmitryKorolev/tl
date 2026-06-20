@@ -662,7 +662,15 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   -- then reflects a sibling that won the race. The race can't be fully closed
   -- (distributed), but the report is as fresh as the post-push fetch. Without
   -- --sync, the just-written state is the freshest we have.
-  let vFinal ← if sync then loadView dirOverride else pure v
+  let (vFinal, reloadNotes) ← if sync then
+      (try (do let vf ← loadView dirOverride; pure (vf, ([] : List String)))
+       catch e =>
+         -- the claim is durably recorded; a failed post-sync reload (transient FS /
+         -- clock-read error) must NOT turn a successful claim into a nonzero exit — an
+         -- exit-code-branching agent would spuriously retry into a second claim. Fall
+         -- back to the post-write view and disclose that this echo is local-only.
+         pure (v, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"]))
+    else pure (v, ([] : List String))
   let current := (vFinal.state.issueData i).assignee.value.getD none
   let won := current == some actor
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
@@ -674,7 +682,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   return { data, human
-           notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes }
+           notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes ++ reloadNotes }
 
 def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     (ofTok : Option String) (actor : String) : TlM CmdOut := do
@@ -697,8 +705,16 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
     else if res == .Done && s.isEpic i then
       let rm := s.effStatusAll
       let openKids := (s.presentChildren i).filter (fun c => !State.effClosedWith rm s c)
+      -- an epic is `done` by child rollup (ADR-0003), never closed `--as done`; word
+      -- the refusal differently once all children are closed (open: 0 would read as a
+      -- contradiction — "becomes done when its children close" but they already have)
+      let msg :=
+        if openKids.isEmpty then
+          s!"{displayId i} is an epic and is already done via child rollup — no explicit close needed (`--as cancelled` is the only manual terminal)"
+        else
+          s!"{displayId i} is an epic — it becomes done when its children close (open: {openKids.length}); `--as cancelled` is the manual terminal"
       .error { code := .notCloseable
-               message := s!"{displayId i} is an epic — it becomes done when its children close (open: {openKids.length}); `--as cancelled` is the manual terminal"
+               message := msg
                context := [("id", .str (displayId i)),
                            ("reasons", Json.mkObj
                              [("isEpic", Json.bool true),

@@ -86,6 +86,12 @@ structure Loaded where
   /-- Max HLC among the *deferred* (skew-future) lines — the real lead of an
       ahead-of-now clock, for `doctor` to report (it is absent from `maxHlc`). -/
   maxDeferredHlc : Nat
+  /-- The OWN replica's segment max HLC, threaded out of the decode so `transact`
+      floors the present clock (ADR-0015 §1) without re-decoding the own segment.
+      `0` when `ownReplica` is unset or has no segment; set by `materializeCached`.
+      (The own segment is never skew-checked, and `transact` throws on a refused
+      own segment before reading this, so the skipBad value cannot matter here.) -/
+  ownMaxHlc : Nat := 0
   /-- Decode-time disclosures (e.g. the priority clamp), with provenance. -/
   warnings : List String
   /-- How many segments were read (the all-refused policy compares against

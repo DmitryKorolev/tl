@@ -74,19 +74,15 @@ def localEvent (last : Hlc) (now : Nat) : Except String Hlc :=
   else if p ≤ physMax then .ok ⟨p, 0⟩
   else .error "hlc-overflow: physical clock past 2^48"
 
-/-- Observe a remote HLC while folding sync: advance strictly past `last`,
-    `remote`, and `now`, preserving causality across the transport (ADR-0007). -/
-def observeRemote (last remote : Hlc) (now : Nat) : Except String Hlc :=
-  let p := max (max last.physical remote.physical) now
-  let lLast := if p = last.physical then last.logical else 0
-  let lRem := if p = remote.physical then remote.logical else 0
-  let baseLog := max lLast lRem
-  if p = last.physical ∨ p = remote.physical then
-    if baseLog < logMax then .ok ⟨p, baseLog + 1⟩
-    else if p < physMax then .ok ⟨p + 1, 0⟩
-    else .error "hlc-overflow: clock exhausted observing remote"
-  else if p ≤ physMax then .ok ⟨p, 0⟩
-  else .error "hlc-overflow: physical past 2^48 observing remote"
+-- NOTE: there is no fold-time `observeRemote` rule, and the write path does NOT
+-- preserve causality across the transport. `transact` (Store/Lock.lean) seeds the
+-- clock before minting: the PRESENT-clock arm floors by the own-segment max only
+-- (monotonicity vs this replica's past writes + crash/`init`-zero recovery), and the
+-- ABSENT-clock arm (fresh init / auto-mint after a replica-id change) reseeds
+-- conservatively from `max(all within-window segments, now)`. A within-window
+-- foreign op with a higher HLC may therefore win LWW against a concurrent local
+-- write — pure last-writer-wins, eventual consistency (ADR-0007). Reads never
+-- advance the persisted clock.
 
 end Hlc
 
