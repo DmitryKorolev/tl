@@ -186,8 +186,9 @@ def perfTests : IO (List Outcome) := do
     -- near-linear growth IS pinned, by the in-process `RollupFast` theorems and by
     -- the end-to-end binary row below (which folds it on every read).
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
-    -- `ready` grows ~11× for ×4 ops here (weightFast runs a blocks-reachability
-    -- closure per candidate with NO adjacency index) — so de-floor-masking it
+    -- `ready` grows ~11× for ×4 ops here (weightFast runs an O(V+E) blocks-cone
+    -- closure per candidate via the adjacency index, but with NO cross-candidate
+    -- shared-cone memo, so the rank phase is O(R·(V+E))) — so de-floor-masking it
     -- would push the row to the ×12 edge: it stays floor-masked until that fix
     -- lands (ADR-0023: a still-superlinear row cannot be honestly un-masked).
     let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)

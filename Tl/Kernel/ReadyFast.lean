@@ -232,7 +232,8 @@ def keyLe (a b : RankKey) : Bool :=
     (`dataH`) and `createdAt` the once-built min-create-HLC hash (`crH`) — both
     O(1)-amortized — instead of an O(N) `issueData` / `createdAtOf` find per
     candidate. (`weight` is still a per-candidate blocks-cone closure — its own
-    ADR-0023 accepted compromise, no adjacency index yet.) -/
+    ADR-0023 accepted compromise: O(V+E) per cone via the adjacency index, but no
+    cross-candidate shared-cone memo.) -/
 def keyOf (dataH : Std.HashMap IssueId IssueData) (crH : Std.HashMap IssueId Nat)
     (bsrc : Std.HashMap IssueId (List IssueId))
     (pset : Std.HashSet IssueId) (n : Nat) (i : IssueId) : RankKey :=
