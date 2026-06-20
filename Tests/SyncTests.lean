@@ -334,6 +334,17 @@ def syncRemoteTests : IO (List Outcome) := do
     | .error e => { name := "syncRemote no-upstream", passed := false, msg := e.message }]
   o := o ++ [check "no progress notice fires when no remote resolves"
       ((← noteN.get).isEmpty) (String.intercalate "," (← noteN.get))]
+  -- (A') option-injection guard: a `tl.remote` whose value starts with `-` (e.g.
+  -- `--upload-pack=<cmd>`) resolves to NONE even though `origin` exists — it must
+  -- never reach ls-remote/fetch/push as a positional that git parses as a flag
+  let (dInj, _) ← repoWithRemote
+  let cfgPath := System.FilePath.mk dInj.base / ".git" / "config"
+  let existing ← IO.FS.readFile cfgPath
+  IO.FS.writeFile cfgPath (existing ++ "[tl]\n\tremote = -upload-pack=evil\n")
+  o := o ++ [match ← runTl (resolveRemote dInj) with
+    | .ok none => { name := "resolveRemote rejects an option-injection remote name (leading '-')", passed := true }
+    | .ok (some r) => { name := "resolveRemote rejects '-' remote", passed := false, msg := s!"resolved to {r}" }
+    | .error e => { name := "resolveRemote rejects '-' remote", passed := false, msg := e.message }]
   -- (B) push to a fresh remote: a local ref's segment lands on the bare
   let (d, bare) ← repoWithRemote
   let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] none)

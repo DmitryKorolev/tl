@@ -62,19 +62,22 @@ def resolveToken (s : State) (tok : String) : Except Tl.Error IssueId :=
     | [] => .error (notFound tok "with slug")
     | many => .error (ambiguous tok many)
 
-/-- The ADR-0013 actor chain. -/
-def resolveActor (flag : Option String) : IO String := do
+/-- The ADR-0013 actor chain. `repoDir` (the `--dir` override, when given) is where
+    the git-config read runs via `git -C` — so under `--dir repoB` the actor comes
+    from repoB's `user.email`, not the process cwd's repo. -/
+def resolveActor (flag : Option String) (repoDir : Option String := none) : IO String := do
   if let some a := flag then
     if a != "me" then return a
   if let some a := ← IO.getEnv "TL_ACTOR" then
     if !a.isEmpty then return a
-  -- bound the git-config read: a hung credential/exec helper (a config `include`
-  -- firing one) or an NFS-hung cwd must not wedge a mutating verb — on timeout/error
-  -- we fall through the ADR-0013 chain (5s, like the local-git bound). (It still runs
-  -- in the process cwd: a repo-LOCAL user.email under `--dir` is read from the cwd
-  -- repo, not the resolved project; global gitconfig is cwd-independent.)
+  -- read user.email from the TARGET repo (`git -C <repoDir>` walks up to its repo
+  -- root), not the process cwd — so `--dir repoB` records repoB's identity. Bound
+  -- the read: a hung credential/exec helper (a config `include` firing one) or an
+  -- NFS-hung dir must not wedge a mutating verb — on timeout/error we fall through
+  -- the ADR-0013 chain (5s, like the local-git bound).
+  let cArgs := match repoDir with | some p => #["-C", p] | none => #[]
   let git ← (Tl.Sync.runBounded
-      { cmd := "git", args := #["config", "--get", "user.email"] } ByteArray.empty 5000).toBaseIO
+      { cmd := "git", args := cArgs ++ #["config", "--get", "user.email"] } ByteArray.empty 5000).toBaseIO
   if let .ok (0, outBytes, _) := git then
     if let some s := String.fromUTF8? outBytes then
       let email := s.trimAscii.toString

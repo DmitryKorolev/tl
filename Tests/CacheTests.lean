@@ -69,6 +69,7 @@ private def loadedEq (a b : Loaded) : Bool :=
   && a.deferred == b.deferred
   && a.maxHlc == b.maxHlc
   && a.maxDeferredHlc == b.maxDeferredHlc
+  && a.ownMaxHlc == b.ownMaxHlc
   && a.warnings == b.warnings
   && a.segmentCount == b.segmentCount
 
@@ -311,6 +312,17 @@ def cacheFoldTests : List Outcome := Id.run do
   let (l0, r0) := materializeCached base none false (some now0) (some ownStem)
   o := o ++ [
     check "no cache: result ≡ fresh fold" (loadedEq l0 (materialize base false (some now0) (some ownStem))),
+    -- ownMaxHlc (transact's present-clock floor) is the OWN segment's max, distinct
+    -- from the all-segment `maxHlc`: baseOwn tops at idx 3, the foreign forPlain at
+    -- idx 4 (higher), so a regression returning `maxHlc` or 0 is caught directly —
+    -- not just by the cached≡fresh equivalence (which compares both paths' fields)
+    check "ownMaxHlc is the OWN segment's max (now0·2^16+3), below the foreign-inflated maxHlc"
+      (l0.ownMaxHlc == now0 * 2 ^ 16 + 3 && l0.maxHlc == now0 * 2 ^ 16 + 4
+        && l0.ownMaxHlc < l0.maxHlc)
+      s!"ownMaxHlc={l0.ownMaxHlc} maxHlc={l0.maxHlc}",
+    -- with no own segment present, the floor is 0 (a freshly-minted replica id)
+    check "ownMaxHlc is 0 when the own replica has no segment"
+      ((materialize base false (some now0) (some "9999999999999")).ownMaxHlc == 0) "",
     check "no cache: a refreshed cache is produced with the live per-segment keys"
       (match r0 with
        | some c => c.segments.map (·.replicaId) == [ownStem, forStem]

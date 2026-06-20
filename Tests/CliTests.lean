@@ -234,6 +234,17 @@ def cliCloseGuardTests : IO (List Outcome) := do
   o := o ++ [← expectData "epic close --as cancelled is allowed"
     ["close", "tl-" ++ epic, "--dir", dir, "--as", "cancelled", "--assignee", "t"]
     (fun j => jStr j "status" == some "cancelled")]
+  -- all-children-closed epic: --as done is still refused (rollup-only, ADR-0003),
+  -- but the message must NOT read the contradictory "open: 0" — it teaches
+  -- already-done-via-rollup, and openChildren is the empty array
+  let epic2 ← mkIssue dir "Rolled-up epic"
+  let child2 ← mkIssue dir "Last child" ["--parent", "tl-" ++ epic2]
+  let _ ← run' ["close", "tl-" ++ child2, "--dir", dir, "--as", "done", "--assignee", "t"]
+  o := o ++
+    [← expectErr "epic close --as done with all children closed teaches rollup (not 'open: 0')"
+      ["close", "tl-" ++ epic2, "--dir", dir, "--as", "done", "--assignee", "t"] .notCloseable
+      (fun e => (e.message.splitOn "already done via child rollup").length > 1
+        && (e.message.splitOn "open:").length == 1)]
   -- duplicate: stored canonical target renders in display form
   let canonical ← mkIssue dir "The canonical"
   let dupe ← mkIssue dir "The dupe"
@@ -497,6 +508,25 @@ def cliBinaryTests : IO (List Outcome) := do
   o := o ++
     [check "discovery from a subdir finds the project" (found.exitCode == 0) found.stdout,
      check "a ceiling directory stops discovery" (ceiled.exitCode == 3) ceiled.stdout]
+  -- the ADR-0013 actor read runs in the --dir TARGET repo (`git -C`), not the
+  -- process cwd: from repoA, a create targeting repoB records repoB's user.email.
+  -- TL_ACTOR is unset so the chain falls through to the git-config read.
+  let gitIn (dir : System.FilePath) (args : List String) : IO Unit := do
+    let _ ← IO.Process.output { cmd := "git", args := (["-C", dir.toString] ++ args).toArray }
+    pure ()
+  let repoA ← IO.FS.createTempDir
+  let repoB ← IO.FS.createTempDir
+  gitIn repoA ["init", "-q"]; gitIn repoA ["config", "user.email", "cwd@example.test"]
+  gitIn repoB ["init", "-q"]; gitIn repoB ["config", "user.email", "target@example.test"]
+  let bTl := (repoB / ".tl").toString
+  let _ ← spawn ["init", "--dir", bTl] [("TL_ACTOR", none)] (some repoA)
+  let _ ← spawn ["create", "task", "--dir", bTl] [("TL_ACTOR", none)] (some repoA)
+  let logged ← spawn ["log", "--dir", bTl, "--json"] [("TL_ACTOR", none)] (some repoA)
+  o := o ++ [
+    check "actor reads the --dir target repo's user.email (git -C), not the cwd repo's"
+      ((logged.stdout.splitOn "target@example.test").length > 1
+        && (logged.stdout.splitOn "cwd@example.test").length == 1)
+      logged.stdout]
   return o
 
 /-- A canonical line for a crafted segment. The stamp's replica is the

@@ -206,7 +206,8 @@ def decodeAll (segs : List SegmentData) (skipBad : Bool := false)
 /-- Assemble the `Loaded` from decoded segments and an already-computed state —
     the fold is the one thing the cached path does differently, every other
     field is the same function of the live decode. -/
-def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.State) :
+def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.State)
+    (ownReplica : Option String := none) :
     Loaded :=
   -- linear accumulation (flatMap/filterMap, same order) — the loop-with-append
   -- shape walked the accumulator per segment
@@ -217,6 +218,12 @@ def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.St
     deferred := pairs.flatMap (fun (sd, dec) => dec.deferred.map (sd.replicaId, ·))
     maxHlc := pairs.foldl (fun a (_, dec) => max a dec.maxHlc) 0
     maxDeferredHlc := pairs.foldl (fun a (_, dec) => max a dec.maxDeferred) 0
+    -- the OWN replica's segment max HLC (transact's present-clock floor), computed
+    -- here in the SHARED assembler so the cached and reference paths agree by
+    -- construction (the cache property tests compare it — ADR-0022)
+    ownMaxHlc := match ownReplica with
+      | some rid => (pairs.find? (fun p => p.1.replicaId == rid)).elim 0 (fun p => p.2.maxHlc)
+      | none => 0
     warnings := pairs.flatMap (fun (_, dec) => dec.warnings)
     segmentCount := pairs.length }
 
@@ -230,7 +237,7 @@ def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.St
 def materialize (segs : List SegmentData) (skipBad : Bool := false)
     (now : Option Nat := none) (ownReplica : Option String := none) : Loaded :=
   let pairs := decodeAll segs skipBad now ownReplica
-  let loaded := assemble pairs Tl.Kernel.State.empty
+  let loaded := assemble pairs Tl.Kernel.State.empty ownReplica
   { loaded with state := Tl.Kernel.fold (loaded.ops.map ParsedOp.kernelOp) }
 
 /-- The lock-free read path: enumerate, read, materialize (ADR-0015 §5);
