@@ -45,6 +45,13 @@ def resolveRemote (d : Dirs) : TlM (Option String) := do
       match ← currentBranch d with
       | some b => pure ((← gitConfig d s!"branch.{b}.remote").getD "origin")
       | none => pure "origin"
+  -- reject an option-injection remote name before it reaches any git command (a name
+  -- like `--upload-pack=<cmd>` / `--receive-pack=<cmd>` would otherwise be parsed as a
+  -- flag, not a positional, by ls-remote/fetch/push → arbitrary exec). The name comes
+  -- from .git/config, BELOW the ADR-0014 trust boundary (config-write already grants
+  -- code exec via hooks), so this is defense-in-depth, not a boundary; it covers all
+  -- three call sites at the single source.
+  if candidate.startsWith "-" then return none
   if ← remoteExists d candidate then return (some candidate) else return none
 
 /-- ADR-0001 §5: try the push, retry once on a non-fast-forward rejection

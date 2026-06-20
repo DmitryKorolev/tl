@@ -13,6 +13,7 @@ git `user.email` → `<os-user>@<hostname>`; `me` resolves through the same
 chain (ADR-0013).
 -/
 import Tl.Cli.Project
+import Tl.Sync.Ref  -- `runBounded`: a hung git-config/hostname must not wedge a verb
 
 namespace Tl.Cli
 
@@ -67,16 +68,24 @@ def resolveActor (flag : Option String) : IO String := do
     if a != "me" then return a
   if let some a := ← IO.getEnv "TL_ACTOR" then
     if !a.isEmpty then return a
-  let git ← IO.Process.output { cmd := "git", args := #["config", "--get", "user.email"] }
-    |>.toBaseIO
-  if let .ok out := git then
-    if out.exitCode == 0 && !out.stdout.trimAscii.toString.isEmpty then
-      return out.stdout.trimAscii.toString
+  -- bound the git-config read: a hung credential/exec helper (a config `include`
+  -- firing one) or an NFS-hung cwd must not wedge a mutating verb — on timeout/error
+  -- we fall through the ADR-0013 chain (5s, like the local-git bound). (It still runs
+  -- in the process cwd: a repo-LOCAL user.email under `--dir` is read from the cwd
+  -- repo, not the resolved project; global gitconfig is cwd-independent.)
+  let git ← (Tl.Sync.runBounded
+      { cmd := "git", args := #["config", "--get", "user.email"] } ByteArray.empty 5000).toBaseIO
+  if let .ok (0, outBytes, _) := git then
+    if let some s := String.fromUTF8? outBytes then
+      let email := s.trimAscii.toString
+      if !email.isEmpty then return email
   let user := (← IO.getEnv "USER").getD ((← IO.getEnv "LOGNAME").getD "unknown")
-  let host ← IO.Process.output { cmd := "hostname", args := #[] } |>.toBaseIO
-  let hostname := match host with
-    | .ok out => if out.exitCode == 0 then out.stdout.trimAscii.toString else "localhost"
-    | .error _ => "localhost"
+  let host ← (Tl.Sync.runBounded { cmd := "hostname", args := #[] } ByteArray.empty 5000).toBaseIO
+  let mut hostname := "localhost"
+  if let .ok (0, outBytes, _) := host then
+    if let some s := String.fromUTF8? outBytes then
+      let h := s.trimAscii.toString
+      unless h.isEmpty do hostname := h
   return s!"{user}@{hostname}"
 
 end Tl.Cli

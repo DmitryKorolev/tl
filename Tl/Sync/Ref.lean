@@ -51,13 +51,19 @@ private def remoteGitTimeoutMs : Nat := 30000
 def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat) :
     IO (UInt32 × ByteArray × String) := do
   let spawned ← IO.Process.spawn { cfg with stdin := .piped, stdout := .piped, stderr := .piped }
-  let child ← do
-    let (stdinH, child) ← spawned.takeStdin
-    stdinH.write stdin
-    stdinH.flush
-    pure child  -- stdinH drops here ⇒ the child's stdin reaches EOF
+  let (stdinH, child) ← spawned.takeStdin
+  -- drain stdout/stderr AND write stdin on concurrent tasks BEFORE the wait. A child
+  -- that interleaves a large stdout with reading a large stdin would otherwise deadlock
+  -- against a synchronous stdin write (its stdout pipe fills with no reader, so it
+  -- blocks writing stdout while we block writing stdin). The write task OWNS `stdinH`,
+  -- so the handle closes (child stdin EOF) as soon as the write completes — not at
+  -- function end — which the EOF-driven callers (hash-object/mktree) need; a broken
+  -- pipe (the child already exited) is caught and benign.
   let outTask ← IO.asTask child.stdout.readBinToEnd Task.Priority.dedicated
   let errTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
+  let _inTask ← IO.asTask
+    (try (do stdinH.write stdin; stdinH.flush) catch _ => pure ())
+    Task.Priority.dedicated
   let mut code? : Option UInt32 := none
   if timeoutMs == 0 then
     code? := some (← child.wait)  -- 0 ⇒ unbounded: the git-config opt-out
