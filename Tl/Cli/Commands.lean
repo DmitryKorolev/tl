@@ -521,21 +521,72 @@ private def opTargets : WireOp → List IssueId
   | .depAdd (f, t, _) | .relate (f, t, _)
   | .depRemove (f, t, _) _ | .unrelate (f, t, _) _ => [f, t]
 
-/-- `tl log [<id>]`: the op history, newest first (ADR-0008 — an HLC-ordered
-    projection over the log), optionally filtered to ops touching one issue.
-    The `--since` cursor is deferred (it needs a version vector, backlog). -/
+/-- A resumable change-feed cursor (ADR-0008 version vector): for each replica
+    (decoded id) the highest packed HLC already delivered. An op is emitted iff
+    its HLC exceeds its replica's threshold, so a late foreign op whose HLC sits
+    below another replica's maximum is still delivered exactly once — a scalar
+    high-water mark would drop it. -/
+private abbrev LogCursor := AMap Nat Nat
+
+private def cursorThreshold (c : LogCursor) (replica : Nat) : Nat := (c.find replica).getD 0
+
+/-- Fold ops into a cursor, keeping the per-replica maximum HLC. -/
+private def advanceCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :=
+  ops.foldl (fun m p => m.insert p.stamp.replica (Nat.max (cursorThreshold m p.stamp.replica) p.stamp.hlc)) base
+
+/-- Serialize a cursor as comma-joined `<replica>:<hlc>` pairs, the replica in
+    its canonical 13-char Crockford form, sorted by replica (`AMap.toList`). -/
+private def renderCursor (c : LogCursor) : String :=
+  String.intercalate "," (c.toList.map (fun (r, h) => s!"{toCrockford r 13}:{h}"))
+
+/-- Parse a `--since` cursor: comma-joined `<replica>:<hlc>` pairs (the `cursor`
+    of a prior `tl log`). An empty token means no thresholds (full history); a
+    malformed segment is a usage error that names the expected shape. -/
+private def parseCursor (s : String) : Except Tl.Error LogCursor := do
+  let mut c : LogCursor := AMap.empty
+  for piece in (s.trimAscii.toString.splitOn ",").filter (fun p => !p.trimAscii.isEmpty) do
+    match piece.splitOn ":" with
+    | [rid, hstr] =>
+      match ofCrockford? rid.trimAscii.toString, hstr.trimAscii.toString.toNat? with
+      | some r, some h => c := c.insert r (Nat.max (cursorThreshold c r) h)
+      | _, _ => throw (.mk' .usage
+          s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>) — pass the `cursor` from a prior `tl log --json`")
+    | _ => throw (.mk' .usage
+        s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>) — pass the `cursor` from a prior `tl log --json`")
+  return c
+
+/-- `tl log [<id>] [--since <cursor>]`: an HLC-ordered projection over the op log
+    (ADR-0008), optionally filtered to ops touching one issue. Without `--since`
+    it lists newest-first (capped by `--limit`); with `--since` it is a resumable
+    change-feed — every op after the cursor, oldest-first — and always reports a
+    `cursor` (a per-replica version vector) to pass on the next call. -/
 def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
-    (skipBad : Bool) : TlM CmdOut := do
+    (since : Option String) (skipBad : Bool) : TlM CmdOut := do
+  -- parse the cursor before loading, so a malformed --since fails fast
+  let cursor ← MonadExcept.ofExcept (parseCursor (since.getD ""))
+  let sinceGiven := since.isSome
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let filtered ← match idTok with
+  let visible ← match idTok with
     | none => pure v.loaded.ops
     | some tok =>
       let i ← MonadExcept.ofExcept (resolveToken v.state tok)
       pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
-  -- newest first by the full stamp order (deterministic on equal HLCs)
-  let sorted := filtered.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
-  let capped := if limit == 0 then sorted else sorted.take limit
+  -- since-mode: the delta strictly after the per-replica cursor; plain: all visible
+  let matching :=
+    if sinceGiven then
+      visible.filter (fun p => Nat.blt (cursorThreshold cursor p.stamp.replica) p.stamp.hlc)
+    else visible
+  -- since-mode reads oldest-first (a forward feed); plain log newest-first.
+  -- Both use the full stamp order (deterministic on equal HLCs).
+  let ordered :=
+    if sinceGiven then matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le a.stamp b.stamp))
+    else matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
+  let capped := if limit == 0 then ordered else ordered.take limit
+  -- advancedCursor: in since-mode the input cursor raised by the delivered
+  -- (capped) ops, so resumption never skips or replays even when --limit pages;
+  -- in plain mode the full frontier of the visible log (a starting point to tail)
+  let advanced := if sinceGiven then advanceCursor cursor capped else advanceCursor AMap.empty visible
   let entry (p : ParsedOp) : Json :=
     Json.mkObj
       [("timestamp", Json.str (hlcIso p.stamp.hlc)),
@@ -547,13 +598,16 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     -- mirroring the `--json` arm above (titles/labels/meta all wrap it too)
     s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.elim "—" sanitizeSingle)}  " ++
       String.intercalate "," ((opTargets p.op).map displayId)
-  return { data := Json.mkObj [("count", jnum filtered.length),
-                               ("entries", Json.arr (capped.map entry).toArray)]
-           human :=
-             if filtered.isEmpty then "no ops"
-             else String.intercalate "\n" (capped.map line)
-               ++ (if capped.length < filtered.length then
-                     s!"\n… {filtered.length - capped.length} older (--limit 0 for all)" else "")
+  let curStr := renderCursor advanced
+  let body :=
+    if matching.isEmpty then "no ops"
+    else String.intercalate "\n" (capped.map line)
+      ++ (if capped.length < matching.length then
+            s!"\n… {matching.length - capped.length} more (--limit 0 for all)" else "")
+  return { data := Json.mkObj [("count", jnum matching.length),
+                               ("entries", Json.arr (capped.map entry).toArray),
+                               ("cursor", Json.str curStr)]
+           human := body ++ (if curStr.isEmpty then "" else s!"\ncursor: {curStr}")
            notes }
 
 /-! ## Write verbs -/

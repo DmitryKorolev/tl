@@ -2118,6 +2118,68 @@ def cliDoctorStaleTests : IO (List Outcome) := do
       | none => false)]
   return o
 
+/-- `tl log --since <cursor>`: the resumable change-feed. Covers empty/zero
+    cursor ⇒ full history, the post-cursor delta, idempotent re-read, malformed
+    cursors, human/json parity, and the distinguishing version-vector regression
+    — a late foreign op below another replica's max is still delivered (a scalar
+    high-water-mark cursor would drop it). -/
+def cliLogSinceTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let _ ← mkIssue dir "one"
+  let _ ← mkIssue dir "two"
+  -- (1) an empty cursor is the full history; every log reports a resumable cursor
+  o := o ++ [← expectData "log --since '' returns the full history with a cursor"
+      ["log", "--since", "", "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 2 && ((jStr j "cursor").getD "").length > 0)]
+  -- capture the current frontier from a plain log
+  let frontier ← (do match ← run' ["log", "--json", "--dir", dir] with
+    | .ok out => pure ((jStr out.data "cursor").getD "")
+    | .error _ => pure "")
+  -- (2) idempotent re-read: --since <frontier> right away is empty, cursor stable
+  o := o ++ [← expectData "log --since <frontier> just after is empty and stable (idempotent)"
+      ["log", "--since", frontier, "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 0 && jStr j "cursor" == some frontier)]
+  -- (3) post-cursor delta: a new op appears exactly once
+  let _ ← mkIssue dir "three"
+  o := o ++ [← expectData "log --since <frontier> after a change shows exactly the new op"
+      ["log", "--since", frontier, "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 1 && (jArr j "entries").length == 1
+        && ((jArr j "entries").head?.bind (fun e => jStr e "op")) == some "create")]
+  -- (4) a malformed cursor is a clean usage error (never a silent full dump)
+  o := o ++
+    [← expectErr "log --since with a token that is not replica:hlc is usage"
+       ["log", "--since", "garbage", "--dir", dir] .usage,
+     ← expectErr "log --since with a non-numeric hlc is usage"
+       ["log", "--since", "1zzzzzzzzzzzz:notanum", "--dir", dir] .usage,
+     ← expectErr "log --since with a non-Crockford replica is usage"
+       ["log", "--since", "!!!:5", "--dir", dir] .usage]
+  -- (5) the distinguishing regression: a late-arriving foreign op whose HLC is
+  -- below the own replica's max is still delivered under the per-replica version
+  -- vector — a scalar high-water-mark cursor would drop it (count 0, not 1).
+  let dirR ← freshDir
+  let _ ← mkIssue dirR "own"           -- own replica at a real (high) HLC
+  let frontierA ← (do match ← run' ["log", "--json", "--dir", dirR] with
+    | .ok out => pure ((jStr out.data "cursor").getD "")
+    | .error _ => pure "")
+  -- a foreign replica authored an op long ago (HLC 0x100, below the own max) that
+  -- has only now synced into this clone
+  IO.FS.writeFile (System.FilePath.mk dirR / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbccccdddd" { title := some "late" }) 0x100 "2zzzzzzzzzzzz" "mallory" ++ "\n")
+  o := o ++
+    [← expectData "a late foreign op below the own max is still delivered (version vector, not scalar)"
+       ["log", "--since", frontierA, "--json", "--dir", dirR]
+       (fun j => jNat j "count" == some 1 && (jArr j "entries").length == 1),
+     ← expectData "the advanced cursor spans both replicas once the late op is folded"
+       ["log", "--since", frontierA, "--json", "--dir", dirR]
+       (fun j => (((jStr j "cursor").getD "").splitOn ",").length == 2)]
+  -- (6) human/json parity: --since reports the cursor in the human output too
+  o := o ++ [← (do match ← run' ["log", "--since", "", "--dir", dir] with
+    | .ok out => pure (check "human log --since prints a cursor line (parity with --json)"
+        ((out.human.splitOn "cursor:").length > 1) out.human)
+    | .error e => pure { name := "human cursor parity", passed := false, msg := e.message })]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -2131,6 +2193,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

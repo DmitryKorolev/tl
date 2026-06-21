@@ -184,8 +184,9 @@ def runVerb : List String → TlM CmdOut
         | [] => pure none
         | [tok] => pure (some tok)
         | _ => throw (usageErr "log takes at most one issue id")
-      let limit ← MonadExcept.ofExcept (natFlag a "limit" 10)
-      cmdLog (a.get? "dir") idTok limit (a.has "skip-bad")
+      let since := a.get? "since"
+      let limit ← MonadExcept.ofExcept (natFlag a "limit" (if since.isSome then 0 else 10))
+      cmdLog (a.get? "dir") idTok limit since (a.has "skip-bad")
     | "stats" => do
       let a ← parse "stats"
       MonadExcept.ofExcept (noPositionals a "stats")
