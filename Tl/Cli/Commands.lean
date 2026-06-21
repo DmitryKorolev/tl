@@ -530,20 +530,27 @@ private def opTargets : WireOp → List IssueId
     this drops neither. -/
 private abbrev LogCursor := AMap Nat (Nat × Nat)
 
-private def cursorThreshold (c : LogCursor) (replica : Nat) : Nat × Nat :=
-  (c.find replica).getD (0, 0)
+/-- A replica's threshold, or `none` when it was never delivered. An absent
+    threshold is below everything — including a `(0, 0)` stamp — so an empty cursor
+    is the full history, not "everything strictly above `(0, 0)`". -/
+private def cursorThreshold (c : LogCursor) (replica : Nat) : Option (Nat × Nat) :=
+  c.find replica
 
-/-- An op's `(HLC, nonce)` is strictly after a threshold (lexicographic). -/
-private def stampAfter (hlc nonce : Nat) (thr : Nat × Nat) : Bool :=
-  Nat.blt thr.1 hlc || (thr.1 == hlc && Nat.blt thr.2 nonce)
+/-- An op's `(HLC, nonce)` is strictly after a threshold (lexicographic); an
+    absent threshold (`none`) is below everything. -/
+private def stampAfter (hlc nonce : Nat) (thr : Option (Nat × Nat)) : Bool :=
+  match thr with
+  | none => true
+  | some (th, tn) => Nat.blt th hlc || (th == hlc && Nat.blt tn nonce)
+
+/-- The greater of `(hlc, nonce)` and a threshold. -/
+private def maxStamp (hlc nonce : Nat) (thr : Option (Nat × Nat)) : Nat × Nat :=
+  if stampAfter hlc nonce thr then (hlc, nonce) else thr.getD (hlc, nonce)
 
 /-- Fold ops into a cursor, keeping the per-replica maximum `(HLC, nonce)`. -/
 private def advanceCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :=
   ops.foldl (fun m p =>
-    let cur := cursorThreshold m p.stamp.replica
-    if stampAfter p.stamp.hlc p.stamp.nonce cur then
-      m.insert p.stamp.replica (p.stamp.hlc, p.stamp.nonce)
-    else m) base
+    m.insert p.stamp.replica (maxStamp p.stamp.hlc p.stamp.nonce (cursorThreshold m p.stamp.replica))) base
 
 /-- Serialize a cursor as comma-joined `<replica>:<hlc>:<nonce>` triples, the
     replica in its canonical 13-char Crockford form, sorted by replica
@@ -554,9 +561,10 @@ private def renderCursor (c : LogCursor) : String :=
 /-- Parse a `--since` cursor: comma-joined `<replica>:<hlc>:<nonce>` triples (the
     `cursor` of a prior `tl log`). A trimmed-empty token is the empty cursor (full
     history); anything else is validated as strictly as the wire decoder
-    (`decodeStamp`) — an empty/extra `:`-segment, a stray comma, a non-canonical
-    or `≥ 2^64` replica, or a non-numeric hlc/nonce is a usage error that names the
-    expected shape, never a silent full dump. -/
+    (`decodeStamp`) — an empty/extra `:`-segment, a stray comma, a non-canonical or
+    `≥ 2^64` replica, an hlc `≥ 2^64` or nonce `≥ 2^128`, or a non-numeric
+    hlc/nonce is a usage error that names the expected shape, never a silent full
+    dump. -/
 private def parseCursor (s : String) : Except Tl.Error LogCursor := do
   let t := s.trimAscii.toString
   if t.isEmpty then return AMap.empty
@@ -567,13 +575,18 @@ private def parseCursor (s : String) : Except Tl.Error LogCursor := do
       let ridT := rid.trimAscii.toString
       match ofCrockford? ridT, hstr.trimAscii.toString.toNat?, nstr.trimAscii.toString.toNat? with
       | some r, some h, some n =>
-        -- mirror `decodeStamp`: a canonical 13-char Crockford replica below 2^64
-        if ridT.length == 13 && toCrockford r 13 == ridT && decide (r < 2 ^ 64) then
-          let cur := cursorThreshold c r
-          c := c.insert r (if stampAfter h n cur then (h, n) else cur)
-        else
+        -- mirror `decodeStamp`: a canonical 13-char Crockford replica below 2^64,
+        -- the hlc below 2^64, the nonce below 2^128
+        let okReplica := ridT.length == 13 && toCrockford r 13 == ridT && decide (r < 2 ^ 64)
+        let okStamp := decide (h < 2 ^ 64) && decide (n < 2 ^ 128)
+        if okReplica && okStamp then
+          c := c.insert r (maxStamp h n (cursorThreshold c r))
+        else if !okReplica then
           throw (.mk' .usage
             s!"--since: '{ridT}' is not a canonical 13-char replica id below 2^64 — pass the `cursor` from a prior `tl log --json`")
+        else
+          throw (.mk' .usage
+            s!"--since: '{piece}' has an out-of-range hlc or nonce (hlc < 2^64, nonce < 2^128) — pass the `cursor` from a prior `tl log --json`")
       | _, _, _ => throw (.mk' .usage
           s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor` from a prior `tl log --json`")
     | _ => throw (.mk' .usage

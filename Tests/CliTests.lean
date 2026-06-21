@@ -2165,7 +2165,11 @@ def cliLogSinceTests : IO (List Outcome) := do
      ← expectErr "log --since with stray commas is usage, never a silent full dump"
        ["log", "--since", ",,,", "--dir", dir] .usage,
      ← expectErr "log --since with a trailing comma is usage"
-       ["log", "--since", "1zzzzzzzzzzzz:256:1,", "--dir", dir] .usage]
+       ["log", "--since", "1zzzzzzzzzzzz:256:1,", "--dir", dir] .usage,
+     ← expectErr "log --since with an hlc >= 2^64 is usage"
+       ["log", "--since", "1zzzzzzzzzzzz:18446744073709551616:1", "--dir", dir] .usage,
+     ← expectErr "log --since with a nonce >= 2^128 is usage"
+       ["log", "--since", "1zzzzzzzzzzzz:256:340282366920938463463374607431768211456", "--dir", dir] .usage]
   -- (5) the distinguishing regression: a late-arriving foreign op whose HLC is
   -- below the own replica's max is still delivered under the per-replica version
   -- vector — a scalar high-water-mark cursor would drop it (count 0, not 1).
@@ -2205,6 +2209,16 @@ def cliLogSinceTests : IO (List Outcome) := do
     [check "same-HLC page 1 delivers one op" (te1 == 1) s!"entries={te1} cursor={tc1}",
      check "same-HLC page 2 delivers the nonce-tiebroken op, not empty (no skip)"
        (te2 == 1 && tc2 != tc1) s!"entries={te2} c1={tc1} c2={tc2}"]
+  -- (5c) a valid (HLC, nonce) = (0, 0) op is decodable; an empty cursor must
+  -- still return it (the absent-threshold bottom sentinel, not a (0,0) default
+  -- under strict >).
+  let dirZ ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dirZ / "log")
+  IO.FS.writeFile (System.FilePath.mk dirZ / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc0000" { title := some "z" }) 0 "2zzzzzzzzzzzz" "m" 0 ++ "\n")
+  o := o ++ [← expectData "log --since '' returns a (0,0)-stamped op (empty cursor is full history)"
+      ["log", "--since", "", "--json", "--dir", dirZ]
+      (fun j => jNat j "count" == some 1 && (jArr j "entries").length == 1)]
   -- (6) human/json parity: --since reports the cursor in the human output too
   o := o ++ [← (do match ← run' ["log", "--since", "", "--dir", dir] with
     | .ok out => pure (check "human log --since prints a cursor line (parity with --json)"
