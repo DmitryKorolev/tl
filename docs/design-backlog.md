@@ -32,11 +32,13 @@ forever-contract surface that freezes on first implementation; the
 
 ## Candidate ADRs (settle before/early in implementation)
 
-- `defer` input parsing [low] — the shell-side parsing of `--until` /
-  `--for` (time-zone handling, bare-date anchor, relative-duration base) is
-  unpinned; the kernel instant, the two-time-type model, and the stored ISO-8601
-  UTC encoding are settled in ADR-0010/0008. Pin the parsing rules in ADR-0010, or
-  split a small time-&-clocks ADR.
+- `defer` input parsing [done] — pinned in ADR-0010 and shared with the
+  `tl log --since/--until` time selectors (ADR-0025): `--until <date>` is local
+  start-of-day with an injected UTC offset (the one deliberate local-time use, kept
+  deterministic by injecting the offset like `now`); `--until <datetime>` requires
+  an explicit `Z`/offset and normalizes to the canonical UTC instant; `--for <dur>`
+  is a positive compact `ms`/`s`/`m`/`h`/`d` duration from the injected now. Same
+  parser front-ends the log selectors, where a bare duration reads as "ago".
 
 ## Kernel & data model
 

@@ -38,11 +38,21 @@ passes; `deferred` is a derived view, not a stored status.
   the injected `now` (ADR-0004) are the *same* abstract ordered type — a
   monotonic instant (concretely `Nat` milliseconds since the Unix epoch) the
   kernel compares only by `≤`, deriving nothing else from it. Parsing a
-  `--until <date>` / `--for <dur>` into that instant — time zone, bare-date
-  anchor, relative-duration base — is a tested I/O-shell concern (one
-  normalization to a UTC instant on write), not a kernel one. So `Ready.lean`
-  depends only on the ordering and is unblocked independently of that parsing
-  decision (input-parsing rules still open: [design backlog](../design-backlog.md)).
+  `--until <date>` / `--for <dur>` into that instant is a tested I/O-shell concern
+  (one normalization to a UTC instant on write), not a kernel one, so `Ready.lean`
+  depends only on the ordering. The input grammar, shared with the
+  `tl log --since/--until` time selectors (ADR-0025):
+  - `--until <YYYY-MM-DD>` is local start-of-day, resolved with an *injected* UTC
+    offset (threaded like the injected `now`, so parsing stays deterministic across
+    machines and tests) — the one deliberate local-time use in an otherwise
+    UTC-pure system (cf. the UTC skew window, ADR-0007);
+  - `--until <datetime>` requires an explicit `Z` or `±HH:MM` offset — a bare
+    datetime is a usage error — and is normalized to the canonical UTC instant;
+  - `--for <dur>` is a positive compact duration (`parseDurationMs?`:
+    `ms`/`s`/`m`/`h`/`d`, digits-only, no zero) from the injected now.
+  The same parser front-ends `tl log --since/--until`, where a bare duration reads
+  as "ago" (now − dur) rather than `--for`'s "from now" (now + dur); the cursor
+  value is log-specific.
 - Wire encoding, and the two time types. On disk `deferUntil` is an
   ISO-8601 UTC instant string (e.g. `2026-06-15T09:00:00Z`), or JSON `null`
   when cleared — the shell normalizes any `--until`/`--for` input to that single
