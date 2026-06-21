@@ -19,34 +19,8 @@ a write's view before its guards — ADR-0016 §3 amendment) have landed. Still
 open: the Stage-2 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical`
 — the dependency trees render on `why`/`unblocks`, not a separate `dep tree`
 verb — and `edit`), and bulk `import` (Stage 3).
-The items Stage 1 touched have graduated: `duplicate-of`
-semantics, the write-time guard inventory + idempotent re-close, the
-`not-closeable` / `unsafe-path` error codes, the canonical string-escaping
-spec (all ADR-0008, with ADR-0003/0015/0020 cross-refs), and clock-file
-recovery + the HLC-saturation code (ADR-0007) landed 2026-06-10, joining the
-stage-1 `--json` shapes and the 0.x stability horizon (ADR-0020 / ADR-0008).
-Everything else
-below remains stage-gated (decide when building that surface) or a
-forever-contract surface that freezes on first implementation; the
-*candidate-ADR* items are worth settling before/early.
-
-## Candidate ADRs (settle before/early in implementation)
-
-- `defer` input parsing [done] — pinned in ADR-0010 and shared with the
-  `tl log --since/--until` time selectors (ADR-0025): `--until <date>` is local
-  start-of-day with an injected UTC offset (the one deliberate local-time use, kept
-  deterministic by injecting the offset like `now`); `--until <datetime>` requires
-  an explicit `Z`/offset and normalizes to the canonical UTC instant; `--for <dur>`
-  is a positive compact `ms`/`s`/`m`/`h`/`d` duration from the injected now. Same
-  parser front-ends the log selectors, where a bare duration reads as "ago".
-
-## Kernel & data model
-
-- `reopen` and `assignee` [low] — ADR-0008's `reopen` sets `status=open` and
-  clears `closeResolution` but does not touch `assignee`; with `claimedAt` going
-  absent (reopen is later than the last `claim`), a reopened issue is `open`, not
-  `in_progress`, yet still shows an `assignee`. Decide whether `reopen` also clears
-  `assignee` (vision/ADR-0008/0013).
+Everything below remains stage-gated (decide when building that surface) or a
+forever-contract surface that freezes on first implementation.
 
 ## Proof obligations (theorems to settle)
 
@@ -66,44 +40,26 @@ Kernel theorems still to decide whether to commit to:
 
 ## CLI surface (before CLI freeze)
 
-- `tl list` input grammar [low] — the *output* rows are pinned (ADR-0020);
-  the input surface so far: a bare `list` shows **open issues** oldest-first
-  (effectively-closed hidden; `--all` includes closed), with `--limit`
-  (default 50, `0` = all), the ADR-0017 §2 forest by default (`--flat` for
-  one-line rows), and `--label <l>`
-  (repeatable ⇒ AND; built with labels). The open-by-default question is
-  decided (this way) and built. Still open: the *other* facet flag spellings
+- `tl list` facet flags & text match [low] — open issues, `--limit`, the
+  default forest (`--flat` for one-line rows), and `--label` are built and pinned
+  (ADR-0020 / ADR-0017 §2). Still open: the *other* facet flag spellings
   (status / assignee / priority / text) and text-match semantics (substring vs
   word, case folding, which fields) (vision / ADR-0020).
 - `--json` `data` shapes for the later `dep` utilities
-  (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
-  `dep cycles`, `why`), `tl help --json`, and now `tl stats` / `tl log` are
-  pinned in ADR-0020 (`help`/`stats`/`log` built); the `dep` utilities pin
-  when built, following its conventions. (`tl log --since` is built — a
-  version-vector cursor, ADR-0020.)
-- `tl log --since <cursor>` is built [done] — a per-replica version-vector cursor
-  over `(HLC, nonce)`, not a scalar HLC. A late-synced op from a lagging replica
-  keeps an HLC below another replica's watermark, and two same-replica ops can
-  share an HLC (split by nonce); emission is `(hlc, nonce) > cursor[replica]`
-  lexicographically, so each is delivered exactly once where a scalar or an
-  HLC-only cursor would drop one. Shape pinned in ADR-0020; full design in
-  ADR-0025.
+  (`tree`/`path`/`critical`) [low] — the existing command shapes are pinned in
+  ADR-0020; these `dep` utilities pin when built, following its conventions.
 
 ## Log format, versioning & compaction
 
-- Compaction snapshot placement & union-merge interaction — pinned by the
-  non-destructive split (ADR-0008, ADR-0022). *Logical* is the default: the
-  snapshot is the content-keyed fold cache, a side artifact (local in `.tl/local/`,
-  or a shared side object), so the ops stay, the log never shrinks, and there is no
-  `v` bump. *Physical* removal — discarding ops below a causally-stable frontier —
-  is the separately-deferred destructive GC; only it needs the `snapshot` record +
-  `v` bump, and only it must answer the strictly-growing per-segment line-union
-  (ADR-0001 §5), which would otherwise re-add retired ops from an un-compacted
-  replica — so it requires the sync/union change (ADR-0008 × ADR-0001 §5 ×
-  ADR-0015 §3) and the reserved *fold-preservation* theorem
-  `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable frontier
-  (ADR-0004/0008). The non-destructive cache needs only the proved
-  `fold_append`/`fold_perm` (ADR-0022).
+- Destructive GC (physical op removal) is deferred and undesigned [low] — the
+  non-destructive split is settled (ADR-0008, ADR-0022): the snapshot is the
+  content-keyed fold cache, the ops stay, the log never shrinks, no `v` bump.
+  Still open is *physical* removal — discarding ops below a causally-stable
+  frontier — which needs a `snapshot` record + `v` bump, must answer the
+  strictly-growing per-segment line-union so an un-compacted replica cannot
+  re-add retired ops (ADR-0008 × ADR-0001 §5 × ADR-0015 §3), and carries the
+  reserved *fold-preservation* theorem `fold ops = snapshot(F) ⊕ fold(ops above
+  F)` for a causally-stable frontier (ADR-0004/0008).
 
 ## Sync, discovery & local concurrency
 
@@ -165,9 +121,6 @@ Kernel theorems still to decide whether to commit to:
 
 ## Distribution (before release)
 
-- `git` minimum version floor [low] — `git` is a runtime prerequisite but no
-  minimum version is pinned; pin a floor and have `doctor`/`init` check it
-  (ADR-0006 / README).
 - Native-Windows gating test pass [low] — the gating test pass for native
   Windows is open, spec'd only if it is promoted from Tier-2 (WSL is the Supported
   Windows path). The Win32 FS/git-shell-out *design* is in ADR-0015 §7 / ADR-0006.
