@@ -213,11 +213,14 @@ discharge (Trusted section). None was downgraded to a test (Definition-of-Done #
   follows from add-tag/stamp uniqueness — a **tier-3 carried assumption** (Trusted
   section), correctly *not* a `sorry`/`axiom` and not a forced theorem.
 
-Reserved (proved when its feature is built). *Compaction preserves the
-fold* — `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-closed
-frontier `F` — the obligation any future `tl compact` must discharge so a
-snapshot can never change the materialized state (deferred with compaction,
-ADR-0008).
+Reserved (proved when its feature is built). *Snapshot preserves the fold* —
+`fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-closed frontier `F` —
+the obligation a shared/durable snapshot must discharge so the checkpoint can
+never change the materialized state. The snapshot is non-destructive (the op log
+is retained; a stale snapshot rebuilds from the segments), so this guards a cache,
+not a one-way deletion; the local realization (the fold cache) already proves its
+`fold_append`/`fold_perm` equivalents (ADR-0022). Destructive GC — discarding ops
+below `F` to bound size — stays separately deferred (ADR-0008).
 
 ## Tested (I/O shell, outside the TCB)
 

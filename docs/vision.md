@@ -296,8 +296,8 @@ each stage shippable and testable on its own:
   skill).
 - Stage 3 — migration + sharing. `import`, the `refs/tl/log` sync/transport
   (fetch / union-merge / push, auto-sync, push-rejection + no-upstream handling —
-  ADR-0001), the distribution matrix (ADR-0006). Compaction stays deferred
-  (ADR-0008).
+  ADR-0001), the distribution matrix (ADR-0006). The non-destructive snapshot
+  ships as the fold cache (ADR-0022); destructive log GC stays deferred (ADR-0008).
 
 A reader who implements only Stage 1 has a useful, autonomous-agent-ready
 tracker; later stages are additive and never change the Stage-0 format or
@@ -461,14 +461,16 @@ exactly the thing to resist.)
 - ADR-0022 — The materialization fold cache
 - ADR-0023 — Algorithmic efficiency: the proved/tested/assumed tiering and the prevention net
 - ADR-0024 — Indexed views: accelerating proved collections behind an equality bridge
+- ADR-0025 — Incremental change feed: `tl log --since` and the version-vector cursor
 
 ## Open questions (for iteration)
 
 The live list of open design questions is the [design backlog](design-backlog.md);
 two worth calling out here, both fine to defer past first implementation:
 
-- When to *implement* compaction — the mechanism is reserved (ADR-0008);
-  the trigger/threshold and the version-vector frontier computation are
-  unbuilt.
+- Whether to *implement* destructive log GC at all — the non-destructive
+  snapshot already gives the read-cost win (ADR-0022), so GC is only about
+  bounding log size; its trigger and the causal-stability frontier computation
+  are reserved but unbuilt (ADR-0008).
 - Contention UX polish — beyond the basic "superseded" signal, whether
   to add an advisory lease/heartbeat is open.

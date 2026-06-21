@@ -79,11 +79,13 @@ Kernel theorems still to decide whether to commit to:
   pinned in ADR-0020 (`help`/`stats`/`log` built); the `dep` utilities pin
   when built, following its conventions. (`tl log --since` is built — a
   version-vector cursor, ADR-0020.)
-- `tl log --since <cursor>` is built [done] — a per-replica version-vector
-  cursor (replica → max HLC), not a scalar HLC. A late-synced op from a lagging
-  replica keeps an HLC below another replica's watermark; emission is
-  `hlc > cursor[replica]`, so it is still delivered exactly once, where a scalar
-  `--since hlc` filter would miss it. Shape pinned in ADR-0020 (ADR-0008).
+- `tl log --since <cursor>` is built [done] — a per-replica version-vector cursor
+  over `(HLC, nonce)`, not a scalar HLC. A late-synced op from a lagging replica
+  keeps an HLC below another replica's watermark, and two same-replica ops can
+  share an HLC (split by nonce); emission is `(hlc, nonce) > cursor[replica]`
+  lexicographically, so each is delivered exactly once where a scalar or an
+  HLC-only cursor would drop one. Shape pinned in ADR-0020; full design in
+  ADR-0025.
 
 ## Log format, versioning & compaction
 

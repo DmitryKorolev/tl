@@ -123,15 +123,25 @@ to per-line classification (`decodeLine`, the segment-owner check), to
 sharing one working copy could suffix-fold new-semantics ops onto an
 old-semantics cached state with no key divergence to force a rebuild.
 
-### 4. Distinct from compaction
+### 4. The local realization of a non-destructive snapshot
 
-[ADR-0008](ADR-0008-log-format-versioning-compaction.md) reserves a
-`snapshot` *record* for log compaction — that changes the log and carries
-its own proof obligation. This cache is not that: it changes no log bytes,
-travels nowhere, and its correctness is pinned by tests against the fresh
-fold (the tested-shell tier, ADR-0004), with the proved anchors
-(`fold_append`, `fold_perm`, `ascending_of_sorted`/`sorted_of_ascending`)
-supplied by the kernel.
+This cache *is* the non-destructive snapshot of
+[ADR-0008](ADR-0008-log-format-versioning-compaction.md), scoped to one working
+copy: a materialized state at a frontier so a read folds only the tail, the op log
+retained in full, a stale cache rebuilding from the segments. It changes no log
+bytes, travels nowhere, and carries no `v` bump; its correctness is pinned by
+tests against the fresh fold (the tested-shell tier, ADR-0004) over the proved
+anchors (`fold_append`, `fold_perm`, `ascending_of_sorted`/`sorted_of_ascending`).
+
+A **shared/durable snapshot** is the natural generalization, for when a cold clone
+or a CI run must not fold from genesis: the same content-keyed, digest-validated,
+fallback-to-fold artifact, published as a side object rather than kept in
+`.tl/local/` — still no log-format change, since a reader that ignores it just
+folds the log. Merging is trivial because a snapshot is a derived cache: keep any
+valid one, or the highest-frontier one. Destructive GC — discarding the ops below
+the frontier to bound size — stays a separate, deferred, opt-in concern
+(ADR-0008); this cache never discards an op, so any `tl log --since` cursor stays
+serviceable (ADR-0025).
 
 ## Consequences
 

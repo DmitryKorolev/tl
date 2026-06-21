@@ -37,3 +37,4 @@ not reference task-tracker IDs.
 | 0022 | [The materialization fold cache](ADR-0022-materialization-fold-cache.md) |
 | 0023 | [Algorithmic efficiency: the proved/tested/assumed tiering and the prevention net](ADR-0023-efficiency-tiering-and-prevention.md) |
 | 0024 | [Indexed views: accelerating proved collections behind an equality bridge](ADR-0024-indexed-views-bridge.md) |
+| 0025 | [Incremental change feed: `tl log --since` and the version-vector cursor](ADR-0025-incremental-change-feed.md) |

@@ -310,11 +310,13 @@ Without `--since` it is newest-first, capped by `--limit` (default 10, `0` = all
 With `--since` it is a resumable change-feed — every op after the cursor,
 oldest-first — and `--limit` defaults to `0` (all), paginating the oldest first.
 Every response carries a top-level `cursor`: a per-replica version vector,
-serialized as comma-joined `<replica>:<hlc>` pairs sorted by replica, to pass as
-the next `--since`. Emission is `hlc > cursor[replica]`, so a late foreign op
-whose HLC sits below another replica's maximum is still delivered exactly once (a
-scalar HLC cursor would drop it). `count` is the total matched (before `--limit`).
-A `--since` cursor is scoped to the `<id>` filter it was produced under.
+serialized as comma-joined `<replica>:<hlc>:<nonce>` triples sorted by replica, to
+pass as the next `--since` (full semantics in ADR-0025). Emission is
+`(hlc, nonce) > cursor[replica]` lexicographically, so a late foreign op below
+another replica's maximum, and a same-replica op sharing an HLC (split by nonce),
+are each delivered exactly once. A malformed cursor is a `usage` error, never a
+silent full dump. `count` is the total matched (before `--limit`); a `--since`
+cursor is scoped to the `<id>` filter it was produced under.
 
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
@@ -323,7 +325,7 @@ A `--since` cursor is scoped to the `<id>` filter it was produced under.
     { "timestamp": "2026-06-11T01:27:49.277Z", "op": "close",
       "actor": "carol", "targets": ["tl-ppyg0ekgf91s56e0"] }
   ],
-  "cursor": "93ac0kyg2gggt:116786845491855360" } }
+  "cursor": "93ac0kyg2gggt:116786845491855360:1" } }
 ```
 
 `op` is the wire verb (ADR-0008's closed enum); `actor` is `|null`;

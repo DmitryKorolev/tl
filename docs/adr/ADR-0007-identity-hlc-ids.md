@@ -350,7 +350,9 @@ component.
 - Wall-clock only / Lamport only. Rejected: skew loses updates / no real-time
   meaning. HLC gives both.
 - Per-field vector clocks. Rejected for LWW: heavy metadata for no gain over
-  scalar HLC; a version *vector* is reserved only for the compaction frontier
-  (ADR-0008).
+  scalar HLC. A version *vector* (per-replica high-water marks) backs two other
+  things of the same shape: the snapshot frontier (ADR-0008) and the
+  `tl log --since` change-feed cursor (ADR-0025) — a global causal-stability
+  frontier and a per-consumer position, respectively.
 - Replica-id shared via git. Rejected: collisions destroy the LWW total order
   and segment ownership.

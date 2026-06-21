@@ -343,40 +343,50 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   assignee as applicable). Agents branch on the structured outcome or error
   code, not on prose.
 
-### Compaction — deferred, but reserved
+### Compaction — a non-destructive snapshot, with destructive GC deferred
 
-- v1 ships without compaction. The log grows with usage; for the
-  expected scale (thousands of issues/ops in a repo) this is fine. The cost
-  is bounded by usage, not catastrophic. This deferral is logged here, not
-  silent (AGENTS.md: no silent caps).
-- Why it's hard (the reason it's deferred, not just unbuilt): under the
-  CRDT, an op or OR-Set tombstone may only be discarded once every
-  replica has observed it — otherwise a still-unmerged replica re-merges
-  and *resurrects* a removed element. Safe compaction therefore needs a
-  notion of causal stability: a frontier below which all replicas agree,
-  computed from a version vector (per-replica high-water marks).
-- What the format reserves now so compaction is a later change needing no
-  format *restructuring*: a `snapshot` record kind carrying (a) a materialized
-  state digest of all ops causally ≤ a stable frontier and (b) that frontier
-  as a version vector. Reading then becomes `snapshot ⊕ fold(tails)` —
-  fold the per-replica segment tails on top of the snapshot. The version
-  vector also has uses beyond compaction (e.g. "have you seen my change?").
-- The safety obligation (a reserved theorem, ADR-0004). Any compaction must
-  preserve the fold: for a causally-closed frontier `F`,
-  `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`. This is what guarantees a
-  snapshot never changes the materialized state, and — with the union-merge
-  interaction (design-backlog) — what guards against a strictly-growing line-union
-  *resurrecting* ops a snapshot retired. Recorded now as the obligation; proved
-  when compaction is built (deferred).
-- When built, it is an explicit `tl compact` command — not automatic.
-  Compaction is destructive of history (it discards ops `tl log` could
-  otherwise show) and a wrong trigger could drop ops a slow replica hasn't
-  observed, so the user stays in control of this one-way operation;
-  auto-compact-when-provably-safe is a possible later opt-in. The name
-  `compact` is honest that it collapses *settled history into a snapshot*
-  (not "gc"-ing garbage — the data was real); `gc` may serve as an alias.
-  The trigger/threshold and the causal-stability frontier computation remain
-  deferred (to be designed with running code to test against).
+Two separable concerns hide under "compaction." tl does the first; the second is
+deferred.
+
+- **Snapshot / checkpoint — a performance optimization, non-destructive.** The
+  cost of a read is the fold. A snapshot is a materialized state at a frontier so a
+  read becomes `snapshot ⊕ fold(ops above the frontier)` rather than folding from
+  genesis. The op log is retained in full: the snapshot is a validated cache (a
+  digest of the state at a causally-closed frontier `F`, plus `F` as a version
+  vector), and a stale, absent, or wrong snapshot falls back to folding the ops.
+  Because nothing is discarded, a late-merged op below `F` just folds onto the tail
+  and the snapshot is rebuilt or re-pointed — no causal-stability proof is needed
+  for *safety*, only for the cache's validity (the fold-preservation obligation
+  below). The local realization already ships — the fold cache (ADR-0022), per
+  clone; a shared/durable snapshot generalizes it so a cold clone or CI run need
+  not fold from genesis. As a side cache, not a new log record, it needs no format
+  `v` bump and is forward-compatible: a reader that ignores it just folds the log.
+- **Destructive GC — bounding log size; deferred, opt-in, lossy.** Actually
+  discarding ops below `F` to bound on-disk/transport size is the hard,
+  CRDT-hostile part: an op or OR-Set tombstone may be dropped only once every
+  replica has observed it, or a still-unmerged replica re-merges and *resurrects* a
+  removed element. That needs a real causal-stability frontier (a version vector
+  below which all replicas provably agree), and an offline clone can always sync an
+  ancient op below any chosen `F` — so a safe automatic GC is genuinely hard. It is
+  not needed at the expected scale (thousands of ops; small JSONL, git-packed on
+  the ref; the fold cache bounds read cost regardless of length), so it is deferred
+  — logged here, not silent (AGENTS.md). If ever built it is an explicit,
+  user-driven `tl compact` (one-way, destructive of the `tl log` history a slow
+  replica might still want), it carries a format `v` bump (the `snapshot` record
+  kind becomes load-bearing — an old reader that ignored it would under-fold, so it
+  fail-closes with an upgrade message), and it owes the change-feed a
+  retention-horizon and gap/resync contract (ADR-0025).
+- **The reserved theorem (ADR-0004): fold-preservation.** For a causally-closed
+  frontier `F`, `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`. This makes a
+  snapshot a valid cache and — with the union-merge interaction (design-backlog) —
+  guards against a strictly-growing line-union resurrecting ops a destructive GC
+  retired. Recorded now; proved when a snapshot is materialized into a shared
+  artifact (the local fold cache already proves its `fold_append`/`fold_perm`
+  equivalents, ADR-0022).
+- **The version vector serves two roles of the same shape.** Per-replica
+  high-water marks back both the snapshot frontier here and the change-feed cursor
+  (ADR-0025) — distinct uses (global causal-stability vs per-consumer position),
+  one primitive.
 
 ## Consequences
 
@@ -385,32 +395,33 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
 - Reading model: materialization is fold-per-invocation —
   `snapshot ⊕ fold(tails)` on each command (ADR-0001). Caching/incremental
   materialization is a later optimization, not needed at expected scale.
-- Compaction needs no format restructuring later. The `snapshot` kind and
-  the version-vector frontier are reserved now. But because a `snapshot` is a
-  new *record kind* an old reader cannot fold (and, once it discards ops below
-  the frontier, an old reader that ignored it would under-fold), enabling
-  compaction does bump `v` — fail-closed, so an old binary refuses a
-  compacted log with an upgrade message rather than silently mis-folding.
-  Whether the un-compacted v1 format stays `v=1` is unaffected.
+- A non-destructive snapshot needs no format change — it is a side cache
+  (ADR-0022), so an old reader that ignores it simply folds the log, and the
+  format stays `v=1`. Only a future destructive GC bumps `v`: once ops below the
+  frontier are discarded, an old reader that ignored the `snapshot` record would
+  under-fold, so a GC'd log fail-closes with an upgrade message rather than
+  silently mis-folding.
 - Fail-closed is honest. A user on an old binary gets a clear "upgrade"
   message, never a silently wrong fold.
-- The log doubles as an action history (`tl log`). Because every
-  mutation is an op, `tl log` is a read-only projection over the log — no
-  separate events table. It merges the per-replica segments and orders by
-  HLC (the established total order, ADR-0007); `tl log <id>` filters to ops
-  touching that issue. Its visible horizon is bounded by compaction: ops
-  below the snapshot frontier are gone, so `tl log` must disclose where
-  history begins ("earlier ops compacted") rather than imply completeness
-  (no silent caps).
+- The log doubles as an action history (`tl log`, and the `--since` change-feed,
+  ADR-0025). Because every mutation is an op, `tl log` is a read-only projection
+  over the log — no separate events table. It merges the per-replica segments and
+  orders by the `Stamp` total order (ADR-0007); `tl log <id>` filters to ops
+  touching that issue. Under the non-destructive snapshot the full history is
+  retained, so `tl log` is complete and any `--since` cursor stays serviceable.
+  Only a future destructive GC would bound the horizon, and then `tl log` must
+  disclose where history begins ("earlier ops compacted") rather than imply
+  completeness (no silent caps).
 
 ## Alternatives considered
 
 - Binary format. Rejected: opaque, not git-diffable, fights the
   human-readable-artifacts rule; preserve-unknown is harder. JSONL's slight
   size cost is irrelevant at this scale.
-- Compaction in v1. Rejected: causal-stability GC is genuinely hard and
-  premature; reserving the `snapshot`/version-vector shape lets us defer
-  without painting ourselves into a corner.
+- Destructive GC in v1. Rejected: causal-stability GC is genuinely hard and
+  premature. The non-destructive snapshot (a perf cache, ADR-0022) captures the
+  read-cost win without it; reserving the `snapshot`/version-vector shape lets a
+  future GC land without painting us into a corner.
 - Best-effort compaction (drop old closed items without a frontier).
   Rejected: it can resurrect removed elements on a late merge — exactly the
   correctness failure the CRDT design exists to prevent.
