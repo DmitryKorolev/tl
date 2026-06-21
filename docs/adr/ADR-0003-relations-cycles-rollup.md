@@ -108,7 +108,7 @@ over the `parent` graph (a cycle-trapped epic falls back to not-done, reported).
 > fuel saturation by an ascending-chain pigeonhole — no acyclicity hypothesis),
 > the path cutoff is proved *exact* (a re-encountered node is on a live cycle,
 > hence `Open` — `effStatusAux_open_on_liveCycle`), and the refinement bridge
-> (`effStatusWith_eq`) makes the fast form pointwise EQUAL to the spec, so the
+> (`effStatusWith_eq`) makes the fast form pointwise equal to the spec, so the
 > acyclic-exactness and never-`Done` theorems transfer rather than being
 > re-proved. Once-per-pass is `rollupVisit_find_hit`. The decided shape was: switch to the memoized
 > shape `effectiveStatus (visiting, memo) i`, where `visiting` is the *current

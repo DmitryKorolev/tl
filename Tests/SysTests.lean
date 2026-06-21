@@ -2,7 +2,7 @@
 `Tests.SysTests` — per-branch tests for the native shim (ADR-0019).
 
 Each shim function's documented branches get a discrete assertion: symlink
-refusal at the final AND an intermediate `rel` component (ADR-0015 §6 — the
+refusal at the final and an intermediate `rel` component (ADR-0015 §6 — the
 component walk), the base-follows/rel-refuses split (a macOS temp dir lives
 under the `/var` symlink, so the *base* leg is exercised by every row here),
 `O_EXCL` collision, append+sync round-trip, lock contention between two open
@@ -72,7 +72,7 @@ def sysTests : IO (List Outcome) := do
   let empty ← Sys.withFd base "empty" 0 Sys.readAll
   outcomes := outcomes ++ [check "readAll on empty file is empty" (empty.size == 0)]
 
-  -- symlink at the FINAL rel component is refused (read, append, and O_CREAT)
+  -- symlink at the final rel component is refused (read, append, and O_CREAT)
   symlink (base ++ "/seg.jsonl") (base ++ "/link.jsonl")
   outcomes := outcomes ++
     [← expectErrno "symlink at final component refused (read)" ["ELOOP"]
@@ -82,7 +82,7 @@ def sysTests : IO (List Outcome) := do
      ← expectErrno "symlink at final component refused even with O_CREAT" ["ELOOP"]
         (Sys.openNoFollow base "link.jsonl" (flagCreate ||| flagWrite))]
 
-  -- symlink at an INTERMEDIATE rel component is refused (the component walk;
+  -- symlink at an intermediate rel component is refused (the component walk;
   -- ELOOP on Linux, ENOTDIR on Darwin — both are the refusal)
   IO.FS.createDir (dir / "realdir")
   IO.FS.writeFile (dir / "realdir" / "inner.txt") "x"

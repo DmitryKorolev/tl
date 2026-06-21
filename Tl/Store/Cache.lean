@@ -4,7 +4,7 @@ target: "an automatic, self-validating cache in gitignored `.tl/local/`,
 keyed to log content; rebuilt from scratch if stale/absent — never a
 user-managed command").
 
-What is cached is ONLY the kernel fold — the quadratic part of a read. Every
+What is cached is only the kernel fold — the quadratic part of a read. Every
 other `Loaded` field (`ops`, refusals, skips, deferrals, HLC maxima,
 warnings) is recomputed from the live line decode on every invocation, so
 the cache can never change what a command *reports*, only how the state it
@@ -16,7 +16,7 @@ Validity is per segment, against the live bytes and the live decode:
   (length extends, the prefix checksum matches) — appends keep a cache
   warm, any rewrite (repair, a reordering ref absorb) forces a rebuild;
 * the refusal flag must match: parse/refusal classification is a pure
-  function of the bytes, but a bad line APPENDED to a clean segment refuses
+  function of the bytes, but a bad line appended to a clean segment refuses
   the whole segment — a fresh fold then drops the prefix ops the cache
   still holds, so the flag divergence must invalidate;
 * every line deferred now (within the prefix) must have been deferred at
@@ -36,7 +36,7 @@ The file is a non-crypto checksum line (core's `ByteArray.hash`, `ckOf`) over a
 payload line: the values the fold trusts (the state, line counts, deferral sets)
 are integrity-checked before any of them is believed, so bit rot anywhere in the
 file is a rebuild, never a silently wrong read — the cache stays the discardable
-one. The checksum is a rot/content check, NOT a security digest: deliberate
+one. The checksum is a rot/content check, not a security digest: deliberate
 tampering inside `.tl/` is the segments' trust domain (ADR-0014), so a 64-bit
 non-crypto hash suffices here (a faster choice than the pure-Lean SHA-256 this
 replaced; ADR-0022/0023/0024). `cacheVersion` is a *semantics* version, not just a format
@@ -82,7 +82,7 @@ structure CacheSegMeta where
       nothing to the cached state. -/
   refused : Bool
   /-- Skew-deferred line numbers at snapshot time — the prefix lines the
-      cached state did NOT fold. -/
+      cached state did not fold. -/
   deferred : List Nat
 deriving BEq, Repr
 
@@ -270,7 +270,7 @@ private def decState (j : Json) : Option State := do
   let edges ← decOrSet decEdge (← (j.getObjVal? "edges").toOption)
   some ⟨issues, data, edges⟩
 
-/-- A stable, version-INDEPENDENT digest of a materialized `State` under the
+/-- A stable, version-independent digest of a materialized `State` under the
     cache codec (`encState`). The cacheVersion-bump guard (Tests.CacheTests)
     pins this against the current `cacheVersion`: any change to the fold
     semantics (`decodeSegment` / the owner check / `WireOp.toOp` / kernel
@@ -302,7 +302,7 @@ private def decSegMeta (j : Json) : Option CacheSegMeta := do
   some { replicaId, byteLen, lineCount, ck, refused, deferred }
 
 /-- A fast non-crypto rot-check over the cached bytes. The cache is the
-    discardable, content-keyed artifact (ADR-0022), NOT a security surface —
+    discardable, content-keyed artifact (ADR-0022), not a security surface —
     deliberate tampering inside `.tl/` is the segments' trust domain
     (ADR-0014) — so collision-resistance is not required: a 64-bit hash
     detects bit rot and prefix changes, and core's `ByteArray.hash` is a fast
@@ -326,7 +326,7 @@ def encodeCache (c : FoldCache) : String :=
     ("state", encState c.state)]).compress
   ckOf payload.toUTF8 ++ "\n" ++ payload ++ "\n"
 
-/-- Decode a cache file. ANY failure — a checksum mismatch anywhere in the
+/-- Decode a cache file. Any failure — a checksum mismatch anywhere in the
     file, parse error, version mismatch, non-canonical content — is `none`:
     the cache is rebuilt, never repaired. -/
 def decodeCache (s : String) : Option FoldCache := do
@@ -361,7 +361,7 @@ def cacheValid (c : FoldCache) (pairs : List (SegmentData × SegmentDecode)) : B
       && dec.refusal.isSome == m.refused
       && dec.deferred.all (fun n => decide (m.lineCount < n) || m.deferred.contains n))
 
-/-- The live ops a VALID cache has not folded: a segment the cache never saw
+/-- The live ops a valid cache has not folded: a segment the cache never saw
     contributes everything; a known segment contributes its appended lines plus
     the snapshot-deferred lines that are admissible now. With validity this is
     exactly `keptNow \ foldedAtSnapshot` (kept prefix lines outside the snapshot
@@ -430,7 +430,7 @@ def materializeCached (segs : List SegmentData) (cache : Option FoldCache)
 
 /-! ## The cache file -/
 
-/-- Load `.tl/local/cache`. ANY failure — absent, unreadable, non-UTF-8,
+/-- Load `.tl/local/cache`. Any failure — absent, unreadable, non-UTF-8,
     corrupt — is `none` (rebuild); a symlinked path is refused by the
     no-follow open and lands here too (the later atomic-replace rename never
     follows it either). -/

@@ -3,7 +3,7 @@
 
 The spec (`Ready.lean`) recomputes everything per use: each ranking comparison
 recomputes both `weight`s, each `weight`
-recomputes `presentIssues` (the closure fuel) and burns ALL fuel iterations
+recomputes `presentIssues` (the closure fuel) and burns all fuel iterations
 with no saturation exit, and every `blockersOf`/`isEpic` re-derives
 `presentEdges` — superlinear per `ready` even on an edgeless graph. The fast
 form hoists the present issues/edges once per call, reads rollups through
@@ -13,7 +13,7 @@ on the O(V+E) frontier engine (`reachBFS`, `ReachBFS.lean`) instead of
 re-scanning the whole accumulator each round.
 
 The refinement bridge is `readyFast_eq` / `unblocksFast_eq` / `whyFast_eq`:
-the fast forms are pointwise EQUAL to the spec, so the proved `ready`
+the fast forms are pointwise equal to the spec, so the proved `ready`
 soundness/completeness/ordering, `unblocks` exactness, and `why` correctness
 theorems transfer to the shipped path with no re-proof. The close path's
 unblocked echo shares the win through `unblocksFast`.
@@ -37,7 +37,7 @@ theorem reachClosure_congr {f g : IssueId → List IssueId} (h : ∀ x, f x = g 
 
 /-! ## Hoisted per-call views
 
-Each helper takes the once-computed edge list and is DEFINITIONALLY the spec
+Each helper takes the once-computed edge list and is definitionally the spec
 function at `edges = s.presentEdges` — the spec already filters that list,
 it just recomputes it per call. -/
 
@@ -140,11 +140,11 @@ theorem blocksSuccB_eq (s : State) (i : IssueId) :
     each step is O(1)-amortized per successor instead of an O(E) edge filter with
     an O(N) `hasIssue` per node.
 
-    ACCEPTED COMPROMISE (ADR-0023): `keyOf` calls this once per ready candidate
+    Accepted compromise (ADR-0023): `keyOf` calls this once per ready candidate
     (`readyFast`), so the weight phase is O(R·(V+E)) — each candidate's blocks-cone
     is computed independently, with no shared-cone memo across candidates. The
     per-cone engine is O(V+E) (the just-landed reach work); cross-candidate sharing
-    is not attempted, and is NOT cheaply worth it: `weight` is a COUNT of a
+    is not attempted, and is not cheaply worth it: `weight` is a count of a
     reachable set, and per-node reachable-set counts are Θ(V²) worst case (a union
     of children's sets is not a fold of their counts) — no general O(V+E) — so a
     batched form would need bitset transitive closure over the SCC condensation,
@@ -277,12 +277,12 @@ theorem rankSortK_map (st : State) :
     sort over cached keys, and the saturating closure inside `weight`. -/
 def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List IssueId :=
   let edges := s.presentEdges
-  -- `parentEdgesFast` builds the child-present check through a hash set ONCE; the
+  -- `parentEdgesFast` builds the child-present check through a hash set once; the
   -- plain `parentEdges` does an O(N) `hasIssue` scan per edge (Θ(E·N)) — the
   -- dominant `ready` cost at scale. Same list (`parentEdgesFast_eq`).
   let pe := s.parentEdgesFast
   let present := s.presentIssues
-  -- hoist the hash/bucket views ONCE; the per-candidate filter then reads each
+  -- hoist the hash/bucket views once; the per-candidate filter then reads each
   -- O(1)-amortized instead of an O(N) find / O(E) edge-filter per issue
   let pset := hashSetOf present
   let mh := hashAssoc m.toList
@@ -294,7 +294,7 @@ def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List Issue
   let cands := present.filter (isReadyFastH pset mh dataH btgt pbk s now ·)
   (rankSortK (cands.map (keyOf dataH crH bsrc pset present.length))).map (·.id)
 
-/-- **The bridge.** The fast queue IS the spec's ranked queue — `ready`
+/-- **The bridge.** The fast queue is the spec's ranked queue — `ready`
     soundness, completeness, and the proved ordering transfer untouched. -/
 theorem readyFast_eq (s : State) (now : Instant) :
     readyFast (s.effStatusAll) s now = s.ready now := by
@@ -410,7 +410,7 @@ def whyFastH (btgt : Std.HashMap IssueId (List IssueId)) (pset : Std.HashSet Iss
     (mh : Std.HashMap IssueId Status) (s : State) (n : Nat) (i : IssueId) : List IssueId :=
   reachBFS (liveSuccB btgt pset mh s) n (liveSuccB btgt pset mh s i)
 
-/-- **The bridge.** The bucketed `why` IS the spec's `why` — `whyFast_eq` (thm 10,
+/-- **The bridge.** The bucketed `why` is the spec's `why` — `whyFast_eq` (thm 10,
     `mem_why_iff`) transfers untouched, routed through `liveSuccB_eq`. -/
 theorem whyFastH_eq (s : State) (i : IssueId) :
     whyFastH (blocksByTarget s.presentEdges) (hashSetOf s.presentIssues)

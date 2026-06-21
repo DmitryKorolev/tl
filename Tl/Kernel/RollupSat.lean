@@ -6,7 +6,7 @@ fast implementation's refinement bridge (`RollupFast.lean`) folds against.
 
 `effectiveStatus` runs the fuel descent at `N = |presentIssues|`. This file
 proves the fuel is *saturated* there, so the rollup satisfies its one-step
-recurrence with NO acyclicity hypothesis:
+recurrence with no acyclicity hypothesis:
 
   `effectiveStatus i = Cancelled` on manual cancel, the stored status with no
   present children, else `Done` iff every present child is effectively closed.

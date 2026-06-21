@@ -15,8 +15,8 @@ is proved, not merely tested):
   set-insensitive fold (`fold_eq_of_mem_iff`) the replicas **converge**
   (`skew_converges`).
 
-Crucially every result holds for ANY window `W` and *regardless of clock
-accuracy*: a wrong clock changes only WHEN an op becomes visible, never the
+Crucially every result holds for any window `W` and *regardless of clock
+accuracy*: a wrong clock changes only when an op becomes visible, never the
 eventual state. So convergence is independent of the window value; `W` tunes
 only timeliness (and the carried system-clock assumption bears only on that).
 

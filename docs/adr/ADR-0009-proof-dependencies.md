@@ -114,7 +114,7 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 > cardinality/pigeonhole module, squarely inside this ADR's recorded scope
 > (a `Reach.lean` dependent). Consequence: the shipped fast definitions, and
 > through them the CLI build cone, now transitively import Mathlib. This is
-> a BUILD-STRUCTURE widening only — Mathlib is used exclusively by the
+> a build-structure widening only — Mathlib is used exclusively by the
 > bridge proofs, the runtime semantics are pinned by the `*_eq` agreement
 > theorems, and the axiom probes stay clean. Recorded here per the "do not
 > widen without recording" rule; if build times ever make it bite, the

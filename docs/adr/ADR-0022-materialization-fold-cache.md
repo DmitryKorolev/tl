@@ -5,7 +5,7 @@
 - Amended: 2026-06-13 — the cache integrity hash is now core's non-crypto
   `ByteArray.hash`, not the pure-Lean SHA-256: the cache is a discardable
   rot-check (tampering is the segments' trust domain, ADR-0014), so
-  collision-resistance is not required and the cache carries NO crypto
+  collision-resistance is not required and the cache carries no crypto
   assumption (ADR-0023/0024 measured SHA ≈25× slower at cache sizes).
   `cacheVersion` bumped 1→2.
 
@@ -81,10 +81,10 @@ is believed — a flipped digit that stays valid JSON must rebuild, not
 silently drop an op. Decode then re-establishes the canonical sortedness
 proofs via `AMap.ofAscList?` (`ascending_of_sorted` guarantees an encode is
 never rejected), so a decoded state is canonical by construction. The
-prefix-validity hash and the file checksum are ROT/CONTENT checks, not
+prefix-validity hash and the file checksum are rot/content checks, not
 security digests: deliberate tampering inside `.tl/` is the segments' trust
 domain (ADR-0014), so a fast 64-bit non-crypto hash suffices and the cache
-needs NO collision-resistance assumption (an accidental shape-preserving
+needs no collision-resistance assumption (an accidental shape-preserving
 collision is ~2⁻⁶⁴, negligible for the discardable cache). This *narrows*
 the framing of the original design — the cache was briefly a pure-Lean
 SHA-256 (ADR-0018), measured ≈25× slower at cache sizes (ADR-0023/0024), and

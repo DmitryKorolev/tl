@@ -4,7 +4,7 @@
 
 `ready s now` answers the whole thesis — "what can I work on right now":
 `i` is ready iff it is a materialized, `open`, non-epic, non-deferred issue every
-one of whose blockers is discharged (closed by effective status, OR dangling —
+one of whose blockers is discharged (closed by effective status, or dangling —
 inert, ADR-0003 §5). The list is returned in the total deterministic ranking
 (priority ↑, critical-path weight ↓, createdAt ↑, id ↑), so replicas agree on the
 ranked queue.

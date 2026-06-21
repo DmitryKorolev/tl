@@ -79,7 +79,7 @@ def storeDiscoveryTests : IO (List Outcome) := do
   IO.FS.createDirAll (root / "src" / "deep" / ".git")
   outcomes := outcomes ++
     [← expectCode "repo boundary stops the walk" .noProject (discover none)]
-  -- a .git FILE (linked worktree/submodule) bounds it too
+  -- a .git file (linked worktree/submodule) bounds it too
   IO.FS.removeDirAll (root / "src" / "deep" / ".git")
   IO.FS.writeFile (root / "src" / "deep" / ".git") "gitdir: elsewhere\n"
   outcomes := outcomes ++
@@ -152,7 +152,7 @@ def storeAdversityTests : IO (List Outcome) := do
   let (root, d) ← mkProject
   let _ ← runTl (transact d none 1 (buildCreate "mine"))
   let ownSeg := root / ".tl" / "log" / (fixedReplica ++ ".jsonl")
-  -- foreign segment: a good line with the GLOBAL max HLC, then garbage
+  -- foreign segment: a good line with the global max HLC, then garbage
   let foreignId := "1zzzzzzzzzzzz"
   let goodForeign :=
     "{\"v\":1,\"op\":\"reopen\",\"hlc\":\"7fffffffffff0000\",\"replica\":\"" ++ foreignId ++
@@ -173,7 +173,7 @@ def storeAdversityTests : IO (List Outcome) := do
             && loaded.state.presentIssues.length == 1)    -- reopen of a dangling id adds no issue
           s!"skipped={loaded.skipped}")]
   -- clock recovery: an absent file reseeds from the segments' max — but a
-  -- far-future FOREIGN HLC is deferred (ADR-0007 skew window), so it does NOT
+  -- far-future foreign HLC is deferred (ADR-0007 skew window), so it does not
   -- inflate the reseed toward saturation; the minted clock stays sane (≈ now),
   -- below the planted 0x7fff… foreign HLC rather than jumping to it.
   IO.FS.removeFile (root / ".tl" / "local" / "clock")
@@ -189,7 +189,7 @@ def storeAdversityTests : IO (List Outcome) := do
     [← expectCode "corrupt clock is corrupt-clock" .corruptClock
         (transact d none 1 (buildCreate "x"))]
   -- the saturated-clock bridge: mintStamps at the 48-bit physical ceiling throws the
-  -- STRUCTURED corrupt-clock(reason:"saturated") — distinct from the unreadable path
+  -- structured corrupt-clock(reason:"saturated") — distinct from the unreadable path
   -- above (which is reason:"unreadable"); assert the context, not just the code
   outcomes := outcomes ++
     [← (do
@@ -204,7 +204,7 @@ def storeAdversityTests : IO (List Outcome) := do
           pure (check "mintStamps at saturation throws corrupt-clock(reason:saturated)"
             false "unexpectedly succeeded"))]
   IO.FS.removeFile (root / ".tl" / "local" / "clock")
-  -- writeLocalFile's rename-failure .error arm: a non-empty DIRECTORY at the clock
+  -- writeLocalFile's rename-failure .error arm: a non-empty directory at the clock
   -- target makes `rename` fail (regardless of uid — unlike a chmod, bypassed under
   -- root); assert (a) a structured throw (the under-lock callers rethrow, unlike the
   -- best-effort saveCache), (b) the CSPRNG-suffixed .tmp is removed, not stranded (a
@@ -225,7 +225,7 @@ def storeAdversityTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectCode "corrupt replica is corrupt-replica" .corruptReplica
         (transact d none 1 (buildCreate "x"))]
-  -- absent replica with state present auto-mints a NEW id
+  -- absent replica with state present auto-mints a new id
   IO.FS.removeFile (root / ".tl" / "local" / "replica")
   outcomes := outcomes ++
     [← expectOk "absent replica auto-mints" (transact d none 1 (buildCreate "reborn"))
@@ -286,7 +286,7 @@ private def craftLine (op : WireOp) (hlc nonce : Nat) (stem : String) : String :
                stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some "x" }
 
 /-- The HLC skew window (ADR-0007): foreign ops dated beyond `now + W` are
-    deferred (held back from the fold AND from `maxHlc`) until wall-clock catches
+    deferred (held back from the fold and from `maxHlc`) until wall-clock catches
     up; within-window foreign ops fold; the own segment is exempt. Deterministic
     — `now` is passed explicitly, so the test never depends on the wall clock. -/
 def storeSkewTests : IO (List Outcome) := do
@@ -303,9 +303,9 @@ def storeSkewTests : IO (List Outcome) := do
     (craftLine (.create "ffff0000ffff0000" { title := some "ownfuture" }) ownFutureHlc 1 ownId ++ "\n").toUTF8 }
   let loaded := materialize [ownSeg, foreignSeg] false (some now) (some ownId)
   let off := materialize [ownSeg, foreignSeg]
-  -- own-id UNKNOWN: nothing is deferred (we cannot tell a segment from our own)
+  -- own-id unknown: nothing is deferred (we cannot tell a segment from our own)
   let ownUnknown := materialize [foreignSeg] false (some now) none
-  -- a refused segment (future-dated line 1, malformed line 2) must report ONLY
+  -- a refused segment (future-dated line 1, malformed line 2) must report only
   -- its refusal — not also "held back, appears later" for the future line
   let refusedSeg : SegmentData := { replicaId := foreignId, bytes :=
     (craftLine (.create "1111222233334444" { title := some "future" }) futureHlc 1 foreignId ++ "\n"

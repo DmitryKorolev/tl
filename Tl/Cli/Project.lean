@@ -42,7 +42,7 @@ def hlcIso (hlc : Nat) : String :=
 
 /-! ## Fold-time provenance (ADR-0008)
 
-Rule: every cross-op recency comparison uses the FULL `Stamp` order — the
+Rule: every cross-op recency comparison uses the full `Stamp` order — the
 LWW order on `(hlc, replica, nonce)` — never the bare HLC. Two replicas can
 write lifecycle ops at the same HLC; the materialized state is decided by
 the full triple, and a projection comparing bare HLCs would disagree with it
@@ -220,7 +220,7 @@ def shortIdLens (ids : List IssueId) : Std.HashMap IssueId Nat := Id.run do
   return m
 
 /-- Build the indexed views once from a view's already-materialized collections
-    (ADR-0024 "build once, read many"). Pass the SAME `rollup`/`present`/`edges`/
+    (ADR-0024 "build once, read many"). Pass the same `rollup`/`present`/`edges`/
     `pedges`/`prov` the base `View` fields hold, so each hashed probe equals its
     spec accessor over those lists. -/
 def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
@@ -284,7 +284,7 @@ structure View where
    scans are now one-pass O(N + Σtags·|removed|) OR-Set enumerations
    (`presentElements` linearized in `b0f3ff5`; the issue OR-Set has no removes, so
    `present` is O(N); `edges` carries the dep/label tombstones); hoisting them here
-   means a command pays each ONCE rather than per diagnostic/per row. -/
+   means a command pays each once rather than per diagnostic/per row. -/
 
 def View.state (v : View) : State := v.loaded.state
 
@@ -403,7 +403,7 @@ private def maxTagOf (s : State) (e : Edge) : Option Stamp :=
 
 /-- The canonical-parent LWW pick: among the candidate parents, the one whose
     greatest surviving `parent` add-tag is `(hlc, replica, nonce)`-greatest
-    (ADR-0003 §4). The ONE canonicalization fold — both the spec `canonicalParent`
+    (ADR-0003 §4). The single canonicalization fold — both the spec `canonicalParent`
     and the view-hoisted `canonicalParentE` are a candidate source + a per-parent
     max-tag lookup over this core, so the logic cannot silently drift between them
     (the two sources are pinned equal by `canonicalParentTieTests` /
@@ -443,12 +443,12 @@ private def labelsJson (d : IssueData) : Json :=
   Json.arr (d.labels.presentElements.map (Json.str ∘ sanitizeSingle)).toArray
 
 private def metaJson (d : IssueData) : Json :=
-  -- Meta KEYS are emitted as-is (not control-stripped): the `--json` encoder
+  -- Meta keys are emitted as-is (not control-stripped): the `--json` encoder
   -- escapes control bytes safely, and stripping keys would silently collapse
   -- two distinct stored keys that differ only in control chars into one
   -- mkObj member — silent data loss the loud-never-silent rule forbids
   -- (ADR-0014, amended: keys are escaped-not-stripped on the JSON path; the
-  -- human path does not render meta in stage 1). VALUES are still sanitized.
+  -- human path does not render meta in stage 1). Values are still sanitized.
   Json.mkObj ((AMap.keys d.metadata).filterMap (fun k =>
     match (d.metadata.find k).bind (·.value) with
     | some (some v) =>

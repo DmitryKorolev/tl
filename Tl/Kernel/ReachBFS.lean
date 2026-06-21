@@ -141,7 +141,7 @@ theorem reachStep_eq_append_layer (succ : IssueId → List IssueId)
     exact fun hcon => hcon (hclosed y hy)
   rw [hsucc, List.filter_append, hbelow, List.nil_append]
 
-/-- List-membership frontier closure (PROOF REFERENCE, not shipped): carry the
+/-- List-membership frontier closure (proof reference, not shipped): carry the
     reachable accumulator and the last frontier; each round appends the next layer
     and recurses on it. -/
 def reachBFSLgo (succ : IssueId → List IssueId) :
@@ -301,7 +301,7 @@ theorem bfsFold_spec : ∀ (ys S r : List IssueId) (v : Std.HashSet IssueId),
         List.reverse_cons, List.append_assoc, List.singleton_append]
 
 /-- The shipped frontier closure (HashSet visited, reverse-built output). The
-    `frontier.isEmpty` guard makes the `fuel` a totality BACKSTOP rather than the
+    `frontier.isEmpty` guard makes the `fuel` a totality backstop rather than the
     iteration count: at saturation the frontier is empty, so the worklist stops
     instead of spinning the remaining `~V` trivial rounds (`reachBFSgo_eq` proves
     this preserves the result — the reference is stationary on an empty frontier). -/

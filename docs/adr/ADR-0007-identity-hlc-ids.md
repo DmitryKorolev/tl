@@ -146,7 +146,7 @@ CSPRNG, not a code path.
   cannot regress below any absorbed op. (The steady-state *present*-clock arm,
   ADR-0015 §1, floors only by the own-segment max — so a within-window foreign op
   with a higher HLC may still win LWW; this is pure last-writer-wins, eventual
-  consistency, NOT causal-safety-across-transport. There is no fold-time
+  consistency, not causal-safety-across-transport. There is no fold-time
   observe-remote merge step.) With no segments at all (a fresh `init`, no prior
   state) it seeds from `now()`. The scan is line-scoped like every reader (ADR-0015
   §5): it takes the max over the well-formed lines and skips a torn tail or

@@ -2,9 +2,9 @@
 `Tl.Sync.Remote` — the remote leg of `tl sync` (ADR-0001 §5): reconcile this
 clone's `refs/tl/log` with a configured remote by `fetch → union → push`.
 
-Layered atop the shared core (`Ref` plumbing, `Merge` join) and run AFTER the
+Layered atop the shared core (`Ref` plumbing, `Merge` join) and run after the
 local-first leg (`Local`), per the ADR-0016 build order. The merge commit is
-parented on BOTH the local tip and the fetched-remote tip, so the push
+parented on both the local tip and the fetched-remote tip, so the push
 fast-forwards; a non-fast-forward rejection (another clone pushed first)
 re-fetches, re-unions and retries once, then surfaces `push-rejected`. With no
 remote configured the leg is a reported no-op (`no-upstream`) — it never fails
@@ -48,7 +48,7 @@ def resolveRemote (d : Dirs) : TlM (Option String) := do
   -- reject an option-injection remote name before it reaches any git command (a name
   -- like `--upload-pack=<cmd>` / `--receive-pack=<cmd>` would otherwise be parsed as a
   -- flag, not a positional, by ls-remote/fetch/push → arbitrary exec). The name comes
-  -- from .git/config, BELOW the ADR-0014 trust boundary (config-write already grants
+  -- from .git/config, below the ADR-0014 trust boundary (config-write already grants
   -- code exec via hooks), so this is defense-in-depth, not a boundary; it covers all
   -- three call sites at the single source.
   if candidate.startsWith "-" then return none
@@ -83,7 +83,7 @@ private def reconcileRemote (d : Dirs) (remote : String)
     let needPush := !merged.isEmpty && (remoteTip.isNone || !segsEquiv merged remoteSegs)
     if !pulled && !needPush then
       return { ran := true, remote, pushed := false, pulled := false, tip := localTip }
-    -- one merge commit descending from BOTH tips ⇒ a fast-forward push; CAS the
+    -- one merge commit descending from both tips ⇒ a fast-forward push; CAS the
     -- local ref to it (so a future sync sees the union and the pushed ref and
     -- local ref agree), retrying if a concurrent local writer moved it
     let parents := ([localTip, remoteTip].filterMap id).eraseDups
@@ -103,7 +103,7 @@ private def reconcileRemote (d : Dirs) (remote : String)
     — the local leg is the success on a remote-less worktree (ADR-0016 §1).
 
     `announce` is a caller-supplied sink fired once with the resolved remote name
-    immediately BEFORE the first network call, so an interactive sync over a slow
+    immediately before the first network call, so an interactive sync over a slow
     remote is not silent. It runs only when a remote actually resolves (a
     no-upstream leg stays quiet). The default is a no-op, so the core stays free
     of any UX/stream policy — the CLI layer injects the (sanitized, stderr) printer.

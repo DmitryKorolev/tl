@@ -5,7 +5,7 @@ as an ADR-0020 convention).
 Free-form content is untrusted data; both render paths (human and `--json`)
 apply the same pinned spec wherever content is surfaced: single-line fields
 (`title`, `assignee`, `slug`, the rendered actor, labels, meta keys/values)
-strip ALL control characters and bound at 1 KiB; multi-line fields
+strip all control characters and bound at 1 KiB; multi-line fields
 (`description`, `notes`) retain only LF and TAB and bound at 64 KiB; both
 classes strip ANSI escape sequences (the whole CSI/OSC sequence, not just
 the ESC byte), zero-width codepoints (ZWSP/ZWNJ/ZWJ/BOM), and bidi controls;
@@ -85,7 +85,7 @@ private def sanitizeWith (keep : Char → Bool) (bound : Nat) (s : String) : Str
   let cleaned := cs.filter (fun c => !isZeroWidthOrBidi c && (keep c || !isControl c))
   boundBytes bound (String.ofList cleaned)
 
-/-- Single-line fields: ALL control characters stripped, 1 KiB bound. -/
+/-- Single-line fields: all control characters stripped, 1 KiB bound. -/
 def sanitizeSingle (s : String) : String :=
   sanitizeWith (fun _ => false) 1024 s
 

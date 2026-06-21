@@ -70,12 +70,12 @@ def grammarSchemaTests : List Outcome := Id.run do
 def grammarParserAgreementTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- a value flag the schema lists for `create` parses (then fails later for
-  -- a missing project / etc., but NOT with a flag usage error)
+  -- a missing project / etc., but not with a flag usage error)
   let accepted ← run' ["create", "x", "--priority", "2", "--dir", "/tmp/tl-nope-xyz"]
   o := o ++ [check "a schema value-flag (--priority) is not a usage error"
     (match accepted with | .error e => e.code != .usage | .ok _ => true)
     (match accepted with | .error e => e.code.wire | .ok _ => "ok")]
-  -- a flag NOT in create's schema is a usage error
+  -- a flag not in create's schema is a usage error
   let rejected ← run' ["create", "x", "--frobnicate", "y", "--dir", "/tmp/tl-nope-xyz"]
   o := o ++ [check "a non-schema flag (--frobnicate) is a usage error"
     (match rejected with | .error e => e.code == .usage | .ok _ => false)

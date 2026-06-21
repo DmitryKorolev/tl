@@ -8,7 +8,7 @@ Four suites, per the tested-shell mandate (every branch, in the same change):
   non-ascending canonical lists, duplicate entries, bad stamp tags,
   out-of-range enum/`Fin` payloads each yield `none`, never a wrong state);
 * validity branches — for each stale/valid case the cached result must equal
-  the fresh `materialize`, AND the path taken is observed directly: a cache
+  the fresh `materialize`, and the path taken is observed directly: a cache
   "poisoned" with a marker issue keeps the marker iff the cache was used, so
   a test asserts rebuild-vs-suffix, not just the (identical) end state;
 * the seeded property — `materializeCached` ≡ `materialize` on generated
@@ -116,7 +116,7 @@ private def metaFor : CacheSegMeta :=
 private def richMeta : List CacheSegMeta := [metaOwn, metaFor]
 
 /-- Sign a payload line as a well-formed cache file — crafted negative rows
-    must carry a CORRECT checksum so they exercise the inner decoder arm they
+    must carry a correct checksum so they exercise the inner decoder arm they
     target, not the checksum gate. -/
 private def sign (payload : String) : String :=
   toString (ByteArray.hash payload.toUTF8) ++ "\n" ++ payload ++ "\n"
@@ -162,7 +162,7 @@ def cacheCodecTests : List Outcome :=
   let dec? := decodeCache enc
   -- a re-signed payload edit: exercises the targeted decoder arm
   let surgery (needle repl : String) := decodeCache (sign (payload.replace needle repl))
-  -- an UNsigned payload edit: structurally valid, caught only by the checksum
+  -- an unsigned payload edit: structurally valid, caught only by the checksum
   let bitrot (needle repl : String) :=
     decodeCache ((enc.splitOn "\n").getD 0 "" ++ "\n" ++ payload.replace needle repl ++ "\n")
   [ check "round-trip re-encodes byte-identically"
@@ -178,7 +178,7 @@ def cacheCodecTests : List Outcome :=
          && (d.state.issueData idA).labels.presentElements == ["perf"]
          && d.state.presentEdges.length == 2
          && (d.state.issueData idA).deferUntilOf == some 123456),
-    -- the checksum gate: structurally-valid VALUE corruption must rebuild,
+    -- the checksum gate: structurally-valid value corruption must rebuild,
     -- never serve a silently wrong state (deferred-set, line-count, and
     -- state-string flips are all shape-preserving)
     check "a flipped deferred-line digit is rejected by the checksum"
@@ -264,8 +264,8 @@ def cacheCodecTests : List Outcome :=
 
 /-! ## Validity branches
 
-Each case asserts BOTH that the cached result equals the fresh `materialize`
-AND which path ran: a marker issue folded only into the cache's state
+Each case asserts both that the cached result equals the fresh `materialize`
+and which path ran: a marker issue folded only into the cache's state
 survives iff the cache was used (`apply` is the only way state enters the
 result), so `hasMarker` distinguishes suffix-fold from rebuild. -/
 
@@ -312,7 +312,7 @@ def cacheFoldTests : List Outcome := Id.run do
   let (l0, r0) := materializeCached base none false (some now0) (some ownStem)
   o := o ++ [
     check "no cache: result ≡ fresh fold" (loadedEq l0 (materialize base false (some now0) (some ownStem))),
-    -- ownMaxHlc (transact's present-clock floor) is the OWN segment's max, distinct
+    -- ownMaxHlc (transact's present-clock floor) is the own segment's max, distinct
     -- from the all-segment `maxHlc`: baseOwn tops at idx 3, the foreign forPlain at
     -- idx 4 (higher), so a regression returning `maxHlc` or 0 is caught directly —
     -- not just by the cached≡fresh equivalence (which compares both paths' fields)
@@ -352,7 +352,7 @@ def cacheFoldTests : List Outcome := Id.run do
   let flipped := [segOf ownStem ([mkLine (.create idA { title := some "X" }) 1 ownStem] ++ baseOwn.drop 1),
                   segOf forStem forPlain]
   o := o ++ branchCase "same-length rewrite (hash mismatch)" flipped c0 false
-  -- a bad line APPENDED refuses the whole segment → flag mismatch → rebuild
+  -- a bad line appended refuses the whole segment → flag mismatch → rebuild
   let refusedNow := [segOf ownStem (baseOwn ++ ["GARBAGE NOT JSON"]), segOf forStem forPlain]
   o := o ++ branchCase "refusal appears in the suffix" refusedNow c0 false
   -- refused at snapshot time, unchanged (and grown-after-garbage) → consistent
@@ -369,7 +369,7 @@ def cacheFoldTests : List Outcome := Id.run do
   o := o ++ branchCase "deferred line admitted at a later now" deferSegs cDefer true (some later)
   let (_, rAdmit) := materializeCached deferSegs (some cDefer) false (some later) (some ownStem)
   o := o ++ [check "admission refreshes the cache (the admitted op advanced the state)" rAdmit.isSome]
-  -- a far-future line APPENDED after the snapshot: valid, and stays held back
+  -- a far-future line appended after the snapshot: valid, and stays held back
   let appendedDefer := [segOf ownStem baseOwn, segOf forStem forDefer]
   o := o ++ branchCase "deferred line appended after the snapshot" appendedDefer c0 true
   let (lDef, _) := materializeCached appendedDefer (some c0) false (some now0) (some ownStem)
@@ -498,18 +498,18 @@ private def readsAgree (name : String) (d : Dirs) (skipBad : Bool := false)
     kernel fold). Its `stateFoldDigest` (version-independent) is pinned against
     the current `cacheVersion`. Any change to per-line classification, the owner
     check, `WireOp.toOp`, kernel apply/merge, or the cache codec moves the
-    digest; the guard then FAILS, turning ADR-0022's "bump cacheVersion on a
+    digest; the guard then fails, turning ADR-0022's "bump cacheVersion on a
     semantics change" obligation into a CI gate instead of reviewer memory. -/
 def cacheVersionGuardTests : List Outcome :=
-  -- the recorded (cacheVersion, digest) the guard is pinned to. On an INTENDED
-  -- semantics change, bump Tl.Store.cacheVersion AND set this to the printed value.
+  -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
+  -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
     (2, "7194777635966312595")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
   -- own segment: the full lifecycle + both edge kinds + a relate + labels + meta
-  -- + REAL removes (observed = the matching add-tag)
+  -- + real removes (observed = the matching add-tag)
   let own : List String :=
     [ mkLine (.create idA { title := some "Alpha", priority := some (1 : Fin 5) }) 0 ownStem,
       mkLine (.create idB { title := some "Beta" }) 1 ownStem,
@@ -532,11 +532,11 @@ def cacheVersionGuardTests : List Outcome :=
       mkLine (.depRemove (idC, idB, .Blocks) (FinSet.singleton (stamp 9 ownStem))) 17 ownStem,
       mkLine (.unrelate (idA, idB, .Related) (FinSet.singleton (stamp 11 ownStem))) 18 ownStem,
       mkLine (.close idC .Cancelled) 19 ownStem ]
-  -- forStem segment: a higher-stamped title write WINS the LWW on idA.title
+  -- forStem segment: a higher-stamped title write wins the LWW on idA.title
   -- (cross-segment merge over the create at idx 0)
   let foreign : List String :=
     [ mkLine (.update idA { title := some "Alpha-merged" }) 20 forStem ]
-  -- a SEPARATE segment whose one line is stamped by ownStem (not newStem): the
+  -- a separate segment whose one line is stamped by ownStem (not newStem): the
   -- per-segment owner check refuses the whole segment, so it folds nothing. A
   -- regression that accepted it would re-take idA.title at the higher hlc 21 and
   -- move the digest. (One bad line refuses its segment wholesale, ADR-0001 — so
@@ -622,7 +622,7 @@ def cacheIoTests : IO (List Outcome) := do
     ((← IO.FS.readFile cachePath) == "{not json")]
   let _ ← runTl (readStateCached d false (some now0) (some fixedReplica))  -- heal it
   -- a directory at the cache path: the read degrades, the save's failed atomic
-  -- replace is swallowed AND does not strand its temp file
+  -- replace is swallowed and does not strand its temp file
   IO.FS.removeFile cachePath
   IO.FS.createDir cachePath
   o := o ++ [← readsAgree "a directory at the cache path degrades to the plain fold" d]

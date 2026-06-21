@@ -5,7 +5,7 @@ cycle diagnostics.
 The diagnostics need the SCC structure of present-bounded graphs (`kindSucc`
 per kind, `precSucc`). Per-node closures cost Θ(V·(V+E)); the linear-time
 algorithms (Tarjan/Kosaraju) have famously intricate invariants. This module
-takes the checked-certificate road instead: an UNTRUSTED candidate partition
+takes the checked-certificate road instead: an untrusted candidate partition
 (`tarjanSCC`, `Tarjan.lean`) is validated by `sccCertOk`, whose acceptance
 proves the spec's SCC characterizations on present nodes — the candidate
 need not even be a true partition (phantom or duplicated components can
@@ -23,7 +23,7 @@ quantifies over present nodes only):
 Together these characterize the spec predicates with O(1)-amortized hash
 probes: `sameSCC u v = (index u == index v)` (`cert_sameSCC`) and
 `onCycle v = (succ v).any (index · == index v)` (`cert_onCycle`). The
-checker proves SOUNDNESS only — a wrong candidate is rejected, never
+checker proves soundness only — a wrong candidate is rejected, never
 trusted. That a correct Tarjan run is accepted is covered by tests; a
 rejection costs speed, not correctness (the caller falls back to the proved
 per-node-closure path).

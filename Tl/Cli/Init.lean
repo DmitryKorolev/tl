@@ -40,7 +40,7 @@ def initAt (path : System.FilePath) : TlM (Option Tl.Clock.Replica) := do
   -- the self-ignore is a `.tl` write, so it rides the same no-follow walk
   writeLocalFile dirs (dirs.tlRel ++ "/.gitignore") "*\n"
   let replica ← mintReplica dirs
-  -- seed the clock only when ABSENT: completing a partial init must never
+  -- seed the clock only when absent: completing a partial init must never
   -- truncate an existing clock to zero (that would skip the transact
   -- absent-arm reseed and regress monotonicity — ADR-0007). A present clock
   -- (valid OR corrupt) is left for the user/transact; transact floors a

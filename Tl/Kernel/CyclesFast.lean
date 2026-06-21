@@ -21,7 +21,7 @@ graph and linear for one big cycle, but quadratic when the cyclic set
 shatters into many small components.
 
 The bridge (`cyclesFast_eq` / `precCyclesFast_eq` / `hasCycleFast_eq` /
-`hasDeadlockFast_eq`) makes the shipped forms pointwise EQUAL to the spec,
+`hasDeadlockFast_eq`) makes the shipped forms pointwise equal to the spec,
 so the SCC-witness theorems (ADR-0004 thm 6) transfer untouched.
 -/
 import Tl.Kernel.Reach
@@ -473,7 +473,7 @@ theorem precSuccH_eq (m : AMap IssueId Status) (s : State) (i : IssueId) :
     List.filter_congr (fun c _ => by rw [closedH_eq m s c])
   rw [hb, hk]
 
-/-- The fast per-kind cycle witnesses over PRE-HOISTED views: the caller
+/-- The fast per-kind cycle witnesses over pre-hoisted views: the caller
     passes `present = s.presentIssues` and `edges = s.presentEdges` (each a
     Θ(N²)/Θ(E²) OR-Set scan) computed once and shared, instead of re-deriving
     them per call. `cyclesFast` is the convenience wrapper that derives them;
@@ -496,7 +496,7 @@ theorem cyclesFast_eq (s : State) (k : EdgeKind) : cyclesFast s k = s.cycles k :
     sccWitnessesT_eq s (s.kindSucc k) (kindSucc_subset_present s k)]
   rfl
 
-/-- The fast readiness-deadlock witnesses over PRE-HOISTED views (see
+/-- The fast readiness-deadlock witnesses over pre-hoisted views (see
     `cyclesFastWith`): `present`/`edges`/`pe` are passed in once. `s` is still
     taken, but only for `precSuccH`'s rollup-miss fallback — never a view scan. -/
 def precCyclesFastWith (m : AMap IssueId Status) (present : List IssueId)
@@ -507,7 +507,7 @@ def precCyclesFastWith (m : AMap IssueId Status) (present : List IssueId)
       (hashSetOf present) s)
 
 /-- The fast readiness-deadlock witnesses. (`parentEdgesFast` builds the
-    child-present check through a hash set ONCE; plain `parentEdges` is Θ(E·N) —
+    child-present check through a hash set once; plain `parentEdges` is Θ(E·N) —
     same list, `parentEdgesFast_eq`.) -/
 def precCyclesFast (m : AMap IssueId Status) (s : State) : List (List IssueId) :=
   precCyclesFastWith m s.presentIssues s.presentEdges s.parentEdgesFast s
@@ -531,11 +531,11 @@ theorem precCyclesFast_eq (s : State) :
 `sccWitnessesT` takes the certificate-checked fast Tarjan path iff `sccCertOk`
 accepts the proposed partition, else it falls back to the proved (slow) closure.
 These predicates expose that decision so the acceptance tests assert the fast
-branch is taken by consuming a PRODUCTION entry point — not a hand-rolled
+branch is taken by consuming a production entry point — not a hand-rolled
 successor copy in a test file that silently goes stale when the wiring changes
 (letting production drop to the slow path while the test keeps passing).
 
-The successor composition is INLINE here (mirroring `cyclesFastWith`/
+The successor composition is inline here (mirroring `cyclesFastWith`/
 `precCyclesFastWith` directly above), not factored into a shared named def: a
 `def … : … → IssueId → List IssueId` returning that partial application is a
 perf trap — it rebuilds `kindAdj`/`blocksAdj` per successor query (Θ(N·E)/call,

@@ -1,7 +1,7 @@
 /-
 `Tl.Store.Sys` — bindings to the native shim (`ffi/tlsys.c`, ADR-0019).
 
-Mechanism only: no-follow opens (a symlink at ANY path component is refused
+Mechanism only: no-follow opens (a symlink at any path component is refused
 by the shim's component walk — ADR-0015 §6), read/write/fsync on the shim's
 own fds, the advisory fd lock, OS CSPRNG entropy, and the ownership check.
 Policy — the `.tl` path discipline, error codes (`unsafe-path`, `lock-busy`),

@@ -134,7 +134,7 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
     the upward blocks-blocker chain (`v.blockers`, for `why`), or a downward
     blocks-dependent view (`v.dependents`) — all over the hoisted view's indexed
     edge buckets. Two distinct markers, checked in this order per kid: a kid on
-    the current descent `path` closes a CYCLE and renders the "↺" line (the path
+    the current descent `path` closes a cycle and renders the "↺" line (the path
     check must come first — every path member is also emitted, so the other
     order would disguise a reportable cycle as a benign diamond); a kid merely in
     the forest-global `emitted` set is a shared-node (diamond) re-encounter and

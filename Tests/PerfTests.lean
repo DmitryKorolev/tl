@@ -9,7 +9,7 @@ while honest machine noise on a near-linear path does not (the
 timing-flake-proof intent; per-call counters would need kernel hooks the
 proofs do not carry).
 
-Covered: the COLD fold (`foldFast`, a full refold with no cache), the warm
+Covered: the cold fold (`foldFast`, a full refold with no cache), the warm
 cached materialize (the suffix-fold read path), the batched rollup
 (`effStatusAll`), the fast queue (`readyFast`), the fast diagnostics
 (`cyclesFast`/`precCyclesFast`), the provenance map, and the sync line-union.
@@ -23,16 +23,16 @@ The diagnostics run the certificate path (Tarjan + proved checker,
 healthy acyclic fixture (cyclic set empty — the dogfooding profile) and on
 a blocks-ring over every id (one giant SCC — the shape the old per-node
 closure was Θ(V·(V+E)) on). Both bench the SCC machinery over state views
-hoisted once, with reps sized so the SMALL-scale total clears ratioRow's
+hoisted once, with reps sized so the small-scale total clears ratioRow's
 30ms floor on a typical dev machine — below the floor the row silently
 degrades to its absolute backstop, so if hardware speeds shift, re-tune the
 reps until the small time again exceeds 30ms. The fast branch being taken
 at these very scales is asserted by its own row (a scale-dependent
-certificate rejection would otherwise read as a quiet slowdown). The FULL
+certificate rejection would otherwise read as a quiet slowdown). The full
 diagnostics command path additionally pays the
 OR-Set view scans (`presentElements`), which are superlinear today and
 tracked as their own task; that total is pinned by an explicit absolute
-CEILING row, not a ratio. If the certificate were ever rejected, the
+ceiling row, not a ratio. If the certificate were ever rejected, the
 fallback's quadratic cost would blow the machinery ratios — and the
 fast-branch-taken tests in `CrossTests` catch it sooner and by name.
 -/
@@ -104,9 +104,9 @@ private def ringOps (n : Nat) : List ParsedOp :=
     [mk (2 * k) (.create (synthId k) { title := some s!"r{k}" }),
      mk (2 * k + 1) (.depAdd (synthId k, synthId ((k + 1) % n), EdgeKind.Blocks))])
 
-/-- A WIDE blocks graph for the dep-path witness extractor (`blocksPath`): a source
+/-- A wide blocks graph for the dep-path witness extractor (`blocksPath`): a source
     `a` (id 0) fans into a width-`n` middle layer X (ids `1..n`), and each `x_i`
-    blocks two DISTINCT next-layer nodes `y_i` and `y_{i+1 mod n}` (ids `n+1..2n`),
+    blocks two distinct next-layer nodes `y_i` and `y_{i+1 mod n}` (ids `n+1..2n`),
     so one round's frontier (all of X) expands to a list of `2n` successors with `n`
     distinct targets and duplicate in-edges. This is the shape the retired engine was
     Θ(n²) on — the round's list `dedup` over `n` distinct successors, and the
@@ -172,7 +172,7 @@ def perfTests : IO (List Outcome) := do
     let cache := cache?.getD ⟨[], State.empty⟩
     let s := loaded.state
     let rollup := s.effStatusAll
-    -- the COLD fold (no cache ⇒ a full refold through `foldFast`): now batched
+    -- the cold fold (no cache ⇒ a full refold through `foldFast`): now batched
     -- canonical construction (mergeSort + collapse, O(N log N)), so it is
     -- asserted near-linear like the other fast paths — the per-op positional
     -- insert (the old Θ(ops×issues)) is gone (foldFast_eq_fold)
@@ -183,7 +183,7 @@ def perfTests : IO (List Outcome) := do
     -- `effStatusAll` at these scales is loop-invariant and small enough that the
     -- compiler hoists it out of `bench`'s loop (0ms at any rep count), so this row
     -- cannot be de-floor-masked through reps — it stays a floor backstop. Its
-    -- near-linear growth IS pinned, by the in-process `RollupFast` theorems and by
+    -- near-linear growth is pinned, by the in-process `RollupFast` theorems and by
     -- the end-to-end binary row below (which folds it on every read).
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
     -- `ready` is near-linear (×4 ops ⇒ ~×4.4): the dominant cost was `parentEdges`
@@ -206,7 +206,7 @@ def perfTests : IO (List Outcome) := do
       (State.cyclesFastWith present edges EdgeKind.Blocks).length
       + (State.cyclesFastWith present edges EdgeKind.Parent).length
       + (State.precCyclesFastWith rollup present edges pe s).length)
-    -- the fast cert branch must actually be taken at THESE scales, not only on
+    -- the fast cert branch must actually be taken at these scales, not only on
     -- the ≤8-node cross-test graphs — a scale-dependent rejection (fuel, depth)
     -- would otherwise surface as nothing but a quiet slowdown. Reads the
     -- production cert-acceptance guard over the same successor wiring.
@@ -245,7 +245,7 @@ def perfTests : IO (List Outcome) := do
     -- prov) — O(1)/O(deg) per issue. Before that routing each was an O(N)
     -- `AMap.find` / O(E) edge-filter, so rendering N rows was Θ(N²)/Θ(N·E). A
     -- revert to a raw accessor turns this row quadratic and the ratio jumps.
-    -- reps sized so the SMALL scale clears ratioRow's 30ms floor (de-masked).
+    -- reps sized so the small scale clears ratioRow's 30ms floor (de-masked).
     let v : Tl.Cli.View :=
       { dirs := ⟨"", ".tl"⟩, loaded, now := synthNow, replica := none,
         rollup, present, edges, pedges := pe, prov := provenanceMap loaded.ops,
@@ -264,14 +264,14 @@ def perfTests : IO (List Outcome) := do
     let canon ← bench 2500 (fun _ =>
       present.foldl (fun acc i =>
         acc + (match Tl.Cli.canonicalParentE v i with | some _ => 1 | none => 0)) 0)
-    -- the dep-path witness extractor (`blocksPath`) over a WIDE blocks graph: a round
+    -- the dep-path witness extractor (`blocksPath`) over a wide blocks graph: a round
     -- whose frontier expands to a wide layer with `n` distinct successors and
     -- duplicate in-edges (`wideOps`). The retired engine was Θ(n²) here — the round's
     -- list `dedup` over the distinct successors and the per-discovered-node `parentOf`
     -- frontier rescan; the shipped engine (one `bfsStepFn` HashSet fold + the one-pass
     -- `firstPred` index, over the bucketed `blocksSuccB`) is O(V+E). A revert to the
     -- list `dedup`, the `parentOf` rescan, or the un-indexed successor turns this row
-    -- quadratic and the ratio jumps. Measured on the COMPILED kernel (not the
+    -- quadratic and the ratio jumps. Measured on the compiled kernel (not the
     -- interpreter), which is the tier this bound is asserted at (ADR-0023).
     let wsegs := segsOf (wideOps n)
     let (wloaded, _) := materializeCached wsegs none false (some synthNow) (some stem)
@@ -279,7 +279,7 @@ def perfTests : IO (List Outcome) := do
     let wa := synthId 0
     let wb := synthId (2 * n)
     let wide ← bench 700 (fun _ => ((ws.blocksPath wa wb).map (·.length)).getD 0)
-    -- the `why` blocker-cone over the wide graph: `why a` is the FULL transitive live
+    -- the `why` blocker-cone over the wide graph: `why a` is the full transitive live
     -- blocker set (X ∪ Y = all 2n nodes over 3n edges). whyFastH runs the O(V+E)
     -- frontier engine over the bucket-backed `liveSuccB` (the `btgt` target bucket +
     -- hashed discharge), built once like the view index. The retired `liveSuccE`
@@ -309,7 +309,7 @@ def perfTests : IO (List Outcome) := do
       o := o ++ [ratioRow name tS tB]
     -- the full diagnostics command path = view scans + SCC machinery. The
     -- view scans (OR-Set presentElements) are superlinear today — tracked
-    -- as their own task — so this is an explicit wall-clock CEILING, not a
+    -- as their own task — so this is an explicit wall-clock ceiling, not a
     -- ratio dressed up by the noise floor.
     let fullSmall := ((fulls.head?).map (·.2)).getD 0
     let fullBig := (fulls.getLast?.map (·.2)).getD 0
@@ -323,7 +323,7 @@ def perfTests : IO (List Outcome) := do
   | _ => return [{ name := "perf scaling setup", passed := false,
                    msg := s!"expected two scales, got {results.length}" }]
 
-/-- Guards for the proved-fast PRIMITIVES, whose revert is behavior-invisible: a
+/-- Guards for the proved-fast primitives, whose revert is behavior-invisible: a
     dropped native String comparator decides the same `Prop`, and a swapped cache
     content hash produces a valid (just slower) digest — so every correctness
     test stays green while a constant factor regresses. An op-count / ratio row
@@ -347,12 +347,12 @@ def perfPrimitiveTests : IO (List Outcome) := do
         if Tl.Crdt.TotalOrd.le a b then acc := acc + 1
     pure acc)
   -- (2) the cache's content hash: core's native `ByteArray.hash` over the
-  -- pure-Lean SHA-256 it replaced. A machine-independent RATIO — both run here on
+  -- pure-Lean SHA-256 it replaced. A machine-independent ratio — both run here on
   -- one machine — pins the fast-hash advantage that justifies the cache using it;
   -- a revert to a slow hash collapses the ratio. ~2.5MB, the warm-cache size.
   -- The native hash is ~9× faster, so a handful of its reps land in the timer
   -- noise where a few ms of OS jitter swings the ratio (the source of past
-  -- flakiness); give it enough reps to clear the floor, compare PER CALL by
+  -- flakiness); give it enough reps to clear the floor, compare per call by
   -- cross-multiplying the rep counts (no integer division), and assert a ≥4×
   -- margin — well under the ~9× real gap, well over the ~1× a revert collapses to.
   let big := ByteArray.mk (Array.replicate 2500000 (0x61 : UInt8))
@@ -376,7 +376,7 @@ def perfPrimitiveTests : IO (List Outcome) := do
 
 /-- End-to-end binary latency (ADR-0023 §2: "End-to-end is mandatory"). In-process
     profiles mispredict the compiled binary — the dominant warm-read cost is the
-    parse + decode/fold, not the in-process view work — so the net MUST time
+    parse + decode/fold, not the in-process view work — so the net must time
     `./.lake/build/bin/tl` on a scaled repo, not a harness. Warm `tl list` over
     500 vs 2000 ops; the ×4-op growth ratio pins the real per-command cost class
     (parse + fold/decode + view + render) independent of the machine. The

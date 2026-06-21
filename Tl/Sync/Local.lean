@@ -90,17 +90,17 @@ def writeForeignSegment (d : Dirs) (replicaId : String) (bytes : ByteArray) : Tl
       Sys.close fd
   liftSys (mapSysError rel) (IO.FS.rename (d.absOf tmpRel) (d.absOf rel))
 
-/-- Write every segment of `final` that is NOT this replica's own and whose
+/-- Write every segment of `final` that is not this replica's own and whose
     on-disk copy differs into `.tl/log/`. Returns the (re)materialized ids. -/
 private def absorbForeign (d : Dirs) (ownReplica : Option String)
     (localSegs final : List SegmentData) : TlM (List String) := do
   let mut absorbed : List String := []
   for s in final do
     let onDisk := localSegs.find? (·.replicaId == s.replicaId)
-    -- write a FOREIGN segment whose on-disk copy differs. When our own replica
+    -- write a foreign segment whose on-disk copy differs. When our own replica
     -- id is unknown (the `.tl/local/replica` file was removed), we cannot prove
     -- a given on-disk segment is not our own authoritative one, so we only
-    -- CREATE absent segments — never clobber an existing file. That protects
+    -- create absent segments — never clobber an existing file. That protects
     -- unpublished own ops from being overwritten by the ref's older copy.
     let mayWrite := match ownReplica with
       | some own => s.replicaId != own
@@ -148,10 +148,10 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
   | fuel + 1 => do
     let tip ← refTip d
     -- Publish-marker fast-out (ADR-0023 write-path analogue of the fold cache):
-    -- if the ref still sits at the OID our own segment is published into, AND the
+    -- if the ref still sits at the OID our own segment is published into, and the
     -- own segment is byte-identical to then, nothing publishes and the absorbed
     -- siblings are already current — return without the readRef + whole-log
-    -- union the publish check would otherwise pay on EVERY write. The marker is
+    -- union the publish check would otherwise pay on every write. The marker is
     -- written only after the own segment is in the tip (`markPub`), so a match
     -- provably means "already published" — never a skipped publish. The outcome
     -- equals the no-publish branch below (published := false, nothing absorbed).
@@ -230,7 +230,7 @@ private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOut
     while git stays off the steady-state read path (an unchanged ref costs one
     `rev-parse` + one small file read).
 
-    Entirely best-effort and lock-free: ANY failure — git absent, a read-only
+    Entirely best-effort and lock-free: any failure — git absent, a read-only
     filesystem, a concurrent refresher — degrades to "fold what is on disk"
     and never fails the read (ADR-0016 §3). It catches both thrown `Tl.Error`s
     and raw `IO.Error`s for that reason. A genuine path-safety / corruption

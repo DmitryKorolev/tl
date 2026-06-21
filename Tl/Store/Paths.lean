@@ -6,7 +6,7 @@ open (ADR-0015 §6): the base — the project root, or the override's parent —
 is opened with normal symlink semantics, while the `.tl` components are
 walked no-follow. Discovery is the ADR-0012 walk-up: from the cwd to the
 nearest ancestor with `.tl/`, stopped at the enclosing repo's root (`.git`
-directory OR file — a linked worktree/submodule is its own boundary) and at
+directory or file — a linked worktree/submodule is its own boundary) and at
 `GIT_CEILING_DIRECTORIES`; `--dir`/`TL_DIR` skips discovery and names the
 state directory itself. No command auto-inits: a missing/uninitialized state
 directory is `no-project`.
@@ -57,7 +57,7 @@ def relRefMark (d : Dirs) : String := d.tlRel ++ "/local/ref-mark"
     when the ref still sits at this OID and the own segment is byte-identical —
     nothing to publish, nothing new to absorb. Local-only, gitignored, no log
     format impact: a stale/absent value only forces the full reconcile, never a
-    wrong publish (it is written ONLY after the own segment is in the tip). -/
+    wrong publish (it is written only after the own segment is in the tip). -/
 def relSyncPub (d : Dirs) : String := d.tlRel ++ "/local/sync-pub"
 /-- The last-sync marker `<ms> <tip>`: wall-clock time of the last `tl sync`
     (local epoch ms) and the `refs/tl/log` tip it left. Read by `doctor`'s sync
@@ -122,7 +122,7 @@ def noProject (where_ : String) : Tl.Error :=
     initialized (`local/` exists — an empty directory is `no-project`,
     ADR-0012). Returns the validated `Dirs`. -/
 def validate (d : Dirs) : TlM Dirs := do
-  -- the shim's component walk enforces no-follow AND ownership on every
+  -- the shim's component walk enforces no-follow and ownership on every
   -- open (ADR-0015 §6), so validation is just the opens themselves
   let fd ← liftSys (fun e =>
       match Sys.errnoOf e with
@@ -154,7 +154,7 @@ def Dirs.ofStatePath (path : String) : Dirs :=
     else { base := parent.toString, tlRel := name }
   | _, _ => { base := "", tlRel := path }
 
-/-- Does `dir` contain a git boundary marker (`.git` directory OR file —
+/-- Does `dir` contain a git boundary marker (`.git` directory or file —
     a linked worktree/submodule gitfile bounds discovery too, ADR-0012)? -/
 def hasGitBoundary (dir : FilePath) : IO Bool := do
   (dir / ".git").pathExists

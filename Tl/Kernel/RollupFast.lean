@@ -7,7 +7,7 @@ Three pieces, named accordingly: the *spec* is the fuel form in
 `path` (the current descent chain) detects a parent cycle at the exact node,
 `memo` caches completed statuses, and the parent-edge view is hoisted once
 per pass; the *refinement bridge* is `effStatusAll_find` /
-`effStatusWith_eq`: the fast form is pointwise EQUAL to `effectiveStatus`,
+`effStatusWith_eq`: the fast form is pointwise equal to `effectiveStatus`,
 so every spec theorem (ready soundness, close-monotonicity, the frame
 lemmas) transfers to the shipped path with no re-proof.
 
@@ -16,7 +16,7 @@ The bridge leans on two spec-side facts: the unconditional recurrence
 working depth) closes the inductive step, and live-cycle conservatism
 (`RollupSpec.effStatusAux_open_on_liveCycle`) makes the path cutoff *exact*:
 a re-encountered node is a member of a cycle of non-cancelled epics, whose
-effective status IS `Open` — treating it as not-closed loses nothing. The
+effective status is `Open` — treating it as not-closed loses nothing. The
 walk's structural once-per-pass property is `rollupVisit_find_hit`.
 -/
 import Tl.Kernel.RollupSat
@@ -49,7 +49,7 @@ def parentEdges (s : State) : List (IssueId × IssueId) :=
     let (f, t, k) := e
     if decide (k = EdgeKind.Parent) && decide (s.hasIssue t) then some (f, t) else none)
 
-/-- `parentEdges` with the child-present check through a hash set built ONCE, not
+/-- `parentEdges` with the child-present check through a hash set built once, not
     an O(N) `hasIssue` (`OrSet.Present`) scan per edge — `parentEdges` is Θ(E·N)
     and the rollup builds it on every pass. Same list (`parentEdgesFast_eq`), so
     every consumer taking `pe = s.parentEdges` stays correct. -/

@@ -19,19 +19,19 @@ Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
   MapFold.lean          --   batched canonical AMap join (mergeSort + adjacent
                         --   collapse, O(N log N)) = the iterated merge
                         --   (joinFast_eq) — the cold-fold core
-  Lww.lean              --   LWW register; key is the TRIPLE (HLC, replica, nonce)
+  Lww.lean              --   LWW register; key is the triple (HLC, replica, nonce)
                         --   (ADR-0002/0007; wire encodings ADR-0007/0008 — 16-hex HLC, 13/26-char Crockford);
                         --   lifted pointwise over a key map = the `meta` CRDT
   OrSet.lean            --   observed-remove set + join laws
 
-Tl/Kernel/              -- the verified core (NO I/O)
+Tl/Kernel/              -- the verified core (no I/O)
   State.lean            --   issues OR-Set, edges OR-Set, per-issue field maps,
                         --   labels OR-Set, and a per-key-LWW `meta` map (ADR-0002)
-  Op.lean               --   the Op inductive; SEVEN deltas (create, setFields,
+  Op.lean               --   the Op inductive; seven deltas (create, setFields,
                         --   metaSet, edgeAdd, edgeRemove, labelAdd, labelRemove) —
                         --   readable CLI verbs map onto these in the shell (ADR-0008)
   Apply.lean            --   apply : State → Op → State  (total reducer + fold)
-  Ready.lean            --   ready : State → Now → List Id  (total on cyclic AND
+  Ready.lean            --   ready : State → Now → List Id  (total on cyclic and
                         --   dangling graphs; blocker discharged iff its
                         --   effectiveStatus is done|cancelled — epics by rollup);
                         --   critical-path weight = |reach⁺ over blocks| (total);
@@ -42,35 +42,35 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   bucketBy adjacency, presence-set membership,
                         --   amapOfHashMap materialize in O(N log N), and the
                         --   find = getElem? lookup bridge to the AMap spec
-  ReadyFast.lean        --   the SHIPPED queue: hoisted present/edge views,
+  ReadyFast.lean        --   the shipped queue: hoisted present/edge views,
                         --   rollups through the batched map, one RankKey per
                         --   candidate, sort on cached keys, the O(V+E) frontier
                         --   closure (reachBFS, ReachBFS.lean); refinement bridge
                         --   readyFast_eq / unblocksFast_eq / whyFast_eq — the
-                        --   fast forms EQUAL the spec, so thm 4/10 transfer
+                        --   fast forms equal the spec, so thm 4/10 transfer
   Cycles.lean           --   per-kind cycle detection (bounded reachClosure
                         --   iteration — total, no well-founded obligation);
                         --   one canonical witness per cyclic SCC = the SCC's
-                        --   sorted NODE SET (ADR-0004 thm 6; proved in SccProps);
-                        --   ALSO readiness-deadlock ≺-cycles (mixed blocks+parent,
+                        --   sorted node set (ADR-0004 thm 6; proved in SccProps);
+                        --   also readiness-deadlock ≺-cycles (mixed blocks+parent,
                         --   ADR-0004 thm 5/6) so no stuck live set is undiagnosed
-  Rollup.lean           --   effectiveStatus (the SPEC: fuel form); reads epic's
-                        --   STORED status first (manual-cancel precedence), else
+  Rollup.lean           --   effectiveStatus (the spec: fuel form); reads epic's
+                        --   stored status first (manual-cancel precedence), else
                         --   derives from children
   RollupSpec.lean       --   rollup meets its ADR-0003 spec (unconditional
                         --   branches) + live-cycle conservatism (cycle members
                         --   are Open at every fuel — the path-cutoff exactness)
-  RollupSat.lean        --   fuel saturation ⇒ the UNCONDITIONAL recurrence
+  RollupSat.lean        --   fuel saturation ⇒ the unconditional recurrence
                         --   (no acyclicity hypothesis; ascending-chain
                         --   pigeonhole, Mathlib zone like RollupAcyclic)
-  RollupFast.lean       --   the SHIPPED rollup: memoized visiting+memo walk
+  RollupFast.lean       --   the shipped rollup: memoized visiting+memo walk
                         --   over a hoisted parent-edge view (effStatusAll, one
                         --   pass per view) + the refinement bridge — pointwise
-                        --   EQUAL to the spec (effStatusWith_eq/isReadyWith_eq),
+                        --   equal to the spec (effStatusWith_eq/isReadyWith_eq),
                         --   so every spec theorem transfers; once-per-pass is
                         --   rollupVisit_find_hit (ADR-0003 §3 amendment)
   RollupAcyclic.lean    --   rollup fuel-adequacy on acyclic parent graphs
-  Invariant.lean        --   Invariant = valid status enum ONLY; endpoint-existence
+  Invariant.lean        --   Invariant = valid status enum only; endpoint-existence
                         --   and acyclicity deliberately excluded (tolerated at read)
   Theorems.lean         --   convergence + tracker theorems (ADR-0004/0003);
                         --   liveness is one-directional deadlock-freedom, not a biconditional
@@ -82,13 +82,13 @@ Tl/Kernel/              -- the verified core (NO I/O)
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's Mathlib zone starts here, ADR-0009)
-  ReachBFS.lean         --   the SHIPPED O(V+E) reachability engine: a Std.HashSet
+  ReachBFS.lean         --   the shipped O(V+E) reachability engine: a Std.HashSet
                         --   frontier/worklist closure (reachBFS), proved list-equal
                         --   to the spec reachClosure (reachBFS_eq, nodup seed) and
                         --   membership-equal unconditionally (mem_reachBFS_iff);
                         --   backs why/weight (ReadyFast) + dep cycles (CyclesFast).
                         --   Reach + HashMapView dependent (ADR-0009 reach zone, 0024)
-  ReachFrontier.lean    --   PROVED "processed-once" structure of the reach engine
+  ReachFrontier.lean    --   proved "processed-once" structure of the reach engine
                         --   (ADR-0023 provable-shape tier): the BFS frontiers
                         --   (reachFrontier) partition the reachable set — disjoint,
                         --   union = reachClosure, each ⊆ presentIssues — so each node
@@ -97,18 +97,18 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   real per-round fold inputs flatten dup-free; a Θ(V·E)
                         --   re-scan recursion (nested closures) fails it. (reachBFSgo_eq
                         --   is output-only.) reachExpandTrace_eq is the reference twin.
-  Path.lean             --   blocksPath: a TOTAL witness-path extractor over present
-                        --   blocks edges (the ORDERED companion to why's reach⁺ set,
+  Path.lean             --   blocksPath: a total witness-path extractor over present
+                        --   blocks edges (the ordered companion to why's reach⁺ set,
                         --   ADR-0004 thm 10 companion). A parent-recording frontier
                         --   BFS — shipped Std.HashSet visited + Std.HashMap parent
                         --   /depth engine (parentSweepH/bfsPathH), bridged to the
                         --   list/AMap reference (parentSweepH_eq); blocksPath_valid
                         --   / blocksPath_isSome_iff. Reach/ReachBFS dependent
-  Tarjan.lean           --   UNVERIFIED fuel-total iterative Tarjan: proposes the
+  Tarjan.lean           --   unverified fuel-total iterative Tarjan: proposes the
                         --   SCC partition in emission order; never trusted — its
                         --   output is runtime-validated by SccFast's checker, so
                         --   a bug here costs speed (fallback), never correctness
-  SccFast.lean          --   the PROVED SCC certificate checker: over the
+  SccFast.lean          --   the proved SCC certificate checker: over the
                         --   HashMapView hash views (bucketed adjacency,
                         --   presence set), a sound frontier BFS, and the
                         --   acceptance characterizations — sameSCC = component-
@@ -116,14 +116,14 @@ Tl/Kernel/              -- the verified core (NO I/O)
                         --   in-my-component (cert_onCycle). Soundness only:
                         --   rejection falls back, acceptance-on-real-runs is
                         --   tested (CrossTests), never assumed
-  CyclesFast.lean       --   the SHIPPED diagnostics: certificate path
+  CyclesFast.lean       --   the shipped diagnostics: certificate path
                         --   (sccWitnessesT = Tarjan + checker + witness
                         --   reconstruction — near-linear detection; grouping
                         --   ∝ cyclic×components, a tracked residual — over
                         --   hash-hoisted successor views), proved
                         --   cached-closure fallback
                         --   (sccWitnessesF); bridge cyclesFast_eq /
-                        --   precCyclesFast_eq — EQUAL to the spec, thm 6
+                        --   precCyclesFast_eq — equal to the spec, thm 6
                         --   transfers; commands compute each result once
   SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
   Unblocks.lean         --   unblocks = the ready-set diff; exact and unconditional
@@ -139,14 +139,14 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
                         --   mismatch is unrepresentable) + Stamp + actor +
                         --   unknown bag; the kernel Op is the WireOp.toOp
                         --   projection (the verb→delta table, executable);
-                        --   covers the FULL v1 enum, not just stage-1-emitted
+                        --   covers the full v1 enum, not just stage-1-emitted
                         --   verbs; strictly canonical decode, fail-closed
                         --   malformed-line/unknown-version (priority clamps,
                         --   disclosed)
   Time.lean             --   strict canonical ISO-8601 UTC ↔ epoch-ms codec
                         --   (deferUntil storage + the --json timestamps)
   Version.lean          --   v fail-closed-on-newer; v=0 is malformed, not older;
-                        --   the snapshot record stays RESERVED (ships with
+                        --   the snapshot record stays reserved (ships with
                         --   compaction behind a v bump, ADR-0008 — a v1 reader
                         --   refuses it as unknown-version)
   Ids.lean              --   issue-id mint (leftmost 80 SHA-256 bits over the
@@ -158,7 +158,7 @@ Tl/Error.lean           -- the structured error contract: the closed code enum,
                         -- every shell layer fails through one type)
 
 Tl/Hash/                -- pure hashing for identity minting (tested)
-  Sha256.lean           --   FIPS 180-4 transcription returning the FULL 32-byte
+  Sha256.lean           --   FIPS 180-4 transcription returning the full 32-byte
                         --   digest; consumers slice (ids take the leftmost 80
                         --   bits, import widths differ — ADR-0007/0018); the
                         --   fixed-shape state is Vector-typed (Fin-indexed
@@ -181,9 +181,9 @@ Tl/Store/               -- I/O shell: local persistence (tested)
   Lock.lean             --   the mutation lock (bounded lock-busy poll) and the
                         --   locked critical section `transact`: acquire → load
                         --   replica → materialize through the fold cache
-                        --   (ADR-0022; a refused OWN segment fails the write) → read+advance the HLC (the absent-clock
+                        --   (ADR-0022; a refused own segment fails the write) → read+advance the HLC (the absent-clock
                         --   arm reseeds from max(all-segments line max, now)
-                        --   INSIDE the lock) → build (guards refuse before any
+                        --   inside the lock) → build (guards refuse before any
                         --   byte) → append → fsync → persist clock → release
                         --   (ADR-0015 §1)
   Segment.lean          --   segment append/enumerate/read; torn-tail skip;
@@ -199,7 +199,7 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   stamped by another replica is a malformed line);
                         --   line-scoped max-HLC scan (the clock reseed); the
                         --   HLC skew window (ADR-0007) — a FOREIGN op dated
-                        --   beyond now+W is deferred from the fold AND maxHlc
+                        --   beyond now+W is deferred from the fold and maxHlc
                         --   (own exempt), so a future HLC neither wins LWW nor
                         --   inflates the reseed (passes `now` only on the
                         --   read/write path; pure-fold default off)
@@ -219,7 +219,7 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   ops/refusals/deferrals/warnings recompute live
   Sys.lean              --   bindings to the native shim (ffi/tlsys.c): no-follow
                         --   + ownership-checked two-part open (the §6 checks
-                        --   ride EVERY component of every open), read/write,
+                        --   ride every component of every open), read/write,
                         --   fsync (F_FULLFSYNC on Darwin), fd lock, OS entropy,
                         --   ownership check — mechanism only (ADR-0019); compiled
                         --   with the host cc (the bundled clang ships no macOS
@@ -233,12 +233,12 @@ Tl/Clock/               -- I/O shell: ordering/identity (tested)
                         --   64-bit range); minting + persistence live in
                         --   Tl/Store/Local and draw from the shim's OS CSPRNG
                         --   (ADR-0019)
-  Skew.lean             --   PROVED: the HLC skew-window admission predicate
+  Skew.lean             --   proved: the HLC skew-window admission predicate
                         --   (admittedB, the exact one the fold branches on) +
                         --   its monotonicity (admitted_mono_now ⇒ deferral is
                         --   eventual) and filter-identity-past-threshold; pure,
                         --   kernel-free (ADR-0007 amendment)
-  SkewConverge.lean     --   PROVED: skew_converges — composes Skew's filter-
+  SkewConverge.lean     --   proved: skew_converges — composes Skew's filter-
                         --   identity with the kernel fold (fold_eq_of_mem_iff)
                         --   ⇒ replicas converge regardless of clock skew
 
@@ -259,7 +259,7 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   own segment (`tl sync`); refreshFromRef is the O(1)
                         --   ref-OID trigger (vs the .tl/local/ref-mark) that
                         --   absorbs siblings — best-effort, lock-free, never
-                        --   fails — run before every read fold AND before every
+                        --   fails — run before every read fold and before every
                         --   write's guards (pre-transact absorb, ADR-0016 §3)
   Ref.lean              --   git ref/config plumbing: refTip/readRef/writeRef
                         --   (CAS), gitConfig/gitConfigSet, isLinkedWorktree
@@ -267,7 +267,7 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
   Remote.lean           --   the remote fetch / union / push leg (built, ADR-0001
                         --   §5): resolveRemote (tl.remote > branch-upstream >
                         --   origin; detached-HEAD → origin); syncRemote unions
-                        --   local+remote into a commit parented on BOTH tips (so
+                        --   local+remote into a commit parented on both tips (so
                         --   the push fast-forwards), retries once on a non-ff
                         --   rejection then push-rejected; no remote → no-upstream
                         --   (reported, not fatal). `tl sync` = local leg → remote
@@ -289,13 +289,13 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Project.lean          --   the read View + issue projections: the full object
                         --   and trimmed rows (omit-empty, display ids, forced-ms
                         --   timestamps), fold-time provenance (cross-op recency
-                        --   compares the FULL Stamp — the LWW order — never the
+                        --   compares the full Stamp — the LWW order — never the
                         --   bare HLC), dependencies +
                         --   canonical parent, the provenance trust block
                         --   (ADR-0003/0020)
   Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-
                         --   width/bidi stripping; 1 KiB / 64 KiB bounds with
-                        --   disclosed truncation) — applied on BOTH render paths
+                        --   disclosed truncation) — applied on both render paths
   Render.lean           --   human rendering (ADR-0017): the Style surfaces
                         --   (--color/--glyphs/--plain, NO_COLOR, TTY), the
                         --   one-line glyph/color format, the show detail view

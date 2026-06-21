@@ -105,7 +105,7 @@ def foldFast (ops : List Op) : State :=
    AMap.joinFast IssueData.merge (ds.map (fun s => s.data)),
    OrSet.joinFast (ds.map (fun s => s.edges))⟩
 
-/-- **The bridge.** The batched cold fold IS `fold` — every fold theorem transfers. -/
+/-- **The bridge.** The batched cold fold is `fold` — every fold theorem transfers. -/
 theorem foldFast_eq_fold (ops : List Op) : foldFast ops = fold ops := by
   rw [fold_eq_joinAll]
   apply State.ext

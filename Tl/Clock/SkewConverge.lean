@@ -22,7 +22,7 @@ open Tl.Kernel
 
     Instantiate at `α := ParsedOp`, `phys := (·.stamp.hlc)`, `toOp :=
     ParsedOp.kernelOp` for the real `(filter ∘ map ∘ fold)` pipeline
-    (`Tl/Store/Materialize`). Holds for ANY window `W` — convergence is
+    (`Tl/Store/Materialize`). Holds for any window `W` — convergence is
     window-independent — and regardless of clock accuracy: a wrong clock changes
     only *when* an op appears, never the eventual state. -/
 theorem skew_converges {α} (phys : α → Nat) (toOp : α → Op)

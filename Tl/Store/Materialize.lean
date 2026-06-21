@@ -30,7 +30,7 @@ namespace Tl.Store
 open Tl.Format
 open Tl.Clock.Skew (admittedB)
 
-/-- The clock-skew window (ADR-0007 amendment): a FOREIGN op whose HLC physical
+/-- The clock-skew window (ADR-0007 amendment): a foreign op whose HLC physical
     time is more than this far beyond local wall-clock is *deferred* — held back
     from the fold and from the clock-reseed max until local time catches up,
     then it appears (eventually consistent). Computed on UTC epoch milliseconds,
@@ -77,7 +77,7 @@ structure Loaded where
   /-- `--skip-bad` disclosures: each skipped `(segment, line)`. -/
   skipped : List (String × Nat)
   /-- Skew-deferred lines (ADR-0007): each foreign `(segment, line)` whose HLC
-      is beyond the skew window, held back from the fold AND from `maxHlc` until
+      is beyond the skew window, held back from the fold and from `maxHlc` until
       wall-clock catches up. Disclosed, never dropped. -/
   deferred : List (String × Nat)
   /-- Line-scoped max envelope HLC across every segment (clock reseed); excludes
@@ -86,7 +86,7 @@ structure Loaded where
   /-- Max HLC among the *deferred* (skew-future) lines — the real lead of an
       ahead-of-now clock, for `doctor` to report (it is absent from `maxHlc`). -/
   maxDeferredHlc : Nat
-  /-- The OWN replica's segment max HLC, threaded out of the decode so `transact`
+  /-- The own replica's segment max HLC, threaded out of the decode so `transact`
       floors the present clock (ADR-0015 §1) without re-decoding the own segment.
       `0` when `ownReplica` is unset or has no segment; set by `materializeCached`.
       (The own segment is never skew-checked, and `transact` throws on a refused
@@ -114,7 +114,7 @@ structure SegmentDecode where
   ops : List (Nat × ParsedOp)
   refusal : Option Refusal
   skipped : List Nat
-  /-- Skew-future lines held back (ADR-0007): excluded from `ops` AND `maxHlc`. -/
+  /-- Skew-future lines held back (ADR-0007): excluded from `ops` and `maxHlc`. -/
   deferred : List Nat
   maxHlc : Nat
   /-- Max HLC among the deferred lines (the ahead clock's real lead). -/
@@ -127,9 +127,9 @@ structure SegmentDecode where
 /-- Decode one segment: kept ops, the refusal (first bad line, unless
     `skipBad`), skipped lines, skew-deferred lines, the line-scoped max HLC, and
     clamp warnings. `skewBound`, when set, is the packed-HLC *physical* ceiling
-    `now + W` for a FOREIGN segment (ADR-0007): a line whose HLC physical
+    `now + W` for a foreign segment (ADR-0007): a line whose HLC physical
     exceeds it is deferred — kept out of `ops` and `maxHlc`, recorded in
-    `deferred`, and it does NOT refuse the segment. The own segment passes
+    `deferred`, and it does not refuse the segment. The own segment passes
     `none` (authoritative, never skew-checked). -/
 def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
     (skewBound : Option Nat := none) : SegmentDecode := Id.run do
@@ -158,8 +158,8 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
         | .error e => .error e
     match decoded with
     | .ok p =>
-      -- a FOREIGN op from beyond the skew window is deferred (ADR-0007): held
-      -- back from the fold AND from maxHlc until local time passes it, so it
+      -- a foreign op from beyond the skew window is deferred (ADR-0007): held
+      -- back from the fold and from maxHlc until local time passes it, so it
       -- can neither win LWW from the future nor inflate the clock reseed. The
       -- branch is `¬ admittedB` — the exact predicate `Tl.Clock.Skew` proves
       -- monotone-in-now (deferral is eventual) and convergence-safe.
@@ -177,7 +177,7 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
         skipped := n :: skipped
       else if refusal.isNone then
         refusal := some { replicaId := sd.replicaId, line := n, error := enrich sd.replicaId n e }
-  -- a refused segment contributes ONLY its refusal: it is repaired, not waited
+  -- a refused segment contributes only its refusal: it is repaired, not waited
   -- on, so suppress its deferred lines (and their lead) too — a read/doctor must
   -- never say "held back, appears later" for a line that is actually refused
   let kept := if refusal.isSome then [] else ops.reverse
@@ -188,7 +188,7 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
            lineCount := n }
 
 /-- Decode every segment, pairing each with its result. The skew bound applies
-    to FOREIGN segments only, and ONLY when the own replica id is known: with it
+    to foreign segments only, and only when the own replica id is known: with it
     unknown (the `.tl/local/replica` file absent) we cannot tell a segment apart
     from our own, so we never defer — better to fold a maybe-future op than to
     silently defer one of our own (ADR-0007). Shared by `materialize` and the
@@ -218,8 +218,8 @@ def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.St
     deferred := pairs.flatMap (fun (sd, dec) => dec.deferred.map (sd.replicaId, ·))
     maxHlc := pairs.foldl (fun a (_, dec) => max a dec.maxHlc) 0
     maxDeferredHlc := pairs.foldl (fun a (_, dec) => max a dec.maxDeferred) 0
-    -- the OWN replica's segment max HLC (transact's present-clock floor), computed
-    -- here in the SHARED assembler so the cached and reference paths agree by
+    -- the own replica's segment max HLC (transact's present-clock floor), computed
+    -- here in the shared assembler so the cached and reference paths agree by
     -- construction (the cache property tests compare it — ADR-0022)
     ownMaxHlc := match ownReplica with
       | some rid => (pairs.find? (fun p => p.1.replicaId == rid)).elim 0 (fun p => p.2.maxHlc)
@@ -228,7 +228,7 @@ def assemble (pairs : List (SegmentData × SegmentDecode)) (state : Tl.Kernel.St
     segmentCount := pairs.length }
 
 /-- Materialize a set of segments (pure — I/O happens in `readSegments`).
-    When `now` is given, FOREIGN segments are skew-checked against `now +
+    When `now` is given, foreign segments are skew-checked against `now +
     skewWindowMs` (ADR-0007): a future-dated foreign op is deferred from the
     fold and from `maxHlc`. The own segment (`ownReplica`) is exempt. With
     `now := none` the skew check is off (the pure-fold default for tests).

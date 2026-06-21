@@ -95,7 +95,7 @@ identity machinery:
   triple (the same triple that mints issue IDs, ADR-0007), so it serves directly
   as the observed-add token. Such an op carries its element key — the issue `id`,
   or the edge `(from, to, kind)` — plus its envelope identity.
-- A `depRemove` / `unrelate` carries the element key AND an explicit
+- A `depRemove` / `unrelate` carries the element key and an explicit
   `observed` field: a JSON array of the canonical add-tag strings it has seen
   for that element. It tombstones exactly those tags — add-wins, so a concurrent
   add the remover never saw survives (ADR-0002).

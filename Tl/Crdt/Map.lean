@@ -230,8 +230,8 @@ theorem ascending_of_sorted : {l : List (K × V)} → Sorted l → ascending l =
     exact ⟨hlb q (List.mem_cons_self ..), ascending_of_sorted hs⟩
 
 /-- Outer-join two sorted maps, combining overlapping keys with `f`. Generic and
-    O(|l2|·|result|) (a fold of `insertWith`); the WARM CRDT path merges a singleton
-    and the COLD path is bridged to the linear merge-join `joinFast` (ADR-0023). BATCH
+    O(|l2|·|result|) (a fold of `insertWith`); the warm CRDT path merges a singleton
+    and the cold path is bridged to the linear merge-join `joinFast` (ADR-0023). Batch
     callers should route through `joinFast`, not this directly. -/
 def merge (f : V → V → V) (l1 l2 : List (K × V)) : List (K × V) :=
   l2.foldr (fun p acc => insertWith f p.1 p.2 acc) l1
@@ -324,7 +324,7 @@ theorem isSome_lookup_of_mem {k : K} {v : V} :
       · exact absurd (congrArg Prod.fst he) hk
       · exact isSome_lookup_of_mem he
 
-/-- In a `Sorted` list (unique keys), a member entry IS its key's lookup — the
+/-- In a `Sorted` list (unique keys), a member entry is its key's lookup — the
     converse of `lookup_mem`, needed to read an entry's value without re-scanning
     for it (the `presentElements` one-pass enumeration). -/
 theorem lookup_of_mem {k : K} {v : V} :
@@ -441,7 +441,7 @@ theorem mem_keys {m : AMap K V} {k : K} : k ∈ m.keys ↔ (m.find k).isSome = t
 theorem keys_nodup (m : AMap K V) : m.keys.Nodup :=
   AssocList.sorted_map_fst_nodup m.sorted
 
-/-- A member entry's value IS its key's `find` — read an entry in `toList`
+/-- A member entry's value is its key's `find` — read an entry in `toList`
     without a separate O(N) lookup for it. -/
 theorem find_eq_some_of_mem {m : AMap K V} {k : K} {v : V}
     (h : (k, v) ∈ m.toList) : m.find k = some v :=

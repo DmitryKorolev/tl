@@ -10,7 +10,7 @@ the `actor`, and the preserve-unknown bag; the kernel `Op` is a *projection*
 (`WireOp.toOp`), which is the executable form of the ADR-0008 verb→delta
 table.
 
-The codec covers the FULL v1 verb enum, not just the verbs the stage-1 CLI
+The codec covers the full v1 verb enum, not just the verbs the stage-1 CLI
 emits — an unknown-op refusal must mean a genuinely foreign kind, never an
 unbuilt stage-2 verb (docs/codebase-map.md). Decode is strict about canonical
 encodings (exact widths, lowercase, no Crockford aliasing, in-range values) —

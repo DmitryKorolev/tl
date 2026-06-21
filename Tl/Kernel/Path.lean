@@ -1,12 +1,12 @@
 /-
-`Tl.Kernel.Path` — `blocksPath`: a TOTAL witness-path extractor over the
+`Tl.Kernel.Path` — `blocksPath`: a total witness-path extractor over the
 `blocks` edge graph, the ordered companion to `why`'s reach+ set (the cycle
-witnesses in `Cycles`/`SccProps` are sorted node-SETS, not ordered paths, so a
+witnesses in `Cycles`/`SccProps` are sorted node sets, not ordered paths, so a
 genuinely new function is needed here). `blocksPath s a b` returns an actual
 edge path `[a, …, b]` exactly when `b` is reach+-reachable from `a` over present
 `blocks` edges (`a` transitively blocks `b`), and `none` otherwise.
 
-It is a frontier/worklist BFS that records a PARENT pointer AT DISCOVERY. A
+It is a frontier/worklist BFS that records a parent pointer at discovery. A
 single forward sweep (`parentSweep`) expands only the last layer each round
 (`bfsLayer`, the frontier expansion — so it saturates early and never re-scans
 the whole accumulator like the retired `reachStep` tower), and for every
@@ -26,7 +26,7 @@ reconstruction soundness (the walk is a real consecutive-edge chain from a seed
 root to `cur`). The two public theorems `blocksPath_valid` /
 `blocksPath_isSome_iff` keep their statements. Mirrors `mem_why_iff` (thm 10).
 
-Direction (recorded): `kindSucc .Blocks i` is the present OUTGOING blocks
+Direction (recorded): `kindSucc .Blocks i` is the present outgoing blocks
 edges (the issues `i` blocks), consistent with `blocksSucc`/`unblocks`/critical;
 `blocksPath a b` is therefore a chain `a` blocks … blocks `b`. The Mathlib
 reachability/cardinality zone (ADR-0009) extends to this `Reach`/`ReachBFS`
@@ -83,7 +83,7 @@ def parentOf (succ : IssueId → List IssueId) (frontier : List IssueId) (y : Is
 /-! ## First-predecessor index (one O(E) pass, no per-node rescan)
 
 `parentOf succ fr y = fr.find? (y ∈ succ ·)` re-walks the whole frontier per
-discovered node (Θ(|layer|·|fr|) per round). `firstPred` precomputes, in ONE pass
+discovered node (Θ(|layer|·|fr|) per round). `firstPred` precomputes, in one pass
 over the frontier's out-edges, the first predecessor of every child; a lookup is
 then O(1)-amortized and `firstPred[y]? = parentOf succ fr y`. -/
 

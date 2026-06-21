@@ -5,7 +5,7 @@ Store").
 
 Recovery rules are the pinned ones (ADR-0007 §HLC / ADR-0012): an absent
 replica id with state present auto-mints on the write path (a byte-copied
-working tree IS a new replica); an absent clock file reseeds — under the
+working tree is a new replica); an absent clock file reseeds — under the
 mutation lock, in `Tl/Store/Lock.lean` — from `max(max HLC over every local
 segment, now())`; a corrupt/unreadable file never silently reseeds or
 re-mints, it fails closed (`corrupt-replica` / `corrupt-clock` with
@@ -51,10 +51,10 @@ private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
     (no-follow), fsync it, then `rename` over the target (ADR-0015 §3 — the
     atomic-replace pattern, so a crash mid-write never leaves a torn
     clock/replica that would read as corrupt and wedge every later command).
-    The temp open is no-follow; `rename` replaces a symlink at the target NAME
-    rather than following it. NOTE: `rename` follows symlinks in the INTERMEDIATE
-    path components — it is NOT a per-component no-follow like `Sys.openNoFollow`.
-    Intermediate-component safety here rests on the temp open below having JUST
+    The temp open is no-follow; `rename` replaces a symlink at the target name
+    rather than following it. Note: `rename` follows symlinks in the intermediate
+    path components — it is not a per-component no-follow like `Sys.openNoFollow`.
+    Intermediate-component safety here rests on the temp open below having just
     validated the identical sibling prefix (the same `.tl/local/` parent) no-follow
     microseconds earlier — a swapper would need mid-call write access to the
     already-validated tree. A `renameat`-based no-follow shim would close even that
@@ -168,7 +168,7 @@ def loadSyncPub (d : Dirs) : TlM (Option (String × Nat × UInt64)) := do
     | _ => return none
 
 /-- Record the publish marker (atomic-replace, best-effort like the ref-mark).
-    The caller writes it ONLY when the own segment `ownBytes` is in `oid`, so a
+    The caller writes it only when the own segment `ownBytes` is in `oid`, so a
     later fast-out at this `(oid, len, hash)` provably skips an already-published
     own segment — never a real publish. -/
 def storeSyncPub (d : Dirs) (oid : String) (ownBytes : ByteArray) : TlM Unit :=

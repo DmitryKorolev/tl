@@ -74,11 +74,11 @@ def localEvent (last : Hlc) (now : Nat) : Except String Hlc :=
   else if p ≤ physMax then .ok ⟨p, 0⟩
   else .error "hlc-overflow: physical clock past 2^48"
 
--- NOTE: there is no fold-time `observeRemote` rule, and the write path does NOT
+-- NOTE: there is no fold-time `observeRemote` rule, and the write path does not
 -- preserve causality across the transport. `transact` (Store/Lock.lean) seeds the
--- clock before minting: the PRESENT-clock arm floors by the own-segment max only
+-- clock before minting: the present-clock arm floors by the own-segment max only
 -- (monotonicity vs this replica's past writes + crash/`init`-zero recovery), and the
--- ABSENT-clock arm (fresh init / auto-mint after a replica-id change) reseeds
+-- absent-clock arm (fresh init / auto-mint after a replica-id change) reseeds
 -- conservatively from `max(all within-window segments, now)`. A within-window
 -- foreign op with a higher HLC may therefore win LWW against a concurrent local
 -- write — pure last-writer-wins, eventual consistency (ADR-0007). Reads never

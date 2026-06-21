@@ -1,45 +1,45 @@
 /-
 `Tl.Kernel.ReachFrontier` — the BFS frontier sequence of the O(V+E) reach engine,
-and the PROVED "processed-once" structural invariant (ADR-0023 efficiency tiering,
+and the proved "processed-once" structural invariant (ADR-0023 efficiency tiering,
 the *provable-shape* tier).
 
 The shipped engine `reachBFSgo` (ReachBFS.lean) expands one *frontier* per round —
 the nodes discovered last round — testing membership against a `Std.HashSet`. This
 module names that frontier sequence (`reachFrontier`, the recurrence the engine
 threads, proved equal to one round's `bfsLayer`) and proves the structure that pins
-its complexity class as a PLAIN PROPOSITION (no cost semantics):
+its complexity class as a plain proposition (no cost semantics):
 
   - `reachClosure_eq_flatMap_frontier` — the frontiers, concatenated in BFS order,
-    ARE the reachable set: `reachClosure n = ⋃ k≤n reachFrontier k` (as lists).
+    are the reachable set: `reachClosure n = ⋃ k≤n reachFrontier k` (as lists).
   - `reachFrontier_disjoint` — the frontiers are pairwise disjoint: a node in one
     layer is in no other. With the concatenation above, every reachable node lands
-    in EXACTLY ONE frontier (`reachClosure_mem_unique_frontier`).
+    in exactly one frontier (`reachClosure_mem_unique_frontier`).
   - `reachFrontier_subset_present` — each frontier ⊆ `presentIssues`.
   - `reachExpanded_nodup` — across a run the layers expanded are duplicate-free.
   - `reachExpandTrace_eq` — the reference engine's actual per-round `flatMap succ`
     input list equals `reachFrontier 0 … (n-1)`.
-  - `reachBFSgoTrace_flatten_nodup` — the SHIPPED engine's actual per-round fold
+  - `reachBFSgoTrace_flatten_nodup` — the shipped engine's actual per-round fold
     inputs flatten to a duplicate-free list ⇒ each node's out-edges folded once.
 
 Three layers of claim, kept distinct to avoid overstating (a prior review caught a
 *false* O(V+E) structural claim in this epic, and a follow-up caught the work-shape
 guard being stated only over the reference engine):
   • The partition theorems hold of the reachable set's BFS layering and so of any
-    correct engine's *output* — they do NOT by themselves forbid a Θ(V·E) engine.
+    correct engine's output — they do not by themselves forbid a Θ(V·E) engine.
     The guard against an output-changing regression remains `reachBFSgo_eq`.
   • `reachExpandTrace_eq` is the *work-shape* guard over the list-reference engine
-    `reachBFSLgo`: an equation over its per-round fold-INPUT list, which a
+    `reachBFSLgo`: an equation over its per-round fold-input list, which a
     whole-accumulator re-scan recursion (folding over the entire `reachClosure k`)
     cannot satisfy — its faithful trace is the nested closures, not the fresh layers.
-  • `reachBFSgoTrace_flatten_nodup` carries the same tooth to the SHIPPED HashSet
+  • `reachBFSgoTrace_flatten_nodup` carries the same tooth to the shipped HashSet
     engine `reachBFSgo` (`reachBFSgoTrace` instruments its real recursion, early-exit
-    and all): the actual fold inputs of the engine that RUNS flatten to a
+    and all): the actual fold inputs of the engine that runs flatten to a
     duplicate-free list. Since `reachBFSgo_eq` is output-only, this — not it — is what
     forbids a re-scan rewrite of the shipped recursion.
 
-Tier boundary (ADR-0023): this proves the operation STRUCTURE (each node/edge
+Tier boundary (ADR-0023): this proves the operation structure (each node/edge
 processed once). The per-operation → wall-clock gap, and `Std.HashSet`/`HashMap`
-amortized-O(1) (hash distribution, resizing), stay TESTED + a tier-3 carried
+amortized-O(1) (hash distribution, resizing), stay tested plus a tier-3 carried
 assumption (docs/overview.md, Trusted) — the same status as the system clock.
 
 Stated over the list-reference engine `reachBFSLgo` / the spec `reachClosure`; the
@@ -97,7 +97,7 @@ theorem reach_frontier_decomp (succ : IssueId → List IssueId) (seed : List Iss
     exact mem_reachStep.mpr (Or.inr ⟨x, hx, hxy⟩)
 
 /-- **Union = closure (BFS-ordered).** The frontiers `reachFrontier 0 … n`, in
-    order, concatenate to `reachClosure n` — the reachable set IS the disjoint
+    order, concatenate to `reachClosure n` — the reachable set is the disjoint
     union of the layers, listed in discovery order. -/
 theorem reachClosure_eq_flatMap_frontier (succ : IssueId → List IssueId) (seed : List IssueId)
     (hnd : seed.Nodup) :
@@ -126,7 +126,7 @@ theorem reachFrontier_subset_closure (succ : IssueId → List IssueId) (seed : L
   rw [reachClosure_eq_flatMap_frontier succ seed hnd k, List.mem_flatMap]
   exact ⟨j, List.mem_range.mpr (Nat.lt_succ_of_le hjk), ha⟩
 
-/-- A node freshly discovered at round `k+1` is NOT in the closure at `k` (the
+/-- A node freshly discovered at round `k+1` is not in the closure at `k` (the
     `bfsLayer` `∉ acc` filter — the structural fact a re-scan engine would lose). -/
 theorem mem_reachFrontier_succ_notMem (succ : IssueId → List IssueId) (seed : List IssueId)
     {k : Nat} {a : IssueId} (ha : a ∈ reachFrontier succ seed (k + 1)) :
@@ -147,7 +147,7 @@ theorem reachFrontier_disjoint_lt (succ : IssueId → List IssueId) (seed : List
     exact mem_reachFrontier_succ_notMem succ seed haj
       (reachFrontier_subset_closure succ seed hnd (Nat.lt_succ_iff.mp hij) hai)
 
-/-- **Each reachable node lands in EXACTLY ONE frontier.** Existence is the union
+/-- **Each reachable node lands in exactly one frontier.** Existence is the union
     decomposition; uniqueness is pairwise disjointness. -/
 theorem reachClosure_mem_unique_frontier (succ : IssueId → List IssueId) (seed : List IssueId)
     (hnd : seed.Nodup) (n : Nat) {a : IssueId} (ha : a ∈ reachClosure succ n seed) :
@@ -198,10 +198,10 @@ theorem reachExpanded_nodup (succ : IssueId → List IssueId) (seed : List Issue
     rw [← reachClosure_eq_flatMap_frontier succ seed hnd m]
     exact reachClosure_nodup succ seed hnd m
 
-/-! ## Engine-coupled: the per-round fold inputs ARE the frontiers
+/-! ## Engine-coupled: the per-round fold inputs are the frontiers
 
 The theorems above are about `reachFrontier` and `reachClosure` — true of the
-reachable-set's BFS layering, hence of any correct engine's *output*. The guard
+reachable-set's BFS layering, hence of any correct engine's output. The guard
 that distinguishes the O(V+E) frontier engine from a Θ(V·E) whole-accumulator
 re-scan is an equation over the engine's *per-round `flatMap succ` input list*:
 `reachExpandTrace` instruments `reachBFSLgo`'s recursion (the `acc ++ bfsLayer …`
@@ -209,8 +209,8 @@ re-scan is an equation over the engine's *per-round `flatMap succ` input list*:
 `reachExpandTrace_eq` then proves those inputs are exactly the disjoint
 `reachFrontier`s — a statement a re-scan recursion (per-round input = the whole
 `reachClosure k`) cannot satisfy, so regressing the recursion breaks this proof.
-This is the work-shape guard over the LIST-REFERENCE engine; the next section
-(`reachBFSgoTrace_*`) carries it to the SHIPPED `reachBFSgo`, since `reachBFSgo_eq`
+This is the work-shape guard over the list-reference engine; the next section
+(`reachBFSgoTrace_*`) carries it to the shipped `reachBFSgo`, since `reachBFSgo_eq`
 relates the two only by output. -/
 
 /-- The per-round `flatMap succ` input the list-reference engine expands, traced in
@@ -252,8 +252,8 @@ theorem reachExpandTrace_eq (succ : IssueId → List IssueId) (seed : List Issue
 
 /-- **Each node's out-edges folded once (engine-coupled).** The flattened per-round
     expansion inputs are duplicate-free — each reachable node is expanded in exactly
-    one round (≤ E edge-examinations, ≤ V node-insertions). FALSE for a re-scan
-    engine, whose per-round inputs are the overlapping nested closures. -/
+    one round (≤ E edge-examinations, ≤ V node-insertions). This is false for a
+    re-scan engine, whose per-round inputs are the overlapping nested closures. -/
 theorem reachExpandTrace_flatten_nodup (succ : IssueId → List IssueId) (seed : List IssueId)
     (hnd : seed.Nodup) (n : Nat) :
     (reachExpandTrace succ n seed seed).flatten.Nodup := by
@@ -261,12 +261,12 @@ theorem reachExpandTrace_flatten_nodup (succ : IssueId → List IssueId) (seed :
   show ((List.range n).flatMap (reachFrontier succ seed)).Nodup
   exact reachExpanded_nodup succ seed hnd n
 
-/-! ## The SHIPPED HashSet engine expands the same frontiers
+/-! ## The shipped HashSet engine expands the same frontiers
 
 The trace above is over the list-reference `reachBFSLgo`; `reachBFSgo_eq` couples
-`reachBFSgo` to it only by OUTPUT equality, so on its own it would not catch a
+`reachBFSgo` to it only by output equality, so on its own it would not catch a
 `reachBFSgo` rewritten to re-scan whole closures while returning the same list.
-This section closes that gap: `reachBFSgoTrace` instruments the SHIPPED engine's
+This section closes that gap: `reachBFSgoTrace` instruments the shipped engine's
 recursion (HashSet visited, early-exit), and `reachBFSgoTrace_flatten_nodup` proves
 its actual per-round fold inputs are duplicate-free — the work-shape guard over the
 engine that really runs. A re-scan rewrite of `reachBFSgo`'s recursion records the
@@ -282,7 +282,7 @@ theorem reachExpandTrace_nil_flatten (succ : IssueId → List IssueId) :
     rw [show bfsLayer succ acc ([] : List IssueId) = [] from rfl, List.append_nil,
       List.flatten_cons, List.nil_append, reachExpandTrace_nil_flatten succ n acc]
 
-/-- The per-round `flatMap succ` input the SHIPPED engine `reachBFSgo` expands, traced
+/-- The per-round `flatMap succ` input the shipped engine `reachBFSgo` expands, traced
     in round order — `reachBFSgo`'s recursion (HashSet visited, early-exit) with the
     expanded `frontier` recorded. -/
 def reachBFSgoTrace (succ : IssueId → List IssueId) :
@@ -343,7 +343,7 @@ theorem reachBFSgoTrace_flatten (succ : IssueId → List IssueId) :
       rw [reachBFSgoTrace_flatten succ n _ _ _ hp1, hlayer, List.reverse_append,
         List.reverse_reverse]
 
-/-- **Each node's out-edges folded once — over the SHIPPED engine.** The actual
+/-- **Each node's out-edges folded once — over the shipped engine.** The actual
     per-round fold inputs of `reachBFSgo` flatten to a duplicate-free list. A
     whole-accumulator re-scan recursion records the nested `reachClosure k` instead,
     whose flatten repeats nodes, so this proof fails — the build-time work-shape guard

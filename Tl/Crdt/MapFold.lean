@@ -340,7 +340,7 @@ theorem combFold_flatMap_find {f : V → V → V} (key : K) :
 def joinFast (f : V → V → V) (ms : List (AMap K V)) : AMap K V :=
   ofEntries f (ms.flatMap (fun m => m.toList))
 
-/-- **The AMap bridge.** The batched join IS the left-folded `merge` — the cold
+/-- **The AMap bridge.** The batched join equals the left-folded `merge` — the cold
     fold's per-component result, built in one O(N log N) pass. -/
 theorem joinFast_eq {f : V → V → V}
     (hcomm : ∀ a b, f a b = f b a) (hassoc : ∀ a b c, f (f a b) c = f a (f b c))

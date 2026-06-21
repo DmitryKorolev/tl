@@ -5,12 +5,12 @@ ADR-0021), composed over the sync legs and exposed to the CLI write verbs.
 A write verb brackets `Store.transact` with two best-effort, lock-free steps,
 both built from the primitives in `Tl.Sync.Local`/`Tl.Sync.Ref`:
 
-  - `preWriteRefresh` — absorb the shared `refs/tl/log` BEFORE the write's
+  - `preWriteRefresh` — absorb the shared `refs/tl/log` before the write's
     guards run (the same `refreshFromRef` reads use), so a directed write by id
     sees a sibling's concurrent write and finds a task that exists only on the
     ref, instead of deciding against a stale view (the double-claim /
     not-found gap). Runs before `transact` takes the mutation lock.
-  - `autoSyncLocal` — AFTER `transact` released the lock, when `tl.autosync` is
+  - `autoSyncLocal` — after `transact` released the lock, when `tl.autosync` is
     on, publish this replica's segment into the ref (and absorb siblings) so a
     worktree sibling sees the write with no explicit `tl sync`. Swallows any
     failure into a non-fatal note (the record is already durable — ADR-0021 §4).
@@ -48,9 +48,9 @@ def preWriteRefresh (dirOverride : Option String) :
 /-- Auto-sync (ADR-0021): if `tl.autosync` is on, publish this replica's segment
     into the shared ref (and absorb siblings) so a worktree sibling sees the
     write with no explicit `tl sync`. Best-effort and lock-free — runs after the
-    write's lock is released; ANY failure (no git, read-only FS, ref contention
+    write's lock is released; any failure (no git, read-only FS, ref contention
     surviving the CAS retry) is swallowed and disclosed as a non-fatal note,
-    NEVER failing the write. Catches both thrown `Tl.Error`s and raw
+    never failing the write. Catches both thrown `Tl.Error`s and raw
     `IO.Error`s, mirroring `refreshFromRef`. The remote leg stays explicit. -/
 def autoSyncLocal (d : Dirs) (replica : Option Replica) : TlM (List String) := do
   if (← gitConfig d "tl.autosync") != some "true" then return []
@@ -62,7 +62,7 @@ def autoSyncLocal (d : Dirs) (replica : Option Replica) : TlM (List String) := d
     return [s!"auto-sync skipped ({toString ioErr}) — run `tl sync` to publish this write to siblings"]
 
 /-- The `tl init` auto-sync default (ADR-0021 §5 / ADR-0016 §4): turn
-    `tl.autosync` ON for a linked worktree (the local leg is free and the whole
+    `tl.autosync` on for a linked worktree (the local leg is free and the whole
     point of cross-worktree sharing), opt-in elsewhere. Never overrides an
     existing value (a re-init is idempotent on the knob too). Returns the
     guidance note to surface from `init`. -/

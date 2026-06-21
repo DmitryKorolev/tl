@@ -232,7 +232,7 @@ def syncLocalTests : IO (List Outcome) := do
     | some bytes => check "A's own segment on disk is never overwritten by sync"
         (String.fromUTF8! bytes == "{\"a\":1}\n") (String.fromUTF8! bytes)
     | none => { name := "own segment untouched", passed := false, msg := "no file" }]
-  -- (E) a real write GROWS A's own segment: the publish-marker fast-out must NOT
+  -- (E) a real write grows A's own segment: the publish-marker fast-out must not
   -- fire (the marker is keyed to the own segment's bytes), so the new op
   -- republishes — the no-lost-publish guarantee the fast-out must preserve
   IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n{\"a\":3}\n".toUTF8
@@ -335,7 +335,7 @@ def syncRemoteTests : IO (List Outcome) := do
   o := o ++ [check "no progress notice fires when no remote resolves"
       ((← noteN.get).isEmpty) (String.intercalate "," (← noteN.get))]
   -- (A') option-injection guard: a `tl.remote` whose value starts with `-` (e.g.
-  -- `--upload-pack=<cmd>`) resolves to NONE even though `origin` exists — it must
+  -- `--upload-pack=<cmd>`) resolves to none even though `origin` exists — it must
   -- never reach ls-remote/fetch/push as a positional that git parses as a flag
   let (dInj, _) ← repoWithRemote
   let cfgPath := System.FilePath.mk dInj.base / ".git" / "config"
@@ -402,8 +402,8 @@ def syncRemoteTests : IO (List Outcome) := do
         (segs.any (·.replicaId == ridA) && segs.any (·.replicaId == ridC))
         (String.intercalate "," (replicaIds segs))
     | .error e => { name := "remote has both after recovery", passed := false, msg := e.message }]
-  -- (F) a remote pre-receive hook that declines every push is a POLICY decline,
-  -- not a non-fast-forward race: the leg must NOT retry-then-misreport it as
+  -- (F) a remote pre-receive hook that declines every push is a policy decline,
+  -- not a non-fast-forward race: the leg must not retry-then-misreport it as
   -- push-rejected ("remote moved, retry") — it surfaces the real reason instead
   let (df, baref) ← repoWithRemote
   IO.FS.writeFile (System.FilePath.mk baref / "hooks" / "pre-receive") "#!/bin/sh\nexit 1\n"
@@ -415,7 +415,7 @@ def syncRemoteTests : IO (List Outcome) := do
         s!"code={e.code.wire} msg={e.message}"
     | .ok r => { name := "hook decline → real error", passed := false, msg := s!"unexpectedly ok: {repr r}" }]
   -- (G) a fresh remote + an empty local repo (no ops): nothing to share, so the
-  -- leg pushes NO empty-log churn commit
+  -- leg pushes no empty-log churn commit
   let (de, baree) ← repoWithRemote
   o := o ++ [match ← runTl (syncRemote de) with
     | .ok r => check "an empty repo against a fresh remote pushes nothing (no churn)"

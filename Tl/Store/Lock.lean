@@ -49,7 +49,7 @@ def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs) : TlM UInt3
       else do
         liftSys (fun e => .mk' .internal s!"{e}") (IO.sleep lockPollMs.toUInt32)
         loop n
-  -- close the fd on EVERY non-success exit (timeout or an unexpected errno)
+  -- close the fd on every non-success exit (timeout or an unexpected errno)
   try loop attempts
   catch e =>
     let _ ← (Sys.close fd).toBaseIO
@@ -110,21 +110,21 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
     -- foreign op neither folds into the guard state nor inflates the reseed.
     -- The guard state folds through the cache (ADR-0022) — under the lock, so
     -- the write path stops paying the whole-log refold; the appended ops are
-    -- NOT folded into the persisted cache here (it is keyed to the pre-append
+    -- not folded into the persisted cache here (it is keyed to the pre-append
     -- bytes and stays exactly valid — the next invocation folds the suffix).
     let cache ← loadCache d
     let (loaded0, refreshed) := materializeCached segs cache false (some now) (some replica.id)
     if let some c := refreshed then
       saveCache d c
     let loaded := { loaded0 with warnings := segNotes ++ loaded0.warnings }
-    -- a refused OWN segment fails the write: guards would run against a
+    -- a refused own segment fails the write: guards would run against a
     -- wrong fold, and the segment needs repair anyway (ADR-0008 §corruption)
     if let some r := loaded.refused.find? (·.replicaId == replica.id) then
       throw r.error
-    -- the max HLC the OWN segment already carries — the floor the present clock must
-    -- clear so this replica's new writes beat its PAST ones even if the persisted
+    -- the max HLC the own segment already carries — the floor the present clock must
+    -- clear so this replica's new writes beat its earlier ones even if the persisted
     -- clock is stale (a crash in the §1 window, or a stray `init` zeroing it). It is
-    -- DELIBERATELY not floored past within-window FOREIGN HLCs: a folded foreign op
+    -- deliberately not floored past within-window foreign HLCs: a folded foreign op
     -- with a higher HLC may win LWW — pure last-writer-wins, eventual consistency;
     -- there is no causal-safety-across-transport (that is why no `observeRemote` rule
     -- exists). The absent arm below floors by the all-segment max only because it has
@@ -137,10 +137,10 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
       | some h => pure (unpackHlc (max h.pack ownMax))
       | none =>
         -- the pinned absent-clock reseed (ADR-0007): max over all segments'
-        -- WITHIN-WINDOW writes (covers the byte-copied orphan under the old
+        -- within-window writes (covers the byte-copied orphan under the old
         -- replica id) and now, inside the lock. `loaded.maxHlc` already excludes
         -- skew-deferred foreign HLCs, so a *future-dated* orphan (a wrong-clock
-        -- copy, > now+W) does NOT drag the reseed forward: it stays ~now rather
+        -- copy, > now+W) does not drag the reseed forward: it stays ~now rather
         -- than honoring a future timestamp. The freshly-minted replica id starts
         -- its own monotonic sequence regardless, so this only loses LWW to the
         -- orphan until wall-clock catches up (eventual), never propagating the

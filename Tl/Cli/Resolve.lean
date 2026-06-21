@@ -70,7 +70,7 @@ def resolveActor (flag : Option String) (repoDir : Option String := none) : IO S
     if a != "me" then return a
   if let some a := ← IO.getEnv "TL_ACTOR" then
     if !a.isEmpty then return a
-  -- read user.email from the TARGET repo (`git -C <repoDir>` walks up to its repo
+  -- read user.email from the target repo (`git -C <repoDir>` walks up to its repo
   -- root), not the process cwd — so `--dir repoB` records repoB's identity. Bound
   -- the read: a hung credential/exec helper (a config `include` firing one) or an
   -- NFS-hung dir must not wedge a mutating verb — on timeout/error we fall through

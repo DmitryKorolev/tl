@@ -52,7 +52,7 @@ where
       let arg := if arg == "-p" then "--priority" else arg
       if arg.startsWith "--" then
         let body := (arg.drop 2).toString
-        -- split at the FIRST '=' only: values may contain '='
+        -- split at the first '=' only: values may contain '='
         match body.splitOn "=" with
         | name :: rest1 :: restN =>
           let value := String.intercalate "=" (rest1 :: restN)
@@ -89,7 +89,7 @@ private def priorityFlag (a : Argv) : Except Tl.Error (Option Nat) :=
     | none => .error (usageErr s!"--priority must be 0-4 (got '{v}')")
 
 private def actorOf (a : Argv) : TlM String :=
-  -- pass the `--dir` override so the git-config actor read runs in the TARGET repo
+  -- pass the `--dir` override so the git-config actor read runs in the target repo
   -- (`git -C`), not the process cwd (ADR-0013)
   liftSys (fun e => .mk' .internal s!"{e}") (resolveActor (a.get? "assignee") (a.get? "dir"))
 
@@ -151,7 +151,7 @@ def runVerb : List String → TlM CmdOut
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
       -- ADR-0017 §8 description precedence: `--description <text>` is the body;
-      -- stdin is read to EOF as the body ONLY on the explicit `-` sentinel
+      -- stdin is read to EOF as the body only on the explicit `-` sentinel
       -- (`--description -`, or a trailing `-`) — never an unrequested stdin, so an
       -- inherited, held-open pipe cannot hang `tl create`. (empty/blank = absent;
       -- the $EDITOR path is the stage-2 `edit` surface.)

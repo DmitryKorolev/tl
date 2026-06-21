@@ -10,7 +10,7 @@ but "an invalid status cannot be built." So `Invariant := True` is the faithful
 encoding, and theorem 3 (`Invariant s → Invariant (apply s op)`) is discharged by
 the type system, inherited by every op (there is one reducer).
 
-Three things are deliberately NOT invariants, each because an order-insensitive
+Three things are deliberately not invariants, each because an order-insensitive
 fold cannot maintain them and a CRDT merge cannot reject a write (ADR-0003/0004):
 acyclicity (reported via `dep cycles`), endpoint-existence of `blocks`/`parent`
 edges (dangling edges tolerated as inert at read time), and status-transition

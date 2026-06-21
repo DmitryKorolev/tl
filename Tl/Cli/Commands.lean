@@ -46,7 +46,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let replica ← loadReplica d
   -- the read-time refresh returns a `degraded` reason when it could not run
   -- (git absent, read-only FS); surface it rather than serve a silently-stale
-  -- view (ADR-0008). A racing concurrent refresher does NOT trip this — the
+  -- view (ADR-0008). A racing concurrent refresher does not trip this — the
   -- foreign-segment writeback uses a per-call CSPRNG temp suffix + atomic
   -- rename (ADR-0016 §3 hardening), so `degraded` reflects a real inability to
   -- read the ref, not benign contention.
@@ -166,7 +166,7 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
             IO.eprintln s!"tl: {sanitizeSingle (remoteSyncNotice remote)}")
           else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
   -- a second local leg after a remote that ran materializes what the fetch added
-  -- (it can pull a NEW replica). Best-effort — the push already succeeded, so
+  -- (it can pull a new replica). Best-effort — the push already succeeded, so
   -- never fail here; a failure self-heals on the next read's refresh. Fold its
   -- absorb into the reported local outcome so a remote-pulled replica is not
   -- silently dropped from `absorbed`; disclose a failure (loud-not-silent).
@@ -176,7 +176,7 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
         pure ({ l with absorbed := (l.absorbed ++ l2.absorbed).eraseDups, tip := l2.tip }, ([] : List String))
        catch e => pure (l, [s!"reconciled with the remote, but materializing the pulled changes locally failed ({e.message}) — the next read or `tl sync` will catch up"]))
     else pure (l, [])
-  -- record last-sync ONLY when the remote leg actually reconciled: lastSync means
+  -- record last-sync only when the remote leg actually reconciled: lastSync means
   -- "last reconciled with the remote", so a local-only sync (no remote, or a
   -- remote added later) must not mark the view clean-vs-remote (a false-clean source).
   if r.ran then
@@ -184,7 +184,7 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
     try storeLastSync d now r.tip catch _ => pure ()
   return (l, r, pnotes)
 
-/-- The LOCAL-only sync posture (no remote contact): the resolved upstream name
+/-- The local-only sync posture (no remote contact): the resolved upstream name
     (git config), the last-sync time, and how many `refs/tl/log` commits the local
     ref sits ahead of that last sync (unpushed). The live *behind* count needs the
     remote, so it is `--sync`'s job (sync then read), not this. -/
@@ -202,12 +202,12 @@ private def ownOpsSince (d : Dirs) (own : String) (syncedTip : Option String) : 
   let (segs, _) ← readSegments d
   let localLines := (segs.find? (·.replicaId == own)).elim 0 (fun sd => (completeLines sd.bytes).length)
   -- ops in the own segment at the synced tip; 0 when that sync left no ref (an
-  -- empty / first sync) — then ALL local ops are unsynced, never a false 0.
+  -- empty / first sync) — then all local ops are unsynced, never a false 0.
   let syncedLines ← match syncedTip with
     | some t => pure (((← Tl.Sync.readRefAt d t).find? (·.replicaId == own)).elim 0
         (fun sd => (completeLines sd.bytes).length))
     | none => pure 0
-  -- Nat subtraction clamps to 0 if the synced ref held MORE own-segment lines
+  -- Nat subtraction clamps to 0 if the synced ref held more own-segment lines
   -- than disk — only possible under same-replica-id divergence, which ADR-0007
   -- rules out; the clamp is then a safe "not ahead" rather than a wrong count.
   return localLines - syncedLines
@@ -238,7 +238,7 @@ def stalenessMsg (p : SyncPosture) (now : Nat) : Option String :=
 
 def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
-  -- --sync reconciles first, BEST-EFFORT: a read must not fail on a remote
+  -- --sync reconciles first, best-effort: a read must not fail on a remote
   -- hiccup, so a sync error degrades to a note and the (still-useful) listing.
   let syncNotes ← if sync then
       (try (do let (_, _, pn) ← performSync d; pure pn)
@@ -248,9 +248,9 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
   let notes ← cleanReadNotes v
   let ranked := State.readyFast v.rollup v.state v.now
   let capped := if limit == 0 then ranked else ranked.take limit
-  -- staleness advisory (ADR-0011 §2): always derived from the posture AFTER any
+  -- staleness advisory (ADR-0011 §2): always derived from the posture after any
   -- --sync. A successful sync makes it clean (ahead 0, lastSync now ⇒ none); a
-  -- FAILED --sync leaves genuine staleness, so it must still surface in
+  -- failed --sync leaves genuine staleness, so it must still surface in
   -- data.staleness (agents read the field; humans also get the degrade note).
   let advisory ← (do pure (stalenessMsg (← syncPostureOf d) v.now))
   let r : Style → String := fun st =>
@@ -272,7 +272,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- createdAt from the hoisted provenance map (one log pass), not s.createdAtOf
   -- (an O(N) add-tag find per issue ⇒ O(N²) over the sort). For a present issue
   -- both are the min create-tag HLC: createdAtOf is the min over add-tag HLCs,
-  -- Prov.createdAt is the min-STAMP create's HLC, and Stamp orders by HLC first,
+  -- Prov.createdAt is the min-stamp create's HLC, and Stamp orders by HLC first,
   -- so they coincide (CrossTests pins it per seed). Default 0 = createdAtOf's nil.
   let createdAt := fun i => ((v.provFor i).createdAt).getD 0
   let sorted := (v.present.map (fun i => (createdAt i, i)))
@@ -332,7 +332,7 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
     match p.op with
     | .claim ci actor => if ci == i && p.stamp.replica == ownVal then some (p.stamp, actor) else none
     | _ => none)
-  -- latest own claim by the FULL stamp order (the cross-op comparison rule,
+  -- latest own claim by the full stamp order (the cross-op comparison rule,
   -- Tl/Cli/Project.lean §provenance)
   let (_, actor) ← claims.foldl (fun acc c =>
     match acc with
@@ -480,7 +480,7 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let blocked := (issues.filter v.blocked).length
   let deferred := (issues.filter v.deferred).length
   let cycles := cycleCount v
-  -- count EFFECTIVE status (rollup-aware): a rolled-up epic counts as done,
+  -- count effective status (rollup-aware): a rolled-up epic counts as done,
   -- exactly as `list`/the glyphs render it — never the raw stored field, which
   -- would report a finished epic as still "open" and disagree with `list`
   -- (ADR-0020 §stats amendment). `open` is split into epics vs tasks so a
@@ -610,13 +610,13 @@ def reloadOrFallback (reload : TlM View) (fallback : View) (i : IssueId) :
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     (sync verify : Bool) : TlM CmdOut := do
   -- freshness preflight (ADR-0001 §5): with --sync/--verify, reconcile against
-  -- the remote BEFORE the take, so the not-claimable check sees the freshest
+  -- the remote before the take, so the not-claimable check sees the freshest
   -- reachable state. --verify warns-and-degrades when no remote is configured
-  -- (it still checks against the freshest LOCAL state, via preWriteRefresh below).
+  -- (it still checks against the freshest local state, via preWriteRefresh below).
   let preNotes ← if sync || verify then do
       let d0 ← discover dirOverride
       let hasRemote := (← Tl.Sync.resolveRemote d0).isSome
-      -- --verify is a GATE: a configured-but-unreachable remote fails the claim
+      -- --verify is a gate: a configured-but-unreachable remote fails the claim
       -- (verify-failed) so a take is never made against unverified state; with no
       -- remote it degrades (claiming locally is fine). --sync alone is best-effort:
       -- a reconcile failure degrades with a note, never blocking the take.
@@ -669,7 +669,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
       (try (do let (_, _, pn) ← performSync d; pure pn)
        catch e => pure [s!"the take is recorded but could not be published to the remote ({e.message}) — run `tl sync`"])
     else pure []
-  -- with --sync, the post-push reconcile may have PULLED a competing claim, so
+  -- with --sync, the post-push reconcile may have pulled a competing claim, so
   -- re-derive the outcome from the freshly-reconciled state (re-fold) — the echo
   -- then reflects a sibling that won the race. The race can't be fully closed
   -- (distributed), but the report is as fresh as the post-push fetch. Without
@@ -759,7 +759,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-/-- `tl update`'s `--append-notes` is a NON-ATOMIC read-modify-write: it reads the
+/-- `tl update`'s `--append-notes` is a non-atomic read-modify-write: it reads the
     issue's current `notes` register from the materialized state, joins the new line
     with a `\n`, and writes the whole string back as one LWW value. `notes` is a
     single register (ADR-0008 LWW), so two appends racing across replicas resolve by
@@ -1191,7 +1191,7 @@ def cmdMetaList (dirOverride : Option String) (idTok : Option String) (skipBad :
 
 def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
-  -- --sync reconciles first; BEST-EFFORT (doctor never fails — ADR-0008): keep
+  -- --sync reconciles first; best-effort (doctor never fails — ADR-0008): keep
   -- the remote leg's result to report what reconciling did, or the error to
   -- disclose if it failed.
   let (synced, syncErr, syncNotes) ← if sync then
@@ -1272,7 +1272,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
      ("cycles", jnum cyc), ("multiParent", jnum multi),
      ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)], graphBad)
   -- stale claims: the window is the `tl.staleAfter` git config (a compact
-  -- duration like 1h / 45m / 24h) — there is NO hardcoded default (ADR-0013,
+  -- duration like 1h / 45m / 24h) — there is no hardcoded default (ADR-0013,
   -- amended). Unset ⇒ no stale verdict at all, so the row is omitted; set but
   -- unparseable ⇒ a row that teaches the format. A claim is stale when its
   -- issue is still InProgress and the claim is older than the window.
@@ -1300,7 +1300,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
                [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)]
   -- clock skew (ADR-0007): foreign ops dated beyond the window are deferred
   -- (held back) until wall-clock catches up — never fatal (convergent and
-  -- self-healing). The lead is over BOTH accepted and deferred ops (a deferred
+  -- self-healing). The lead is over both accepted and deferred ops (a deferred
   -- op is absent from maxHlc, so reading maxHlc alone would understate a
   -- far-ahead peer). Warn when an op is deferred OR a clock leads `now` by more
   -- than the (much smaller) warn threshold — so a notably-ahead-but-folded
@@ -1315,14 +1315,14 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
      ("clockLeadMs", jnum leadMs)]
     ++ (if skewSegs.isEmpty then [] else
         [("segments", Json.arr (skewSegs.map Json.str).toArray)]), false)
-  -- sync posture (ADR-0011 §2): LOCAL only — no remote contact unless `--sync`
+  -- sync posture (ADR-0011 §2): local only — no remote contact unless `--sync`
   -- just ran a `tl sync`. upstream/lastSync/ahead from git config + the marker;
   -- the live behind-count is `doctor --sync`'s job (sync then read).
   let posture ← syncPostureOf d
   -- No `behind` field: it cannot be observed without a fetch, and a --sync
   -- reconcile converges it to 0 — so it would only ever be null/0, never a real
   -- count. Report `ahead` (local unsynced ops) + lastSync always, and what a
-  -- --sync reconcile DID (reconciled/pushed/pulled) when it ran.
+  -- --sync reconcile did (reconciled/pushed/pulled) when it ran.
   let warnSync := posture.upstream.isSome &&
     (syncErr.isSome || (synced.isNone && (posture.lastSyncMs.isNone || posture.ahead > 0)))
   let syncMsg :=
@@ -1485,7 +1485,7 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   -- write/refresh the gitignored primer (ADR-0011 §3), through the no-follow
   -- shim like every other .tl write
   writeLocalFile dirs (dirs.tlRel ++ "/README.md") readmePrimer
-  -- the committed discovery pointer: SUGGEST adding it to a root agent file;
+  -- the committed discovery pointer: suggest adding it to a root agent file;
   -- never auto-edit the user's committed files (no-surprise ethos — ADR-0011
   -- §3, decision: print, do not write; create no file when none exists)
   let rootDir := target.parent.getD (System.FilePath.mk ".")

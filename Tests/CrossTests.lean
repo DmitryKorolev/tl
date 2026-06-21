@@ -11,7 +11,7 @@
 
 2. Compiled-kernel-vs-spec property cross-check: the theorems are proved
    over `Tl/Kernel`'s *source*; this re-checks their statements against the
-   COMPILED functions on seeded random op multisets — a regression net over
+   compiled functions on seeded random op multisets — a regression net over
    the executable (does compilation preserve the theorems?), never a
    substitute for the proofs (ADR-0004): order/duplicate-insensitivity of
    the fold, join commutativity/idempotence observed through a state
@@ -137,14 +137,14 @@ def kernelSpecTests : List Outcome :=
     let rollupTotal := s.presentIssues.all (fun i =>
       match s.effectiveStatus i with
       | .Open | .InProgress | .Done | .Cancelled => true)
-    -- the COMPILED fast rollup agrees with the compiled spec (the proved
+    -- the compiled fast rollup agrees with the compiled spec (the proved
     -- refinement bridge, effStatusWith_eq/isReadyWith_eq, re-checked over
     -- the executable on cyclic/diamond graphs the generator produces)
     let rollupMap := s.effStatusAll
     let fastAgrees := s.presentIssues.all (fun i =>
       State.effStatusWith rollupMap s i == s.effectiveStatus i
       && State.isReadyWith rollupMap s now i == s.isReady now i)
-    -- the COMPILED fast queue/echo/why agree with the compiled spec (the
+    -- the compiled fast queue/echo/why agree with the compiled spec (the
     -- ReadyFast refinement bridge re-checked over the executable)
     let readyFastAgrees := State.readyFast rollupMap s now == s.ready now
     let echoFastAgrees := s.presentIssues.all (fun i =>
@@ -180,8 +180,8 @@ def kernelSpecTests : List Outcome :=
 
 `kernelSpecTests` checks the compiled `cyclesFast`/`precCyclesFast` against
 the compiled spec on random multisets; these fixtures additionally pin the
-EXPECTED witnesses on known graphs (the deterministic-witness contract) and
-assert the certificate ACCEPTS Tarjan's partition. The fast branch being
+expected witnesses on known graphs (the deterministic-witness contract) and
+assert the certificate accepts Tarjan's partition. The fast branch being
 taken is covered by tests, never by a proof (SccFast.lean) — a silent
 permanent fallback would read as a performance regression with no error. -/
 
@@ -203,7 +203,7 @@ def sccFixtureTests : List Outcome :=
      ("c", "d", .Blocks), ("d", "c", .Blocks), ("b", "c", .Blocks)]
   -- a self-loop is a cycle; the isolated node is not
   let selfLoop := fixtureState ["a", "b"] [("a", "a", .Blocks)]
-  -- a parent 2-cycle: a structural cycle AND a readiness deadlock (each
+  -- a parent 2-cycle: a structural cycle and a readiness deadlock (each
   -- epic waits on the other as its live child)
   let parentCycle := fixtureState ["e", "f"]
     [("e", "f", .Parent), ("f", "e", .Parent)]
@@ -241,7 +241,7 @@ def sccFixtureTests : List Outcome :=
       State.cyclesCertAccepted s .Blocks && State.cyclesCertAccepted s .Parent
         && State.precCyclesCertAccepted s.effStatusAll s))]
 
-/-- The checker must REJECT wrong candidates — without these the rejection
+/-- The checker must reject wrong candidates — without these the rejection
     branch (and the proved fallback behind it) is dark code in the compiled
     suite, since Tarjan's output is always accepted. -/
 private def succOfPairs (pairs : List (IssueId × IssueId)) (i : IssueId) :

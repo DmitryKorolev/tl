@@ -52,10 +52,10 @@ def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat
     IO (UInt32 × ByteArray × String) := do
   let spawned ← IO.Process.spawn { cfg with stdin := .piped, stdout := .piped, stderr := .piped }
   let (stdinH, child) ← spawned.takeStdin
-  -- drain stdout/stderr AND write stdin on concurrent tasks BEFORE the wait. A child
+  -- drain stdout/stderr and write stdin on concurrent tasks before the wait. A child
   -- that interleaves a large stdout with reading a large stdin would otherwise deadlock
   -- against a synchronous stdin write (its stdout pipe fills with no reader, so it
-  -- blocks writing stdout while we block writing stdin). The write task OWNS `stdinH`,
+  -- blocks writing stdout while we block writing stdin). The write task owns `stdinH`,
   -- so the handle closes (child stdin EOF) as soon as the write completes — not at
   -- function end — which the EOF-driven callers (hash-object/mktree) need; a broken
   -- pipe (the child already exited) is caught and benign.
@@ -199,9 +199,9 @@ def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) := do
 def readRef (d : Dirs) : TlM (List SegmentData) := readRefAt d "refs/tl/log"
 
 /-- Build a `refs/tl/log` commit (blob per segment, one tree, a commit under
-    the neutral identity with `parents`) WITHOUT moving any ref — the caller
+    the neutral identity with `parents`) without moving any ref — the caller
     does the `update-ref` / `push`. Multiple parents let the remote leg make
-    the merge commit descend from BOTH the local and the fetched-remote tip, so
+    the merge commit descend from both the local and the fetched-remote tip, so
     the push fast-forwards (ADR-0001 §5). Returns the commit oid. -/
 private def buildCommit (d : Dirs) (segs : List SegmentData) (parents : List String) :
     TlM String := do
@@ -242,7 +242,7 @@ def writeRefCas (d : Dirs) (segs : List SegmentData) (expectedTip : Option Strin
   let commit ← buildCommit d segs expectedTip.toList
   let o ← (git d (casArgs commit expectedTip) : IO _)
   if o.exitCode == 0 then return some commit
-  -- a timeout (exit 124) is a hung git, NOT a CAS race — surface it as the
+  -- a timeout (exit 124) is a hung git, not a CAS race — surface it as the
   -- timeout it is rather than re-reading the tip and retrying as a lost race
   else if o.exitCode == 124 then throw (gitErr "update-ref" o)
   else if (← refTip d) != expectedTip then return none  -- a sibling moved it: retry
@@ -294,7 +294,7 @@ def fetchRemoteLog (d : Dirs) (remote : String) : TlM (Option String × List Seg
   return (some o.stdout.trimAscii.toString, ← readRefAt d "FETCH_HEAD")
 
 /-- Build the merge commit (tree = `segs`, parents = `parents`) and compare-and-set
-    the LOCAL `refs/tl/log` to it against `expectedLocalTip`. Returns the oid, or
+    the local `refs/tl/log` to it against `expectedLocalTip`. Returns the oid, or
     `none` if a concurrent local writer moved the ref (the caller retries — like
     `writeRefCas`, distinguished from a real failure by re-reading the tip). -/
 def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String)
@@ -307,9 +307,9 @@ def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String
   else throw (gitErr "update-ref" o)
 
 /-- Push `commit` to the remote's `refs/tl/log`. Returns `true` on success,
-    `false` ONLY on a genuine non-fast-forward race (the caller re-fetches and
+    `false` only on a genuine non-fast-forward race (the caller re-fetches and
     retries — ADR-0001 §5). Classification uses `--porcelain`'s machine-readable
-    status (`(non-fast-forward)` / `(fetch first)`), NOT a loose stderr scan: a
+    status (`(non-fast-forward)` / `(fetch first)`), not a loose stderr scan: a
     hook/policy decline, a permission denial, or a transport failure is a real
     error thrown with its reason — never retried into a misleading push-rejected.
     Pushing the explicit oid (`<commit>:refs/tl/log`) rather than the ref name
@@ -318,7 +318,7 @@ def pushRefLog (d : Dirs) (remote : String) (commit : String) : TlM Bool := do
   let o ← (git d ["push", "--porcelain", remote, s!"{commit}:refs/tl/log"]
             (remote := true) : IO _)
   if o.exitCode == 0 then return true
-  -- --porcelain writes per-ref status to STDOUT; only these two reasons are the
+  -- --porcelain writes per-ref status to stdout; only these two reasons are the
   -- retryable race (a hook decline reads "(... hook declined)", an auth/transport
   -- failure has no porcelain status line at all)
   let status := o.stdout

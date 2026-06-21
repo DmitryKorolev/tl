@@ -7,7 +7,7 @@ spec theorems are stated over them), but `AMap.find` is a linear assoc-list
 scan: read once per issue across N issues and a command path is Θ(N²). These
 views — a `HashSet` of a list, a `HashMap` copy of an assoc list, and an
 adjacency bucketing — give O(1)-amortized probes, each carrying the lemma that
-makes it pointwise EQUAL to the list form (`mem_hashSetOf`,
+makes it pointwise equal to the list form (`mem_hashSetOf`,
 `getElem?_hashAssoc_amap`, `getD_bucketBy`). This module sits upstream of the
 ready queue and the diagnostics so both the kernel fast paths and the CLI's
 per-row projections can read through it.
@@ -170,7 +170,7 @@ theorem getElem?_foldl_insert_keys {V : Type _} (val : IssueId → V) :
 
 The rollup builds its memo in a `Std.HashMap` (O(1)-amortized), then materializes
 the canonical `AMap` once at the end — O(N log N): sort the entries by key
-(`mergeSort`) and wrap with the proved strict sort (`sorted_mergeSort_keys`), NOT
+(`mergeSort`) and wrap with the proved strict sort (`sorted_mergeSort_keys`), not
 an O(N) `AMap.insert` per entry (which would be O(N²)). So `effStatusAll`'s type
 and every downstream bridge stay unchanged. `find_amapOfHashMap` is the bridge:
 the materialized map looks up exactly the hash map's `getElem?`. -/

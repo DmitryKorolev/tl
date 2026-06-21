@@ -83,7 +83,7 @@ def cliBasicTests : IO (List Outcome) := do
      check "init wrote the * self-ignore" (gitignore == "*\n"),
      ← expectData "init is idempotent" ["init", "--dir", target]
        (fun j => jBool j "created" == some false)]
-  -- discovery (ADR-0011 §3): init writes the gitignored primer and SUGGESTS
+  -- discovery (ADR-0011 §3): init writes the gitignored primer and suggests
   -- the committed pointer without editing the user's agent file
   let root3 ← IO.FS.createTempDir
   IO.FS.writeFile (root3 / "AGENTS.md") "# proj\n"
@@ -235,7 +235,7 @@ def cliCloseGuardTests : IO (List Outcome) := do
     ["close", "tl-" ++ epic, "--dir", dir, "--as", "cancelled", "--assignee", "t"]
     (fun j => jStr j "status" == some "cancelled")]
   -- all-children-closed epic: --as done is still refused (rollup-only, ADR-0003),
-  -- but the message must NOT read the contradictory "open: 0" — it teaches
+  -- but the message must not read the contradictory "open: 0" — it teaches
   -- already-done-via-rollup, and openChildren is the empty array
   let epic2 ← mkIssue dir "Rolled-up epic"
   let child2 ← mkIssue dir "Last child" ["--parent", "tl-" ++ epic2]
@@ -266,7 +266,7 @@ def cliCloseGuardTests : IO (List Outcome) := do
        (fun j => jStr j "closeResolution" == some "duplicate"),
      -- deliberately allowed (the pinned `close --as duplicate [--of <id>]`
      -- surface): a targetless duplicate closes as cancelled/duplicate and
-     -- records NO duplicate-of meta — not an oversight
+     -- records no duplicate-of meta — not an oversight
      ← (do
        let loner ← mkIssue dir "Targetless dupe"
        expectData "targetless --as duplicate is allowed (pinned contract)"
@@ -334,21 +334,21 @@ def cliDepTests : IO (List Outcome) := do
      ← expectData "dep path A A is empty when A is on no cycle"
       ["dep", "path", "tl-" ++ c, "tl-" ++ c, "--dir", dir]
       (fun j => jBool j "found" == some false),
-     -- total on a CYCLIC graph: the a↔b blocks cycle built above still terminates
+     -- total on a cyclic graph: the a↔b blocks cycle built above still terminates
      ← expectData "dep path terminates and finds a path inside a blocks cycle"
       ["dep", "path", "tl-" ++ a, "tl-" ++ b, "--dir", dir]
       (fun j => jBool j "found" == some true && !(jArr j "path").isEmpty),
      -- wrong arity is a usage error (the new dep path dispatch branch)
      ← expectErr "dep path with one positional is usage"
       ["dep", "path", "tl-" ++ c, "--dir", dir] .usage]
-  -- why renders the human blocker TREE over the production liveBlockers accessor
+  -- why renders the human blocker tree over the production liveBlockers accessor
   -- (the JSON tests don't read the rendered human; this covers that branch).
   -- why e: its blocker d, with d's blocker c nested under it (e⊣d⊣c).
   let whyOut ← run' ["why", "tl-" ++ e, "--dir", dir]
   o := o ++ [(match whyOut with
     | .ok out =>
       let h := (out.render.map (· Style.plain)).getD out.human
-      -- styledLine renders the SHORT id (tl- + first 4 chars); the tree nests c
+      -- styledLine renders the short id (tl- + first 4 chars); the tree nests c
       -- (d's blocker) under d (e's direct blocker) with the ascii last-connector
       check "why renders the nested blocker tree (production render path)"
         ((h.splitOn "\\-- ").length != 1
@@ -508,7 +508,7 @@ def cliBinaryTests : IO (List Outcome) := do
   o := o ++
     [check "discovery from a subdir finds the project" (found.exitCode == 0) found.stdout,
      check "a ceiling directory stops discovery" (ceiled.exitCode == 3) ceiled.stdout]
-  -- the ADR-0013 actor read runs in the --dir TARGET repo (`git -C`), not the
+  -- the ADR-0013 actor read runs in the --dir target repo (`git -C`), not the
   -- process cwd: from repoA, a create targeting repoB records repoB's user.email.
   -- TL_ACTOR is unset so the chain falls through to the git-config read.
   let gitIn (dir : System.FilePath) (args : List String) : IO Unit := do
@@ -565,7 +565,7 @@ def cliReviewTests : IO (List Outcome) := do
       { name := "tl log over a seeded escape-actor segment succeeds", passed := false,
         msg := e.message }]
   -- claim --sync post-reload fallback (reloadOrFallback): a throwing reload yields
-  -- the FALLBACK view + a disclosure note (never a thrown error — a durable claim
+  -- the fallback view + a disclosure note (never a thrown error — a durable claim
   -- must not report failure); a succeeding reload yields the reloaded view, no note.
   -- Two views with distinct issue counts (fallback=1, reload=2) prove which is used.
   let dFb ← freshDir; let _ ← mkIssue dFb "fallback-only"
@@ -669,7 +669,7 @@ GARBAGE
   let dir3 ← freshDir
   let target ← mkIssue dir3 "Contested"
   let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--assignee", "carol"]
-  -- a sibling's concurrent claim, later than ours but WITHIN the skew window
+  -- a sibling's concurrent claim, later than ours but within the skew window
   -- (ADR-0007: a far-future HLC would be deferred, not treated as "later")
   let laterHlc := ((← nowMs) + 60000) * 2 ^ 16
   let foreignClaim := foreignLine (.claim target "eve") laterHlc "2zzzzzzzzzzzz" "eve"
@@ -681,7 +681,7 @@ GARBAGE
       ["show", "tl-" ++ target, "--dir", dir3]
       (fun j => jStr j "assignee" == some "eve"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
-  -- the claim COMMAND itself discloses supersession in its human line (parity
+  -- the claim command itself discloses supersession in its human line (parity
   -- with close): a reopened issue keeps its assignee, so it is ready (status
   -- Open) yet a higher-stamped foreign claim outranks the fresh one on the
   -- assignee LWW — current ≠ actor, so "Claimed …" would be a lie
@@ -727,7 +727,7 @@ def cliDescriptionTests : IO (List Outcome) := do
       ["create", "Titled", "--dir", dir, "--assignee", "t",
        "--description", "line one\nline two"]
       (fun j => jStr j "description" == some "line one\nline two"),
-     -- a trailing `-` AND `--description <text>` name two body sources: a usage
+     -- a trailing `-` and `--description <text>` name two body sources: a usage
      -- conflict, caught before any IO (so it never reaches stdin)
      ← expectErr "a trailing - with --description <text> is a usage conflict"
        ["create", "X", "--dir", dir, "--assignee", "t", "--description", "text", "-"] .usage]
@@ -740,7 +740,7 @@ def cliDescriptionTests : IO (List Outcome) := do
   let q (s : String) : String := "'" ++ s ++ "'"
   let hasDesc (out body : String) : Bool := (out.splitOn s!"\"description\":\"{body}\"").length == 2
   let noDesc (out : String) : Bool := (out.splitOn "\"description\"").length == 1
-  -- ADR-0017 §8 (amended 2026-06-14): WITHOUT the `-` sentinel, stdin is NOT
+  -- ADR-0017 §8 (amended 2026-06-14): without the `-` sentinel, stdin is not
   -- read — the body stays absent even with data on the pipe. The regression
   -- guard for the hang: an unrequested stdin is never consumed.
   let nodash ← sh s!"printf 'from\nstdin' | {q exe.toString} create NoDash --dir {q dir} --assignee t --json"
@@ -757,7 +757,7 @@ def cliDescriptionTests : IO (List Outcome) := do
   -- `-` with empty stdin leaves the description absent
   let emptyDash ← sh s!": | {q exe.toString} create EmptyDash --dir {q dir} --assignee t --json -"
   o := o ++ [check "- with empty stdin leaves the body absent" (noDesc emptyDash.stdout) emptyDash.stdout]
-  -- the hang guard: a held-open, non-EOF stdin WITHOUT `-` must not block — tl
+  -- the hang guard: a held-open, non-EOF stdin without `-` must not block — tl
   -- returns promptly without reading it. On a regression it would block until
   -- the 5s holder closes the write end; the timing bound catches that.
   let fifo := s!"{dir}-holdpipe"
@@ -782,7 +782,7 @@ def cliConsistencyTests : IO (List Outcome) := do
   o := o ++ [← expectErr "--of without --as duplicate is usage"
     ["close", "tl-" ++ x, "--dir", dir, "--as", "done", "--of", "tl-" ++ x] .usage]
   -- same-HLC cross-replica lifecycle ties: the projection must agree with
-  -- the LWW state in BOTH directions (the bare-hlc comparison bug class)
+  -- the LWW state in both directions (the bare-hlc comparison bug class)
   let a ← mkIssue dir "TieA"
   let b ← mkIssue dir "TieB"
   -- later than the local creates, within the skew window (ADR-0007)
@@ -822,7 +822,7 @@ def cliConsistencyTests : IO (List Outcome) := do
     | .error e =>
       { name := "junk .jsonl stem is disclosed, not folded", passed := false,
         msg := e.message }]
-  -- a symlinked log/ refuses the LISTING (not just the later per-file opens)
+  -- a symlinked log/ refuses the listing (not just the later per-file opens)
   let dir3 ← freshDir
   let _ ← mkIssue dir3 "X"
   let realLog ← IO.FS.createTempDir
@@ -841,9 +841,9 @@ def cliConsistencyTests : IO (List Outcome) := do
 def cliReviewBatchTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let esc := String.singleton (Char.ofNat 0x1b)
-  -- (1) a STALE present clock is floored by the own-segment max: craft an own
+  -- (1) a stale present clock is floored by the own-segment max: craft an own
   -- segment with a high HLC, set the clock file far below it, then a write
-  -- must mint ABOVE the own max (no own-replica LWW regression).
+  -- must mint above the own max (no own-replica LWW regression).
   let dir ← freshDir
   -- the project's own replica id, so the crafted segment counts as own
   let realReplica := (← IO.FS.readFile (System.FilePath.mk dir / "local" / "replica")).trimAscii.toString
@@ -898,7 +898,7 @@ def cliReviewBatchTests : IO (List Outcome) := do
       ++ foreignLine (.metaSet m k2 (some "v2")) 0x101 realReplica4 "t" 4 ++ "\n")
   o := o ++
     [← (do
-       -- the own segment now has the meta ops; show --json must keep BOTH keys
+       -- the own segment now has the meta ops; show --json must keep both keys
        match ← run' ["show", "tl-" ++ m, "--dir", dir4] with
        | .ok out =>
          let metaCount := match jGet out.data "meta" with
@@ -908,7 +908,7 @@ def cliReviewBatchTests : IO (List Outcome) := do
            (metaCount == 2) s!"meta member count {metaCount}")
        | .error e => pure { name := "meta keys both survive", passed := false, msg := e.message })]
   -- (#12) a close that loses LWW to a later foreign write echoes
-  -- consistently: status NOT closed and unblocked empty (no "Closed" lie)
+  -- consistently: status not closed and unblocked empty (no "Closed" lie)
   let dir5 ← freshDir
   let blkr ← mkIssue dir5 "blocker"
   let _ ← mkIssue dir5 "dependent" ["--blocked-by", "tl-" ++ blkr]
@@ -989,7 +989,7 @@ def cliFreeVerbTests : IO (List Outcome) := do
       (fun j => jNat j "total" == some 2 && jNat j "open" == some 2
         && jNat j "ready" == some 1 && jNat j "blocked" == some 1
         && jNat j "cycles" == some 0)]
-  -- §7: green marks the workable (ready) count, NOT the stored-open count
+  -- §7: green marks the workable (ready) count, not the stored-open count
   -- (which includes the blocked issue). Assert the colored render directly.
   let escSeq := String.singleton (Char.ofNat 0x1b)
   match ← run' ["stats", "--dir", dir] with
@@ -1001,7 +1001,7 @@ def cliFreeVerbTests : IO (List Outcome) := do
         ((colored.splitOn (escSeq ++ "[32mready ")).length == 2) colored,
        check "stats leaves the stored-open count neutral (not green)"
         ((colored.splitOn (escSeq ++ "[32mopen ")).length == 1) colored]
-  -- stats counts EFFECTIVE status and splits open into epics vs tasks: a
+  -- stats counts effective status and splits open into epics vs tasks: a
   -- rolled-up epic (stored open, all children closed) counts as done, not open,
   -- matching `list` (ADR-0020 §stats amendment).
   let dir2 ← freshDir
@@ -1188,7 +1188,7 @@ def cliReadRefreshTests : IO (List Outcome) := do
 
 /-- Degraded-refresh disclosure (ADR-0008 loud-not-silent × ADR-0016 §3): when a
     read-time refresh cannot run (here, B's log dir is read-only so the foreign
-    materialize fails), the read still serves — a moment stale — AND discloses
+    materialize fails), the read still serves — a moment stale — and discloses
     the degrade as a note, rather than silently serving the stale view. Root
     bypasses directory permissions, so the degrade branch is asserted only for a
     non-root user; the always-true invariant (the read succeeds) holds for both. -/
@@ -1204,7 +1204,7 @@ def cliDegradedRefreshTests : IO (List Outcome) := do
   let _ ← run' ["sync", "--dir", aDir]
   -- B reads once: this materializes A's segment, creating B's log dir + ref-mark.
   let _ ← run' ["list", "--dir", bDir, "--json"]
-  -- the ref moves AGAIN; now B's mark trails the tip, so B's next read must
+  -- the ref moves again; now B's mark trails the tip, so B's next read must
   -- materialize — but with B's log dir read-only the writeback fails and the
   -- refresh degrades (read the ref, can't write the segment).
   let _ ← run' ["create", "second task", "--dir", aDir, "--assignee", "a"]
@@ -1278,7 +1278,7 @@ def cliAutoSyncTests : IO (List Outcome) := do
   return o
 
 /-- Pre-transact absorb (ADR-0016 §3 amendment): a directed write by id refreshes
-    from the shared ref BEFORE its guards run, so it finds a task that exists
+    from the shared ref before its guards run, so it finds a task that exists
     only on a sibling's published segment — closing the stale-directed-write gap
     (without it, this `close` by id would fail not-found). -/
 def cliPreWriteAbsorbTests : IO (List Outcome) := do
@@ -1304,8 +1304,8 @@ def cliPreWriteAbsorbTests : IO (List Outcome) := do
   return o
 
 /-- Read-time refresh × the refused-segment policy (ADR-0008 × ADR-0016 §3):
-    refresh now routinely materializes sibling segments, so a single CORRUPT
-    sibling segment must be DISCLOSED, not fail a worktree whose own state is
+    refresh now routinely materializes sibling segments, so a single corrupt
+    sibling segment must be disclosed, not fail a worktree whose own state is
     fine/empty — the all-refused throw only fires with no own replica to anchor
     a partial read. -/
 def cliRefreshRefusalTests : IO (List Outcome) := do
@@ -1314,12 +1314,12 @@ def cliRefreshRefusalTests : IO (List Outcome) := do
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
   let bDir := (root / ".tl").toString
   let _ ← run' ["init", "--dir", bDir]  -- B: own replica minted, no own segment
-  -- a sibling publishes a CORRUPT segment into the shared ref
+  -- a sibling publishes a corrupt segment into the shared ref
   let badRid := (Tl.Clock.Replica.ofNat 13).id
   let dB : Tl.Store.Dirs := { base := root.toString, tlRel := ".tl" }
   let _ ← (Tl.Sync.writeRef dB [⟨badRid, "this is not json\n".toUTF8⟩] none).run
-  -- B reads: refresh materializes the corrupt sibling, and the read DISCLOSES
-  -- the foreign refusal and SUCCEEDS (exit 0) rather than failing the command
+  -- B reads: refresh materializes the corrupt sibling, and the read discloses
+  -- the foreign refusal and succeeds (exit 0) rather than failing the command
   let listed ← run' ["list", "--dir", bDir, "--json"]
   o := o ++ [(match listed with
     | .ok out => check "an all-foreign-refused read discloses and succeeds (does not fail)"
@@ -1354,15 +1354,15 @@ def cliDoctorSkewTests : IO (List Outcome) := do
       jStr c "name" == some "clockSkew" && jStr c "status" == some "warn"
         && (jNat c "deferredOps").getD 0 ≥ 1
         && (jNat c "clockLeadMs").getD 0 ≥ skewWindowMs))]
-  -- a WRITE against the deferred foreign op discloses it too (not only reads)
+  -- a write against the deferred foreign op discloses it too (not only reads)
   let wrote ← run' ["create", "local work", "--dir", dir, "--assignee", "t"]
   o := o ++ [(match wrote with
     | .ok out => check "a write whose guard fold dropped a deferred op discloses it"
         (out.notes.any (fun n => (n.splitOn "held back").length > 1))
         (String.intercalate "|" out.notes)
     | .error e => { name := "write discloses deferred", passed := false, msg := e.message })]
-  -- a clock notably ahead but WITHIN the 24h window: its op FOLDS (count 1, not
-  -- deferred) yet doctor still WARNS — the warn threshold is decoupled from the
+  -- a clock notably ahead but within the 24h window: its op folds (count 1, not
+  -- deferred) yet doctor still warns — the warn threshold is decoupled from the
   -- deferral window, so a 9h-style TZ misconfig is flagged (not silent)
   let dir2 ← freshDir
   let ahead := ((← nowMs) + 2 * skewWarnMs) * 2 ^ 16  -- ~2h ahead: > warn, < window
@@ -1381,7 +1381,7 @@ def cliDoctorSkewTests : IO (List Outcome) := do
   return o
 
 /-- Labels (ADR-0002 OR-Set): add (idempotent), remove (noop when absent),
-    the `label list` vocabulary, and the `tl list --label` facet (AND across
+    the `label list` vocabulary, and the `tl list --label` facet (conjunctive across
     repeats). -/
 def cliLabelTests : IO (List Outcome) := do
   let mut o : List Outcome := []
@@ -1424,7 +1424,7 @@ def cliLabelTests : IO (List Outcome) := do
     expands once, later encounters render the already-shown marker. -/
 def cliTreeDiamondTests : IO (List Outcome) := do
   let dir ← freshDir
-  -- distinctive titles, not ids: human rows now render SHORT ids (whose length
+  -- distinctive titles, not ids: human rows now render short ids (whose length
   -- depends on prefix collisions), so count the stable title token instead — it
   -- renders on both the first expansion and the shared-node "(shown above)" line.
   let a ← mkIssue dir "Anode"
@@ -1456,7 +1456,7 @@ def cliTreePrefixDimTests : IO (List Outcome) := do
   let a ← mkIssue dir "A"
   let b ← mkIssue dir "B" ["--parent", "tl-" ++ a]
   let c ← mkIssue dir "C" ["--parent", "tl-" ++ a]
-  -- nest under BOTH siblings: whichever renders non-last yields a `|   `
+  -- nest under both siblings: whichever renders non-last yields a `|   `
   -- continuation, independent of the sibling ordering
   let _ ← mkIssue dir "subB" ["--parent", "tl-" ++ b]
   let _ ← mkIssue dir "subC" ["--parent", "tl-" ++ c]
@@ -1566,7 +1566,7 @@ def treeCycleRenderTests : List Outcome :=
     Op.edgeAdd (r1, r2, .Parent) stE1]
   let vShared := mkView sShared
   let sharedOut := String.intercalate "\n" (treeForest Style.plain vShared [r1, r2] (fun _ => true) vShared.kids)
-  -- the SAME renderer over the blocks-blocker accessor (`why`'s direction): a
+  -- the same renderer over the blocks-blocker accessor (`why`'s direction): a
   -- transitive blocker nests under its direct blocker. Chain a → b → c (a blocks
   -- b, b blocks c); `why c`'s roots are c's blockers ([b]), b's blockers ([a]).
   let c := "e000000000000000"
@@ -1613,7 +1613,7 @@ def canonicalParentTieTests : List Outcome :=
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty
       idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList }
-  -- a parent edge to an ABSENT child (dangling): parentEdges drops it, so the
+  -- a parent edge to an absent child (dangling): parentEdges drops it, so the
   -- fast presence-filter must too
   let sDangling := Tl.Kernel.fold [
     Op.create pOld ⟨10, 7, 1⟩ { title := some "p" },
@@ -1665,7 +1665,7 @@ def rowAccessorAgreementTests : List Outcome :=
   let rollup := s.effStatusAll
   let edges := s.presentEdges
   let pedges := s.parentEdges
-  -- a NON-EMPTY prov so `v.provFor` (reads the provH hash copy) is checked
+  -- a non-empty prov so `v.provFor` (reads the provH hash copy) is checked
   -- against `provOf` (reads the AMap) on populated entries, not a vacuous
   -- both-default-{} match: `a` carries created/updated/close, `d` a claim.
   let prov : Tl.Crdt.AMap IssueId Prov :=
@@ -1719,8 +1719,8 @@ def cliDefaultLimitTests : IO (List Outcome) := do
     (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
   o := o ++ [← expectData "list default limit shows all 11 (>10)" ["list", "--dir", dir]
     (fun j => jNat j "count" == some 11 && (jArr j "items").length == 11)]
-  -- the tree view caps rendered ROWS, not roots: one epic + 6 children is 7 rows
-  -- under a single root, so `--limit 3` shows 3 rows + a truncation footer — NOT
+  -- the tree view caps rendered rows, not roots: one epic + 6 children is 7 rows
+  -- under a single root, so `--limit 3` shows 3 rows + a truncation footer — not
   -- the whole subtree (which the old root-capping would have rendered in full).
   let dirT ← freshDir
   let epic ← mkIssue dirT "Epic root"
@@ -1834,7 +1834,7 @@ def cliSyncPostureTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "doctor ahead>0", passed := false, msg := e.message }]
   o := o ++ [← expectData "ready: unsynced-ops advisory" ["ready", "--dir", tldir]
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "local change").length > 1 | none => false)]
-  -- (4) stale-by-time: re-sync (ahead→0), then age the marker keeping the REAL
+  -- (4) stale-by-time: re-sync (ahead→0), then age the marker keeping the real
   -- tip, so the time branch (not the ahead branch) drives the advisory
   let _ ← run' ["sync", "--dir", tldir]
   let tipOut ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "rev-parse", "refs/tl/log"] }
@@ -1892,7 +1892,7 @@ def cliClaimSyncTests : IO (List Outcome) := do
     ["claim", "tl-" ++ blk, "--dir", dir, "--sync", "--assignee", "ann"] .notClaimable]
   return o
 
-/-- Two clones over a bare remote: a sync that pulls a NEW replica from the
+/-- Two clones over a bare remote: a sync that pulls a new replica from the
     remote reports it in `absorbed` (the post-remote second local leg), and
     `doctor`'s refMark check warns when a materialized foreign segment is deleted
     on disk while the ref-mark stays put. -/
@@ -1939,7 +1939,7 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
 
 /-- An unreachable (configured-but-broken) remote: read `--sync` degrades and
     never fails, `doctor --sync` never fails, `claim --sync` records the take and
-    discloses, but `claim --verify` FAILS `verify-failed` (the strict gate). -/
+    discloses, but `claim --verify` fails with `verify-failed` (the strict gate). -/
 def cliSyncDegradeTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let syncRow := fun (out : CmdOut) => (jArr out.data "checks").find? (fun c => jStr c "name" == some "sync")
@@ -1977,7 +1977,7 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "claim --sync degrade", passed := false, msg := s!"failed instead of degrading: {e.message}" }]
   return o
 
-/-- A push rejected (a pre-receive hook) AFTER the local CAS advanced the ref
+/-- A push rejected (a pre-receive hook) after the local CAS advanced the ref
     self-heals — the failed sync left the local ref ahead, and a later sync (hook
     removed) recovers and converges the remote. Plus: a remote-leg timeout
     surfaces as a clear error, never misclassified as a push-rejected race. -/
@@ -2007,7 +2007,7 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
     o := o ++ [check "the next sync recovers and converges the remote" (!ls.stdout.trimAscii.isEmpty) ls.stdout]
   | .error e => o := o ++ [{ name := "sync recovery", passed := false, msg := e.message }]
   -- G-adjacent: a remote timeout surfaces as a clear error, not a misclassified
-  -- race. A FRESH repo with the 1ms remote timeout set BEFORE its first git call
+  -- race. A fresh repo with the 1ms remote timeout set before its first git call
   -- (the timeout is memoized per repo per process — fine for the one-shot CLI).
   let root2 ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "init", "-q"] }
@@ -2065,7 +2065,7 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
   return o
 
 /-- `doctor`'s staleClaims check is driven entirely by the `tl.staleAfter` git
-    config (a compact duration) — there is NO hardcoded default. Unset ⇒ the row
+    config (a compact duration) — there is no hardcoded default. Unset ⇒ the row
     is omitted; a set window flags in-progress claims older than it; an
     unparseable value teaches the format. -/
 def cliDoctorStaleTests : IO (List Outcome) := do
@@ -2080,7 +2080,7 @@ def cliDoctorStaleTests : IO (List Outcome) := do
     ["doctor", "--json", "--dir", bare]
     (fun j => (findCheck j "staleClaims").isNone)]
   -- a git-backed project so `tl.staleAfter` is readable; inject a foreign
-  -- create+claim BOTH ~2h in the past (the claim must out-stamp its own create
+  -- create+claim both ~2h in the past (the claim must out-stamp its own create
   -- to leave the issue InProgress, so both are dated old)
   let root ← IO.FS.createTempDir
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
