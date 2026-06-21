@@ -506,16 +506,19 @@ def precCyclesFastWith (m : AMap IssueId Status) (present : List IssueId)
     (precSuccH (hashAssoc m.toList) (blocksAdj edges) (bucketBy pe)
       (hashSetOf present) s)
 
-/-- The fast readiness-deadlock witnesses. -/
+/-- The fast readiness-deadlock witnesses. (`parentEdgesFast` builds the
+    child-present check through a hash set ONCE; plain `parentEdges` is Θ(E·N) —
+    same list, `parentEdgesFast_eq`.) -/
 def precCyclesFast (m : AMap IssueId Status) (s : State) : List (List IssueId) :=
-  precCyclesFastWith m s.presentIssues s.presentEdges s.parentEdges s
+  precCyclesFastWith m s.presentIssues s.presentEdges s.parentEdgesFast s
 
 theorem precCyclesFast_eq (s : State) :
     precCyclesFast (s.effStatusAll) s = s.precCycles := by
   show sccWitnessesT s.presentIssues s.presentIssues.length
       (precSuccH (hashAssoc (s.effStatusAll).toList) (blocksAdj s.presentEdges)
-        (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s)
+        (bucketBy s.parentEdgesFast) (hashSetOf s.presentIssues) s)
     = s.precCycles
+  rw [parentEdgesFast_eq]
   rw [show precSuccH (hashAssoc (s.effStatusAll).toList) (blocksAdj s.presentEdges)
         (bucketBy s.parentEdges) (hashSetOf s.presentIssues) s
       = s.precSucc from funext (fun i =>
@@ -558,7 +561,7 @@ def precCyclesCertAcceptedWith (m : AMap IssueId Status) (present : List IssueId
 
 /-- Is the readiness-deadlock path's fast cert branch accepted for `s`? -/
 def precCyclesCertAccepted (m : AMap IssueId Status) (s : State) : Bool :=
-  precCyclesCertAcceptedWith m s.presentIssues s.presentEdges s.parentEdges s
+  precCyclesCertAcceptedWith m s.presentIssues s.presentEdges s.parentEdgesFast s
 
 /-- The fast cycle-presence flag. -/
 def hasCycleFast (s : State) (k : EdgeKind) : Bool := !(cyclesFast s k).isEmpty
