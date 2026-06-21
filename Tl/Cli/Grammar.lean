@@ -57,7 +57,7 @@ private def limitFlag : FlagSpec :=
   { name := "limit", value := true, summary := "max rows shown (default 50; 0 = all)" }
 
 private def logLimitFlag : FlagSpec :=
-  { name := "limit", value := true, summary := "max entries shown (default 10; with --since, 0 = all)" }
+  { name := "limit", value := true, summary := "max entries shown (0 = all; default 10, or all when --since)" }
 
 private def logSinceFlag : FlagSpec :=
   { name := "since", value := true, summary := "only ops after this cursor — a resumable change-feed (pass the prior `cursor`)" }

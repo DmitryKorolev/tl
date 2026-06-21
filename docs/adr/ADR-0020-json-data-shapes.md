@@ -304,11 +304,17 @@ miscounted as workable. `ready`/`blocked`/`deferred` are the derived views;
 `cycles` is the cycle-witness count (structural per kind plus the non-duplicate
 readiness deadlocks, as `doctor`'s graph check).
 
-**`tl log [<id>] --json`** — the op history, newest first (an HLC-ordered
-projection over the log, ADR-0008); `<id>` filters to ops touching that
-issue. `--limit` caps `entries` (default 10, `0` = all); `count` is the total
-matched. The `--since` cursor is deferred — it needs a version vector, not a
-scalar HLC (backlog) — so this is the full-history (best-effort-capped) view.
+**`tl log [<id>] [--since <cursor>] --json`** — the op history (an HLC-ordered
+projection over the log, ADR-0008); `<id>` filters to ops touching that issue.
+Without `--since` it is newest-first, capped by `--limit` (default 10, `0` = all).
+With `--since` it is a resumable change-feed — every op after the cursor,
+oldest-first — and `--limit` defaults to `0` (all), paginating the oldest first.
+Every response carries a top-level `cursor`: a per-replica version vector,
+serialized as comma-joined `<replica>:<hlc>` pairs sorted by replica, to pass as
+the next `--since`. Emission is `hlc > cursor[replica]`, so a late foreign op
+whose HLC sits below another replica's maximum is still delivered exactly once (a
+scalar HLC cursor would drop it). `count` is the total matched (before `--limit`).
+A `--since` cursor is scoped to the `<id>` filter it was produced under.
 
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
@@ -316,7 +322,8 @@ scalar HLC (backlog) — so this is the full-history (best-effort-capped) view.
   "entries": [
     { "timestamp": "2026-06-11T01:27:49.277Z", "op": "close",
       "actor": "carol", "targets": ["tl-ppyg0ekgf91s56e0"] }
-  ] } }
+  ],
+  "cursor": "93ac0kyg2gggt:116786845491855360" } }
 ```
 
 `op` is the wire verb (ADR-0008's closed enum); `actor` is `|null`;

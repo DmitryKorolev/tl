@@ -547,8 +547,17 @@ private def parseCursor (s : String) : Except Tl.Error LogCursor := do
   for piece in (s.trimAscii.toString.splitOn ",").filter (fun p => !p.trimAscii.isEmpty) do
     match piece.splitOn ":" with
     | [rid, hstr] =>
-      match ofCrockford? rid.trimAscii.toString, hstr.trimAscii.toString.toNat? with
-      | some r, some h => c := c.insert r (Nat.max (cursorThreshold c r) h)
+      let ridT := rid.trimAscii.toString
+      match ofCrockford? ridT, hstr.trimAscii.toString.toNat? with
+      | some r, some h =>
+        -- require the canonical 13-char replica id: `ofCrockford?` imposes no
+        -- width, so an empty id aliases replica 0 and an over-long id would
+        -- truncate to a different replica when `renderCursor` re-emits it
+        if toCrockford r 13 == ridT then
+          c := c.insert r (Nat.max (cursorThreshold c r) h)
+        else
+          throw (.mk' .usage
+            s!"--since: '{ridT}' is not a canonical 13-char replica id — pass the `cursor` from a prior `tl log --json`")
       | _, _ => throw (.mk' .usage
           s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>) — pass the `cursor` from a prior `tl log --json`")
     | _ => throw (.mk' .usage
@@ -559,7 +568,9 @@ private def parseCursor (s : String) : Except Tl.Error LogCursor := do
     (ADR-0008), optionally filtered to ops touching one issue. Without `--since`
     it lists newest-first (capped by `--limit`); with `--since` it is a resumable
     change-feed — every op after the cursor, oldest-first — and always reports a
-    `cursor` (a per-replica version vector) to pass on the next call. -/
+    `cursor` (a per-replica version vector) to pass on the next call. The cursor
+    is scoped to the `<id>` filter it was produced under: resume with the same
+    filter. -/
 def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     (since : Option String) (skipBad : Bool) : TlM CmdOut := do
   -- parse the cursor before loading, so a malformed --since fails fast
@@ -603,7 +614,7 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     if matching.isEmpty then "no ops"
     else String.intercalate "\n" (capped.map line)
       ++ (if capped.length < matching.length then
-            s!"\n… {matching.length - capped.length} more (--limit 0 for all)" else "")
+            s!"\n… {matching.length - capped.length} {if sinceGiven then "more" else "older"} (--limit 0 for all)" else "")
   return { data := Json.mkObj [("count", jnum matching.length),
                                ("entries", Json.arr (capped.map entry).toArray),
                                ("cursor", Json.str curStr)]

@@ -2153,7 +2153,11 @@ def cliLogSinceTests : IO (List Outcome) := do
      ← expectErr "log --since with a non-numeric hlc is usage"
        ["log", "--since", "1zzzzzzzzzzzz:notanum", "--dir", dir] .usage,
      ← expectErr "log --since with a non-Crockford replica is usage"
-       ["log", "--since", "!!!:5", "--dir", dir] .usage]
+       ["log", "--since", "!!!:5", "--dir", dir] .usage,
+     ← expectErr "log --since with an empty replica is usage"
+       ["log", "--since", ":5", "--dir", dir] .usage,
+     ← expectErr "log --since with an over-long (non-13-char) replica is usage"
+       ["log", "--since", "00000000000000000000:5", "--dir", dir] .usage]
   -- (5) the distinguishing regression: a late-arriving foreign op whose HLC is
   -- below the own replica's max is still delivered under the per-replica version
   -- vector — a scalar high-water-mark cursor would drop it (count 0, not 1).
@@ -2178,6 +2182,32 @@ def cliLogSinceTests : IO (List Outcome) := do
     | .ok out => pure (check "human log --since prints a cursor line (parity with --json)"
         ((out.human.splitOn "cursor:").length > 1) out.human)
     | .error e => pure { name := "human cursor parity", passed := false, msg := e.message })]
+  -- (7) --limit paginates the feed and the cursor advances by exactly the page,
+  -- so a resume never skips — pins advanceCursor over the delivered page (capped),
+  -- not over all matching ops (a capped→matching mutation drops page 2 to empty)
+  let dirP ← freshDir
+  let _ ← mkIssue dirP "p1"
+  let _ ← mkIssue dirP "p2"
+  let page1 ← run' ["log", "--since", "", "--limit", "1", "--json", "--dir", dirP]
+  let (e1, c1) := match page1 with
+    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .error _ => (0, "")
+  let page2 ← run' ["log", "--since", c1, "--limit", "1", "--json", "--dir", dirP]
+  let (e2, c2) := match page2 with
+    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .error _ => (0, "")
+  o := o ++
+    [check "log --since --limit 1 delivers one op for the first page" (e1 == 1) s!"page1 entries={e1}",
+     check "the next page resumes from the page cursor without skipping (capped advance)"
+       (e2 == 1 && c2 != c1) s!"page2 entries={e2} c1={c1} c2={c2}"]
+  -- (8) --since combined with an <id> filter scopes the feed to that issue's ops
+  let dirF ← freshDir
+  let i1 ← mkIssue dirF "f1"
+  let _ ← mkIssue dirF "f2"
+  let _ ← run' ["update", "tl-" ++ i1, "--title", "f1b", "--dir", dirF]
+  o := o ++ [← expectData "log <id> --since '' returns only that issue's ops, with a cursor"
+      ["log", "tl-" ++ i1, "--since", "", "--json", "--dir", dirF]
+      (fun j => jNat j "count" == some 2 && ((jStr j "cursor").getD "").length > 0)]
   return o
 
 def cliTests : IO (List Outcome) := do

@@ -248,10 +248,13 @@ decision, not an oversight:
   `claim <id>`, no central queue. If two pick the same item (e.g. across clones
   before a sync), LWW resolves it — the loser is told "superseded" and is free to
   take another (guaranteed progress, no herd).
-- No incremental change feed in v1. Agents re-fold full state per
-  invocation (the awareness model; fine at the thousands-scale target). A
-  `tl log --since <hlc>` cursor is the natural additive primitive once the
-  compaction version-vector lands (ADR-0008).
+- An incremental change feed is available alongside the full-state awareness
+  model: `tl log --since <cursor>` returns the ops after a per-replica
+  version-vector cursor, a resumable tail for an external supervisor or
+  orchestrator. Agents may still re-fold full state per invocation (fine at the
+  thousands-scale target); the feed is additive. The cursor is a version vector,
+  not a scalar HLC, so a late-synced op from a lagging replica is not missed
+  (ADR-0008, ADR-0020).
 
 ### Staged implementation (the MVP cutline)
 

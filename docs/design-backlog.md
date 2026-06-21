@@ -77,16 +77,13 @@ Kernel theorems still to decide whether to commit to:
   (`tree`/`path`/`critical`) [low] — the stage-1 command shapes (incl. `doctor`,
   `dep cycles`, `why`), `tl help --json`, and now `tl stats` / `tl log` are
   pinned in ADR-0020 (`help`/`stats`/`log` built); the `dep` utilities pin
-  when built, following its conventions. (`tl log`'s `--since` cursor stays
-  deferred — it needs a version vector, below.)
-- A future `tl log --since <hlc>` cursor needs a version vector, not a scalar
-  HLC [low] — `observe-remote` advances only the local clock, so a late-synced op
-  from a lagging replica keeps an HLC *below* another replica's watermark; a scalar
-  `--since hlc` filter would silently miss it — a soundness hole for the promised
-  incremental feed. Record that an incremental cursor must be a version-vector (the
-  frontier compaction already reserves), and a scalar `--since` is best-effort/lossy;
-  defer implementation but pin the contract (ADR-0008; relates to the read-command
-  `--json` shapes above).
+  when built, following its conventions. (`tl log --since` is built — a
+  version-vector cursor, ADR-0020.)
+- `tl log --since <cursor>` is built [done] — a per-replica version-vector
+  cursor (replica → max HLC), not a scalar HLC. A late-synced op from a lagging
+  replica keeps an HLC below another replica's watermark; emission is
+  `hlc > cursor[replica]`, so it is still delivered exactly once, where a scalar
+  `--since hlc` filter would miss it. Shape pinned in ADR-0020 (ADR-0008).
 
 ## Log format, versioning & compaction
 
