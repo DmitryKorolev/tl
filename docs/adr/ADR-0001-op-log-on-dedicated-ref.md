@@ -216,8 +216,10 @@ mutation lock around the mint-HLC→append critical section, with atomic
 
 ### 7. Stealth mode (`tl init --stealth`) — opt-in
 
-Sharing is the default; `--stealth` (alias `--local`) is an explicit opt-in,
-never automatic. In the dedicated-ref model normal mode is already
+Sharing is the default; `--stealth` is an explicit opt-in, never automatic. It
+is the sole spelling — no `--local` alias (the word "local" already names the
+shared local ref and `.tl/local/`), and no environment-variable form, since an
+env default would silently create untracked private state (decided 2026-06-21). In the dedicated-ref model normal mode is already
 branch-stealthy — `.tl/` is gitignored, nothing is committed to the working
 branch, and sync touches only `refs/tl/log` — so `--stealth` no longer means
 "avoid dirtying commits." It means local-only task state with zero

@@ -116,10 +116,10 @@ are not record-op values. The enum and its payloads:
 | wire `op` | kernel delta | payload (beyond the envelope) |
 |---|---|---|
 | `create` | create | `id`; optional initial scalars (`title`, `priority`, …); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
-| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`assignee`/`slug`/`description`/`notes`/…). Lifecycle status and time fields use the distinguished verbs below so their provenance projections stay well-defined |
+| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/`notes`/…). Lifecycle status/time fields and `assignee` use the distinguished verbs below so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, the 2026-06-21 ADR-0013 amendment) |
 | `claim` | setFields | `id`; sets `status=in_progress`, `assignee` |
 | `close` | setFields | `id`; sets `status` (`done`\|`cancelled`), `closeResolution` (with `--of <id>` the *command* additionally emits a separate `metaSet` record — composites below) |
-| `reopen` | setFields | `id`; sets `status=open`, clears `closeResolution` |
+| `reopen` | setFields | `id`; sets `status=open`, clears `closeResolution` and `assignee` (the 2026-06-21 ADR-0013 amendment) |
 | `defer` / `undefer` | setFields | `id`; sets / clears `deferUntil` — an ISO-8601 UTC instant string (e.g. `2026-06-15T09:00:00Z`), or JSON `null` to clear; normalized on write, distinct from the 16-hex `hlc` (ADR-0010) |
 | `metaSet` | metaSet | `id`, `key`, `value` (`null` = clear) — opaque metadata (ADR-0002) |
 | `depAdd` / `relate` | edgeAdd | `from`, `to`, `kind` (`blocks`/`parent`/`related`); add-tag = the envelope triple in its canonical string form (`"<hlc>.<replica>.<nonce>"`, above), an opaque equality token for the OR-Set — distinct from LWW *comparison* of scalar writes, which is HLC-primary `(hlc, replica, nonce)` (ADR-0007). CLI `dep add A B` ⇒ `from=B, to=A` — A blocked-by B (ADR-0003) |
@@ -132,10 +132,19 @@ Provenance timestamps are not op payload fields — `createdAt`,
 own scalar writes (`update`/`claim`/`close`/`reopen`/`defer`; edge/label/meta
 ops do not bump it); `closedAt` = the HLC of the `close` that set the
 current terminal status (absent once `reopen`ed); `claimedAt` = the HLC of the
-latest `claim`-semantics op (`claim` or `update --claim`) that is later than
+latest `claim`-semantics op (`claim` or `claim --steal`) that is later than
 any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.
 `createdAt` (the ready-ordering key, ADR-0004) is read from the issue's
 `create` op at fold time.
+
+> **Amendment (2026-06-21) — `assignee` is claim-only.** Per the ADR-0013
+> amendment, the `assignee` field is written only by `claim`/`claim --steal`
+> and cleared by `reopen`. The delta rows above change accordingly: `update`
+> drops `assignee` from its settable scalars (an `update` record still carrying
+> an `assignee` key preserves it in the unknown bag and never applies it —
+> additive evolution, no `v` bump), and `reopen` adds an `assignee` clear. Both
+> change the `WireOp.toOp` fold projection, so the implementation handles the
+> ADR-0022 cache-version obligation (no on-disk bytes or `v` change).
 
 Stability rules follow from the verb/delta split:
 

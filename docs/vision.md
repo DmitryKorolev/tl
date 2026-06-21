@@ -66,7 +66,7 @@ except where noted:
 | `title` | text | one line |
 | `status` | closed enum | `open / in_progress / done / cancelled`; a new issue defaults to `open` |
 | `priority` | `0`–`4` (`Fin 5`) | 0 = highest; default 2; an out-of-range value clamps to `0..4` on parse/import, with disclosure (ADR-0002) |
-| `assignee` | text? | optional free-form actor label; `claim` sets it to the current actor (ADR-0013) |
+| `assignee` | text? | optional free-form actor label; written only by `claim` / `claim --steal` and cleared by `reopen` (claim-only; not settable via `create`/`update`, ADR-0013/0008) |
 | `labels` | set of text | OR-Set; categorical tags, filter facets only, drive nothing |
 | `description` | text? | optional freeform body — task *input* (whole-field, not threaded) |
 | `notes` | text? | optional freeform body — task *output* / human notes (whole-field, not threaded) |
@@ -133,11 +133,11 @@ Work loop
 | `tl init [--stealth]` | create the (gitignored) `.tl/`, mint the replica-id, and (in a git repo) wire up sharing; `--stealth` = local-only, zero repo-visible trace. Grows across stages (ADR-0001 §4 / ADR-0012) |
 | `tl import <path> [--force]` | one-shot migration from an existing tracker's data; refuses existing task state (local `.tl/log/` segments or a local/remote `refs/tl/log`) without `--force` (ADR-0005) |
 | `tl sync` | publish/receive task state: fetch + union-merge + push the `refs/tl/log` ref (ADR-0001) — the transport, since `tl` never commits to your branch |
-| `tl claim <id> [--sync] [--verify]` / `tl update <id> --claim` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
-| `tl update <id> [--assignee] [-p] [--slug] …` | scalar field edits via flags (lifecycle status uses `claim`/`close`/`reopen`; edges use `dep`/`parent`, never `update`) |
+| `tl claim <id> [--sync] [--verify]` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
+| `tl update <id> [--actor] [-p] [--slug] …` | scalar field edits via flags (`--actor` records provenance; `assignee` is claim-only, not an `update` field; lifecycle status uses `claim`/`close`/`reopen`; edges use `dep`/`parent`, never `update`) |
 | `tl edit <id>` | open title/description/notes in `$EDITOR` |
 | `tl close <id> --as done\|cancelled\|duplicate [--of <id>]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); cancelling an epic leaves its children open and reparentable — there is no `--cascade` (cut, ADR-0003 §3) |
-| `tl reopen <id>` | terminal → `open` |
+| `tl reopen <id>` | terminal → `open`; clears `assignee` (ADR-0008/0013) |
 | `tl defer <id> --until <date>` / `--for <dur>` / `tl undefer <id>` | timed postponement; auto-resumes (ADR-0010) |
 
 Dependencies (typed relations — `blocks` / `parent` / `related`, ADR-0003)
@@ -159,7 +159,7 @@ Read / visibility
 |---|---|
 | `tl show <id>` | one issue, with blockers + dependents + parent/children inline |
 | `tl log [<id>]` | chronological action history (HLC-ordered); per-issue when `<id>` given (ADR-0008) |
-| `tl list [filters]` | many: status / assignee / label / priority / text / `--blocked` / `--deferred` / `--stale [<dur>]` (default 24h, ADR-0013); `--all` includes closed, `--flat` for rows (the rest are the destination surface — see §Staged implementation for what ships today) |
+| `tl list [filters]` | many: status / assignee / label / priority / text / `--blocked` / `--deferred` / `--stale <dur>` (a mandatory duration, no default, ADR-0013); `--all` includes closed, `--flat` for rows (the rest are the destination surface — see §Staged implementation for what ships today) |
 | `tl label add <id> <label>` / `label remove <id> <label>` / `label list [<id>]` | manage categorical label tags (filter-only; drive nothing) |
 | `tl meta set <id> <key> <value>` / `meta get <id> [<key>]` / `meta clear <id> <key>` / `meta list [<id>]` | manage the opaque metadata side-channel — `ext:<system>` refs, imported fields (ADR-0002/0005); drives nothing |
 | `tl stats` | counts by state, #ready, #blocked, #cycles |
@@ -274,8 +274,8 @@ each stage shippable and testable on its own:
 - Stage 1 — the MVP work loop. `create` (with inline `--blocked-by` /
   `--blocks` / `--parent` / `--related`), `ready`, ready-only `claim`,
   `close --as`, a minimal `update` (non-lifecycle scalars —
-  title/priority/description/notes; the `--claim` alias is Stage 2, and
-  reparenting landed as the dedicated `parent set/remove` verbs, not
+  title/priority/description/notes; reparenting landed as the dedicated
+  `parent set/remove` verbs, not
   `update --parent`), `dep add/remove`, `why`, `dep cycles`, `show`,
   `list`, a minimal `doctor` (local clock/replica/log health + graph
   diagnostics; remote sync depth grows in Stage 3), and `--json` everywhere. This is the

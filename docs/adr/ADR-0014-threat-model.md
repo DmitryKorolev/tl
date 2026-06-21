@@ -199,7 +199,7 @@ Stance: accept + document. Within the read population there is no temporal
 or field-level confidentiality — superseded values stay reconstructable; this is
 inherent to an append-only auditable log (as with git history). Documented in
 overview.md. ADR-0013 keeps the actor resolution order
-`--assignee` → `TL_ACTOR` → git `user.email` → `<os-user>@<hostname>`, rather
+`--actor` → `TL_ACTOR` → git `user.email` → `<os-user>@<hostname>`, rather
 than changing the default away from git identity. The important guarantee is
 documentation and an explicit escape hatch: users or agents that want a non-PII
 handle set `TL_ACTOR`. Secrets must never be placed in task fields — they

@@ -250,7 +250,7 @@ canonical shape:
   is untrusted data; the render-time sanitization/fencing of these fields — and
   the schema-level statement that content is untrusted — are defined at the
   consumption boundary (ADR-0011 / ADR-0014), not in the kernel.
-- Claim outcome (on `show` and the `claim` / `update --claim` verbs):
+- Claim outcome (on `show` and the `claim` verb):
   `claim: { "outcome": "won"|"superseded", "currentAssignee": <assignee>|null }`
   — an `ok: true` data outcome, *not* an error, when a ready-only claim write
   succeeded and then either still wins (`won`) or lost on LWW (`superseded`).

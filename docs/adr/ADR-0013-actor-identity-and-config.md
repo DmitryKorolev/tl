@@ -20,8 +20,8 @@ a config file or stays env + flags only.
 
 The current actor resolves in this order, first hit wins:
 
-1. `--assignee <name>` flag, when the command takes one (explicit
-   override, and what `claim --assignee=X` uses);
+1. `--actor <name>` flag, when the command takes one (the explicit
+   provenance override; the env form is `TL_ACTOR`);
 2. `TL_ACTOR` environment variable;
 3. git `user.email` (via `git config user.email`);
 4. `<os-user>@<hostname>` as a last-resort fallback.
@@ -49,7 +49,8 @@ every op as the envelope `actor` field (ADR-0008) — provenance the kernel
 never reads (not part of the OR-Set/LWW key, so convergence is untouched). It
 mirrors git's per-commit author, backs `provenance.createdBy` and per-op
 authorship (ADR-0003), and is distinct from the `assignee` *field*, which only
-`claim` / `update --claim` write. The kernel never reads the environment.
+`claim` / `claim --steal` write and `reopen` clears (the 2026-06-21 amendment).
+The kernel never reads the environment.
 
 ### The "superseded by …" signal is shell-only and replica-relative
 
@@ -64,7 +65,8 @@ replica-relative, not a property of the merged state. `show` emits
 replica's latest local claim — surfaced as the `claim` block on **every**
 `tl show`, decoupled from any age window (amended 2026-06-16: the block is the
 replica's own provenance, so age never hides it). The *stale-claim* window is a
-separate, `doctor`-only concern with **no default**: it is the `tl.staleAfter`
+separate concern, read by `doctor` and by `claim --steal` (the 2026-06-21
+amendment), with **no default**: it is the `tl.staleAfter`
 git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
 `now - claimedAt` against the query's injected `now` (ADR-0010); unset ⇒
 `doctor` reports no stale verdict. A future `tl list --stale <duration>` takes
@@ -87,6 +89,43 @@ global store for *state*; this extends it to *settings*).
 A `tl config` command and/or a config file is a clean additive extension
 if real need appears (e.g. a persistent default priority or actor) — but it
 is not built speculatively.
+
+## Amendment (2026-06-21) — actor/assignee split, claim-only assignee, takeover
+
+Four freeze-sensitive decisions settle the actor/assignee surface before the
+CLI ossifies:
+
+- **Provenance flag `--actor`.** The acting-identity override (the resolution
+  order above) is `--actor <name>`, matching the `TL_ACTOR` env form; the old
+  `--assignee` spelling for provenance is dropped. `--assignee` is reserved for
+  the assignee concept — the `--assignee me` read filter on `ready`/`list` (the
+  facet grammar is settled separately). One flag no longer carries both
+  provenance and assignment.
+- **Claim-only `assignee`.** The `assignee` field is written only by `claim`
+  and `claim --steal`, and cleared by `reopen`; `create` and `update` cannot set
+  it. An open issue therefore never carries an assignee without a live claim —
+  the state the superseded signal and a future `list --stale` would misread. It
+  holds by construction: the `update` op drops `assignee` from its settable
+  fields (ADR-0008), so no write-time guard is needed.
+- **`reopen` clears `assignee`.** Returning a closed issue to `open` clears the
+  assignee alongside `closeResolution`; `claimedAt` is already absent after a
+  reopen, so the issue becomes unassigned until re-claimed (the ADR-0008 reopen
+  delta).
+- **Takeover via `claim --steal`.** Taking over an already-claimed item is
+  `claim <id> --steal`, allowed only when the existing claim is stale — by an
+  inline `--stale <duration>` or the configured `tl.staleAfter` (no default). It
+  writes an ordinary `claim` (status `in_progress`, the stealer as assignee, a
+  fresh `claimedAt`), keeping lifecycle in `claim` and letting `doctor` name the
+  exact fix. The staleness test is a local courtesy guard, never merge-enforced:
+  two replicas can both steal, LWW keeps the later stamp, and the loser reads
+  "superseded" — the existing claim-race contract. A separate `reassign` verb,
+  and reassignment without a claim, are rejected.
+
+First-class **routing** — earmarking an open task for an agent to pick up once
+it is ready — is deferred, and stays available as an additive later step (relax
+`assignee` to an earmark, or add a distinct `owner` field with `ready --owner
+me`), with an `owner:*` label as the interim. Choosing claim-only now re-admits
+an assignee writer later as a new allowed state, with no data migration.
 
 ## Consequences
 
