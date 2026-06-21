@@ -144,7 +144,12 @@ theorem blocksSuccB_eq (s : State) (i : IssueId) :
     (`readyFast`), so the weight phase is O(R·(V+E)) — each candidate's blocks-cone
     is computed independently, with no shared-cone memo across candidates. The
     per-cone engine is O(V+E) (the just-landed reach work); cross-candidate sharing
-    is not attempted. -/
+    is not attempted, and is NOT cheaply worth it: `weight` is a COUNT of a
+    reachable set, and per-node reachable-set counts are Θ(V²) worst case (a union
+    of children's sets is not a fold of their counts) — no general O(V+E) — so a
+    batched form would need bitset transitive closure over the SCC condensation,
+    disproportionate to the bounded-R dogfooding profile (the open working set is
+    small, so R is bounded and this phase is near-linear in practice). -/
 def weightFast (bsrc : Std.HashMap IssueId (List IssueId))
     (pset : Std.HashSet IssueId) (n : Nat) (i : IssueId) : Nat :=
   ((reachBFS (blocksSuccB bsrc pset) n [i]).erase i).length
