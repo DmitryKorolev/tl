@@ -349,18 +349,20 @@ Two separable concerns hide under "compaction." tl does the first; the second is
 deferred.
 
 - **Snapshot / checkpoint — a performance optimization, non-destructive.** The
-  cost of a read is the fold. A snapshot is a materialized state at a frontier so a
-  read becomes `snapshot ⊕ fold(ops above the frontier)` rather than folding from
-  genesis. The op log is retained in full: the snapshot is a validated cache (a
-  digest of the state at a causally-closed frontier `F`, plus `F` as a version
-  vector), and a stale, absent, or wrong snapshot falls back to folding the ops.
-  Because nothing is discarded, a late-merged op below `F` just folds onto the tail
-  and the snapshot is rebuilt or re-pointed — no causal-stability proof is needed
-  for *safety*, only for the cache's validity (the fold-preservation obligation
-  below). The local realization already ships — the fold cache (ADR-0022), per
-  clone; a shared/durable snapshot generalizes it so a cold clone or CI run need
-  not fold from genesis. As a side cache, not a new log record, it needs no format
-  `v` bump and is forward-compatible: a reader that ignores it just folds the log.
+  cost of a read is the fold. A snapshot is a materialized state plus the
+  per-segment content keys it folded (the existing fold cache, ADR-0022): a read
+  folds only each segment's appended byte-suffix onto the cached state, never from
+  genesis, and the op log is retained in full. It is *content-keyed*, not a causal
+  frontier — an append keeps it warm; any other divergence (a rewrite, or a
+  reordering ref-absorb that lands a late op below a cached prefix) fails the
+  per-segment key and rebuilds from the segments. So a late op never "folds below"
+  anything: it is either an appended suffix (folded) or a prefix change (rebuild).
+  Its correctness anchor is `fold_append`/`fold_perm` (ADR-0022) — no
+  causal-stability proof. The local realization already ships per clone; a
+  shared/durable snapshot generalizes the same content-keyed artifact so a cold
+  clone or CI run need not fold from genesis. As a side cache, not a log record, it
+  needs no format `v` bump and is forward-compatible: a reader that ignores it just
+  folds the log.
 - **Destructive GC — bounding log size; deferred, opt-in, lossy.** Actually
   discarding ops below `F` to bound on-disk/transport size is the hard,
   CRDT-hostile part: an op or OR-Set tombstone may be dropped only once every
@@ -376,13 +378,14 @@ deferred.
   kind becomes load-bearing — an old reader that ignored it would under-fold, so it
   fail-closes with an upgrade message), and it owes the change-feed a
   retention-horizon and gap/resync contract (ADR-0025).
-- **The reserved theorem (ADR-0004): fold-preservation.** For a causally-closed
-  frontier `F`, `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`. This makes a
-  snapshot a valid cache and — with the union-merge interaction (design-backlog) —
-  guards against a strictly-growing line-union resurrecting ops a destructive GC
-  retired. Recorded now; proved when a snapshot is materialized into a shared
-  artifact (the local fold cache already proves its `fold_append`/`fold_perm`
-  equivalents, ADR-0022).
+- **The reserved theorem (ADR-0004): fold-preservation.** The destructive-GC
+  snapshot — a `snapshot` record at a causally-stable version-vector frontier `F` —
+  owes `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`: what lets it discard
+  the ops below `F` without changing the materialized state, and, with the
+  union-merge interaction (design-backlog), guards against a strictly-growing
+  line-union resurrecting retired ops. Recorded now; proved if destructive GC is
+  built. The non-destructive content cache above needs only `fold_append`/
+  `fold_perm`, already proved (ADR-0022).
 - **The version vector serves two roles of the same shape.** Per-replica
   high-water marks back both the snapshot frontier here and the change-feed cursor
   (ADR-0025) — distinct uses (global causal-stability vs per-consumer position),

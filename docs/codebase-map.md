@@ -147,8 +147,9 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
                         --   (deferUntil storage + the --json timestamps)
   Version.lean          --   v fail-closed-on-newer; v=0 is malformed, not older;
                         --   the snapshot record stays reserved (ships with
-                        --   compaction behind a v bump, ADR-0008 — a v1 reader
-                        --   refuses it as unknown-version)
+                        --   destructive log GC behind a v bump, ADR-0008; the
+                        --   non-destructive snapshot is the no-bump fold cache —
+                        --   a v1 reader refuses a GC'd log as unknown-version)
   Ids.lean              --   issue-id mint (leftmost 80 SHA-256 bits over the
                         --   fixed-width preimage, ADR-0018) + the tl- display affix
 

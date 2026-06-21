@@ -89,19 +89,19 @@ Kernel theorems still to decide whether to commit to:
 
 ## Log format, versioning & compaction
 
-- Compaction snapshot placement & union-merge interaction is unpinned [med] —
-  ADR-0008 reserves a `snapshot` record and reads as `snapshot ⊕ fold(tails)`, and
-  claims "no format restructuring later" — but it never says where the snapshot
-  lives / which segment owns it, and the text reads two ways: *logical* compaction
-  (ops stay; snapshot shadows them — but then the log never shrinks) vs *physical*
-  removal (which the strictly-growing per-segment line-union, ADR-0001 §5, would
-  re-add from any un-compacted replica, resurrecting the retired ops the
-  snapshot tried to drop). Pin logical-vs-physical and, if physical, that
-  compaction *does* require a sync/union change (ADR-0008 × ADR-0001 §5 ×
-  ADR-0015 §3). A reserved kernel theorem records the safety obligation —
-  *compaction preserves the fold*, `fold ops = snapshot(F) ⊕ fold(ops above F)` for
-  a causally-closed frontier (ADR-0004/0008) — which whichever placement is chosen
-  must discharge.
+- Compaction snapshot placement & union-merge interaction — pinned by the
+  non-destructive split (ADR-0008, ADR-0022). *Logical* is the default: the
+  snapshot is the content-keyed fold cache, a side artifact (local in `.tl/local/`,
+  or a shared side object), so the ops stay, the log never shrinks, and there is no
+  `v` bump. *Physical* removal — discarding ops below a causally-stable frontier —
+  is the separately-deferred destructive GC; only it needs the `snapshot` record +
+  `v` bump, and only it must answer the strictly-growing per-segment line-union
+  (ADR-0001 §5), which would otherwise re-add retired ops from an un-compacted
+  replica — so it requires the sync/union change (ADR-0008 × ADR-0001 §5 ×
+  ADR-0015 §3) and the reserved *fold-preservation* theorem
+  `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable frontier
+  (ADR-0004/0008). The non-destructive cache needs only the proved
+  `fold_append`/`fold_perm` (ADR-0022).
 
 ## Sync, discovery & local concurrency
 

@@ -6,9 +6,10 @@ policy is fail-closed on newer: a record whose `v` exceeds what this binary
 supports refuses its *segment* (never the whole log — ADR-0008 §corruption),
 with an upgrade message. `v = 0` (below the baseline) is not a version at all
 — no writer ever stamped it — so it is malformed, not "older". The reserved
-`snapshot` record kind ships with compaction behind a `v` bump (ADR-0008), so
-this v1 reader correctly refuses it as unknown-version; there is deliberately
-no stage-1 snapshot code.
+`snapshot` record kind ships with *destructive* log GC behind a `v` bump
+(ADR-0008) — the non-destructive snapshot is the no-bump fold cache (ADR-0022) —
+so this v1 reader correctly refuses a GC'd log as unknown-version; there is
+deliberately no stage-1 snapshot code.
 
 Tested I/O shell (ADR-0004); no Mathlib (ADR-0009).
 -/
