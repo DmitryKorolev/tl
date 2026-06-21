@@ -261,8 +261,11 @@ into (one you don't own, a personal overlay, an isolated test run — pair with
   "sugar over git."
 - Duplicate delivery is harmless (the fold's duplicate-insensitivity), so
   the union may re-deliver a line with no effect.
-- The log grows without bound. Compaction/snapshotting is deferred to
-  ADR-0008, which reserves the `snapshot` record and version-vector frontier.
+- The log grows without bound, but read cost does not: the non-destructive
+  snapshot — the content-keyed fold cache (ADR-0022), which retains every op — folds
+  only appended suffixes. Destructive GC, the only thing that would bound on-disk
+  size by discarding settled ops, is deferred to ADR-0008 (which reserves the
+  `snapshot` record and version-vector frontier for it).
 
 ## Alternatives considered
 

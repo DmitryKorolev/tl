@@ -184,7 +184,8 @@ wins*, never *whether the join is well-defined* — the kernel theorem
   set, and a re-`remove` settles it. (Should real use show add-wins is the
   wrong call, switching to remove-wins is a localized superseding change.)
 - Deletes are tombstones, and tombstones accumulate. OR-Set removal
-  retains metadata; this feeds the same compaction problem ADR-0001 defers.
+  retains metadata; this feeds the same unbounded log growth that only destructive
+  GC would bound (deferred, ADR-0001/0008).
 - Equal-timestamp ties resolve deterministically by the `(replica-id,
   nonce)` suffix of the order key (above), so two replicas never disagree on a
   field's value once they have seen the same writes.
