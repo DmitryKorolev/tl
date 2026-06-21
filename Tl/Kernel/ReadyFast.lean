@@ -272,7 +272,10 @@ theorem rankSortK_map (st : State) :
     sort over cached keys, and the saturating closure inside `weight`. -/
 def readyFast (m : AMap IssueId Status) (s : State) (now : Instant) : List IssueId :=
   let edges := s.presentEdges
-  let pe := s.parentEdges
+  -- `parentEdgesFast` builds the child-present check through a hash set ONCE; the
+  -- plain `parentEdges` does an O(N) `hasIssue` scan per edge (Θ(E·N)) — the
+  -- dominant `ready` cost at scale. Same list (`parentEdgesFast_eq`).
+  let pe := s.parentEdgesFast
   let present := s.presentIssues
   -- hoist the hash/bucket views ONCE; the per-candidate filter then reads each
   -- O(1)-amortized instead of an O(N) find / O(E) edge-filter per issue
@@ -292,6 +295,7 @@ theorem readyFast_eq (s : State) (now : Instant) :
     readyFast (s.effStatusAll) s now = s.ready now := by
   unfold State.readyFast State.ready
   dsimp only
+  rw [parentEdgesFast_eq]
   have hf : s.presentIssues.filter (isReadyFastH (hashSetOf s.presentIssues)
               (hashAssoc (s.effStatusAll).toList) (hashAssoc s.data.toList)
               (blocksByTarget s.presentEdges) (bucketBy s.parentEdges) s now ·)

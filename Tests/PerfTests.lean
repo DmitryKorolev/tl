@@ -186,12 +186,13 @@ def perfTests : IO (List Outcome) := do
     -- near-linear growth IS pinned, by the in-process `RollupFast` theorems and by
     -- the end-to-end binary row below (which folds it on every read).
     let roll ← bench reps (fun _ => (State.effStatusAll s).toList.length)
-    -- `ready` grows ~11× for ×4 ops here (weightFast runs an O(V+E) blocks-cone
-    -- closure per candidate via the adjacency index, but with NO cross-candidate
-    -- shared-cone memo, so the rank phase is O(R·(V+E))) — so de-floor-masking it
-    -- would push the row to the ×12 edge: it stays floor-masked until that fix
-    -- lands (ADR-0023: a still-superlinear row cannot be honestly un-masked).
-    let rdy ← bench 1 (fun _ => (State.readyFast rollup s synthNow).length)
+    -- `ready` is near-linear (×4 ops ⇒ ~×4.4): the dominant cost was `parentEdges`
+    -- doing an O(N) `hasIssue` scan per Parent edge (Θ(E·N)); `readyFast` now reads
+    -- it through `parentEdgesFast` (presence via a once-built hash set, O(E),
+    -- `parentEdgesFast_eq`). R (ready candidates) is bounded, so the per-candidate
+    -- `weightFast` cone is not the driver. De-floor-masked: benched well above the
+    -- 30ms floor so the ×12 ratio actually bites (previously masked at reps=1).
+    let rdy ← bench 2500 (fun _ => (State.readyFast rollup s synthNow).length)
     -- the diagnostics machinery (the certificate SCC path) over state views
     -- hoisted once: adjacency bucketing, presence/rollup hash views, Tarjan,
     -- the checker, and witness reconstruction — the cycleCount shape (three
