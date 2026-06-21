@@ -521,47 +521,63 @@ private def opTargets : WireOp → List IssueId
   | .depAdd (f, t, _) | .relate (f, t, _)
   | .depRemove (f, t, _) _ | .unrelate (f, t, _) _ => [f, t]
 
-/-- A resumable change-feed cursor (ADR-0008 version vector): for each replica
-    (decoded id) the highest packed HLC already delivered. An op is emitted iff
-    its HLC exceeds its replica's threshold, so a late foreign op whose HLC sits
-    below another replica's maximum is still delivered exactly once — a scalar
-    high-water mark would drop it. -/
-private abbrev LogCursor := AMap Nat Nat
+/-- A resumable change-feed cursor (ADR-0025): for each replica (decoded id) the
+    highest `(HLC, nonce)` already delivered. The log's intra-replica order is
+    `(HLC, nonce)` — two ops can share an HLC and are separated by the nonce
+    (ADR-0007) — so the cursor tracks both. An op is emitted iff its `(HLC, nonce)`
+    exceeds its replica's threshold. A scalar high-water mark drops a late op below
+    another replica's max; a per-replica HLC-only frontier drops a same-HLC tie;
+    this drops neither. -/
+private abbrev LogCursor := AMap Nat (Nat × Nat)
 
-private def cursorThreshold (c : LogCursor) (replica : Nat) : Nat := (c.find replica).getD 0
+private def cursorThreshold (c : LogCursor) (replica : Nat) : Nat × Nat :=
+  (c.find replica).getD (0, 0)
 
-/-- Fold ops into a cursor, keeping the per-replica maximum HLC. -/
+/-- An op's `(HLC, nonce)` is strictly after a threshold (lexicographic). -/
+private def stampAfter (hlc nonce : Nat) (thr : Nat × Nat) : Bool :=
+  Nat.blt thr.1 hlc || (thr.1 == hlc && Nat.blt thr.2 nonce)
+
+/-- Fold ops into a cursor, keeping the per-replica maximum `(HLC, nonce)`. -/
 private def advanceCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :=
-  ops.foldl (fun m p => m.insert p.stamp.replica (Nat.max (cursorThreshold m p.stamp.replica) p.stamp.hlc)) base
+  ops.foldl (fun m p =>
+    let cur := cursorThreshold m p.stamp.replica
+    if stampAfter p.stamp.hlc p.stamp.nonce cur then
+      m.insert p.stamp.replica (p.stamp.hlc, p.stamp.nonce)
+    else m) base
 
-/-- Serialize a cursor as comma-joined `<replica>:<hlc>` pairs, the replica in
-    its canonical 13-char Crockford form, sorted by replica (`AMap.toList`). -/
+/-- Serialize a cursor as comma-joined `<replica>:<hlc>:<nonce>` triples, the
+    replica in its canonical 13-char Crockford form, sorted by replica
+    (`AMap.toList`). -/
 private def renderCursor (c : LogCursor) : String :=
-  String.intercalate "," (c.toList.map (fun (r, h) => s!"{toCrockford r 13}:{h}"))
+  String.intercalate "," (c.toList.map (fun (r, hn) => s!"{toCrockford r 13}:{hn.1}:{hn.2}"))
 
-/-- Parse a `--since` cursor: comma-joined `<replica>:<hlc>` pairs (the `cursor`
-    of a prior `tl log`). An empty token means no thresholds (full history); a
-    malformed segment is a usage error that names the expected shape. -/
+/-- Parse a `--since` cursor: comma-joined `<replica>:<hlc>:<nonce>` triples (the
+    `cursor` of a prior `tl log`). A trimmed-empty token is the empty cursor (full
+    history); anything else is validated as strictly as the wire decoder
+    (`decodeStamp`) — an empty/extra `:`-segment, a stray comma, a non-canonical
+    or `≥ 2^64` replica, or a non-numeric hlc/nonce is a usage error that names the
+    expected shape, never a silent full dump. -/
 private def parseCursor (s : String) : Except Tl.Error LogCursor := do
+  let t := s.trimAscii.toString
+  if t.isEmpty then return AMap.empty
   let mut c : LogCursor := AMap.empty
-  for piece in (s.trimAscii.toString.splitOn ",").filter (fun p => !p.trimAscii.isEmpty) do
+  for piece in t.splitOn "," do
     match piece.splitOn ":" with
-    | [rid, hstr] =>
+    | [rid, hstr, nstr] =>
       let ridT := rid.trimAscii.toString
-      match ofCrockford? ridT, hstr.trimAscii.toString.toNat? with
-      | some r, some h =>
-        -- require the canonical 13-char replica id: `ofCrockford?` imposes no
-        -- width, so an empty id aliases replica 0 and an over-long id would
-        -- truncate to a different replica when `renderCursor` re-emits it
-        if toCrockford r 13 == ridT then
-          c := c.insert r (Nat.max (cursorThreshold c r) h)
+      match ofCrockford? ridT, hstr.trimAscii.toString.toNat?, nstr.trimAscii.toString.toNat? with
+      | some r, some h, some n =>
+        -- mirror `decodeStamp`: a canonical 13-char Crockford replica below 2^64
+        if ridT.length == 13 && toCrockford r 13 == ridT && decide (r < 2 ^ 64) then
+          let cur := cursorThreshold c r
+          c := c.insert r (if stampAfter h n cur then (h, n) else cur)
         else
           throw (.mk' .usage
-            s!"--since: '{ridT}' is not a canonical 13-char replica id — pass the `cursor` from a prior `tl log --json`")
-      | _, _ => throw (.mk' .usage
-          s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>) — pass the `cursor` from a prior `tl log --json`")
+            s!"--since: '{ridT}' is not a canonical 13-char replica id below 2^64 — pass the `cursor` from a prior `tl log --json`")
+      | _, _, _ => throw (.mk' .usage
+          s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor` from a prior `tl log --json`")
     | _ => throw (.mk' .usage
-        s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>) — pass the `cursor` from a prior `tl log --json`")
+        s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor` from a prior `tl log --json`")
   return c
 
 /-- `tl log [<id>] [--since <cursor>]`: an HLC-ordered projection over the op log
@@ -583,10 +599,11 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     | some tok =>
       let i ← MonadExcept.ofExcept (resolveToken v.state tok)
       pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
-  -- since-mode: the delta strictly after the per-replica cursor; plain: all visible
+  -- since-mode: the delta strictly after the per-replica (HLC, nonce) cursor;
+  -- plain: all visible
   let matching :=
     if sinceGiven then
-      visible.filter (fun p => Nat.blt (cursorThreshold cursor p.stamp.replica) p.stamp.hlc)
+      visible.filter (fun p => stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold cursor p.stamp.replica))
     else visible
   -- since-mode reads oldest-first (a forward feed); plain log newest-first.
   -- Both use the full stamp order (deterministic on equal HLCs).

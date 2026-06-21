@@ -2148,16 +2148,24 @@ def cliLogSinceTests : IO (List Outcome) := do
         && ((jArr j "entries").head?.bind (fun e => jStr e "op")) == some "create")]
   -- (4) a malformed cursor is a clean usage error (never a silent full dump)
   o := o ++
-    [← expectErr "log --since with a token that is not replica:hlc is usage"
+    [← expectErr "log --since with a token that is not a replica:hlc:nonce triple is usage"
        ["log", "--since", "garbage", "--dir", dir] .usage,
      ← expectErr "log --since with a non-numeric hlc is usage"
-       ["log", "--since", "1zzzzzzzzzzzz:notanum", "--dir", dir] .usage,
+       ["log", "--since", "1zzzzzzzzzzzz:notanum:1", "--dir", dir] .usage,
+     ← expectErr "log --since with a non-numeric nonce is usage"
+       ["log", "--since", "1zzzzzzzzzzzz:256:nope", "--dir", dir] .usage,
      ← expectErr "log --since with a non-Crockford replica is usage"
-       ["log", "--since", "!!!:5", "--dir", dir] .usage,
+       ["log", "--since", "!!!:256:1", "--dir", dir] .usage,
      ← expectErr "log --since with an empty replica is usage"
-       ["log", "--since", ":5", "--dir", dir] .usage,
+       ["log", "--since", ":256:1", "--dir", dir] .usage,
      ← expectErr "log --since with an over-long (non-13-char) replica is usage"
-       ["log", "--since", "00000000000000000000:5", "--dir", dir] .usage]
+       ["log", "--since", "00000000000000000000:256:1", "--dir", dir] .usage,
+     ← expectErr "log --since with a >=2^64 replica is usage (first char above 'f')"
+       ["log", "--since", "zzzzzzzzzzzzz:256:1", "--dir", dir] .usage,
+     ← expectErr "log --since with stray commas is usage, never a silent full dump"
+       ["log", "--since", ",,,", "--dir", dir] .usage,
+     ← expectErr "log --since with a trailing comma is usage"
+       ["log", "--since", "1zzzzzzzzzzzz:256:1,", "--dir", dir] .usage]
   -- (5) the distinguishing regression: a late-arriving foreign op whose HLC is
   -- below the own replica's max is still delivered under the per-replica version
   -- vector — a scalar high-water-mark cursor would drop it (count 0, not 1).
@@ -2177,6 +2185,26 @@ def cliLogSinceTests : IO (List Outcome) := do
      ← expectData "the advanced cursor spans both replicas once the late op is folded"
        ["log", "--since", frontierA, "--json", "--dir", dirR]
        (fun j => (((jStr j "cursor").getD "").splitOn ",").length == 2)]
+  -- (5b) two ops from one replica at the same HLC, split only by nonce (ADR-0007),
+  -- must each be delivered exactly once: a (replica → HLC) cursor skips the second
+  -- on resume; the (HLC, nonce) frontier does not.
+  let dirT ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dirT / "log")
+  IO.FS.writeFile (System.FilePath.mk dirT / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc0001" { title := some "a" }) 256 "2zzzzzzzzzzzz" "m" 1 ++ "\n"
+      ++ foreignLine (.create "aaaabbbbcccc0002" { title := some "b" }) 256 "2zzzzzzzzzzzz" "m" 2 ++ "\n")
+  let tp1 ← run' ["log", "--since", "", "--limit", "1", "--json", "--dir", dirT]
+  let (te1, tc1) := match tp1 with
+    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .error _ => (0, "")
+  let tp2 ← run' ["log", "--since", tc1, "--limit", "1", "--json", "--dir", dirT]
+  let (te2, tc2) := match tp2 with
+    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .error _ => (0, "")
+  o := o ++
+    [check "same-HLC page 1 delivers one op" (te1 == 1) s!"entries={te1} cursor={tc1}",
+     check "same-HLC page 2 delivers the nonce-tiebroken op, not empty (no skip)"
+       (te2 == 1 && tc2 != tc1) s!"entries={te2} c1={tc1} c2={tc2}"]
   -- (6) human/json parity: --since reports the cursor in the human output too
   o := o ++ [← (do match ← run' ["log", "--since", "", "--dir", dir] with
     | .ok out => pure (check "human log --since prints a cursor line (parity with --json)"
