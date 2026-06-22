@@ -140,12 +140,26 @@ any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.
 > **Amendment (2026-06-21) — `assignee` is claim-only.** Per the ADR-0013
 > amendment, the `assignee` field is written only by `claim`/`claim --steal`
 > and cleared by `reopen`. The delta rows above change accordingly: neither
-> `create` nor `update` may set `assignee` (a record carrying an `assignee` key
-> preserves it in the unknown bag and never applies it — additive evolution, no
-> `v` bump), and `reopen` adds an `assignee` clear. The `create`/`update` decode
-> classification and the `reopen` `WireOp.toOp` projection both change, so the
-> implementation handles the ADR-0022 cache-version obligation (no on-disk bytes
-> or `v` change).
+> `create` nor `update` may set `assignee`, and `reopen` adds an `assignee`
+> clear. Two legs, with different version status:
+> - `create`/`update` dropping `assignee` is genuinely **additive** — `tl` never
+>   emitted an `assignee` key on a `create`/`update` record (its CLI `--actor`
+>   flag is provenance, not a scalar write), so a carried key was always meant
+>   for, and is now routed to, the unknown bag; the fold of every real `tl`
+>   record is unchanged.
+> - `reopen` clearing `assignee` is **not** additive: it is a changed-field
+>   meaning on an existing record kind, so an old binary folds a
+>   reopened-not-reclaimed issue keeping its prior assignee while a new binary
+>   clears it — a same-`v1`-log fold divergence that, **had any release shipped**,
+>   would require a `v` bump. It does not, because the floor binds from 1.0 (§
+>   Stability horizon) and **no release/tag has shipped** (product is pre-1.0): the
+>   prior fold was never a delivered contract, so changing it is unreleased
+>   iteration, not an inter-release break. The one live hazard pre-release — a
+>   stale *local* fold cache suffix-folding new-semantics ops onto an
+>   old-semantics cached state — is exactly the ADR-0022 cache-version obligation,
+>   handled by the `cacheVersion` 2→3 bump. No on-disk bytes or `v` change.
+> The first tagged release must still disclose the materialization change in its
+> notes (the Stability-horizon "never silently" duty).
 
 Stability rules follow from the verb/delta split:
 

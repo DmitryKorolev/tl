@@ -721,6 +721,25 @@ GARBAGE
   o := o ++ [← expectData "reopen clears the assignee: a reopened claimed issue is Open and unassigned"
       ["show", "tl-" ++ tgtRC, "--dir", dirRC, "--json"]
       (fun j => jStr j "status" == some "open" && (jGet j "assignee").isNone)]
+  -- open+assigned IS reachable by an LWW race (NOT "unreachable by construction"):
+  -- `status` and `assignee` are independent registers, so a `claim` stamped BELOW
+  -- its `create` (clock skew / a crafted segment) loses the status LWW (the higher
+  -- create wins status=open) but wins the assignee LWW. The value-equality reopen
+  -- guard is genuinely needed: it fires on this open-but-assigned state (not a
+  -- no-op) and restores open+unassigned.
+  let dirLww ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dirLww / "log")
+  let lwwId := "aaaabbbbcccceeee"
+  IO.FS.writeFile (System.FilePath.mk dirLww / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create lwwId { title := some "skewed" }) 4000 "2zzzzzzzzzzzz" "eve" 2 ++ "\n"
+     ++ foreignLine (.claim lwwId "alice") 2000 "2zzzzzzzzzzzz" "eve" 1 ++ "\n")
+  o := o ++ [← expectData "open+assigned is reachable by an LWW race (claim stamped below create)"
+      ["show", "tl-" ++ lwwId, "--dir", dirLww, "--json"]
+      (fun j => jStr j "status" == some "open" && jStr j "assignee" == some "alice")]
+  let _ ← run' ["reopen", "tl-" ++ lwwId, "--dir", dirLww, "--actor", "dev"]
+  o := o ++ [← expectData "reopen (value-equality guard) restores open+unassigned from the LWW open+assigned"
+      ["show", "tl-" ++ lwwId, "--dir", dirLww, "--json"]
+      (fun j => jStr j "status" == some "open" && (jGet j "assignee").isNone)]
   -- doctor survives store damage as a failing check
   let dir4 ← freshDir
   let _ ← mkIssue dir4 "Healthy"

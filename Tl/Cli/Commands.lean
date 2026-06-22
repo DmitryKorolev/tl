@@ -898,10 +898,13 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
     (ADR-0008's reopen delta + ADR-0013: the prior claim ended with the close).
     Idempotent on *value equality* — a no-op only when the issue already equals
     reopen's whole target (open, no resolution, no assignee), mirroring the
-    re-close guard. This is deliberately not narrowed to `status == open`: a CRDT
-    merge of a foreign/imported `create` (which seeds `assignee` verbatim) with a
-    claim can materialize an open-but-assigned issue that no reopen produced, and
-    no write-time guard can forbid that merge (CLAUDE.md §2). Firing reopen on it
+    re-close guard. This is deliberately not narrowed to `status == open`:
+    `status` and `assignee` are independent LWW registers, so a merge can
+    materialize an open-but-assigned issue that no reopen produced — e.g. a
+    `claim` (which writes `status:=in_progress` and `assignee` at one stamp)
+    stamped *below* a later status write (a `create`/`reopen` under clock skew, or
+    a crafted segment) loses the status LWW (→ `open`) but keeps the assignee LWW.
+    No write-time guard can forbid that merge (CLAUDE.md §2). Firing reopen on it
     restores the claim-only invariant — the only CLI path back to open+unassigned. -/
 def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride

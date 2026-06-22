@@ -104,17 +104,18 @@ CLI ossifies:
 - **Claim-only `assignee`.** The `assignee` field is written only by `claim`
   and `claim --steal`, and cleared by `reopen`; neither `create` nor `update`
   may set it (a record carrying an `assignee` key preserves it in the unknown
-  bag, never applied). An open issue therefore never carries an assignee without
-  a live claim — the state the superseded signal and a future `list --stale`
-  would misread. It holds **by construction**, not by a write-time guard (which a
-  CRDT merge could not enforce anyway, §core-principle-2): every op that *sets*
-  the assignee (`claim`) sets `status = in_progress` at the same stamp, and every
-  op that *opens* the issue (`reopen`) clears the assignee at the same stamp, so
-  the status and assignee registers move together — open-and-assigned is not a
-  reachable LWW join. `tl reopen` is additionally a value-equality idempotent (it
-  fires unless the issue already equals open + no-resolution + no-assignee), so
-  even a hand-built record that smuggled an assignee onto an open issue is
-  restored to the invariant through the CLI.
+  bag, never applied). So in the **steady state** an open issue carries no
+  assignee — only a live claim sets one, and the claim moves the issue to
+  `in_progress`. This is *not* an absolute invariant: `status` and `assignee`
+  are independent LWW registers, so a CRDT merge can still produce a transient
+  open-but-assigned state — a `claim` (which writes `in_progress` + `assignee`
+  at one stamp) stamped *below* a later status write (a `create` or `reopen`
+  under clock skew, or a crafted segment) loses the status LWW but keeps the
+  assignee LWW. No write-time guard could forbid that merge (§core-principle-2);
+  the superseded signal and a future `list --stale` are *derived* and tolerate
+  it. `tl reopen` is the CLI remedy: it is a value-equality idempotent (it fires
+  unless the issue already equals open + no-resolution + no-assignee), so it
+  clears any such smuggled-in assignee and restores the steady state.
 - **`reopen` clears `assignee`.** Returning a closed issue to `open` clears the
   assignee alongside `closeResolution`; `claimedAt` is already absent after a
   reopen, so the issue becomes unassigned until re-claimed (the ADR-0008 reopen
