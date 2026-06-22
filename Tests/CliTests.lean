@@ -62,7 +62,7 @@ private def freshDir : IO String := do
 
 /-- Create an issue and return its bare id. -/
 private def mkIssue (dir : String) (title : String) (extra : List String := []) : IO String := do
-  match ← run' (["create", title, "--dir", dir, "--assignee", "tester"] ++ extra) with
+  match ← run' (["create", title, "--dir", dir, "--actor", "tester"] ++ extra) with
   | .ok out => return ((jStr out.data "id").getD "").drop 3 |>.toString
   | .error e => throw (IO.userError s!"create failed: {e.message}")
 
@@ -101,7 +101,7 @@ def cliBasicTests : IO (List Outcome) := do
   -- create echo (ADR-0020): display id, defaults, provenance, dependencies
   let dir ← freshDir
   o := o ++ [← expectData "create echoes the full issue"
-    ["create", "Design the AST", "--dir", dir, "-p", "0", "--assignee", "carol"]
+    ["create", "Design the AST", "--dir", dir, "-p", "0", "--actor", "carol"]
     (fun j =>
       ((jStr j "id").getD "").startsWith "tl-"
       && jStr j "status" == some "open" && jStr j "effectiveStatus" == some "open"
@@ -110,7 +110,7 @@ def cliBasicTests : IO (List Outcome) := do
       && ((jGet j "provenance").bind (fun p => jStr p "createdBy")) == some "carol"
       && (jStr j "createdAt").isSome && (jStr j "updatedAt").isSome)]
   -- default priority is 2
-  o := o ++ [← expectData "create defaults priority 2" ["create", "x", "--dir", dir, "--assignee", "t"]
+  o := o ++ [← expectData "create defaults priority 2" ["create", "x", "--dir", dir, "--actor", "t"]
     (fun j => jNat j "priority" == some 2)]
   -- sync progress notice (stderr-only, sanitized before it bypasses Main's chokepoint)
   o := o ++
@@ -155,23 +155,23 @@ def cliWorkLoopTests : IO (List Outcome) := do
       && ((jArr j "items").head?.bind (fun r => jStr r "id")) == some ("tl-" ++ blocker))]
   -- dep relate / unrelate: a symmetric link, visible in dependencies, retractable
   o := o ++ [← expectData "dep relate links two issues"
-      ["dep", "relate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--assignee", "t"]
+      ["dep", "relate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--actor", "t"]
     (fun j => jStr j "status" == some "added"),
    ← expectData "the related edge shows in dependencies" ["show", "tl-" ++ blocker, "--dir", dir]
     (fun j => (jArr j "dependencies").any (fun e => jStr e "type" == some "related")),
    ← expectData "dep unrelate retracts it"
-      ["dep", "unrelate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--assignee", "t"]
+      ["dep", "unrelate", "tl-" ++ blocker, "tl-" ++ blocked, "--dir", dir, "--actor", "t"]
     (fun j => jStr j "status" == some "removed"),
    ← expectData "the related edge is gone" ["show", "tl-" ++ blocker, "--dir", dir]
     (fun j => !((jArr j "dependencies").any (fun e => jStr e "type" == some "related")))]
   -- claim refusals: not-ready target, with blockedBy reasons
   o := o ++ [← expectErr "claim of a blocked issue is not-claimable"
-    ["claim", "tl-" ++ blocked, "--dir", dir, "--assignee", "carol"] .notClaimable
+    ["claim", "tl-" ++ blocked, "--dir", dir, "--actor", "carol"] .notClaimable
     (fun e => e.context.any (fun (k, v) =>
       k == "reasons" && ((jGet v "blockedBy").isSome)))]
   -- claim the ready one: outcome won, assignee set
   o := o ++ [← expectData "claim wins and echoes the claim block"
-    ["claim", "tl-" ++ blocker, "--dir", dir, "--assignee", "carol"]
+    ["claim", "tl-" ++ blocker, "--dir", dir, "--actor", "carol"]
     (fun j => jStr j "assignee" == some "carol" && jStr j "status" == some "in_progress"
       && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
   -- show now carries the recent-claim block
@@ -180,26 +180,26 @@ def cliWorkLoopTests : IO (List Outcome) := do
     (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
   -- already-claimed target refuses with assignee reason
   o := o ++ [← expectErr "claim of an in-progress issue is not-claimable"
-    ["claim", "tl-" ++ blocker, "--dir", dir, "--assignee", "dana"] .notClaimable
+    ["claim", "tl-" ++ blocker, "--dir", dir, "--actor", "dana"] .notClaimable
     (fun e => e.context.any (fun (k, v) =>
       k == "reasons" && ((jGet v "assignee").isSome || (jGet v "status").isSome)))]
   -- close: unblocked carries the freed dependent
   o := o ++ [← expectData "close frees the dependent (unblocked)"
-    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "done", "--assignee", "carol"]
+    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "done", "--actor", "carol"]
     (fun j => jStr j "closeResolution" == some "done" && (jStr j "closedAt").isSome
       && (jArr j "unblocked").any (fun x => x.getStr?.toOption == some ("tl-" ++ blocked)))]
   -- idempotent re-close: succeeds, empty unblocked, still closed
   o := o ++ [← expectData "re-close with the same resolution is a no-op"
-    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "done", "--assignee", "carol"]
+    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "done", "--actor", "carol"]
     (fun j => jStr j "status" == some "done" && (jArr j "unblocked").isEmpty)]
   -- different resolution is a plain rewrite
   o := o ++ [← expectData "re-close with a different resolution rewrites"
-    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "cancelled", "--assignee", "carol"]
+    ["close", "tl-" ++ blocker, "--dir", dir, "--as", "cancelled", "--actor", "carol"]
     (fun j => jStr j "closeResolution" == some "cancelled" && jStr j "status" == some "cancelled")]
   -- update echo
   o := o ++
     [← expectData "update rewrites the title"
-      ["update", "tl-" ++ blocked, "--dir", dir, "--title", "Parser v2", "--assignee", "t"]
+      ["update", "tl-" ++ blocked, "--dir", dir, "--title", "Parser v2", "--actor", "t"]
       (fun j => jStr j "title" == some "Parser v2"),
      ← expectErr "update without flags is usage"
        ["update", "tl-" ++ blocked, "--dir", dir] .usage]
@@ -207,17 +207,17 @@ def cliWorkLoopTests : IO (List Outcome) := do
   -- --notes still replaces wholesale; the two flags conflict
   o := o ++
     [← expectData "append-notes seeds notes when empty"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "first", "--assignee", "t"]
+       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "first", "--actor", "t"]
        (fun j => jStr j "notes" == some "first"),
      ← expectData "append-notes joins onto existing notes with a newline"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "second", "--assignee", "t"]
+       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "second", "--actor", "t"]
        (fun j => jStr j "notes" == some "first\nsecond"),
      ← expectData "--notes replaces the accumulated notes wholesale"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "reset", "--assignee", "t"]
+       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "reset", "--actor", "t"]
        (fun j => jStr j "notes" == some "reset"),
      ← expectErr "--notes and --append-notes together is usage"
        ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "x", "--append-notes", "y",
-        "--assignee", "t"] .usage]
+        "--actor", "t"] .usage]
   return o
 
 def cliCloseGuardTests : IO (List Outcome) := do
@@ -227,22 +227,22 @@ def cliCloseGuardTests : IO (List Outcome) := do
   let child ← mkIssue dir "The child" ["--parent", "tl-" ++ epic]
   -- epic --as done refused with openChildren context
   o := o ++ [← expectErr "epic close --as done is not-closeable"
-    ["close", "tl-" ++ epic, "--dir", dir, "--as", "done", "--assignee", "t"] .notCloseable
+    ["close", "tl-" ++ epic, "--dir", dir, "--as", "done", "--actor", "t"] .notCloseable
     (fun e => e.context.any (fun (k, v) =>
       k == "reasons" && (jGet v "openChildren").isSome))]
   -- --as cancelled is allowed on an epic
   o := o ++ [← expectData "epic close --as cancelled is allowed"
-    ["close", "tl-" ++ epic, "--dir", dir, "--as", "cancelled", "--assignee", "t"]
+    ["close", "tl-" ++ epic, "--dir", dir, "--as", "cancelled", "--actor", "t"]
     (fun j => jStr j "status" == some "cancelled")]
   -- all-children-closed epic: --as done is still refused (rollup-only, ADR-0003),
   -- but the message must not read the contradictory "open: 0" — it teaches
   -- already-done-via-rollup, and openChildren is the empty array
   let epic2 ← mkIssue dir "Rolled-up epic"
   let child2 ← mkIssue dir "Last child" ["--parent", "tl-" ++ epic2]
-  let _ ← run' ["close", "tl-" ++ child2, "--dir", dir, "--as", "done", "--assignee", "t"]
+  let _ ← run' ["close", "tl-" ++ child2, "--dir", dir, "--as", "done", "--actor", "t"]
   o := o ++
     [← expectErr "epic close --as done with all children closed teaches rollup (not 'open: 0')"
-      ["close", "tl-" ++ epic2, "--dir", dir, "--as", "done", "--assignee", "t"] .notCloseable
+      ["close", "tl-" ++ epic2, "--dir", dir, "--as", "done", "--actor", "t"] .notCloseable
       (fun e => (e.message.splitOn "already done via child rollup").length > 1
         && (e.message.splitOn "open:").length == 1)]
   -- duplicate: stored canonical target renders in display form
@@ -251,18 +251,18 @@ def cliCloseGuardTests : IO (List Outcome) := do
   o := o ++
     [← expectErr "self-duplicate is not-closeable"
       ["close", "tl-" ++ dupe, "--dir", dir, "--as", "duplicate", "--of", "tl-" ++ dupe,
-       "--assignee", "t"] .notCloseable
+       "--actor", "t"] .notCloseable
       (fun e => e.context.any (fun (k, v) =>
         k == "reasons" && (jGet v "selfDuplicate").isSome)),
      ← expectData "close --as duplicate records the canonical target"
        ["close", "tl-" ++ dupe, "--dir", dir, "--as", "duplicate", "--of", "tl-" ++ canonical,
-        "--assignee", "t"]
+        "--actor", "t"]
        (fun j => jStr j "status" == some "cancelled"
          && jStr j "closeResolution" == some "duplicate"
          && ((jGet j "meta").bind (fun m => jStr m "duplicate-of")) == some ("tl-" ++ canonical)),
      ← expectData "duplicate re-close with the same target is a no-op"
        ["close", "tl-" ++ dupe, "--dir", dir, "--as", "duplicate", "--of", "tl-" ++ canonical,
-        "--assignee", "t"]
+        "--actor", "t"]
        (fun j => jStr j "closeResolution" == some "duplicate"),
      -- deliberately allowed (the pinned `close --as duplicate [--of <id>]`
      -- surface): a targetless duplicate closes as cancelled/duplicate and
@@ -270,12 +270,12 @@ def cliCloseGuardTests : IO (List Outcome) := do
      ← (do
        let loner ← mkIssue dir "Targetless dupe"
        expectData "targetless --as duplicate is allowed (pinned contract)"
-         ["close", "tl-" ++ loner, "--dir", dir, "--as", "duplicate", "--assignee", "t"]
+         ["close", "tl-" ++ loner, "--dir", dir, "--as", "duplicate", "--actor", "t"]
          (fun j => jStr j "status" == some "cancelled"
            && jStr j "closeResolution" == some "duplicate"
            && ((jGet j "meta").bind (fun m => jStr m "duplicate-of")).isNone)),
      ← expectData "child close completes the epic by rollup"
-       (["close", "tl-" ++ child, "--dir", dir, "--as", "done", "--assignee", "t"])
+       (["close", "tl-" ++ child, "--dir", dir, "--as", "done", "--actor", "t"])
        (fun j => jStr j "status" == some "done")]
   -- the cancelled epic stays cancelled (manual-cancel precedence)
   o := o ++ [← expectData "manual epic cancel takes precedence over rollup"
@@ -290,18 +290,18 @@ def cliDepTests : IO (List Outcome) := do
   let b ← mkIssue dir "B"
   o := o ++
     [← expectData "dep add acks the edge"
-      ["dep", "add", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--assignee", "t"]
+      ["dep", "add", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
       (fun j => jStr j "type" == some "blocks" && jStr j "from" == some ("tl-" ++ b)
         && jStr j "to" == some ("tl-" ++ a) && jStr j "status" == some "added"),
      ← expectData "dep remove acks removal"
-      ["dep", "remove", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--assignee", "t"]
+      ["dep", "remove", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
       (fun j => jStr j "status" == some "removed"),
      ← expectData "second dep remove is a disclosed noop"
-      ["dep", "remove", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--assignee", "t"]
+      ["dep", "remove", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
       (fun j => jStr j "status" == some "noop")]
   -- a cycle: A blocked by B, B blocked by A
-  let _ ← run' ["dep", "add", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--assignee", "t"]
-  let _ ← run' ["dep", "add", "tl-" ++ b, "tl-" ++ a, "--dir", dir, "--assignee", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ b, "tl-" ++ a, "--dir", dir, "--actor", "t"]
   o := o ++
     [← expectData "dep cycles reports the SCC witness" ["dep", "cycles", "--dir", dir]
       (fun j => jNat j "count" == some 1
@@ -319,8 +319,8 @@ def cliDepTests : IO (List Outcome) := do
   let c ← mkIssue dir "C"
   let dd ← mkIssue dir "D"
   let e ← mkIssue dir "E"
-  let _ ← run' ["dep", "add", "tl-" ++ dd, "tl-" ++ c, "--dir", dir, "--assignee", "t"]
-  let _ ← run' ["dep", "add", "tl-" ++ e, "tl-" ++ dd, "--dir", dir, "--assignee", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ dd, "tl-" ++ c, "--dir", dir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ e, "tl-" ++ dd, "--dir", dir, "--actor", "t"]
   o := o ++
     [← expectData "dep path finds the transitive blocks chain"
       ["dep", "path", "tl-" ++ c, "tl-" ++ e, "--dir", dir]
@@ -368,45 +368,45 @@ def cliReparentTests : IO (List Outcome) := do
   let t ← mkIssue dir "a task"
   -- move a root under an epic: canonical parent reflects it, status set, nothing replaced
   o := o ++ [← expectData "parent set moves a root under an epic"
-    ["parent", "set", "tl-" ++ t, "tl-" ++ e1, "--dir", dir, "--assignee", "t"]
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e1, "--dir", dir, "--actor", "t"]
     (fun j => jStr j "parent" == some ("tl-" ++ e1)
       && ((jGet j "reparent").bind (fun c => jStr c "status")) == some "set"
       && ((jGet j "reparent").map (fun c => (jArr c "replaced").isEmpty)) == some true)]
   -- reparent to a second epic replaces the first (replaced lists the old parent)
   o := o ++ [← expectData "parent set replaces the current parent"
-    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--actor", "t"]
     (fun j => jStr j "parent" == some ("tl-" ++ e2)
       && ((jGet j "reparent").bind (fun c => jStr c "status")) == some "set"
       && ((jGet j "reparent").map (fun c => (jArr c "replaced").any
             (fun x => x.getStr?.toOption == some ("tl-" ++ e1)))) == some true)]
   -- idempotent: already under e2 → noop, appends nothing
   o := o ++ [← expectData "parent set to the current parent is a noop"
-    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    ["parent", "set", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--actor", "t"]
     (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "noop")]
   -- self-parent is a courtesy usage refusal
   o := o ++ [← expectErr "a task cannot be its own parent"
-    ["parent", "set", "tl-" ++ t, "tl-" ++ t, "--dir", dir, "--assignee", "t"] .usage]
+    ["parent", "set", "tl-" ++ t, "tl-" ++ t, "--dir", dir, "--actor", "t"] .usage]
   -- detach: parent remove drops the edge; the child becomes a root (no parent)
   o := o ++ [← expectData "parent remove detaches the child (now a root)"
-    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--actor", "t"]
     (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "removed"
       && (jGet j "parent").isNone)]
   o := o ++ [← expectData "a second parent remove is a disclosed noop"
-    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--assignee", "t"]
+    ["parent", "remove", "tl-" ++ t, "tl-" ++ e2, "--dir", dir, "--actor", "t"]
     (fun j => ((jGet j "reparent").bind (fun c => jStr c "status")) == some "noop")]
   -- multi-parent: a child born under two epics is reported by doctor (never
   -- rejected); a local `parent set` collapses it to a single parent
   let m ← freshDir
   let me1 ← mkIssue m "M epic one"
   let me2 ← mkIssue m "M epic two"
-  let kid ← match ← run' ["create", "multi kid", "--dir", m, "--assignee", "t",
+  let kid ← match ← run' ["create", "multi kid", "--dir", m, "--actor", "t",
                           "--parent", "tl-" ++ me1, "--parent", "tl-" ++ me2] with
     | .ok out => pure ((jStr out.data "id").getD "")
     | .error e => throw (IO.userError s!"create failed: {e.message}")
   o := o ++ [← expectData "doctor reports a born multi-parent" ["doctor", "--dir", m]
     (fun j => (jArr j "checks").any (fun c =>
       jStr c "name" == some "graph" && jNat c "multiParent" == some 1))]
-  let _ ← run' ["parent", "set", kid, "tl-" ++ me1, "--dir", m, "--assignee", "t"]
+  let _ ← run' ["parent", "set", kid, "tl-" ++ me1, "--dir", m, "--actor", "t"]
   o := o ++ [← expectData "parent set collapses the multi-parent" ["doctor", "--dir", m]
     (fun j => (jArr j "checks").any (fun c =>
       jStr c "name" == some "graph" && jNat c "multiParent" == some 0))]
@@ -458,7 +458,16 @@ def cliUsageTests : IO (List Outcome) := do
        ["close", "tl-x", "--dir", dir, "--as", "wontfix"] .usage,
      ← expectErr "bad --limit is usage" ["ready", "--dir", dir, "--limit", "many"] .usage,
      ← expectErr "out-of-range -p is usage" ["create", "x", "--dir", dir, "-p", "9"] .usage,
-     ← expectErr "missing flag value is usage" ["ready", "--dir"] .usage]
+     ← expectErr "missing flag value is usage" ["ready", "--dir"] .usage,
+     -- the provenance flag is --actor (ADR-0013 amendment); the old --assignee
+     -- spelling is dropped (reserved for the future assignee read filter) and now
+     -- rejects as an unknown flag — a deliberate pre-1.0 breaking change.
+     ← expectErr "the dropped --assignee provenance flag is now an unknown flag (usage)"
+       ["create", "x", "--dir", dir, "--assignee", "carol"] .usage]
+  -- --actor records provenance (the rename's positive half)
+  o := o ++ [← expectData "the --actor flag records the provenance actor"
+      ["create", "actored", "--dir", dir, "--actor", "grace"]
+      (fun j => (jGet j "provenance").bind (fun p => jStr p "createdBy") == some "grace")]
   return o
 
 /-- Spawned-binary rows: stdout envelope bytes, exit codes, env discovery. -/
@@ -545,7 +554,7 @@ def cliReviewTests : IO (List Outcome) := do
   let zwsp := String.singleton (Char.ofNat 0x200B)
   o := o ++
     [← expectData "create echo sanitizes the title"
-      ["create", "Red " ++ esc ++ "[31mtext" ++ zwsp ++ "!", "--dir", dir, "--assignee", "t"]
+      ["create", "Red " ++ esc ++ "[31mtext" ++ zwsp ++ "!", "--dir", dir, "--actor", "t"]
       (fun j => jStr j "title" == some "Red text!")]
   -- `tl log` human output sanitizes the (attacker-controllable, ADR-0014 T1) actor
   -- field: a foreign op whose actor carries an OSC title-set escape must not reach a
@@ -591,10 +600,10 @@ def cliReviewTests : IO (List Outcome) := do
   let a ← mkIssue dir "EqTarget"
   o := o ++
     [← expectData "--title=a=b keeps the embedded '='"
-      ["update", "tl-" ++ a, "--dir", dir, "--title=a=b", "--assignee", "t"]
+      ["update", "tl-" ++ a, "--dir", dir, "--title=a=b", "--actor", "t"]
       (fun j => jStr j "title" == some "a=b"),
      ← expectData "--title a=b keeps the embedded '=' (two-token form)"
-      ["update", "tl-" ++ a, "--dir", dir, "--title", "x=y", "--assignee", "t"]
+      ["update", "tl-" ++ a, "--dir", dir, "--title", "x=y", "--actor", "t"]
       (fun j => jStr j "title" == some "x=y")]
   -- uppercase TL- discriminates as an id
   let upper := "TL-" ++ String.ofList (a.toList.map Char.toUpper)
@@ -642,7 +651,7 @@ GARBAGE
       ["list", "--dir", dir2, "--limit", "0", "--skip-bad"]
       (fun j => jNat j "count" == some 2)]
   -- write verbs disclose the refusal on stderr (CmdOut.notes)
-  let wres ← run' ["create", "another", "--dir", dir2, "--assignee", "t"]
+  let wres ← run' ["create", "another", "--dir", dir2, "--actor", "t"]
   o := o ++ [match wres with
     | .ok out =>
       check "write verbs disclose the foreign refusal"
@@ -668,7 +677,7 @@ GARBAGE
   -- superseded claim: a foreign claim at a later HLC wins LWW
   let dir3 ← freshDir
   let target ← mkIssue dir3 "Contested"
-  let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--assignee", "carol"]
+  let _ ← run' ["claim", "tl-" ++ target, "--dir", dir3, "--actor", "carol"]
   -- a sibling's concurrent claim, later than ours but within the skew window
   -- (ADR-0007: a far-future HLC would be deferred, not treated as "later")
   let laterHlc := ((← nowMs) + 60000) * 2 ^ 16
@@ -691,7 +700,7 @@ GARBAGE
   let seg := foreignLine (.claim tgt2 "eve") ((base + 20000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
           ++ foreignLine (.reopen tgt2) ((base + 40000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 2 ++ "\n"
   IO.FS.writeFile (System.FilePath.mk dir3b / "log" / "2zzzzzzzzzzzz.jsonl") seg
-  match ← run' ["claim", "tl-" ++ tgt2, "--dir", dir3b, "--assignee", "carol"] with
+  match ← run' ["claim", "tl-" ++ tgt2, "--dir", dir3b, "--actor", "carol"] with
   | .error e => o := o ++ [check "superseded claim is reachable via the command" false s!"unexpected: {e.message}"]
   | .ok out =>
     let outc := (jGet out.data "claim").bind (fun c => jStr c "outcome")
@@ -724,13 +733,13 @@ def cliDescriptionTests : IO (List Outcome) := do
   let dir ← freshDir
   o := o ++
     [← expectData "create --description sets the body"
-      ["create", "Titled", "--dir", dir, "--assignee", "t",
+      ["create", "Titled", "--dir", dir, "--actor", "t",
        "--description", "line one\nline two"]
       (fun j => jStr j "description" == some "line one\nline two"),
      -- a trailing `-` and `--description <text>` name two body sources: a usage
      -- conflict, caught before any IO (so it never reaches stdin)
      ← expectErr "a trailing - with --description <text> is a usage conflict"
-       ["create", "X", "--dir", dir, "--assignee", "t", "--description", "text", "-"] .usage]
+       ["create", "X", "--dir", dir, "--actor", "t", "--description", "text", "-"] .usage]
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   unless ← exe.pathExists do
     return o ++ [{ name := "binary present for stdin rows", passed := false,
@@ -743,26 +752,26 @@ def cliDescriptionTests : IO (List Outcome) := do
   -- ADR-0017 §8 (amended 2026-06-14): without the `-` sentinel, stdin is not
   -- read — the body stays absent even with data on the pipe. The regression
   -- guard for the hang: an unrequested stdin is never consumed.
-  let nodash ← sh s!"printf 'from\nstdin' | {q exe.toString} create NoDash --dir {q dir} --assignee t --json"
+  let nodash ← sh s!"printf 'from\nstdin' | {q exe.toString} create NoDash --dir {q dir} --actor t --json"
   o := o ++ [check "no sentinel: piped stdin is NOT read (body absent)" (noDesc nodash.stdout) nodash.stdout]
   -- `--description -` reads the body from stdin
-  let viaFlag ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaFlag --dir {q dir} --assignee t --description - --json"
+  let viaFlag ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaFlag --dir {q dir} --actor t --description - --json"
   o := o ++ [check "--description - reads the body from stdin" (hasDesc viaFlag.stdout "from\\nstdin") viaFlag.stdout]
   -- a trailing `-` reads the body from stdin (same request as --description -)
-  let viaDash ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaDash --dir {q dir} --assignee t --json -"
+  let viaDash ← sh s!"printf 'from\nstdin' | {q exe.toString} create ViaDash --dir {q dir} --actor t --json -"
   o := o ++ [check "a trailing - reads the body from stdin" (hasDesc viaDash.stdout "from\\nstdin") viaDash.stdout]
   -- `--description <text>` is the literal body; stdin is left untouched
-  let lit ← sh s!"printf 'ignored' | {q exe.toString} create Lit --dir {q dir} --assignee t --description flagged --json"
+  let lit ← sh s!"printf 'ignored' | {q exe.toString} create Lit --dir {q dir} --actor t --description flagged --json"
   o := o ++ [check "--description <text> is the body; stdin untouched" (hasDesc lit.stdout "flagged") lit.stdout]
   -- `-` with empty stdin leaves the description absent
-  let emptyDash ← sh s!": | {q exe.toString} create EmptyDash --dir {q dir} --assignee t --json -"
+  let emptyDash ← sh s!": | {q exe.toString} create EmptyDash --dir {q dir} --actor t --json -"
   o := o ++ [check "- with empty stdin leaves the body absent" (noDesc emptyDash.stdout) emptyDash.stdout]
   -- the hang guard: a held-open, non-EOF stdin without `-` must not block — tl
   -- returns promptly without reading it. On a regression it would block until
   -- the 5s holder closes the write end; the timing bound catches that.
   let fifo := s!"{dir}-holdpipe"
   let t0 ← IO.monoMsNow
-  let held ← sh s!"mkfifo {q fifo}; sleep 5 > {q fifo} 2>/dev/null & {q exe.toString} create Held --dir {q dir} --assignee t --json < {q fifo}; rm -f {q fifo}"
+  let held ← sh s!"mkfifo {q fifo}; sleep 5 > {q fifo} 2>/dev/null & {q exe.toString} create Held --dir {q dir} --actor t --json < {q fifo}; rm -f {q fifo}"
   let elapsed := (← IO.monoMsNow) - t0
   o := o ++
     [check s!"held-open non-EOF stdin without - does not block ({elapsed}ms)"
@@ -854,7 +863,7 @@ def cliReviewBatchTests : IO (List Outcome) := do
   IO.FS.writeFile (System.FilePath.mk dir / "local" / "clock") "0000000000000001\n"
   o := o ++
     [← expectData "a stale clock is floored by the own-segment max (no regression)"
-      ["create", "new", "--dir", dir, "--assignee", "t"]
+      ["create", "new", "--dir", dir, "--actor", "t"]
       (fun j => ((jStr j "createdAt").isSome))]
   -- read it back: the new create's stamp must exceed the old high HLC, i.e.
   -- the issue materializes (folded above) — verify via list count = 2
@@ -880,7 +889,7 @@ def cliReviewBatchTests : IO (List Outcome) := do
      ← expectErr "duplicate single-value flag is usage"
        ["update", "tl-" ++ x, "--dir", dir3, "--title", "a", "--title", "b"] .usage,
      ← expectData "create's repeatable edge flags are NOT rejected"
-       ["create", "child", "--dir", dir3, "--blocked-by", "tl-" ++ x, "--blocked-by", "tl-" ++ x, "--assignee", "t"]
+       ["create", "child", "--dir", dir3, "--blocked-by", "tl-" ++ x, "--blocked-by", "tl-" ++ x, "--actor", "t"]
        (fun j => (jArr j "dependencies").length ≥ 1)]
   -- (7) meta-key collision: two keys differing only in a control char both
   -- survive the --json projection (no silent mkObj collapse)
@@ -922,7 +931,7 @@ def cliReviewBatchTests : IO (List Outcome) := do
       ++ foreignLine (.reopen blkr) reopenHlc "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
   o := o ++
     [← expectData "a superseded close echoes consistently (not closed, nothing freed)"
-      ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--assignee", "t"]
+      ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--actor", "t"]
       (fun j => jStr j "status" != some "done" && (jArr j "unblocked").isEmpty)]
   -- spawn rows: TL_DIR-init, ceiling realpath, error sanitization
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
@@ -973,14 +982,14 @@ def cliFreeVerbTests : IO (List Outcome) := do
   let a ← mkIssue dir "Task A" ["-p", "1"]
   let b ← mkIssue dir "Task B" ["--blocked-by", "tl-" ++ a]
   -- reopen: a closed issue returns to open and clears the resolution
-  let _ ← run' ["close", "tl-" ++ a, "--dir", dir, "--as", "done", "--assignee", "t"]
+  let _ ← run' ["close", "tl-" ++ a, "--dir", dir, "--as", "done", "--actor", "t"]
   o := o ++
     [← expectData "reopen returns a closed issue to open, clearing resolution"
-      ["reopen", "tl-" ++ a, "--dir", dir, "--assignee", "t"]
+      ["reopen", "tl-" ++ a, "--dir", dir, "--actor", "t"]
       (fun j => jStr j "status" == some "open" && (jStr j "closeResolution").isNone),
      -- idempotent: reopening an already-open issue is a disclosed no-op
      ← expectData "reopen of an already-open issue is a no-op"
-       ["reopen", "tl-" ++ a, "--dir", dir, "--assignee", "t"]
+       ["reopen", "tl-" ++ a, "--dir", dir, "--actor", "t"]
        (fun j => jStr j "status" == some "open")]
   -- stats: the pinned counts
   o := o ++
@@ -1013,7 +1022,7 @@ def cliFreeVerbTests : IO (List Outcome) := do
       ["stats", "--dir", dir2]
       (fun j => jNat j "total" == some 3 && jNat j "open" == some 3
         && jNat j "openEpics" == some 1 && jNat j "openTasks" == some 2)]
-  let _ ← run' ["close", "tl-" ++ c, "--dir", dir2, "--as", "done", "--assignee", "t"]
+  let _ ← run' ["close", "tl-" ++ c, "--dir", dir2, "--as", "done", "--actor", "t"]
   o := o ++
     [← expectData "stats: a rolled-up epic counts as done, not open (effective, not stored)"
       ["stats", "--dir", dir2]
@@ -1028,21 +1037,21 @@ def cliFreeVerbTests : IO (List Outcome) := do
      ← expectData "the slug resolves like an id" ["show", "my-slug", "--dir", dirS]
       (fun j => jStr j "id" == some ("tl-" ++ sId)),
      ← expectData "update --slug replaces it"
-        ["update", "tl-" ++ sId, "--slug", "new-slug", "--dir", dirS, "--assignee", "t"]
+        ["update", "tl-" ++ sId, "--slug", "new-slug", "--dir", dirS, "--actor", "t"]
       (fun j => jStr j "slug" == some "new-slug")]
   -- meta: the opaque side-channel — set/get/list/clear round-trip
   let dirMeta ← freshDir
   let mId ← mkIssue dirMeta "Has meta" []
   o := o ++
     [← expectData "meta set writes a key"
-        ["meta", "set", "tl-" ++ mId, "ext:jira", "PROJ-1", "--dir", dirMeta, "--assignee", "t"]
+        ["meta", "set", "tl-" ++ mId, "ext:jira", "PROJ-1", "--dir", dirMeta, "--actor", "t"]
       (fun j => jStr j "status" == some "set" && jStr j "value" == some "PROJ-1"),
      ← expectData "meta get reads it back" ["meta", "get", "tl-" ++ mId, "ext:jira", "--dir", dirMeta]
       (fun j => jStr j "value" == some "PROJ-1"),
      ← expectData "meta list counts the issue's keys" ["meta", "list", "tl-" ++ mId, "--dir", dirMeta]
       (fun j => jNat j "count" == some 1),
      ← expectData "meta clear retracts it"
-        ["meta", "clear", "tl-" ++ mId, "ext:jira", "--dir", dirMeta, "--assignee", "t"]
+        ["meta", "clear", "tl-" ++ mId, "ext:jira", "--dir", dirMeta, "--actor", "t"]
       (fun j => jStr j "status" == some "cleared"),
      ← expectData "meta get after clear is null" ["meta", "get", "tl-" ++ mId, "ext:jira", "--dir", dirMeta]
       (fun j => (jStr j "value").isNone)]
@@ -1054,7 +1063,7 @@ def cliFreeVerbTests : IO (List Outcome) := do
      ← expectErr "an unknown command suggests the closest" ["creat", "x"] .usage
        (fun e => (e.message.splitOn "did you mean").length > 1)]
   -- list defaults to open-only; --all includes closed
-  let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--assignee", "t"]
+  let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--actor", "t"]
   o := o ++
     [← expectData "list hides closed issues by default"
        ["list", "--dir", dir, "--limit", "0"]
@@ -1169,7 +1178,7 @@ def cliReadRefreshTests : IO (List Outcome) := do
   let bDir := (root / ".tlB").toString
   let _ ← run' ["init", "--dir", aDir]
   let _ ← run' ["init", "--dir", bDir]
-  let aId ← match ← run' ["create", "shared via read-refresh", "--dir", aDir, "--assignee", "a"] with
+  let aId ← match ← run' ["create", "shared via read-refresh", "--dir", aDir, "--actor", "a"] with
     | .ok out => pure ((jStr out.data "id").getD "")
     | .error e => throw (IO.userError s!"create failed: {e.message}")
   let _ ← run' ["sync", "--dir", aDir]  -- A publishes; B never syncs
@@ -1200,14 +1209,14 @@ def cliDegradedRefreshTests : IO (List Outcome) := do
   let bDir := (root / ".tlB").toString
   let _ ← run' ["init", "--dir", aDir]
   let _ ← run' ["init", "--dir", bDir]
-  let _ ← run' ["create", "first task", "--dir", aDir, "--assignee", "a"]
+  let _ ← run' ["create", "first task", "--dir", aDir, "--actor", "a"]
   let _ ← run' ["sync", "--dir", aDir]
   -- B reads once: this materializes A's segment, creating B's log dir + ref-mark.
   let _ ← run' ["list", "--dir", bDir, "--json"]
   -- the ref moves again; now B's mark trails the tip, so B's next read must
   -- materialize — but with B's log dir read-only the writeback fails and the
   -- refresh degrades (read the ref, can't write the segment).
-  let _ ← run' ["create", "second task", "--dir", aDir, "--assignee", "a"]
+  let _ ← run' ["create", "second task", "--dir", aDir, "--actor", "a"]
   let _ ← run' ["sync", "--dir", aDir]
   let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
   let isRoot := uid.stdout.trimAscii.toString == "0"
@@ -1240,12 +1249,12 @@ def cliAutoSyncTests : IO (List Outcome) := do
   let _ ← run' ["init", "--dir", bDir]
   -- (a) auto-sync unset (default off in a main worktree): A's write is not
   -- published, so a sibling that only reads sees nothing.
-  let _ ← run' ["create", "off by default", "--dir", aDir, "--assignee", "a"]
+  let _ ← run' ["create", "off by default", "--dir", aDir, "--actor", "a"]
   o := o ++ [← expectData "auto-sync off: a sibling does not see an unpublished write"
     ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 0)]
   -- (b) auto-sync on: the next write auto-publishes; B sees it with no `tl sync`.
   let _ ← gitC ["config", "tl.autosync", "true"]
-  let onId ← match ← run' ["create", "on, auto-published", "--dir", aDir, "--assignee", "a"] with
+  let onId ← match ← run' ["create", "on, auto-published", "--dir", aDir, "--actor", "a"] with
     | .ok out => pure ((jStr out.data "id").getD "")
     | .error e => throw (IO.userError s!"create failed: {e.message}")
   o := o ++ [← expectData "auto-sync on: a sibling sees the write with no explicit sync"
@@ -1257,7 +1266,7 @@ def cliAutoSyncTests : IO (List Outcome) := do
   let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
   let isRoot := uid.stdout.trimAscii.toString == "0"
   let _ ← (IO.Process.output { cmd := "chmod", args := #["-R", "0500", (root / ".git").toString] } : IO _)
-  let res ← run' ["create", "write outlives a failed publish", "--dir", aDir, "--assignee", "a"]
+  let res ← run' ["create", "write outlives a failed publish", "--dir", aDir, "--actor", "a"]
   o := o ++ [(match res with
     | .ok out => check "a write succeeds and discloses when auto-sync's publish fails"
         ((jStr out.data "id").isSome
@@ -1289,7 +1298,7 @@ def cliPreWriteAbsorbTests : IO (List Outcome) := do
   let bDir := (root / ".tlB").toString
   let _ ← run' ["init", "--dir", aDir]
   let _ ← run' ["init", "--dir", bDir]
-  let aId ← match ← run' ["create", "made by A", "--dir", aDir, "--assignee", "a"] with
+  let aId ← match ← run' ["create", "made by A", "--dir", aDir, "--actor", "a"] with
     | .ok out => pure ((jStr out.data "id").getD "")
     | .error e => throw (IO.userError s!"create failed: {e.message}")
   let _ ← run' ["sync", "--dir", aDir]  -- A publishes; B has never read or synced
@@ -1355,7 +1364,7 @@ def cliDoctorSkewTests : IO (List Outcome) := do
         && (jNat c "deferredOps").getD 0 ≥ 1
         && (jNat c "clockLeadMs").getD 0 ≥ skewWindowMs))]
   -- a write against the deferred foreign op discloses it too (not only reads)
-  let wrote ← run' ["create", "local work", "--dir", dir, "--assignee", "t"]
+  let wrote ← run' ["create", "local work", "--dir", dir, "--actor", "t"]
   o := o ++ [(match wrote with
     | .ok out => check "a write whose guard fold dropped a deferred op discloses it"
         (out.notes.any (fun n => (n.splitOn "held back").length > 1))
@@ -1800,7 +1809,7 @@ def cliSyncPostureTests : IO (List Outcome) := do
   let bare ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
-  let _ ← run' ["create", "Remote task", "--dir", tldir, "--assignee", "t"]
+  let _ ← run' ["create", "Remote task", "--dir", tldir, "--actor", "t"]
   match ← run' ["doctor", "--dir", tldir] with
   | .ok out =>
     o := o ++
@@ -1867,7 +1876,7 @@ def cliClaimSyncTests : IO (List Outcome) := do
   let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
   let a ← mkIssue tldir "Claimable"
-  match ← run' ["claim", "tl-" ++ a, "--dir", tldir, "--sync", "--assignee", "ann"] with
+  match ← run' ["claim", "tl-" ++ a, "--dir", tldir, "--sync", "--actor", "ann"] with
   | .ok out =>
     o := o ++ [check "claim --sync wins the take"
                  ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress]
@@ -1877,7 +1886,7 @@ def cliClaimSyncTests : IO (List Outcome) := do
   -- --verify with no remote: succeeds and warns it degraded to local
   let dir ← freshDir
   let b ← mkIssue dir "Local claimable"
-  match ← run' ["claim", "tl-" ++ b, "--dir", dir, "--verify", "--assignee", "ann"] with
+  match ← run' ["claim", "tl-" ++ b, "--dir", dir, "--verify", "--actor", "ann"] with
   | .ok out =>
     o := o ++
       [check "claim --verify succeeds with no remote"
@@ -1889,7 +1898,7 @@ def cliClaimSyncTests : IO (List Outcome) := do
   let c ← mkIssue dir "a blocker"
   let blk ← mkIssue dir "blocked one" ["--blocked-by", "tl-" ++ c]
   o := o ++ [← expectErr "claim --sync still refuses a non-ready item"
-    ["claim", "tl-" ++ blk, "--dir", dir, "--sync", "--assignee", "ann"] .notClaimable]
+    ["claim", "tl-" ++ blk, "--dir", dir, "--sync", "--actor", "ann"] .notClaimable]
   return o
 
 /-- Two clones over a bare remote: a sync that pulls a new replica from the
@@ -1966,9 +1975,9 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "doctor --sync degrade", passed := false, msg := s!"failed: {e.message}" }]
   let vid ← mkIssue dir "verify target"
   o := o ++ [← expectErr "claim --verify fails verify-failed on an unreachable remote"
-    ["claim", "tl-" ++ vid, "--dir", dir, "--verify", "--assignee", "t"] .verifyFailed]
+    ["claim", "tl-" ++ vid, "--dir", dir, "--verify", "--actor", "t"] .verifyFailed]
   let sid ← mkIssue dir "sync target"
-  match ← run' ["claim", "tl-" ++ sid, "--dir", dir, "--sync", "--assignee", "t"] with
+  match ← run' ["claim", "tl-" ++ sid, "--dir", dir, "--sync", "--actor", "t"] with
   | .ok out => o := o ++
       [check "claim --sync still records the take on an unreachable remote"
          ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress,

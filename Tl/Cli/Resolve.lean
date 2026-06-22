@@ -8,9 +8,10 @@ it is an id — stripped, ASCII-case-folded, Crockford-symbol-aliased
 other token is a slug (case-folded, never symbol-aliased — slugs are author
 intent). `>1` match → `ambiguous-id` naming the full `tl-…` candidates.
 
-The actor resolves first-hit-wins: `--assignee` (unless `me`) → `TL_ACTOR` →
+The actor resolves first-hit-wins: `--actor` (unless `me`) → `TL_ACTOR` →
 git `user.email` → `<os-user>@<hostname>`; `me` resolves through the same
-chain (ADR-0013).
+chain (ADR-0013). (`--assignee` is reserved for the future assignee read
+filter, not provenance — ADR-0013 amendment.)
 -/
 import Tl.Cli.Project
 import Tl.Sync.Ref  -- `runBounded`: a hung git-config/hostname must not wedge a verb

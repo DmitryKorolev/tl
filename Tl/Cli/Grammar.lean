@@ -50,7 +50,7 @@ def globalFlags : List FlagSpec :=
       summary := "shorthand for --color=never --glyphs=ascii" } ]
 
 private def actorFlag : FlagSpec :=
-  { name := "assignee", value := true,
+  { name := "actor", value := true,
     summary := "record this actor (else TL_ACTOR, then git user.email, then user@host)" }
 
 private def limitFlag : FlagSpec :=

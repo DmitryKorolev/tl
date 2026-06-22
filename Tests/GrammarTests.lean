@@ -53,7 +53,7 @@ def grammarSchemaTests : List Outcome := Id.run do
      check "create's flags include the repeatable inline-edge flags"
        (match cmds.find? (fun c => jStr c "command" == some "create") with
         | some c => let fs := (jArr c "flags").filterMap (fun f => jStr f "name")
-                    ["priority","blocked-by","blocks","parent","related","description","assignee"].all fs.contains
+                    ["priority","blocked-by","blocks","parent","related","description","actor"].all fs.contains
         | none => false),
      check "help <command> filters to that command (stable shape)"
        (let one := helpJson (some "close")

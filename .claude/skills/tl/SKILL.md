@@ -122,7 +122,7 @@ tl parent remove <id> <parent>      # detach <id> from that parent
 
 - Ids resolve by any unambiguous `tl-`-prefixed prefix, case-insensitively;
   a bare token (no `tl-`) is a slug. `ambiguous-id` lists the candidates.
-- On a write, set who is acting with `--assignee <name>`, or the `TL_ACTOR`
+- On a write, set who is acting with `--actor <name>`, or the `TL_ACTOR`
   env var (otherwise it falls back to git identity). This is provenance, and
   the actor on a claim becomes the issue's assignee.
 

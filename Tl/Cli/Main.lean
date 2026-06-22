@@ -91,7 +91,7 @@ private def priorityFlag (a : Argv) : Except Tl.Error (Option Nat) :=
 private def actorOf (a : Argv) : TlM String :=
   -- pass the `--dir` override so the git-config actor read runs in the target repo
   -- (`git -C`), not the process cwd (ADR-0013)
-  liftSys (fun e => .mk' .internal s!"{e}") (resolveActor (a.get? "assignee") (a.get? "dir"))
+  liftSys (fun e => .mk' .internal s!"{e}") (resolveActor (a.get? "actor") (a.get? "dir"))
 
 /-- Exactly one positional, or a `usage` error — surplus positionals are
     never silently dropped (e.g. an unquoted multi-word title, or a second
