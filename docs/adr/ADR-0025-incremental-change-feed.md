@@ -73,27 +73,34 @@ filter. Cross-filter resumption is undefined.
 the existing `{timestamp, op, actor, targets}` shape — unchanged, ADR-0020), and
 `cursor`. The human view shows the same ops plus a `cursor:` line.
 
-## Planned extensions (decided, not yet shipped)
+## Extensions
 
-These are the agreed shape; they land incrementally, but the cursor primitive
-above is the load-bearing part and is fixed now so they are additive.
+The cursor primitive above is the load-bearing part; these build on it additively.
 
-- **`--since` / `--until` as the universal temporal-bound pair.** `--since` =
-  lower bound (after), `--until` = upper bound (before), the same meaning in every
-  command that takes a time. The *value* is a cursor (log only), a duration
-  (`1h`, `7d`), or a date/timestamp (`2026-06-21`); `--limit N` is the page size,
-  `--last N` a count tail, `--since all` an explicit from-start. The duration/date
-  grammar is decided once and shared with `defer` (`--until`/`--for`, ADR-0010,
-  the open decision recorded for the parsing rules) — not a second parser. Times
-  are best-effort over physical wall-clock (skew-sensitive); the cursor is the
-  exact, resumable form.
-- **Dual-edge cursor.** The response `cursor` becomes an object
-  `{ since: <resume-forward>, until: <resume-back> }` (field names match the
-  flags), so each page is self-navigating in both directions. Locking this object
-  shape now keeps it additive. `--since` (forward) is exactly-once; `--until`
-  (backward browsing of history) is best-effort — a still-merging CRDT log can
-  gain an op below where a backward page already passed.
-- **Title in the human view.** The human `log` line shows each target's current
+- **Dual-edge cursor + cursor-valued `--until` (shipped).** The response `cursor`
+  is an object `{ since: <resume-forward>, until: <resume-back> }` (field names
+  match the flags), so each page is self-navigating in both directions: pass
+  `cursor.since` to `--since` to continue forward, `cursor.until` to `--until` to
+  page older. `--until <cursor>` browses history backward — ops before the upper
+  cursor, newest-first — and `--since C1 --until C2` composes into a bounded
+  window. `--since` (forward) is exactly-once; `--until` (backward browsing of
+  history) is best-effort — a still-merging CRDT log can gain an op below where a
+  backward page already passed. The resume-back edge is the per-replica minimum of
+  the delivered page accumulated onto the input upper bound (the dual of the
+  forward edge's accumulation onto the lower bound), so paging back never
+  re-delivers a replica bounded by an earlier page; at a boundary HLC shared by two
+  replicas the per-replica thresholds differ by the `(hlc, replica, nonce)`
+  tie-break. `--since` drains by default (`--limit 0`); `--until` and plain log
+  page (`--limit 10`).
+- **`--since` / `--until` as the universal temporal-bound pair (planned).** Beyond
+  the cursor value (log only, shipped above), `--since`/`--until` will also accept
+  a duration (`1h`, `7d`) or a date/timestamp (`2026-06-21`) — the same meaning in
+  every command that takes a time, with `--last N` a count tail and `--since all`
+  an explicit from-start. That duration/date grammar is decided once and shared
+  with `defer` (`--until`/`--for`, ADR-0010) — not a second parser. Times are
+  best-effort over physical wall-clock (skew-sensitive); the cursor is the exact,
+  resumable form.
+- **Title in the human view (planned).** The human `log` line shows each target's current
   title (sanitized, ADR-0014; truncated; via the indexed view, ADR-0024, not an
   O(N) find per op). The `--json` entry stays id-keyed: the feed is an immutable
   op stream and the title is mutable state derivable from the id, so this is a
@@ -102,8 +109,8 @@ above is the load-bearing part and is fixed now so they are additive.
 ## Consequences
 
 - **Exactly-once is forward-only.** `--since` over the retained log delivers every
-  op once. Backward browsing (`--until`, planned) is a best-effort view of
-  currently-known history.
+  op once. Backward browsing (`--until`) is a best-effort view of currently-known
+  history.
 - **Compaction interaction.** Compaction is non-destructive (ADR-0008 rescoped,
   ADR-0022): the full op log is retained, so any cursor — however old — is always
   serviceable, and exactly-once holds indefinitely with no retention horizon. If

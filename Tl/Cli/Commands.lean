@@ -581,20 +581,45 @@ private def advanceCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :
   ops.foldl (fun m p =>
     m.insert p.stamp.replica (maxStamp p.stamp.hlc p.stamp.nonce (cursorThreshold m p.stamp.replica))) base
 
+/-- An op's `(HLC, nonce)` is strictly before a threshold (lexicographic); an
+    absent threshold (`none`) is *above* everything — the dual of `stampAfter`.
+    For `--until` (backward) a replica with no recorded edge is unconstrained, so
+    all of its ops are candidates, exactly as an empty cursor is full history. -/
+private def stampBefore (hlc nonce : Nat) (thr : Option (Nat × Nat)) : Bool :=
+  match thr with
+  | none => true
+  | some (th, tn) => Nat.blt hlc th || (hlc == th && Nat.blt nonce tn)
+
+/-- The lesser of `(hlc, nonce)` and a threshold. -/
+private def minStamp (hlc nonce : Nat) (thr : Option (Nat × Nat)) : Nat × Nat :=
+  if stampBefore hlc nonce thr then (hlc, nonce) else thr.getD (hlc, nonce)
+
+/-- Fold ops into a cursor, keeping the per-replica *minimum* `(HLC, nonce)` — the
+    frontier just below the oldest delivered op. Emitting `(hlc, nonce) < this`
+    (per replica) yields exactly the ops globally older than the page's oldest op,
+    because the delivered page is a top-suffix of the total order: every op below
+    a per-replica minimum is below the global oldest, and a replica absent from the
+    page (unconstrained, `none`) has all its ops below it. This backs `--until`'s
+    resume-back edge and is the dual of `advanceCursor`. -/
+private def retreatCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :=
+  ops.foldl (fun m p =>
+    m.insert p.stamp.replica (minStamp p.stamp.hlc p.stamp.nonce (cursorThreshold m p.stamp.replica))) base
+
 /-- Serialize a cursor as comma-joined `<replica>:<hlc>:<nonce>` triples, the
     replica in its canonical 13-char Crockford form, sorted by replica
     (`AMap.toList`). -/
 private def renderCursor (c : LogCursor) : String :=
   String.intercalate "," (c.toList.map (fun (r, hn) => s!"{toCrockford r 13}:{hn.1}:{hn.2}"))
 
-/-- Parse a `--since` cursor: comma-joined `<replica>:<hlc>:<nonce>` triples (the
-    `cursor` of a prior `tl log`). A trimmed-empty token is the empty cursor (full
-    history); anything else is validated as strictly as the wire decoder
-    (`decodeStamp`) — an empty/extra `:`-segment, a stray comma, a non-canonical or
-    `≥ 2^64` replica, an hlc `≥ 2^64` or nonce `≥ 2^128`, or a non-numeric
-    hlc/nonce is a usage error that names the expected shape, never a silent full
-    dump. -/
-private def parseCursor (s : String) : Except Tl.Error LogCursor := do
+/-- Parse a `--since`/`--until` cursor (`edge` is the flag/object field name,
+    `"since"` or `"until"`): comma-joined `<replica>:<hlc>:<nonce>` triples (the
+    matching edge of a prior `tl log`'s `cursor` object). A trimmed-empty token is
+    the empty cursor (full history); anything else is validated as strictly as the
+    wire decoder (`decodeStamp`) — an empty/extra `:`-segment, a stray comma, a
+    non-canonical or `≥ 2^64` replica, an hlc `≥ 2^64` or nonce `≥ 2^128`, or a
+    non-numeric hlc/nonce is a usage error that names the expected shape, never a
+    silent full dump. -/
+private def parseCursor (edge : String) (s : String) : Except Tl.Error LogCursor := do
   let t := s.trimAscii.toString
   if t.isEmpty then return AMap.empty
   let mut c : LogCursor := AMap.empty
@@ -612,28 +637,35 @@ private def parseCursor (s : String) : Except Tl.Error LogCursor := do
           c := c.insert r (maxStamp h n (cursorThreshold c r))
         else if !okReplica then
           throw (.mk' .usage
-            s!"--since: '{ridT}' is not a canonical 13-char replica id below 2^64 — pass the `cursor` from a prior `tl log --json`")
+            s!"--{edge}: '{ridT}' is not a canonical 13-char replica id below 2^64 — pass the `cursor.{edge}` from a prior `tl log --json`")
         else
           throw (.mk' .usage
-            s!"--since: '{piece}' has an out-of-range hlc or nonce (hlc < 2^64, nonce < 2^128) — pass the `cursor` from a prior `tl log --json`")
+            s!"--{edge}: '{piece}' has an out-of-range hlc or nonce (hlc < 2^64, nonce < 2^128) — pass the `cursor.{edge}` from a prior `tl log --json`")
       | _, _, _ => throw (.mk' .usage
-          s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor` from a prior `tl log --json`")
+          s!"--{edge}: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor.{edge}` from a prior `tl log --json`")
     | _ => throw (.mk' .usage
-        s!"--since: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor` from a prior `tl log --json`")
+        s!"--{edge}: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor.{edge}` from a prior `tl log --json`")
   return c
 
-/-- `tl log [<id>] [--since <cursor>]`: an HLC-ordered projection over the op log
-    (ADR-0008), optionally filtered to ops touching one issue. Without `--since`
-    it lists newest-first (capped by `--limit`); with `--since` it is a resumable
-    change-feed — every op after the cursor, oldest-first — and always reports a
-    `cursor` (a per-replica version vector) to pass on the next call. The cursor
-    is scoped to the `<id>` filter it was produced under: resume with the same
-    filter. -/
+/-- `tl log [<id>] [--since <cursor>] [--until <cursor>]`: an HLC-ordered
+    projection over the op log (ADR-0008), optionally filtered to ops touching one
+    issue. Without bounds it lists newest-first (capped by `--limit`). `--since` is
+    a resumable forward change-feed — every op after the lower cursor, oldest-first,
+    exactly-once. `--until` browses history backward — every op before the upper
+    cursor, newest-first, best-effort (a still-merging log can gain an op below a
+    page already passed, ADR-0025). Given both, the bounds compose into a window.
+    Every response carries a dual-edge `cursor` object `{ since, until }` (field
+    names match the flags) so each page is self-navigating: pass `cursor.since` to
+    `--since` to continue forward, `cursor.until` to `--until` to page older. The
+    cursor is scoped to the `<id>` filter it was produced under: resume with the
+    same filter. -/
 def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
-    (since : Option String) (skipBad : Bool) : TlM CmdOut := do
-  -- parse the cursor before loading, so a malformed --since fails fast
-  let cursor ← MonadExcept.ofExcept (parseCursor (since.getD ""))
+    (since untilC : Option String) (skipBad : Bool) : TlM CmdOut := do
+  -- parse both cursors before loading, so a malformed bound fails fast
+  let sinceCur ← MonadExcept.ofExcept (parseCursor "since" (since.getD ""))
+  let untilCur ← MonadExcept.ofExcept (parseCursor "until" (untilC.getD ""))
   let sinceGiven := since.isSome
+  let untilGiven := untilC.isSome
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let visible ← match idTok with
@@ -641,22 +673,30 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     | some tok =>
       let i ← MonadExcept.ofExcept (resolveToken v.state tok)
       pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
-  -- since-mode: the delta strictly after the per-replica (HLC, nonce) cursor;
-  -- plain: all visible
-  let matching :=
-    if sinceGiven then
-      visible.filter (fun p => stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold cursor p.stamp.replica))
-    else visible
-  -- since-mode reads oldest-first (a forward feed); plain log newest-first.
-  -- Both use the full stamp order (deterministic on equal HLCs).
+  -- `--since` keeps ops strictly after its lower cursor (per replica), `--until`
+  -- strictly before its upper cursor; together a bounded window. Each bound is
+  -- per-replica (HLC, nonce), so an absent edge is unconstrained on that side.
+  let matching := visible.filter (fun p =>
+    (!sinceGiven || stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold sinceCur p.stamp.replica))
+      && (!untilGiven || stampBefore p.stamp.hlc p.stamp.nonce (cursorThreshold untilCur p.stamp.replica)))
+  -- `--since` is a forward feed (oldest-first); plain and `--until` read
+  -- newest-first (backward browsing). Both use the full stamp order
+  -- (deterministic on equal HLCs).
   let ordered :=
     if sinceGiven then matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le a.stamp b.stamp))
     else matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
   let capped := if limit == 0 then ordered else ordered.take limit
-  -- advancedCursor: in since-mode the input cursor raised by the delivered
-  -- (capped) ops, so resumption never skips or replays even when --limit pages;
-  -- in plain mode the full frontier of the visible log (a starting point to tail)
-  let advanced := if sinceGiven then advanceCursor cursor capped else advanceCursor AMap.empty visible
+  -- Resume-forward (since) edge: in since-mode the lower cursor raised by the
+  -- delivered (capped) page, so a paged resume never skips/replays; otherwise the
+  -- full frontier of the visible log (a point to tail from the newest). Resume-back
+  -- (until) edge: the per-replica minimum of the delivered page — the frontier just
+  -- below the oldest delivered op — so `--until` pages strictly older.
+  let sinceEdge := if sinceGiven then advanceCursor sinceCur capped else advanceCursor AMap.empty visible
+  -- accumulate from the input upper bound, not from empty: a replica bounded by a
+  -- prior backward page must stay bounded, or paging further back re-delivers its
+  -- already-seen ops (a replica absent from this page would otherwise reset to
+  -- unconstrained). The dual of `advanceCursor sinceCur` for the forward feed.
+  let untilEdge := retreatCursor untilCur capped
   let entry (p : ParsedOp) : Json :=
     Json.mkObj
       [("timestamp", Json.str (hlcIso p.stamp.hlc)),
@@ -668,16 +708,23 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     -- mirroring the `--json` arm above (titles/labels/meta all wrap it too)
     s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.elim "—" sanitizeSingle)}  " ++
       String.intercalate "," ((opTargets p.op).map displayId)
-  let curStr := renderCursor advanced
+  let sinceStr := renderCursor sinceEdge
+  let untilStr := renderCursor untilEdge
+  -- newest-first pages (plain/`--until`) overflow into "older"; the forward feed
+  -- (`--since`) overflows into "more".
   let body :=
     if matching.isEmpty then "no ops"
     else String.intercalate "\n" (capped.map line)
       ++ (if capped.length < matching.length then
             s!"\n… {matching.length - capped.length} {if sinceGiven then "more" else "older"} (--limit 0 for all)" else "")
+  let cursorParts := (if sinceStr.isEmpty then [] else [s!"since={sinceStr}"])
+                   ++ (if untilStr.isEmpty then [] else [s!"until={untilStr}"])
   return { data := Json.mkObj [("count", jnum matching.length),
                                ("entries", Json.arr (capped.map entry).toArray),
-                               ("cursor", Json.str curStr)]
-           human := body ++ (if curStr.isEmpty then "" else s!"\ncursor: {curStr}")
+                               ("cursor", Json.mkObj [("since", Json.str sinceStr),
+                                                      ("until", Json.str untilStr)])]
+           human := body ++ (if cursorParts.isEmpty then ""
+                             else "\ncursor: " ++ String.intercalate " " cursorParts)
            notes }
 
 /-! ## Write verbs -/

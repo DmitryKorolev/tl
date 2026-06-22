@@ -304,19 +304,27 @@ miscounted as workable. `ready`/`blocked`/`deferred` are the derived views;
 `cycles` is the cycle-witness count (structural per kind plus the non-duplicate
 readiness deadlocks, as `doctor`'s graph check).
 
-**`tl log [<id>] [--since <cursor>] --json`** — the op history (an HLC-ordered
-projection over the log, ADR-0008); `<id>` filters to ops touching that issue.
-Without `--since` it is newest-first, capped by `--limit` (default 10, `0` = all).
-With `--since` it is a resumable change-feed — every op after the cursor,
-oldest-first — and `--limit` defaults to `0` (all), paginating the oldest first.
-Every response carries a top-level `cursor`: a per-replica version vector,
-serialized as comma-joined `<replica>:<hlc>:<nonce>` triples sorted by replica, to
-pass as the next `--since` (full semantics in ADR-0025). Emission is
-`(hlc, nonce) > cursor[replica]` lexicographically, so a late foreign op below
+**`tl log [<id>] [--since <cursor>] [--until <cursor>] --json`** — the op history
+(an HLC-ordered projection over the log, ADR-0008); `<id>` filters to ops touching
+that issue. With no bound it is newest-first, capped by `--limit` (default 10,
+`0` = all). `--since` is a resumable forward change-feed — every op after the lower
+cursor, oldest-first, exactly-once — and `--limit` defaults to `0` (all),
+paginating the oldest first. `--until` browses backward — every op before the upper
+cursor, newest-first — `--limit` defaults to 10 (a page, like plain log); it is
+best-effort, not exactly-once (a still-merging log can gain an op below a page
+already passed, ADR-0025). Given both, the bounds compose into a window.
+
+Every response carries a top-level dual-edge `cursor` **object**
+`{ "since": <resume-forward>, "until": <resume-back> }` (field names match the
+flags), each a per-replica version vector serialized as comma-joined
+`<replica>:<hlc>:<nonce>` triples sorted by replica: pass `cursor.since` to
+`--since` to continue forward, `cursor.until` to `--until` to page older (full
+semantics in ADR-0025). Forward emission is `(hlc, nonce) > since[replica]`
+lexicographically (backward is `< until[replica]`), so a late foreign op below
 another replica's maximum, and a same-replica op sharing an HLC (split by nonce),
-are each delivered exactly once. A malformed cursor is a `usage` error, never a
-silent full dump. `count` is the total matched (before `--limit`); a `--since`
-cursor is scoped to the `<id>` filter it was produced under.
+are each delivered exactly once on the forward feed. A malformed cursor is a
+`usage` error, never a silent full dump. `count` is the total matched (before
+`--limit`); a cursor is scoped to the `<id>` filter it was produced under.
 
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
@@ -325,7 +333,8 @@ cursor is scoped to the `<id>` filter it was produced under.
     { "timestamp": "2026-06-11T01:27:49.277Z", "op": "close",
       "actor": "carol", "targets": ["tl-ppyg0ekgf91s56e0"] }
   ],
-  "cursor": "93ac0kyg2gggt:116786845491855360:1" } }
+  "cursor": { "since": "93ac0kyg2gggt:116786845491855360:1",
+              "until": "93ac0kyg2gggt:116786845491820032:1" } } }
 ```
 
 `op` is the wire verb (ADR-0008's closed enum); `actor` is `|null`;

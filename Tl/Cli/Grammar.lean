@@ -60,7 +60,10 @@ private def logLimitFlag : FlagSpec :=
   { name := "limit", value := true, summary := "max entries shown (0 = all; default 10, or all when --since)" }
 
 private def logSinceFlag : FlagSpec :=
-  { name := "since", value := true, summary := "only ops after this cursor — a resumable change-feed (pass the prior `cursor`)" }
+  { name := "since", value := true, summary := "only ops after this cursor — a resumable forward change-feed (pass the prior `cursor.since`)" }
+
+private def logUntilFlag : FlagSpec :=
+  { name := "until", value := true, summary := "only ops before this cursor — backward history browsing (pass the prior `cursor.until`)" }
 
 private def syncFlag : FlagSpec :=
   { name := "sync", value := false,
@@ -160,8 +163,8 @@ def commandSpecs : List CommandSpec :=
     { command := "meta list", positionals := "[<id>]",
       summary := "metadata keys in use (one issue, or all with counts)" },
     { command := "log", positionals := "[<id>]",
-      summary := "the op history, newest first (optionally one issue); --since for a resumable change-feed",
-      flags := [logLimitFlag, logSinceFlag] },
+      summary := "the op history, newest first (optionally one issue); --since for a resumable change-feed, --until to browse backward",
+      flags := [logLimitFlag, logSinceFlag, logUntilFlag] },
     { command := "stats", positionals := "",
       summary := "counts by state plus ready / blocked / cycles totals" },
     { command := "sync", positionals := "",

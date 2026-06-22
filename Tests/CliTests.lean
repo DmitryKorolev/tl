@@ -33,6 +33,10 @@ private def jNat (j : Json) (k : String) : Option Nat :=
   (jGet j k).bind (fun v => v.getNat?.toOption)
 private def jArr (j : Json) (k : String) : List Json :=
   ((jGet j k).bind (fun v => v.getArr?.toOption)).map (·.toList) |>.getD []
+/-- A string field of a nested object: `jSub j "cursor" "since"` reads
+    `j.cursor.since` (the dual-edge `tl log` cursor, ADR-0025). -/
+private def jSub (j : Json) (k sub : String) : Option String :=
+  (jGet j k).bind (fun c => jStr c sub)
 
 private def run' (args : List String) : IO (Except Tl.Error CmdOut) :=
   (runVerb args).run
@@ -2339,15 +2343,15 @@ def cliLogSinceTests : IO (List Outcome) := do
   -- (1) an empty cursor is the full history; every log reports a resumable cursor
   o := o ++ [← expectData "log --since '' returns the full history with a cursor"
       ["log", "--since", "", "--json", "--dir", dir]
-      (fun j => jNat j "count" == some 2 && ((jStr j "cursor").getD "").length > 0)]
+      (fun j => jNat j "count" == some 2 && ((jSub j "cursor" "since").getD "").length > 0)]
   -- capture the current frontier from a plain log
   let frontier ← (do match ← run' ["log", "--json", "--dir", dir] with
-    | .ok out => pure ((jStr out.data "cursor").getD "")
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "")
     | .error _ => pure "")
   -- (2) idempotent re-read: --since <frontier> right away is empty, cursor stable
   o := o ++ [← expectData "log --since <frontier> just after is empty and stable (idempotent)"
       ["log", "--since", frontier, "--json", "--dir", dir]
-      (fun j => jNat j "count" == some 0 && jStr j "cursor" == some frontier)]
+      (fun j => jNat j "count" == some 0 && jSub j "cursor" "since" == some frontier)]
   -- (3) post-cursor delta: a new op appears exactly once
   let _ ← mkIssue dir "three"
   o := o ++ [← expectData "log --since <frontier> after a change shows exactly the new op"
@@ -2384,7 +2388,7 @@ def cliLogSinceTests : IO (List Outcome) := do
   let dirR ← freshDir
   let _ ← mkIssue dirR "own"           -- own replica at a real (high) HLC
   let frontierA ← (do match ← run' ["log", "--json", "--dir", dirR] with
-    | .ok out => pure ((jStr out.data "cursor").getD "")
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "")
     | .error _ => pure "")
   -- a foreign replica authored an op long ago (HLC 0x100, below the own max) that
   -- has only now synced into this clone
@@ -2396,7 +2400,7 @@ def cliLogSinceTests : IO (List Outcome) := do
        (fun j => jNat j "count" == some 1 && (jArr j "entries").length == 1),
      ← expectData "the advanced cursor spans both replicas once the late op is folded"
        ["log", "--since", frontierA, "--json", "--dir", dirR]
-       (fun j => (((jStr j "cursor").getD "").splitOn ",").length == 2)]
+       (fun j => (((jSub j "cursor" "since").getD "").splitOn ",").length == 2)]
   -- (5b) two ops from one replica at the same HLC, split only by nonce (ADR-0007),
   -- must each be delivered exactly once: a (replica → HLC) cursor skips the second
   -- on resume; the (HLC, nonce) frontier does not.
@@ -2407,11 +2411,11 @@ def cliLogSinceTests : IO (List Outcome) := do
       ++ foreignLine (.create "aaaabbbbcccc0002" { title := some "b" }) 256 "2zzzzzzzzzzzz" "m" 2 ++ "\n")
   let tp1 ← run' ["log", "--since", "", "--limit", "1", "--json", "--dir", dirT]
   let (te1, tc1) := match tp1 with
-    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "since").getD "")
     | .error _ => (0, "")
   let tp2 ← run' ["log", "--since", tc1, "--limit", "1", "--json", "--dir", dirT]
   let (te2, tc2) := match tp2 with
-    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "since").getD "")
     | .error _ => (0, "")
   o := o ++
     [check "same-HLC page 1 delivers one op" (te1 == 1) s!"entries={te1} cursor={tc1}",
@@ -2440,11 +2444,11 @@ def cliLogSinceTests : IO (List Outcome) := do
   let _ ← mkIssue dirP "p2"
   let page1 ← run' ["log", "--since", "", "--limit", "1", "--json", "--dir", dirP]
   let (e1, c1) := match page1 with
-    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "since").getD "")
     | .error _ => (0, "")
   let page2 ← run' ["log", "--since", c1, "--limit", "1", "--json", "--dir", dirP]
   let (e2, c2) := match page2 with
-    | .ok out => ((jArr out.data "entries").length, (jStr out.data "cursor").getD "")
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "since").getD "")
     | .error _ => (0, "")
   o := o ++
     [check "log --since --limit 1 delivers one op for the first page" (e1 == 1) s!"page1 entries={e1}",
@@ -2457,7 +2461,95 @@ def cliLogSinceTests : IO (List Outcome) := do
   let _ ← run' ["update", "tl-" ++ i1, "--title", "f1b", "--dir", dirF]
   o := o ++ [← expectData "log <id> --since '' returns only that issue's ops, with a cursor"
       ["log", "tl-" ++ i1, "--since", "", "--json", "--dir", dirF]
-      (fun j => jNat j "count" == some 2 && ((jStr j "cursor").getD "").length > 0)]
+      (fun j => jNat j "count" == some 2 && ((jSub j "cursor" "since").getD "").length > 0)]
+  return o
+
+/-- `tl log --until <cursor>` (ADR-0025): backward history browsing and the
+    dual-edge `{since, until}` cursor. Covers full-history-newest-first with both
+    edges, backward paging that telescopes without overlap and terminates, the
+    shared-HLC boundary tie-break across two replicas (each op delivered exactly
+    once paging back — an HLC-only edge would skip or re-deliver the second), a
+    bounded `--since C1 --until C2` window, the default page size (pages, not
+    drains), and the edge-named malformed-cursor usage error. -/
+def cliLogUntilTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let entryTarget (out : CmdOut) : Option String :=
+    ((jArr out.data "entries").head?.bind (fun e => (jArr e "targets").head?)).bind (fun t => t.getStr?.toOption)
+  -- (1) --until '' is the full history, newest-first, and reports both edges
+  let dir ← freshDir
+  let _a ← mkIssue dir "a"
+  let _b ← mkIssue dir "b"
+  let c ← mkIssue dir "c"
+  o := o ++ [← expectData "log --until '' is full history newest-first with both cursor edges"
+      ["log", "--until", "", "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 3
+        && (jSub j "cursor" "since").isSome && (jSub j "cursor" "until").isSome
+        && (((jArr j "entries").head?.bind (fun e => (jArr e "targets").head?)).bind
+              (fun t => t.getStr?.toOption)) == some ("tl-" ++ c))]
+  -- (2) backward paging telescopes via cursor.until: no overlap, then drains
+  let p1 ← run' ["log", "--until", "", "--limit", "2", "--json", "--dir", dir]
+  let (n1, u1) := match p1 with
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "until").getD "")
+    | .error _ => (0, "")
+  let p2 ← run' ["log", "--until", u1, "--limit", "2", "--json", "--dir", dir]
+  let (n2, u2) := match p2 with
+    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "until").getD "")
+    | .error _ => (0, "")
+  let p3 ← run' ["log", "--until", u2, "--limit", "2", "--json", "--dir", dir]
+  let n3 := match p3 with | .ok out => (jArr out.data "entries").length | .error _ => 99
+  o := o ++
+    [check "backward page 1 delivers the newest 2 of 3" (n1 == 2) s!"n1={n1}",
+     check "backward page 2 telescopes to the remaining 1 (no overlap)" (n2 == 1) s!"n2={n2} u1={u1}",
+     check "backward paging terminates (page 3 is empty)" (n3 == 0) s!"n3={n3} u2={u2}"]
+  -- (3) boundary tie-break: two replicas author an op at the SAME hlc; backward
+  -- --limit 1 pages deliver each exactly once. The per-replica until edge splits
+  -- them by the (hlc, replica, nonce) tie-break — an HLC-only edge skips or
+  -- re-delivers the second; a non-accumulating until edge re-delivers on page 3.
+  let dirB ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dirB / "log")
+  IO.FS.writeFile (System.FilePath.mk dirB / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc000a" { title := some "A" }) 256 "2zzzzzzzzzzzz" "m" 1 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirB / "log" / "3zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc000b" { title := some "B" }) 256 "3zzzzzzzzzzzz" "m" 1 ++ "\n")
+  let b1 ← run' ["log", "--until", "", "--limit", "1", "--json", "--dir", dirB]
+  let (bn1, bt1, bu1) := match b1 with
+    | .ok out => ((jArr out.data "entries").length, entryTarget out, (jSub out.data "cursor" "until").getD "")
+    | .error _ => (0, none, "")
+  let b2 ← run' ["log", "--until", bu1, "--limit", "1", "--json", "--dir", dirB]
+  let (bn2, bt2, bu2) := match b2 with
+    | .ok out => ((jArr out.data "entries").length, entryTarget out, (jSub out.data "cursor" "until").getD "")
+    | .error _ => (0, none, "")
+  let b3 ← run' ["log", "--until", bu2, "--limit", "1", "--json", "--dir", dirB]
+  let bn3 := match b3 with | .ok out => (jArr out.data "entries").length | .error _ => 99
+  o := o ++
+    [check "same-HLC backward page 1 delivers one op" (bn1 == 1) s!"bn1={bn1}",
+     check "same-HLC backward page 2 delivers the OTHER op (tie-break, no skip)"
+       (bn2 == 1 && bt1.isSome && bt2.isSome && bt2 != bt1) s!"bt1={bt1} bt2={bt2}",
+     check "same-HLC backward paging terminates without re-delivery" (bn3 == 0) s!"bn3={bn3} bu2={bu2}"]
+  -- (4) a bounded window: --since C1 --until C3 keeps only ops strictly between
+  let dirW ← freshDir
+  let _w1 ← mkIssue dirW "w1"
+  let c1 ← (do match ← run' ["log", "--json", "--dir", dirW] with
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "") | .error _ => pure "")
+  let _w2 ← mkIssue dirW "w2"
+  let _w3 ← mkIssue dirW "w3"
+  let c3 ← (do match ← run' ["log", "--json", "--dir", dirW] with
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "") | .error _ => pure "")
+  o := o ++ [← expectData "log --since C1 --until C3 is the bounded window (just the middle op)"
+      ["log", "--since", c1, "--until", c3, "--json", "--dir", dirW]
+      (fun j => jNat j "count" == some 1)]
+  -- (5) a malformed --until cursor is a usage error (the message names --until)
+  o := o ++
+    [← expectErr "log --until with a bad cursor segment is usage (never a silent dump)"
+       ["log", "--until", "garbage", "--dir", dir] .usage,
+     ← expectErr "log --until with a non-numeric hlc is usage"
+       ["log", "--until", "1zzzzzzzzzzzz:notanum:1", "--dir", dir] .usage]
+  -- (6) --until's default --limit pages (like plain log, 10) and does not drain
+  let dirP ← freshDir
+  for k in [0:12] do let _ ← mkIssue dirP s!"i{k}"
+  o := o ++ [← expectData "log --until '' defaults to a 10-entry page (count discloses the full 12)"
+      ["log", "--until", "", "--json", "--dir", dirP]
+      (fun j => jNat j "count" == some 12 && (jArr j "entries").length == 10)]
   return o
 
 def cliTests : IO (List Outcome) := do
@@ -2473,6 +2565,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliBinaryTests)
 
 end Tl.Tests
