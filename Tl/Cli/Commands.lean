@@ -703,7 +703,11 @@ def reloadOrFallback (reload : TlM View) (fallback : View) (i : IssueId) :
     pure (fallback, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"])
 
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
-    (sync verify : Bool) : TlM CmdOut := do
+    (sync verify steal : Bool) (staleArg : Option String) : TlM CmdOut := do
+  -- `--stale` only sets the window for `--steal`; alone it is a usage error so a
+  -- typo (`--stale 1h` without `--steal`) never silently does a plain claim.
+  if staleArg.isSome && !steal then
+    throw (.mk' .usage "--stale sets the staleness window for --steal — pass --steal too, or drop --stale")
   -- freshness preflight (ADR-0001 §5): with --sync/--verify, reconcile against
   -- the remote before the take, so the not-claimable check sees the freshest
   -- reachable state. --verify warns-and-degrades when no remote is configured
@@ -728,29 +732,67 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
           pure [s!"claimed against local state — could not reconcile with the remote first ({e.message}); run `tl sync`"])
     else pure []
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  -- the staleness window for --steal: inline --stale wins over the tl.staleAfter
+  -- git config; a malformed value from either source is a usage error (fail fast).
+  -- No --steal ⇒ no read, no threshold. A configured-but-absent window stays
+  -- `none`: only the take-over-someone-else path below then errors (so --steal on
+  -- a ready/own item still works without any window).
+  -- read tl.staleAfter only when --steal is on and no inline --stale overrides it
+  let cfgWindow ← if steal && staleArg.isNone then Tl.Sync.gitConfig d "tl.staleAfter" else pure none
+  let windowRaw : Option String := if steal then staleArg.orElse (fun _ => cfgWindow) else none
+  let windowSrc : String := if staleArg.isSome then "--stale:" else "git config tl.staleAfter="
+  let thresholdMs : Option Nat ← match windowRaw with
+    | none => pure none
+    | some raw =>
+      match Time.parseDurationMs? raw with
+      | some w => pure (some w)
+      | none => throw (.mk' .usage s!"{windowSrc} '{sanitizeSingle raw}' is not a valid duration — use e.g. 45m, 1h, 24h")
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
     let rm := s.effStatusAll
-    if State.isReadyWith rm s ctx.now i then
-      .ok [.claim i actor]
-    else
-      let dta := s.issueData i
-      let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith rm s b)
-      let reasons := Json.mkObj <|
-        (if dta.statusOf != .Open then [("status", Json.str (statusWire dta.statusOf))] else [])
-        ++ (match dta.assignee.value.getD none with
-            | some a => [("assignee", Json.str a)]
-            | none => [])
-        ++ (if s.isEpic i then [("isEpic", Json.bool true)] else [])
-        ++ (match dta.deferUntilOf with
-            | some t => if ctx.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
-            | none => [])
-        ++ (if direct.isEmpty then [] else
-            [("blockedBy", Json.arr (direct.map (Lean.Json.str ∘ displayId)).toArray)])
-      .error { code := .notClaimable
-               message := s!"{displayId i} is not claimable — run `tl why {displayId i}`, or claim something from `tl ready`"
-               context := [("id", .str (displayId i)), ("reasons", reasons)] })
+    let dta := s.issueData i
+    let direct := (s.blockersOf i).filter (fun b => !State.blockerDischargedWith rm s b)
+    let claimedBy := dta.assignee.value.getD none
+    let deferActive := match dta.deferUntilOf with | some t => ctx.now < t | none => false
+    -- `--steal` overrides ONLY an existing claim (in_progress + assigned) on an
+    -- otherwise-workable item (not epic/deferred/blocked).
+    let onlyClaimObstacle := dta.statusOf == .InProgress && claimedBy.isSome
+      && !s.isEpic i && !deferActive && direct.isEmpty
+    let holder := (claimedBy.map sanitizeSingle).getD "someone"
+    let reasons := Json.mkObj <|
+      (if dta.statusOf != .Open then [("status", Json.str (statusWire dta.statusOf))] else [])
+      ++ (match claimedBy with | some a => [("assignee", Json.str a)] | none => [])
+      ++ (if s.isEpic i then [("isEpic", Json.bool true)] else [])
+      ++ (match dta.deferUntilOf with
+          | some t => if ctx.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
+          | none => [])
+      ++ (if direct.isEmpty then [] else
+          [("blockedBy", Json.arr (direct.map (Lean.Json.str ∘ displayId)).toArray)])
+    let notClaimable : String → Tl.Error := fun msg =>
+      { code := .notClaimable, message := msg,
+        context := [("id", .str (displayId i)), ("reasons", reasons)] }
+    -- the verdict for taking over someone else's claim: a stale-claim courtesy
+    -- guard, never merge-enforced (ADR-0013) — concurrent steals reconcile by LWW
+    -- and the loser reads "superseded".
+    let stealVerdict : Except Tl.Error (List WireOp) :=
+      match thresholdMs with
+      | none => .error (.mk' .usage
+          s!"{displayId i} is claimed by {holder}; --steal needs a staleness window — pass --stale <duration> (e.g. 1h) or set `git config tl.staleAfter`")
+      | some w =>
+        match (provenanceOf ctx.loaded.ops i).claimedAt with
+        | none => .error (notClaimable
+            s!"{displayId i} is claimed by {holder} but carries no claim timestamp to age — claim something from `tl ready`")
+        | some claimedHlc =>
+          let deadline := claimedHlc / 2 ^ 16 + w
+          if ctx.now > deadline then .ok [.claim i actor]  -- stale: take it over
+          else .error (notClaimable
+            s!"{displayId i} is claimed by {holder} and not stale yet (~{(deadline - ctx.now + 59999) / 60000}m until the window elapses) — retry later, --steal with a shorter --stale, or claim something from `tl ready`")
+    if State.isReadyWith rm s ctx.now i then .ok [.claim i actor]
+    else if steal && onlyClaimObstacle && claimedBy == some actor then .ok [.claim i actor]
+    else if steal && onlyClaimObstacle then stealVerdict
+    else .error (notClaimable
+      s!"{displayId i} is not claimable — run `tl why {displayId i}`, or claim something from `tl ready`"))
   let v := writeNow ctx parsed
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .claim ci _ => some ci | _ => none)
@@ -776,10 +818,15 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
     [("outcome", Json.str (if won then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
+  -- a takeover when the pre-write state was claimed by someone else (read from
+  -- ctx.loaded, the pre-fold state): disclose whom we took it from
+  let priorHolder := (ctx.loaded.state.issueData i).assignee.value.getD none
+  let tookOver := won && priorHolder.isSome && priorHolder != some actor
   -- mirror cmdClose: a folded foreign op can outstamp the fresh claim inside the
   -- skew window, so the human line must disclose supersession — not assume "Claimed"
   let human :=
-    if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
+    if tookOver then s!"Took over {displayId i} from {(priorHolder.map sanitizeSingle).getD "—"} as {sanitizeSingle actor} (its claim was stale)"
+    else if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   return { data, human
            notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes ++ reloadNotes }
@@ -1404,7 +1451,9 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
             ("window", Json.str raw),
             ("count", jnum stale.length)]
            ++ (if stale.isEmpty then [] else
-               [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray)]), false)]
+               [("ids", Json.arr (stale.map (Lean.Json.str ∘ displayId)).toArray),
+                -- the next-step the signal otherwise dead-ends on (ADR-0013)
+                ("message", Json.str s!"{stale.length} claim(s) stale past {raw} — take one over with `tl claim <id> --steal`, or check with the holder")]), false)]
   -- clock skew (ADR-0007): foreign ops dated beyond the window are deferred
   -- (held back) until wall-clock catches up — never fatal (convergent and
   -- self-healing). The lead is over both accepted and deferred ops (a deferred

@@ -68,6 +68,12 @@ tl help <command>  # one command (human)
    children, description.
 2. `tl claim <id> --json` — take it if ready (same `not-claimable` handling).
    `tl why <id> --json` lists the transitive unclosed blockers if it is not.
+   If `not-claimable` because someone else holds a **stale** claim, take it over
+   with `tl claim <id> --steal --stale <duration>` (e.g. `1h`) — allowed only when
+   the existing claim is older than the window (the inline `--stale`, or the
+   `tl.staleAfter` git config; no default). It writes an ordinary claim, so a
+   concurrent steal still reconciles by last-writer-wins (the loser reads
+   `superseded`). On a ready or your-own item, `--steal` is just a plain claim.
 3. Do the work → `tl close <id> --as done|cancelled|duplicate`. For a
    duplicate, `--of <canonical-id>` records the original.
 

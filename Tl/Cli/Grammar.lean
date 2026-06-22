@@ -70,6 +70,14 @@ private def verifyFlag : FlagSpec :=
   { name := "verify", value := false,
     summary := "fetch + re-check readiness against the freshest state before taking; fails (verify-failed) if a configured remote is unreachable, degrades if none" }
 
+private def stealFlag : FlagSpec :=
+  { name := "steal", value := false,
+    summary := "take over an already-claimed item, only if its claim is stale (see --stale / tl.staleAfter); no-op-extra on an unclaimed or own item" }
+
+private def staleFlag : FlagSpec :=
+  { name := "stale", value := true,
+    summary := "the staleness window for --steal (e.g. 45m, 1h, 24h); overrides git config tl.staleAfter — no default" }
+
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
   [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)" },
@@ -87,8 +95,8 @@ def commandSpecs : List CommandSpec :=
     { command := "ready", positionals := "",
       summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag, syncFlag] },
     { command := "claim", positionals := "<id>",
-      summary := "take a ready item (refused with structured reasons otherwise)",
-      flags := [actorFlag, syncFlag, verifyFlag] },
+      summary := "take a ready item (refused with structured reasons otherwise); --steal takes over a stale claim",
+      flags := [actorFlag, syncFlag, verifyFlag, stealFlag, staleFlag] },
     { command := "close", positionals := "<id>",
       summary := "finish an issue; any closed status discharges its blockers",
       flags :=

@@ -212,7 +212,7 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "claim"
       let tok ← MonadExcept.ofExcept (onePositional a "claim" "an issue id")
       let actor ← actorOf a
-      cmdClaim (a.get? "dir") tok actor (a.has "sync") (a.has "verify")
+      cmdClaim (a.get? "dir") tok actor (a.has "sync") (a.has "verify") (a.has "steal") (a.get? "stale")
     | "close" => do
       let a ← parse "close"
       let tok ← MonadExcept.ofExcept (onePositional a "close" "an issue id")
