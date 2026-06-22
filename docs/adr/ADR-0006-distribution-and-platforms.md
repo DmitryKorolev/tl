@@ -134,6 +134,14 @@ drop 18.04 despite its in-tier glibc. CI pins and tests the floor version so a
 future plumbing dependency above it cannot slip in unnoticed (decided
 2026-06-21).
 
+The runtime check shipped 2026-06-21: `Tl.Sync.parseGitVersion` /
+`gitMeetsFloor` / `gitVersion` (a bounded `git --version`), surfaced as a
+`doctor` `gitVersion` check row (`ok` at/above the floor, a teaching `warn`
+below it or when git is unreadable — a warn, never a doctor failure) and an
+`init` below-floor note. The CI job pinned to git 2.17 is still pending — the
+repo has no CI infrastructure yet, so it is tracked separately as standing CI up
+from scratch.
+
 ### Release integrity and provenance
 
 Binary distribution is gated on a verifiable release pipeline:

@@ -2328,6 +2328,54 @@ def cliListStaleTests : IO (List Outcome) := do
     | .ok out => pure (check "list --stale human render shows the stale-claim summary, not 'no issues'"
         ((out.human.splitOn "stale claim").length ≥ 2 && (out.human.splitOn "no issues").length == 1) out.human)
     | .error e => pure { name := "stale human render", passed := false, msg := e.message })]
+/-- The git runtime-floor check (ADR-0006): the `git --version` parser, the floor
+    comparison, the doctor row builder (incl. the below-floor warn — pure, so it is
+    covered without an actually-old git), and the doctor/init integration on the
+    live git (≥ 2.17 ⇒ ok / no note). -/
+def cliGitFloorTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- (1) parseGitVersion: canonical X.Y.Z, a build suffix, two-component, garbage
+  o := o ++
+    [check "parseGitVersion: canonical X.Y.Z" (Tl.Sync.parseGitVersion "git version 2.17.1" == some (2, 17)) "",
+     check "parseGitVersion: Apple build suffix" (Tl.Sync.parseGitVersion "git version 2.39.3 (Apple Git-145)" == some (2, 39)) "",
+     check "parseGitVersion: two-component X.Y" (Tl.Sync.parseGitVersion "git version 2.9" == some (2, 9)) "",
+     check "parseGitVersion: trailing newline tolerated" (Tl.Sync.parseGitVersion "git version 2.37.2\n" == some (2, 37)) "",
+     check "parseGitVersion: non-git output → none" (Tl.Sync.parseGitVersion "not a git line" == none) "",
+     check "parseGitVersion: missing minor → none" (Tl.Sync.parseGitVersion "git version 2" == none) ""]
+  -- (2) gitMeetsFloor: at, below, above the 2.17 floor (major and minor)
+  o := o ++
+    [check "gitMeetsFloor: exactly 2.17 meets" (Tl.Sync.gitMeetsFloor (2, 17) == true) "",
+     check "gitMeetsFloor: 2.16 is below" (Tl.Sync.gitMeetsFloor (2, 16) == false) "",
+     check "gitMeetsFloor: 2.39 is above" (Tl.Sync.gitMeetsFloor (2, 39) == true) "",
+     check "gitMeetsFloor: 1.99 (older major) is below" (Tl.Sync.gitMeetsFloor (1, 99) == false) "",
+     check "gitMeetsFloor: 3.0 (newer major) is above" (Tl.Sync.gitMeetsFloor (3, 0) == true) ""]
+  -- (3) gitVersionRow: below-floor warns + teaches; at-floor ok; unreadable warns;
+  --     never fails doctor (warn, not fail — ADR-0008)
+  let rowStatus (v : Option (Nat × Nat)) : Option String := jStr (gitVersionRow v).1 "status"
+  let rowSaysFloor (v : Option (Nat × Nat)) : Bool := (((jStr (gitVersionRow v).1 "message").getD "").splitOn "2.17").length ≥ 2
+  o := o ++
+    [check "gitVersionRow: below floor → warn + teaching message"
+       (rowStatus (some (2, 16)) == some "warn" && rowSaysFloor (some (2, 16))) "",
+     check "gitVersionRow: at floor → ok" (rowStatus (some (2, 17)) == some "ok") "",
+     check "gitVersionRow: unreadable git (none) → warn + message"
+       (rowStatus none == some "warn" && rowSaysFloor none) "",
+     check "gitVersionRow: never fails doctor (warn, not fail)"
+       ((gitVersionRow (some (2, 16))).2 == false && (gitVersionRow none).2 == false) ""]
+  -- (4) doctor integration: the gitVersion row is present and ok on the live git
+  let dir ← freshDir
+  let _ ← mkIssue dir "x"
+  o := o ++ [← expectData "doctor reports a gitVersion check, ok on the live (≥2.17) git"
+      ["doctor", "--json", "--dir", dir]
+      (fun j => match (jArr j "checks").find? (fun c => jStr c "name" == some "gitVersion") with
+        | some c => jStr c "status" == some "ok" && (jStr c "version").isSome
+        | none => false)]
+  -- (5) init integration: no git-floor note on the live git
+  let root ← IO.FS.createTempDir
+  o := o ++ [← (do match ← run' ["init", "--dir", (root / ".tl").toString] with
+    | .ok out => pure (check "init emits no git-floor note on the live (≥2.17) git"
+        (out.notes.all (fun n => (n.splitOn "below the required floor").length == 1))
+        (String.intercalate " | " out.notes))
+    | .error e => pure { name := "init git-floor note", passed := false, msg := e.message })]
   return o
 
 /-- `tl log --since <cursor>`: the resumable change-feed. Covers empty/zero
@@ -2667,7 +2715,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)

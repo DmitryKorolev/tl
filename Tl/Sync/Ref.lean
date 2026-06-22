@@ -260,6 +260,37 @@ def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
   let o ← (git d ["config", key, value] : IO _)
   return o.exitCode == 0
 
+/-- The git runtime floor (ADR-0006): `tl` shells out to git plumbing for the
+    `refs/tl/log` transport and discovery, and requires git ≥ 2.17. -/
+def gitFloor : Nat × Nat := (2, 17)
+
+/-- Parse a `git version X.Y[.Z…]` line to `(major, minor)`. Tolerant of a build
+    suffix (`git version 2.39.3 (Apple Git-145)`). `none` when the `git version `
+    prefix or the two leading numeric components are absent. -/
+def parseGitVersion (raw : String) : Option (Nat × Nat) :=
+  let line := (raw.splitOn "\n").head?.getD raw
+  match line.splitOn "git version " with
+  | _ :: rest :: _ =>
+    let ver := (rest.trimAscii.toString.splitOn " ").head?.getD ""
+    match ver.splitOn "." with
+    | major :: minor :: _ =>
+      match major.toNat?, minor.toNat? with
+      | some mj, some mn => some (mj, mn)
+      | _, _ => none
+    | _ => none
+  | _ => none
+
+/-- `v ≥ gitFloor` (major, then minor). -/
+def gitMeetsFloor (v : Nat × Nat) : Bool :=
+  gitFloor.1 < v.1 || (gitFloor.1 == v.1 && gitFloor.2 ≤ v.2)
+
+/-- Run `git --version` (bounded) → `(major, minor)`, or `none` when git is absent
+    on PATH or its output is unparseable. Needs no repo, so it takes no `Dirs`. -/
+def gitVersion (timeoutMs : Nat := localGitTimeoutMs) : IO (Option (Nat × Nat)) := do
+  match ← (runBounded { cmd := "git", args := #["--version"] } .empty timeoutMs).toBaseIO with
+  | .ok (0, out, _) => return (String.fromUTF8? out).bind parseGitVersion
+  | _ => return none
+
 /-- True when `d` is inside a *linked* git worktree — its `--git-dir` differs
     from the shared `--git-common-dir`. This is exactly where auto-sync's local
     leg is free and cross-worktree sharing is the point (ADR-0016 §4); false in

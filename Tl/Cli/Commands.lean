@@ -1456,6 +1456,23 @@ def cmdMetaList (dirOverride : Option String) (idTok : Option String) (skipBad :
 
 /-! ## doctor / init / version -/
 
+/-- The `doctor` git-version check row from a parsed `git --version` (ADR-0006):
+    `ok` at/above the floor (git ≥ 2.17), `warn` below it or when git is unreadable.
+    Always a warn, never a failure (doctor reports, does not fail — ADR-0008). Pure,
+    so the below-floor branch is unit-testable without an actually-old git. -/
+def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
+  match v with
+  | none =>
+    (Json.mkObj [("name", Json.str "gitVersion"), ("status", Json.str "warn"),
+      ("message", Json.str "could not read `git --version` — git ≥ 2.17 is a runtime prerequisite for the refs/tl/log transport; ensure git is on PATH")], false)
+  | some (mj, mn) =>
+    let ok := Tl.Sync.gitMeetsFloor (mj, mn)
+    (Json.mkObj <|
+      [("name", Json.str "gitVersion"), ("status", Json.str (if ok then "ok" else "warn")),
+       ("version", Json.str s!"{mj}.{mn}")]
+      ++ (if ok then [] else
+          [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
+
 def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
   -- --sync reconciles first; best-effort (doctor never fails — ADR-0008): keep
@@ -1649,7 +1666,10 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     catch e =>
       pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow]
+  -- git runtime floor (ADR-0006): a teaching warn below 2.17, so an older git
+  -- surfaces here rather than failing the plumbing cryptically later
+  let gitVerRow := gitVersionRow (← liftSys (fun e => .mk' .internal s!"{e}") Tl.Sync.gitVersion)
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow, gitVerRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),
@@ -1774,7 +1794,15 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   let human := match created with
     | some r => s!"Initialized tl in {target} (replica {r.id})"
     | none => s!"{target} already initialized — nothing to do (idempotent)"
-  return { data, human, notes := note ++ [pointerNote] ++ autosyncNote }
+  -- git runtime floor (ADR-0006): warn at setup if a present git is below 2.17, so
+  -- the prerequisite is caught now rather than as a cryptic plumbing failure. git
+  -- absent ⇒ no note: init can create local-only state outside any repo.
+  let gitFloorNote ← liftSys (fun e => .mk' .internal s!"{e}") (do
+    match ← Tl.Sync.gitVersion with
+    | some v => if Tl.Sync.gitMeetsFloor v then pure ([] : List String)
+                else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git"]
+    | none => pure [])
+  return { data, human, notes := note ++ [pointerNote] ++ autosyncNote ++ gitFloorNote }
 
 /-- The product version (keep in lockstep with lakefile.lean's package
     version; `tl version` is the single user-facing source). -/
