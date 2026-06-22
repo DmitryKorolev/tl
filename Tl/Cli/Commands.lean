@@ -595,12 +595,16 @@ private def minStamp (hlc nonce : Nat) (thr : Option (Nat × Nat)) : Nat × Nat 
   if stampBefore hlc nonce thr then (hlc, nonce) else thr.getD (hlc, nonce)
 
 /-- Fold ops into a cursor, keeping the per-replica *minimum* `(HLC, nonce)` — the
-    frontier just below the oldest delivered op. Emitting `(hlc, nonce) < this`
-    (per replica) yields exactly the ops globally older than the page's oldest op,
-    because the delivered page is a top-suffix of the total order: every op below
-    a per-replica minimum is below the global oldest, and a replica absent from the
-    page (unconstrained, `none`) has all its ops below it. This backs `--until`'s
-    resume-back edge and is the dual of `advanceCursor`. -/
+    frontier just below the oldest delivered op (`min` is order-independent, so the
+    page list may be in either sort order). Emitting `(hlc, nonce) < this` (per
+    replica) yields the ops older than the page's oldest delivered op, and a replica
+    absent from the page (unconstrained, `none`) keeps all its ops as candidates.
+    In a newest-first page (plain / `--until`) the page is a top-suffix of the total
+    order, so "older than the oldest delivered" is exactly the not-yet-shown
+    remainder — backward paging is gap-free. In an oldest-first `--since` page the
+    delivered slice is a bottom-prefix of the delta, so this edge points below the
+    feed's oldest op (into pre-feed history); the *forward* remainder of a `--since`
+    feed is reached by `cursor.since`, not this edge. The dual of `advanceCursor`. -/
 private def retreatCursor (base : LogCursor) (ops : List ParsedOp) : LogCursor :=
   ops.foldl (fun m p =>
     m.insert p.stamp.replica (minStamp p.stamp.hlc p.stamp.nonce (cursorThreshold m p.stamp.replica))) base
@@ -634,7 +638,13 @@ private def parseCursor (edge : String) (s : String) : Except Tl.Error LogCursor
         let okReplica := ridT.length == 13 && toCrockford r 13 == ridT && decide (r < 2 ^ 64)
         let okStamp := decide (h < 2 ^ 64) && decide (n < 2 ^ 128)
         if okReplica && okStamp then
-          c := c.insert r (maxStamp h n (cursorThreshold c r))
+          -- a self-produced cursor has one triple per replica (`renderCursor`),
+          -- but a hand-edited one may repeat a replica; collapse to the most
+          -- conservative bound — the tightest that never over-emits: the maximum
+          -- for a lower bound (`since`), the minimum for an upper bound (`until`).
+          let folded := if edge == "until" then minStamp h n (cursorThreshold c r)
+                        else maxStamp h n (cursorThreshold c r)
+          c := c.insert r folded
         else if !okReplica then
           throw (.mk' .usage
             s!"--{edge}: '{ridT}' is not a canonical 13-char replica id below 2^64 — pass the `cursor.{edge}` from a prior `tl log --json`")
@@ -690,7 +700,11 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
   -- delivered (capped) page, so a paged resume never skips/replays; otherwise the
   -- full frontier of the visible log (a point to tail from the newest). Resume-back
   -- (until) edge: the per-replica minimum of the delivered page — the frontier just
-  -- below the oldest delivered op — so `--until` pages strictly older.
+  -- below the oldest delivered op — so `--until` pages strictly older. Both edges
+  -- always bracket the *delivered* page, so no op is lost: in a `--since` feed the
+  -- forward remainder is reached by `cursor.since` (the until edge then points into
+  -- pre-feed history, and a one-op page makes the two edges coincide — expected,
+  -- not a skip; see `cliLogUntilTests` (windowed forward + limit)).
   let sinceEdge := if sinceGiven then advanceCursor sinceCur capped else advanceCursor AMap.empty visible
   -- accumulate from the input upper bound, not from empty: a replica bounded by a
   -- prior backward page must stay bounded, or paging further back re-delivers its

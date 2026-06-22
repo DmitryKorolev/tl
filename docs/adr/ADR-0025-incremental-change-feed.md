@@ -79,11 +79,15 @@ The cursor primitive above is the load-bearing part; these build on it additivel
 
 - **Dual-edge cursor + cursor-valued `--until` (shipped).** The response `cursor`
   is an object `{ since: <resume-forward>, until: <resume-back> }` (field names
-  match the flags), so each page is self-navigating in both directions: pass
-  `cursor.since` to `--since` to continue forward, `cursor.until` to `--until` to
-  page older. `--until <cursor>` browses history backward — ops before the upper
-  cursor, newest-first — and `--since C1 --until C2` composes into a bounded
-  window. `--since` (forward) is exactly-once; `--until` (backward browsing of
+  match the flags): pass `cursor.since` to `--since` to continue forward,
+  `cursor.until` to `--until` to read ops older than this page. Each edge always
+  brackets the *delivered* page, so no op is unreachable — but the two edges are
+  not interchangeable directions through one feed: a forward `--since` feed is
+  continued with `cursor.since` (its `cursor.until` then points below the feed's
+  oldest op, into pre-feed history, and on a one-op page coincides with
+  `cursor.since`), and a backward `--until` browse is continued with `cursor.until`.
+  `--until <cursor>` browses history backward — ops before the upper cursor,
+  newest-first — and `--since C1 --until C2` composes into a bounded window. `--since` (forward) is exactly-once; `--until` (backward browsing of
   history) is best-effort — a still-merging CRDT log can gain an op below where a
   backward page already passed. The resume-back edge is the per-replica minimum of
   the delivered page accumulated onto the input upper bound (the dual of the

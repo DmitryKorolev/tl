@@ -2483,23 +2483,29 @@ def cliLogUntilTests : IO (List Outcome) := do
   o := o ++ [← expectData "log --until '' is full history newest-first with both cursor edges"
       ["log", "--until", "", "--json", "--dir", dir]
       (fun j => jNat j "count" == some 3
-        && (jSub j "cursor" "since").isSome && (jSub j "cursor" "until").isSome
+        -- both edges present AND populated (not the always-present empty-string key)
+        && ((jSub j "cursor" "since").getD "").length > 0 && ((jSub j "cursor" "until").getD "").length > 0
         && (((jArr j "entries").head?.bind (fun e => (jArr e "targets").head?)).bind
               (fun t => t.getStr?.toOption)) == some ("tl-" ++ c))]
-  -- (2) backward paging telescopes via cursor.until: no overlap, then drains
+  -- (2) backward paging telescopes via cursor.until: pages are disjoint, then drains
+  let pageTargets (out : CmdOut) : List String :=
+    (jArr out.data "entries").filterMap (fun e => (jArr e "targets").head?.bind (fun t => t.getStr?.toOption))
   let p1 ← run' ["log", "--until", "", "--limit", "2", "--json", "--dir", dir]
-  let (n1, u1) := match p1 with
-    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "until").getD "")
-    | .error _ => (0, "")
+  let (t1, u1) := match p1 with
+    | .ok out => (pageTargets out, (jSub out.data "cursor" "until").getD "")
+    | .error _ => ([], "")
   let p2 ← run' ["log", "--until", u1, "--limit", "2", "--json", "--dir", dir]
-  let (n2, u2) := match p2 with
-    | .ok out => ((jArr out.data "entries").length, (jSub out.data "cursor" "until").getD "")
-    | .error _ => (0, "")
+  let (t2, u2) := match p2 with
+    | .ok out => (pageTargets out, (jSub out.data "cursor" "until").getD "")
+    | .error _ => ([], "")
   let p3 ← run' ["log", "--until", u2, "--limit", "2", "--json", "--dir", dir]
   let n3 := match p3 with | .ok out => (jArr out.data "entries").length | .error _ => 99
+  let overlap := t1.filter t2.contains
   o := o ++
-    [check "backward page 1 delivers the newest 2 of 3" (n1 == 2) s!"n1={n1}",
-     check "backward page 2 telescopes to the remaining 1 (no overlap)" (n2 == 1) s!"n2={n2} u1={u1}",
+    [check "backward page 1 delivers the newest 2 of 3" (t1.length == 2) s!"t1={t1}",
+     check "backward page 2 telescopes to the remaining 1, disjoint from page 1"
+       (t2.length == 1 && overlap.isEmpty) s!"t1={t1} t2={t2} overlap={overlap}",
+     check "the two pages together cover all 3 ops with no repeat" ((t1 ++ t2).eraseDups.length == 3) s!"t1={t1} t2={t2}",
      check "backward paging terminates (page 3 is empty)" (n3 == 0) s!"n3={n3} u2={u2}"]
   -- (3) boundary tie-break: two replicas author an op at the SAME hlc; backward
   -- --limit 1 pages deliver each exactly once. The per-replica until edge splits
@@ -2538,12 +2544,54 @@ def cliLogUntilTests : IO (List Outcome) := do
   o := o ++ [← expectData "log --since C1 --until C3 is the bounded window (just the middle op)"
       ["log", "--since", c1, "--until", c3, "--json", "--dir", dirW]
       (fun j => jNat j "count" == some 1)]
-  -- (5) a malformed --until cursor is a usage error (the message names --until)
+  -- (4b) a windowed FORWARD feed with --limit loses no op: the undelivered remainder
+  -- is reached by cursor.since (not cursor.until). Guards the resume-back edge against
+  -- a future "fix" that mistakes the since-mode degenerate edge for a skip.
+  let dirN ← freshDir
+  let _n1 ← mkIssue dirN "n1"
+  let cLo ← (do match ← run' ["log", "--limit", "1", "--since", "", "--json", "--dir", dirN] with
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "") | .error _ => pure "")
+  let _n2 ← mkIssue dirN "n2"
+  let _n3 ← mkIssue dirN "n3"
+  let _n4 ← mkIssue dirN "n4"
+  let cHi ← (do match ← run' ["log", "--json", "--dir", dirN] with
+    | .ok out => pure ((jSub out.data "cursor" "since").getD "") | .error _ => pure "")
+  -- window (cLo, cHi) = {n2, n3}; drain it forward one op at a time
+  let q1 ← run' ["log", "--since", cLo, "--until", cHi, "--limit", "1", "--json", "--dir", dirN]
+  let (qt1, qs1) := match q1 with
+    | .ok out => (pageTargets out, (jSub out.data "cursor" "since").getD "")
+    | .error _ => ([], "")
+  let q2 ← run' ["log", "--since", qs1, "--until", cHi, "--limit", "1", "--json", "--dir", dirN]
+  let qt2 := match q2 with | .ok out => pageTargets out | .error _ => []
   o := o ++
-    [← expectErr "log --until with a bad cursor segment is usage (never a silent dump)"
-       ["log", "--until", "garbage", "--dir", dir] .usage,
+    [check "windowed forward page 1 delivers one op" (qt1.length == 1) s!"qt1={qt1}",
+     check "windowed forward page 2 reaches the remainder via cursor.since (no op lost)"
+       (qt2.length == 1 && (qt1.filter qt2.contains).isEmpty) s!"qt1={qt1} qt2={qt2}"]
+  -- (5) a malformed --until cursor is a usage error whose message names --until
+  -- (the edge param's whole point) — never a silent dump
+  o := o ++
+    [← expectErr "log --until bad segment is usage, and the message names --until"
+       ["log", "--until", "garbage", "--dir", dir] .usage
+       (fun e => (e.message.splitOn "--until").length > 1),
      ← expectErr "log --until with a non-numeric hlc is usage"
        ["log", "--until", "1zzzzzzzzzzzz:notanum:1", "--dir", dir] .usage]
+  -- (5b) a hand-edited --until cursor repeating a replica collapses to the MIN
+  -- (the conservative upper bound), not the max: the higher triple must not widen
+  -- the window. With one own op at stamp S, `--until <S-as-(hlc,big-nonce)>,<S>`
+  -- must exclude S (min picks the lower), i.e. deliver nothing.
+  let dirD ← freshDir
+  let _d1 ← mkIssue dirD "d1"
+  let sCur ← (do match ← run' ["log", "--json", "--dir", dirD] with
+    | .ok out => pure ((jSub out.data "cursor" "until").getD "") | .error _ => pure "")
+  -- sCur is "<replica>:<hlc>:<nonce>" of d1; pair it with a higher-hlc triple for the
+  -- same replica (append a digit ⇒ ×10, still < 2^64; the nonce is already near 2^128
+  -- so it cannot be grown without tripping the bound). min collapses to the real hlc.
+  let dup := match sCur.splitOn ":" with
+    | [r, h, n] => s!"{r}:{h}0:{n},{r}:{h}:{n}"
+    | _ => sCur
+  o := o ++ [← expectData "log --until with a duplicate-replica cursor uses the MIN bound (excludes the op)"
+      ["log", "--until", dup, "--json", "--dir", dirD]
+      (fun j => jNat j "count" == some 0)]
   -- (6) --until's default --limit pages (like plain log, 10) and does not drain
   let dirP ← freshDir
   for k in [0:12] do let _ ← mkIssue dirP s!"i{k}"
