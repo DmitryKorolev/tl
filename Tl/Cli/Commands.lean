@@ -261,8 +261,15 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
                 "staleness" (advisory.elim Json.null Json.str)
   return { data, human := r Style.plain, render := some r, notes := notes ++ syncNotes }
 
+/-- When a claim goes stale: the epoch-ms instant `claimedAt + window`. `claimedAt`
+    is an HLC, so its physical-ms component is `hlc / 2^16` (ADR-0007). Shared by
+    `list --stale`, `claim --steal`, and `doctor`'s `staleClaims` so the staleness
+    boundary cannot drift between them (ADR-0013). A claim is stale when `now` is
+    past this. -/
+def claimStaleDeadlineMs (claimedHlc windowMs : Nat) : Nat := claimedHlc / 2 ^ 16 + windowMs
+
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
-    (labels : List String) : TlM CmdOut := do
+    (labels : List String) (staleArg : Option String) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- every issue, oldest first; then by default hide effectively-closed
@@ -281,11 +288,28 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
   let sorted := if labels.isEmpty then sorted
     else sorted.filter (fun i => labels.all (v.issueData i).labels.presentElements.contains)
+  -- `--stale <duration>` (mandatory arg, no default — ADR-0011 amendment): keep
+  -- only stale claims — InProgress with a `claimedAt` older than the window,
+  -- mirroring `doctor`/`claim --steal` via the shared `claimStaleDeadlineMs`.
+  let staleWindow : Option Nat ← match staleArg with
+    | none => pure none
+    | some raw => match Time.parseDurationMs? raw with
+      | some w => pure (some w)
+      | none => throw (.mk' .usage s!"--stale: '{sanitizeSingle raw}' is not a valid duration — use e.g. 45m, 1h, 24h")
+  let sorted := match staleWindow with
+    | none => sorted
+    | some w => sorted.filter (fun i =>
+        (v.issueData i).statusOf == .InProgress
+          && match (v.provFor i).claimedAt with
+             | some h => v.now > claimStaleDeadlineMs h w
+             | none => false)
   let visible := if showAll then sorted else sorted.filter (fun i => !v.effClosed i)
   let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
   let summary :=
-    if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress)"
+    if staleArg.isSome then
+      s!"{visible.length} stale claim(s) (in progress, older than the --stale window)"
+    else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress)"
     else s!"{visible.length} open issues ({inProg} in progress) — --all includes closed"
   -- the --json data is the flat items array (the tree is a human browse mode
   -- only — ADR-0017 §2; a recursive JSON shape isn't pinned)
@@ -701,12 +725,6 @@ def reloadOrFallback (reload : TlM View) (fallback : View) (i : IssueId) :
   try (do let vf ← reload; pure (vf, ([] : List String)))
   catch e =>
     pure (fallback, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"])
-
-/-- When a claim goes stale: the epoch-ms instant `claimedAt + window`. `claimedAt`
-    is an HLC, so its physical-ms component is `hlc / 2^16` (ADR-0007). Shared by
-    `claim --steal` and `doctor`'s `staleClaims` so the staleness boundary cannot
-    drift between the two (ADR-0013). A claim is stale when `now` is past this. -/
-def claimStaleDeadlineMs (claimedHlc windowMs : Nat) : Nat := claimedHlc / 2 ^ 16 + windowMs
 
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     (sync verify steal : Bool) (staleArg : Option String) : TlM CmdOut := do

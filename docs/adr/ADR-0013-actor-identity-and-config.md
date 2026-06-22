@@ -69,8 +69,8 @@ separate concern, read by `doctor` and by `claim --steal` (the 2026-06-21
 amendment), with **no default**: it is the `tl.staleAfter`
 git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
 `now - claimedAt` against the query's injected `now` (ADR-0010); unset ⇒
-`doctor` reports no stale verdict. A future `tl list --stale <duration>` takes
-the window as a mandatory argument (also no default). It is advisory output,
+`doctor` reports no stale verdict. `tl list --stale <duration>` (shipped
+2026-06-21) takes the window as a mandatory argument (also no default). It is advisory output,
 never a write-time guard. In `--json` it is structured, not prose: `show`
 carries `claim: { outcome, currentAssignee }` (ADR-0003/0008) so an agent branches
 on the outcome rather than parsing text.

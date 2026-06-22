@@ -81,10 +81,10 @@ Different cadence, different consumer, different question — folding them into
 one command would couple two things that evolve independently. The rest of the
 read surface (`tl show <id>`, `tl list --deferred`, `tl dep cycles`,
 `tl why`/`tl unblocks`) covers the remaining queries on demand. (Shipped today:
-`show`, `dep cycles`, `why`. `tl unblocks`, `tl list --deferred`, and `tl list
---stale` are the planned read facets — not yet in the grammar; until they land,
-`why`/`show`/`doctor` are the surfaces. Shipped-vs-intended is tracked in the
-backlog and the tracker.)
+`show`, `dep cycles`, `why`, `unblocks`, and `tl list --stale <duration>`.
+`tl list --deferred` is the remaining planned read facet — not yet in the
+grammar; until it lands, `why`/`show`/`doctor` are the surfaces.
+Shipped-vs-intended is tracked in the backlog and the tracker.)
 
 > **Amendment (2026-06-16) — stale has no default window.** The original text
 > advertised `tl list --stale` as a present read facet and `doctor` baked a
@@ -93,8 +93,10 @@ backlog and the tracker.)
 > `24h`). `tl doctor` omits the staleClaims check when it is unset, reports it
 > with the active `window` when set, and yields a row teaching the format on an
 > unparseable value. A dedicated `tl list --stale <duration>` facet —
-> **mandatory duration, also no default** — is planned but not yet built, so
-> `doctor` is the stale-claim surface for now.
+> **mandatory duration, also no default** — shipped 2026-06-21: it filters the
+> list to in-progress claims older than the passed window (the same
+> `claimStaleDeadlineMs` boundary as `doctor`/`claim --steal`). `doctor` remains
+> the `tl.staleAfter`-config-driven surface; `list --stale` is the ad-hoc one.
 
 Sync-freshness — the "is my view stale before I trust `ready`?" signal —
 is rehomed onto these two commands rather than carried by a bundled snapshot:

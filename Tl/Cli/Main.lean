@@ -177,7 +177,7 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
-      cmdList (a.get? "dir") limit (!a.has "flat") (a.has "all") (a.has "skip-bad") (a.getAll "label")
+      cmdList (a.get? "dir") limit (!a.has "flat") (a.has "all") (a.has "skip-bad") (a.getAll "label") (a.get? "stale")
     | "log" => do
       let a ← parse "log"
       let idTok ← match a.positionals with

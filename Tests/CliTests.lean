@@ -2264,6 +2264,42 @@ def cliClaimStealTests : IO (List Outcome) := do
       (fun e => (e.message.splitOn "not a valid duration").length == 2)]
   return o
 
+/-- `tl list --stale <duration>` (ADR-0011 amendment): a mandatory-window read
+    facet showing only stale claims (in-progress, claimed longer ago than the
+    window), via the same `claimStaleDeadlineMs` as doctor / claim --steal. No
+    default; a bad value is usage; open and freshly-claimed items are excluded. -/
+def cliListStaleTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  -- an open (unclaimed) item and a freshly-claimed (not stale) item
+  let _open ← mkIssue dir "open work"
+  let freshId ← mkIssue dir "fresh claim"
+  let _ ← run' ["claim", "tl-" ++ freshId, "--dir", dir, "--assignee", "alice"]
+  -- a foreign claim ~2h ago (the claim out-stamps its create ⇒ InProgress + stale)
+  let base := (← nowMs) - 2 * 3600 * 1000
+  let staleId := "aaaabbbbcccc7777"
+  IO.FS.writeFile (System.FilePath.mk dir / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create staleId { title := some "claimed long ago" }) (base * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.claim staleId "eve") ((base + 1000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  -- (1) --stale 1h ⇒ only the 2h-old claim (open + fresh-claim excluded)
+  o := o ++ [← expectData "list --stale 1h shows only the stale claim"
+      ["list", "--stale", "1h", "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 1 && (jArr j "items").length == 1
+        && ((jArr j "items").head?.bind (fun e => jStr e "id")) == some ("tl-" ++ staleId))]
+  -- (2) --stale 3h ⇒ the 2h-old claim is within the window ⇒ nothing stale
+  o := o ++ [← expectData "list --stale 3h shows nothing (the claim is younger than the window)"
+      ["list", "--stale", "3h", "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 0)]
+  -- (3) a bad --stale value is a usage error (no default, no silent full list)
+  o := o ++ [← expectErr "list --stale with a bad duration is usage"
+      ["list", "--stale", "soon", "--dir", dir] .usage
+      (fun e => (e.message.splitOn "valid duration").length == 2)]
+  -- (4) plain list (no --stale) shows all open work (open + both claims)
+  o := o ++ [← expectData "plain list shows all open work, not just stale"
+      ["list", "--json", "--dir", dir]
+      (fun j => jNat j "count" == some 3)]
+  return o
+
 /-- `tl log --since <cursor>`: the resumable change-feed. Covers empty/zero
     cursor ⇒ full history, the post-cursor delta, idempotent re-read, malformed
     cursors, human/json parity, and the distinguishing version-vector regression
@@ -2405,7 +2441,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
