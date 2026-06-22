@@ -106,7 +106,7 @@ def commandSpecs : List CommandSpec :=
           { name := "slug", value := true, summary := "set the display handle (kebab-case; not identity)" },
           actorFlag ] },
     { command := "reopen", positionals := "<id>",
-      summary := "return a closed issue to open (clears the resolution)", flags := [actorFlag] },
+      summary := "return a closed issue to open (clears the resolution and assignee)", flags := [actorFlag] },
     { command := "dep add", positionals := "<id> <blocked-by>",
       summary := "add a blocks edge: <id> becomes blocked by <blocked-by>", flags := [actorFlag] },
     { command := "dep remove", positionals := "<id> <blocked-by>",
