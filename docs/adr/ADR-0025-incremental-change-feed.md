@@ -104,11 +104,13 @@ The cursor primitive above is the load-bearing part; these build on it additivel
   with `defer` (`--until`/`--for`, ADR-0010) — not a second parser. Times are
   best-effort over physical wall-clock (skew-sensitive); the cursor is the exact,
   resumable form.
-- **Title in the human view (planned).** The human `log` line shows each target's current
-  title (sanitized, ADR-0014; truncated; via the indexed view, ADR-0024, not an
-  O(N) find per op). The `--json` entry stays id-keyed: the feed is an immutable
-  op stream and the title is mutable state derivable from the id, so this is a
-  deliberate, recorded human/JSON divergence rather than a parity gap.
+- **Title in the human view (shipped).** The human `log` line shows each target's current
+  title (sanitized, ADR-0014; truncated to ~48 chars with an ellipsis; via the
+  indexed view, ADR-0024 `View.issueData`, not an O(N) find per op); a dangling or
+  untitled target falls back to the bare id. The `--json` entry stays id-keyed
+  with no title: the feed is an immutable op stream and the title is mutable state
+  derivable from the id, so this is a deliberate, recorded human/JSON divergence
+  rather than a parity gap.
 
 ## Consequences
 

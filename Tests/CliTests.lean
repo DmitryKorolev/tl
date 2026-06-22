@@ -2464,6 +2464,43 @@ def cliLogSinceTests : IO (List Outcome) := do
       (fun j => jNat j "count" == some 2 && ((jSub j "cursor" "since").getD "").length > 0)]
   return o
 
+/-- `tl log` human output shows each target's current title (ADR-0025), sanitized
+    (ADR-0014) and id-keyed-fallback for a dangling/untitled target; the `--json`
+    entry stays id-keyed with NO title (the deliberate human/json divergence). -/
+def cliLogTitleTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let humanOf (out : CmdOut) : String := (out.render.map (· Style.plain)).getD out.human
+  let dir ← freshDir
+  let _ ← mkIssue dir "Write the parser"
+  -- (1) the human line carries the materialized title
+  o := o ++ [← (do match ← run' ["log", "--dir", dir] with
+    | .ok out => pure (check "tl log human line shows the target's title"
+        (((humanOf out).splitOn "Write the parser").length ≥ 2) (humanOf out))
+    | .error e => pure { name := "log title human", passed := false, msg := e.message })]
+  -- (2) the --json entry stays id-keyed with NO title key (deliberate divergence)
+  o := o ++ [← expectData "tl log --json entries carry no title (an id-keyed op feed)"
+      ["log", "--json", "--dir", dir]
+      (fun j => match (jArr j "entries").head? with
+        | some e => (jGet e "title").isNone && (jArr e "targets").length == 1
+        | none => false)]
+  -- (3) a dangling target (op on a never-created issue) renders as the bare id with
+  --     no title; an attacker-controlled title is sanitized on the human line
+  let dir2 ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dir2 / "log")
+  let evil := String.singleton (Char.ofNat 0x1b) ++ "]0;x" ++ String.singleton (Char.ofNat 0x07)
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc1234" { title := some ("Esc" ++ evil ++ "End") }) 100 "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.metaSet "ffffffffffffffff" "k" (some "v")) 200 "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  o := o ++ [← (do match ← run' ["log", "--dir", dir2] with
+    | .ok out =>
+      let h := humanOf out
+      pure (check "log title: dangling target → bare id; attacker title sanitized"
+        (!h.contains (Char.ofNat 0x1b)
+          && (h.splitOn "tl-ffffffffffffffff").length ≥ 2
+          && (h.splitOn "EscEnd").length ≥ 2) h)
+    | .error e => pure { name := "log title dangling/sanitize", passed := false, msg := e.message })]
+  return o
+
 /-- `tl log --until <cursor>` (ADR-0025): backward history browsing and the
     dual-edge `{since, until}` cursor. Covers full-history-newest-first with both
     edges, backward paging that telescopes without overlap and terminates, the
@@ -2613,6 +2650,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

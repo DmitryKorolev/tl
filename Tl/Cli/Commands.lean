@@ -717,11 +717,23 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
        ("op", Json.str p.op.wire),
        ("actor", p.actor.elim Json.null (Json.str ∘ sanitizeSingle)),
        ("targets", Json.arr ((opTargets p.op).map (Json.str ∘ displayId)).toArray)]
+  -- the human line shows each target's current title (ADR-0025): read through the
+  -- O(1) indexed view (ADR-0024 `View.issueData`, not an O(N) per-op find),
+  -- sanitized (attacker-controllable, ADR-0014) and truncated. A dangling or
+  -- untitled target falls back to the bare id. The `--json` entry above stays
+  -- id-keyed with no title (a deliberate human/json divergence, ADR-0025): the
+  -- feed is an immutable op stream, the title is mutable state derived from the id.
+  let titleSuffix (i : IssueId) : String :=
+    match (v.issueData i).title.value with
+    | none => ""
+    | some raw =>
+      let s := sanitizeSingle raw
+      " " ++ (if s.length > 48 then String.ofList (s.toList.take 48) ++ "…" else s)
   let line (p : ParsedOp) : String :=
     -- actor is attacker-controllable (ADR-0014 T1) — sanitize for the human terminal,
     -- mirroring the `--json` arm above (titles/labels/meta all wrap it too)
     s!"{hlcIso p.stamp.hlc}  {p.op.wire}  {(p.actor.elim "—" sanitizeSingle)}  " ++
-      String.intercalate "," ((opTargets p.op).map displayId)
+      String.intercalate ", " ((opTargets p.op).map (fun t => displayId t ++ titleSuffix t))
   let sinceStr := renderCursor sinceEdge
   let untilStr := renderCursor untilEdge
   -- newest-first pages (plain/`--until`) overflow into "older"; the forward feed
