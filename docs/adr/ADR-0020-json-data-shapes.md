@@ -13,7 +13,12 @@ a permanent contract the day its command first ships (the design-backlog item
 this ADR closes for the stage-1 commands). The additive-only promise binds
 from 1.0 (ADR-0008 §Stability horizon), so during 0.x these shapes may still
 be revised with a `schemaVersion` bump — they are pinned here as the intended
-1.0 contract, deliberately chosen rather than emitted-by-accident.
+1.0 contract, deliberately chosen rather than emitted-by-accident. A
+`schemaVersion` bump signals a break to an *installed base*, so it applies to a
+revision *between releases*; iterating a shape **before the first release/tag**
+(no consumer ever saw the prior shape) is not such a break and needs no bump —
+e.g. `tl log`'s `cursor` settling from a bare string to the `{since, until}`
+object (ADR-0025) happened entirely pre-release within `schemaVersion: 1`.
 
 ## Decision
 
