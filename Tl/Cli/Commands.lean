@@ -303,7 +303,12 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
           && match (v.provFor i).claimedAt with
              | some h => v.now > claimStaleDeadlineMs h w
              | none => false)
-  let visible := if showAll then sorted else sorted.filter (fun i => !v.effClosed i)
+  -- `--stale` already restricts to raw-InProgress claims; it must NOT then re-hide
+  -- one whose epic rolled up to done (raw in_progress but effClosed) — that is
+  -- exactly the lingering claim to surface, and `doctor`'s staleClaims (raw status,
+  -- no effClosed gate) lists it. So a stale query bypasses the effClosed filter and
+  -- is `--all`-independent, keeping the two surfaces in agreement (ADR-0013).
+  let visible := if showAll || staleArg.isSome then sorted else sorted.filter (fun i => !v.effClosed i)
   let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
   let summary :=

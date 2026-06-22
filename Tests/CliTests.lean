@@ -2274,7 +2274,7 @@ def cliListStaleTests : IO (List Outcome) := do
   -- an open (unclaimed) item and a freshly-claimed (not stale) item
   let _open ← mkIssue dir "open work"
   let freshId ← mkIssue dir "fresh claim"
-  let _ ← run' ["claim", "tl-" ++ freshId, "--dir", dir, "--assignee", "alice"]
+  let _ ← run' ["claim", "tl-" ++ freshId, "--dir", dir, "--actor", "alice"]
   -- a foreign claim ~2h ago (the claim out-stamps its create ⇒ InProgress + stale)
   let base := (← nowMs) - 2 * 3600 * 1000
   let staleId := "aaaabbbbcccc7777"
@@ -2298,6 +2298,32 @@ def cliListStaleTests : IO (List Outcome) := do
   o := o ++ [← expectData "plain list shows all open work, not just stale"
       ["list", "--json", "--dir", dir]
       (fun j => jNat j "count" == some 3)]
+  -- (5) a stale-claimed EPIC that rolled up to done (raw in_progress, all children
+  -- closed) must still appear under --stale — that lingering claim is exactly what
+  -- to surface, doctor lists it (raw status, no effClosed gate), and --all must not
+  -- change the stale set. Regression for the effClosed-gate bypass.
+  let epicId := "aaaabbbbcccc8888"
+  let kidId := "aaaabbbbcccc8889"
+  IO.FS.writeFile (System.FilePath.mk dir / "log" / "3zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create epicId { title := some "epic claimed long ago" }) (base * 2 ^ 16) "3zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.claim epicId "eve") ((base + 1000) * 2 ^ 16) "3zzzzzzzzzzzz" "eve" 2 ++ "\n"
+     ++ foreignLine (.create kidId { title := some "kid" }) ((base + 2000) * 2 ^ 16) "3zzzzzzzzzzzz" "eve" 3 ++ "\n"
+     ++ foreignLine (.depAdd (epicId, kidId, EdgeKind.Parent)) ((base + 3000) * 2 ^ 16) "3zzzzzzzzzzzz" "eve" 4 ++ "\n"
+     ++ foreignLine (.close kidId CloseResolution.Done) ((base + 4000) * 2 ^ 16) "3zzzzzzzzzzzz" "eve" 5 ++ "\n")
+  let staleHasEpic (allFlag : Bool) : IO Bool := do
+    match ← run' (["list", "--stale", "1h", "--json", "--dir", dir] ++ (if allFlag then ["--all"] else [])) with
+    | .ok out => pure ((jArr out.data "items").any (fun e => jStr e "id" == some ("tl-" ++ epicId)))
+    | .error _ => pure false
+  o := o ++
+    [check "list --stale surfaces a rolled-up-done epic with a stale claim (mirrors doctor, no effClosed gate)"
+       (← staleHasEpic false) "the stale epic is missing under --stale",
+     check "list --stale --all gives the same stale set (the epic is present either way)"
+       (← staleHasEpic true) "the stale epic is missing under --stale --all"]
+  -- (human) the stale render is non-empty and carries the stale-claim summary
+  o := o ++ [← (do match ← run' ["list", "--stale", "1h", "--dir", dir] with
+    | .ok out => pure (check "list --stale human render shows the stale-claim summary, not 'no issues'"
+        ((out.human.splitOn "stale claim").length ≥ 2 && (out.human.splitOn "no issues").length == 1) out.human)
+    | .error e => pure { name := "stale human render", passed := false, msg := e.message })]
   return o
 
 /-- `tl log --since <cursor>`: the resumable change-feed. Covers empty/zero
