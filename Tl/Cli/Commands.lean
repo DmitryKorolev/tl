@@ -728,7 +728,10 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     | none => ""
     | some raw =>
       let s := sanitizeSingle raw
-      " " ++ (if s.length > 48 then String.ofList (s.toList.take 48) ++ "…" else s)
+      -- a title that sanitizes to nothing (all control/zero-width bytes) renders as
+      -- the bare id too, not a dangling trailing space
+      if s.isEmpty then ""
+      else " " ++ (if s.length > 48 then String.ofList (s.toList.take 48) ++ "…" else s)
   let line (p : ParsedOp) : String :=
     -- actor is attacker-controllable (ADR-0014 T1) — sanitize for the human terminal,
     -- mirroring the `--json` arm above (titles/labels/meta all wrap it too)

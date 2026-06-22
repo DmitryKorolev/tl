@@ -2471,11 +2471,11 @@ def cliLogTitleTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let humanOf (out : CmdOut) : String := (out.render.map (· Style.plain)).getD out.human
   let dir ← freshDir
-  let _ ← mkIssue dir "Write the parser"
-  -- (1) the human line carries the materialized title
+  let id ← mkIssue dir "Write the parser"
+  -- (1) the human line carries the title immediately after the target id
   o := o ++ [← (do match ← run' ["log", "--dir", dir] with
-    | .ok out => pure (check "tl log human line shows the target's title"
-        (((humanOf out).splitOn "Write the parser").length ≥ 2) (humanOf out))
+    | .ok out => pure (check "tl log human line shows the title right after the target id"
+        (((humanOf out).splitOn ("tl-" ++ id ++ " Write the parser")).length ≥ 2) (humanOf out))
     | .error e => pure { name := "log title human", passed := false, msg := e.message })]
   -- (2) the --json entry stays id-keyed with NO title key (deliberate divergence)
   o := o ++ [← expectData "tl log --json entries carry no title (an id-keyed op feed)"
@@ -2499,6 +2499,29 @@ def cliLogTitleTests : IO (List Outcome) := do
           && (h.splitOn "tl-ffffffffffffffff").length ≥ 2
           && (h.splitOn "EscEnd").length ≥ 2) h)
     | .error e => pure { name := "log title dangling/sanitize", passed := false, msg := e.message })]
+  -- (4) a long title is truncated to 48 chars + an ellipsis (the 49th char is dropped)
+  let dir3 ← freshDir
+  let _ ← mkIssue dir3 (String.ofList (List.replicate 60 'A'))
+  o := o ++ [← (do match ← run' ["log", "--dir", dir3] with
+    | .ok out =>
+      let h := humanOf out
+      pure (check "tl log truncates a >48-char title to 48 chars + ellipsis"
+        ((h.splitOn "…").length ≥ 2
+          && (h.splitOn (String.ofList (List.replicate 48 'A'))).length ≥ 2
+          && (h.splitOn (String.ofList (List.replicate 49 'A'))).length == 1) h)
+    | .error e => pure { name := "log title truncation", passed := false, msg := e.message })]
+  -- (5) a title that sanitizes to empty renders as the bare id — no trailing space
+  let dir4 ← freshDir
+  IO.FS.createDirAll (System.FilePath.mk dir4 / "log")
+  IO.FS.writeFile (System.FilePath.mk dir4 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc5555" { title := some evil }) 100 "2zzzzzzzzzzzz" "eve" 1 ++ "\n")
+  o := o ++ [← (do match ← run' ["log", "--dir", dir4] with
+    | .ok out =>
+      let h := humanOf out
+      pure (check "a title that sanitizes to empty renders as the bare id, no trailing space"
+        ((h.splitOn "tl-aaaabbbbcccc5555").length ≥ 2
+          && (h.splitOn "tl-aaaabbbbcccc5555 ").length == 1) h)
+    | .error e => pure { name := "log title empty-sanitize", passed := false, msg := e.message })]
   return o
 
 /-- `tl log --until <cursor>` (ADR-0025): backward history browsing and the
