@@ -2189,25 +2189,25 @@ def cliClaimStealTests : IO (List Outcome) := do
   -- (tl.staleAfter is unset for the usage/not-stale cases below)
   -- (a) --steal with no window at all (no --stale, no config) is usage
   o := o ++ [← expectErr "claim --steal without any staleness window is usage"
-      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--assignee", "bob"] .usage
+      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--actor", "bob"] .usage
       (fun e => (e.message.splitOn "staleness window").length == 2)]
   -- (b) --stale without --steal is usage (a typo never silently plain-claims)
   o := o ++ [← expectErr "claim --stale without --steal is usage"
-      ["claim", "tl-" ++ issB, "--dir", dir, "--stale", "1h", "--assignee", "bob"] .usage]
+      ["claim", "tl-" ++ issB, "--dir", dir, "--stale", "1h", "--actor", "bob"] .usage]
   -- (c) --steal --stale <unparseable> is usage
   o := o ++ [← expectErr "claim --steal --stale with a bad duration is usage"
-      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--stale", "later", "--assignee", "bob"] .usage]
+      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--stale", "later", "--actor", "bob"] .usage]
   -- (d) --steal --stale 3h: the 2h-old claim is within the window ⇒ not-claimable
   o := o ++ [← expectErr "claim --steal --stale 3h on a 2h-old claim is not-claimable (not stale yet)"
-      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--stale", "3h", "--assignee", "bob"] .notClaimable
+      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--stale", "3h", "--actor", "bob"] .notClaimable
       (fun e => (e.message.splitOn "not stale yet").length == 2)]
   -- (e) --steal --stale 1h: the 2h-old claim IS stale ⇒ takeover (won + reassigned)
   o := o ++ [← expectData "claim --steal --stale 1h takes over a stale claim (won, reassigned)"
-      ["claim", "tl-" ++ issA, "--dir", dir, "--steal", "--stale", "1h", "--assignee", "bob"]
+      ["claim", "tl-" ++ issA, "--dir", dir, "--steal", "--stale", "1h", "--actor", "bob"]
       (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won"
         && ((jGet j "claim").bind (fun c => jStr c "currentAssignee")) == some "bob")]
   -- the human line discloses the takeover and the prior holder
-  o := o ++ [← (do match ← run' ["claim", "tl-" ++ issC, "--dir", dir, "--steal", "--stale", "1h", "--assignee", "carol"] with
+  o := o ++ [← (do match ← run' ["claim", "tl-" ++ issC, "--dir", dir, "--steal", "--stale", "1h", "--actor", "carol"] with
     | .ok out => pure (check "claim --steal human line says 'Took over … from eve'"
         ((out.human.splitOn "Took over").length == 2 && (out.human.splitOn "from eve").length == 2) out.human)
     | .error e => pure { name := "steal human line", passed := false, msg := e.message })]
@@ -2215,21 +2215,53 @@ def cliClaimStealTests : IO (List Outcome) := do
   --     is still eve's untouched 2h-old claim — the (a)-(d) cases all errored)
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "tl.staleAfter", "1h"] } : IO _)
   o := o ++ [← expectData "claim --steal uses the tl.staleAfter window when --stale is omitted"
-      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--assignee", "dave"]
+      ["claim", "tl-" ++ issB, "--dir", dir, "--steal", "--actor", "dave"]
       (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won"
         && ((jGet j "claim").bind (fun c => jStr c "currentAssignee")) == some "dave")]
   -- (g) --steal on an unclaimed (ready) item is just a plain claim — no window read
   let fresh ← freshDir
   let r1 ← mkIssue fresh "ready one"
   o := o ++ [← expectData "claim --steal on an unclaimed ready item just claims it (won)"
-      ["claim", "tl-" ++ r1, "--dir", fresh, "--steal", "--assignee", "bob"]
+      ["claim", "tl-" ++ r1, "--dir", fresh, "--steal", "--actor", "bob"]
       (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
   -- (h) --steal on your OWN in-progress item re-claims it (no window needed)
   let r2 ← mkIssue fresh "own one"
-  let _ ← run' ["claim", "tl-" ++ r2, "--dir", fresh, "--assignee", "alice"]
+  let _ ← run' ["claim", "tl-" ++ r2, "--dir", fresh, "--actor", "alice"]
   o := o ++ [← expectData "claim --steal on your own in-progress item re-claims it (won, no window)"
-      ["claim", "tl-" ++ r2, "--dir", fresh, "--steal", "--assignee", "alice"]
+      ["claim", "tl-" ++ r2, "--dir", fresh, "--steal", "--actor", "alice"]
       (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
+  -- (i) a plain claim (no --steal) of a READY item that merely retains a stale
+  -- assignee (open + assignee, reachable via claim→close→reopen) must say
+  -- "Claimed", never a false "Took over … stale" — no staleness test ran here
+  let fresh2 ← freshDir
+  let ra ← mkIssue fresh2 "retained-assignee"
+  let _ ← run' ["claim", "tl-" ++ ra, "--dir", fresh2, "--actor", "alice"]
+  let _ ← run' ["close", "tl-" ++ ra, "--dir", fresh2, "--as", "done", "--actor", "alice"]
+  let _ ← run' ["reopen", "tl-" ++ ra, "--dir", fresh2, "--actor", "alice"]
+  o := o ++ [← (do match ← run' ["claim", "tl-" ++ ra, "--dir", fresh2, "--actor", "bob"] with
+    | .ok out => pure (check "a plain claim of a ready open+assigned item says Claimed, not a false takeover"
+        ((out.human.splitOn "Claimed").length == 2 && (out.human.splitOn "Took over").length == 1) out.human)
+    | .error e => pure { name := "no false takeover", passed := false, msg := e.message })]
+  -- (j) a malformed tl.staleAfter must NOT block --steal on a ready item (no window
+  -- is needed there); only the take-over path reports the bad config
+  let root2 ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root2.toString, "init", "-q"] } : IO _)
+  let dir2 := (root2 / ".tl").toString
+  let _ ← run' ["init", "--dir", dir2]
+  IO.FS.createDirAll (System.FilePath.mk dir2 / "log")
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root2.toString, "config", "tl.staleAfter", "whenever"] } : IO _)
+  let rb ← mkIssue dir2 "ready under a bad config"
+  o := o ++ [← expectData "a malformed tl.staleAfter does not block --steal on a ready item"
+      ["claim", "tl-" ++ rb, "--dir", dir2, "--steal", "--actor", "bob"]
+      (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
+  -- (k) but taking over a stale claim with a malformed config reports it (teaches)
+  let base2 := (← nowMs) - 2 * 3600 * 1000
+  IO.FS.writeFile (System.FilePath.mk dir2 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbcccc9999" { title := some "stale" }) (base2 * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.claim "aaaabbbbcccc9999" "eve") ((base2 + 1000) * 2 ^ 16) "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  o := o ++ [← expectErr "--steal over a stale claim with a malformed tl.staleAfter reports the bad config"
+      ["claim", "tl-aaaabbbbcccc9999", "--dir", dir2, "--steal", "--actor", "bob"] .usage
+      (fun e => (e.message.splitOn "not a valid duration").length == 2)]
   return o
 
 /-- `tl log --since <cursor>`: the resumable change-feed. Covers empty/zero
