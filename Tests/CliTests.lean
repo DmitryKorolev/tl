@@ -2328,6 +2328,8 @@ def cliListStaleTests : IO (List Outcome) := do
     | .ok out => pure (check "list --stale human render shows the stale-claim summary, not 'no issues'"
         ((out.human.splitOn "stale claim").length ≥ 2 && (out.human.splitOn "no issues").length == 1) out.human)
     | .error e => pure { name := "stale human render", passed := false, msg := e.message })]
+  return o
+
 /-- The git runtime-floor check (ADR-0006): the `git --version` parser, the floor
     comparison, the doctor row builder (incl. the below-floor warn — pure, so it is
     covered without an actually-old git), and the doctor/init integration on the
@@ -2340,6 +2342,8 @@ def cliGitFloorTests : IO (List Outcome) := do
      check "parseGitVersion: Apple build suffix" (Tl.Sync.parseGitVersion "git version 2.39.3 (Apple Git-145)" == some (2, 39)) "",
      check "parseGitVersion: two-component X.Y" (Tl.Sync.parseGitVersion "git version 2.9" == some (2, 9)) "",
      check "parseGitVersion: trailing newline tolerated" (Tl.Sync.parseGitVersion "git version 2.37.2\n" == some (2, 37)) "",
+     check "parseGitVersion: windows suffix X.Y.Z.windows.N" (Tl.Sync.parseGitVersion "git version 2.45.2.windows.1" == some (2, 45)) "",
+     check "parseGitVersion: a banner line before the version is scanned past" (Tl.Sync.parseGitVersion "warning: setlocale\ngit version 2.40.0" == some (2, 40)) "",
      check "parseGitVersion: non-git output → none" (Tl.Sync.parseGitVersion "not a git line" == none) "",
      check "parseGitVersion: missing minor → none" (Tl.Sync.parseGitVersion "git version 2" == none) ""]
   -- (2) gitMeetsFloor: at, below, above the 2.17 floor (major and minor)

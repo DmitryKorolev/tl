@@ -1667,8 +1667,12 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
       pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)
   -- git runtime floor (ADR-0006): a teaching warn below 2.17, so an older git
-  -- surfaces here rather than failing the plumbing cryptically later
-  let gitVerRow := gitVersionRow (← liftSys (fun e => .mk' .internal s!"{e}") Tl.Sync.gitVersion)
+  -- surfaces here rather than failing the plumbing cryptically later. doctor
+  -- reports, never fails (ADR-0008) — any read error folds to the warn row, like
+  -- the sibling shell-touching rows.
+  let gitVer ← (try liftSys (fun e => .mk' .internal s!"{e}") Tl.Sync.gitVersion
+                catch _ => pure none)
+  let gitVerRow := gitVersionRow gitVer
   let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow, gitVerRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
@@ -1797,11 +1801,15 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   -- git runtime floor (ADR-0006): warn at setup if a present git is below 2.17, so
   -- the prerequisite is caught now rather than as a cryptic plumbing failure. git
   -- absent ⇒ no note: init can create local-only state outside any repo.
-  let gitFloorNote ← liftSys (fun e => .mk' .internal s!"{e}") (do
-    match ← Tl.Sync.gitVersion with
-    | some v => if Tl.Sync.gitMeetsFloor v then pure ([] : List String)
-                else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git"]
-    | none => pure [])
+  -- a git read error must never fail init (it can create local-only state outside
+  -- any repo) — fold to no note, like the git-absent case
+  let gitFloorNote ← (try
+      liftSys (fun e => .mk' .internal s!"{e}") (do
+        match ← Tl.Sync.gitVersion with
+        | some v => if Tl.Sync.gitMeetsFloor v then pure ([] : List String)
+                    else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git"]
+        | none => pure [])
+    catch _ => pure ([] : List String))
   return { data, human, notes := note ++ [pointerNote] ++ autosyncNote ++ gitFloorNote }
 
 /-- The product version (keep in lockstep with lakefile.lean's package

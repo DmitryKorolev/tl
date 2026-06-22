@@ -264,20 +264,20 @@ def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
     `refs/tl/log` transport and discovery, and requires git ≥ 2.17. -/
 def gitFloor : Nat × Nat := (2, 17)
 
-/-- Parse a `git version X.Y[.Z…]` line to `(major, minor)`. Tolerant of a build
-    suffix (`git version 2.39.3 (Apple Git-145)`). `none` when the `git version `
-    prefix or the two leading numeric components are absent. -/
-def parseGitVersion (raw : String) : Option (Nat × Nat) :=
-  let line := (raw.splitOn "\n").head?.getD raw
-  match line.splitOn "git version " with
-  | _ :: rest :: _ =>
-    let ver := (rest.trimAscii.toString.splitOn " ").head?.getD ""
-    match ver.splitOn "." with
-    | major :: minor :: _ =>
-      match major.toNat?, minor.toNat? with
-      | some mj, some mn => some (mj, mn)
-      | _, _ => none
-    | _ => none
+/-- Parse `git --version` output to `(major, minor)`. Scans every line for the
+    `git version ` marker (so a prepended banner/warning line on stdout does not
+    defeat it), tolerant of a build suffix (`git version 2.39.3 (Apple Git-145)`,
+    `git version 2.45.2.windows.1`). `none` when no line carries the marker or its
+    two leading components are not numeric. -/
+def parseGitVersion (raw : String) : Option (Nat × Nat) := do
+  let line ← (raw.splitOn "\n").find? (fun l => (l.splitOn "git version ").length ≥ 2)
+  let rest ← (line.splitOn "git version ")[1]?
+  let ver := (rest.trimAscii.toString.splitOn " ").head?.getD ""
+  match ver.splitOn "." with
+  | major :: minor :: _ =>
+    match major.toNat?, minor.toNat? with
+    | some mj, some mn => some (mj, mn)
+    | _, _ => none
   | _ => none
 
 /-- `v ≥ gitFloor` (major, then minor). -/
