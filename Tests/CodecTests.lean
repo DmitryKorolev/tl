@@ -252,8 +252,34 @@ def foldSmokeTests : List Outcome :=
      check "blocks edge is present"
        (s.blockersOf idA = [idB]) s!"got {repr (s.blockersOf idA)}"]
 
+/-- Assignee is claim-only (ADR-0013): an `update` carrying an `assignee` routes
+    it to the unknown bag (never consumed into the op, so the fold never applies
+    it), and `reopen` clears the assignee as part of closed→open. -/
+def assigneeSemanticsTests : List Outcome :=
+  let envAt (op hlc : String) : String := (env op).replace "0000018d07f4c812" hlc
+  let updLine := envAt "update" "0000018d07f4c813" ++ s!"\"assignee\":\"dana\",\"id\":\"{idA}\",\"title\":\"t2\"}"
+  -- decode-gate: the update's assignee is not read into the op's writes
+  let updGate := match decodeLine updLine with
+    | .ok p => match p.op with | .update _ w => w.assignee.isNone | _ => false
+    | .error _ => false
+  let base :=
+    [envAt "create" "0000018d07f4c811" ++ s!"\"id\":\"{idA}\",\"title\":\"t\"}",
+     envAt "claim"  "0000018d07f4c812" ++ s!"\"assignee\":\"carol\",\"id\":\"{idA}\"}",
+     updLine]
+  let reopenLine := envAt "reopen" "0000018d07f4c814" ++ s!"\"id\":\"{idA}\"}"
+  let assigneeOf (lines : List String) : Option (Option String) :=
+    match lines.mapM decodeLine with
+    | .error _ => none
+    | .ok ps => some ((Tl.Kernel.fold (ps.map ParsedOp.kernelOp)).issueData idA |>.assignee.value.getD none)
+  [check "update's assignee is routed to the unknown bag, not consumed into the op"
+     updGate "update.assignee was consumed into the op",
+   check "an update carrying assignee does not change the materialized assignee (stays carol)"
+     (assigneeOf base == some (some "carol")) s!"got {repr (assigneeOf base)}",
+   check "reopen clears the assignee (closed→open drops the prior claim)"
+     (assigneeOf (base ++ [reopenLine]) == some none) s!"got {repr (assigneeOf (base ++ [reopenLine]))}"]
+
 def codecTests : List Outcome :=
   canonicalRoundTripTests ++ escapeTests ++ crEscapeTest ++ failClosedTests
-    ++ clampTests ++ foldSmokeTests
+    ++ clampTests ++ foldSmokeTests ++ assigneeSemanticsTests
 
 end Tl.Tests

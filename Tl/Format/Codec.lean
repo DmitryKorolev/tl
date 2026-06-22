@@ -169,11 +169,13 @@ def wire : WireOp → String
   | .labelAdd .. => "labelAdd"
   | .labelRemove .. => "labelRemove"
 
-/-- `update` writes only non-lifecycle scalars (ADR-0008: lifecycle status and
-    time fields use the distinguished verbs) — enforced here as well as at
-    decode, so a hand-built value folds exactly as it renders. -/
+/-- `update` writes only non-lifecycle, non-assignee scalars (ADR-0008: the
+    lifecycle status/time fields use the distinguished verbs; assignee is
+    claim-only, set by `claim` and cleared by `reopen` — ADR-0013) — enforced
+    here as well as at decode, so a hand-built value folds exactly as it renders.
+    Changing what this strips bumps `Tl.Store.cacheVersion`. -/
 def stripLifecycle (w : ScalarWrites) : ScalarWrites :=
-  { w with status := none, deferUntil := none, closeResolution := none }
+  { w with status := none, deferUntil := none, closeResolution := none, assignee := none }
 
 /-- The ADR-0008 verb→delta table, executable: project the kernel `Op`. A change
     to this projection's classification must bump `Tl.Store.cacheVersion` — the
@@ -188,7 +190,12 @@ def toOp (w : WireOp) (st : Stamp) : Op :=
       .setFields id st { status := some (statusOfResolution res),
                          closeResolution := some (some res) }
   | .reopen id =>
-      .setFields id st { status := some .Open, closeResolution := some none }
+      -- reopen is the inverse of close: it returns to open and clears BOTH the
+      -- resolution and the assignee, since the prior owner's claim ended with the
+      -- close (ADR-0008 reopen delta + ADR-0013). Changing this projection bumps
+      -- `Tl.Store.cacheVersion`.
+      .setFields id st { status := some .Open, closeResolution := some none,
+                         assignee := some none }
   | .defer id untilMs => .setFields id st { deferUntil := some (some untilMs) }
   | .undefer id => .setFields id st { deferUntil := some none }
   | .metaSet id key value => .metaSet id st key value
@@ -267,11 +274,13 @@ private def reqObserved (fs : List (String × Json)) :
     return FinSet.union acc (FinSet.singleton st)) FinSet.empty
 
 /-- Decode a scalar field set (the `create`/`update` payloads). `lifecycle`
-    admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) —
-    true only for `create`'s initial seed; `update` leaves them to the
-    distinguished verbs (an `update` record carrying them keeps them in the
-    unknown bag instead, ADR-0008). Returns the writes plus clamp warnings. -/
-def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
+    admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) and
+    `allowAssignee` the seed `assignee` — both true only for `create`'s initial
+    seed; `update` leaves them to the distinguished verbs (`claim`/`reopen` own
+    assignee, ADR-0013), so an `update` record carrying them keeps them in the
+    unknown bag instead (ADR-0008). Returns the writes plus clamp warnings. -/
+def decodeScalars (fs : List (String × Json)) (lifecycle : Bool)
+    (allowAssignee : Bool := lifecycle) :
     Except Tl.Error (ScalarWrites × List String) := do
   let mut w : ScalarWrites := {}
   let mut warns : List String := []
@@ -288,8 +297,9 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
         warns := warns ++ [s!"priority {i} out of range; clamped to {p.val} (0-4)"]
       w := { w with priority := some p }
     | .error _ => throw (malformed "'priority' must be an integer")
-  if let some j := field? fs "assignee" then
-    w := { w with assignee := some (← strOrNull "assignee" j) }
+  if allowAssignee then
+    if let some j := field? fs "assignee" then
+      w := { w with assignee := some (← strOrNull "assignee" j) }
   if let some j := field? fs "description" then
     w := { w with description := some (← strOrNull "description" j) }
   if let some j := field? fs "notes" then
@@ -325,7 +335,7 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
 def consumedKeys : String → List String
   | "create" => ["id", "title", "status", "priority", "assignee", "description",
                  "notes", "slug", "deferUntil", "closeResolution"]
-  | "update" => ["id", "title", "priority", "assignee", "description", "notes", "slug"]
+  | "update" => ["id", "title", "priority", "description", "notes", "slug"]
   | "claim" => ["id", "assignee"]
   | "close" => ["id", "status", "closeResolution"]
   | "reopen" => ["id"]

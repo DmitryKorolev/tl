@@ -8,6 +8,9 @@
   collision-resistance is not required and the cache carries no crypto
   assumption (ADR-0023/0024 measured SHA ≈25× slower at cache sizes).
   `cacheVersion` bumped 1→2.
+- Amended: 2026-06-21 — `cacheVersion` bumped 2→3: the `WireOp.toOp` fold changed
+  (the ADR-0013 claim-only-assignee amendment — `update` no longer applies an
+  `assignee`, `reopen` now clears it), so a v2 cache must rebuild.
 
 ## Context
 

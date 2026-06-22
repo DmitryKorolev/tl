@@ -126,7 +126,7 @@ private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ 
 /-- A handcrafted, correctly-signed payload with all three state components
     injectable — for shapes the encoder can never produce. -/
 private def handState (issues data edges : String) : String :=
-  sign ("{\"v\":2,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+  sign ("{\"v\":3,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
     ++ ",\"edges\":" ++ edges ++ "}}")
 
 private def handIssues (aaa rrr : String) : String :=
@@ -151,7 +151,7 @@ private def emptyStateJson : String :=
   "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
 
 private def handSeg (segJson : String) : String :=
-  sign ("{\"v\":2,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
+  sign ("{\"v\":3,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
@@ -192,7 +192,7 @@ def cacheCodecTests : List Outcome :=
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
     check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":2}" "\"v\":3}").isNone,
+      (surgery "\"v\":3}" "\"v\":4}").isNone,
     check "a missing version is rejected"
       (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a non-numeric version is rejected"
@@ -200,12 +200,12 @@ def cacheCodecTests : List Outcome :=
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache (sign "{\"v\":2,\"segments\":[]}")).isNone,
+      (decodeCache (sign "{\"v\":3,\"segments\":[]}")).isNone,
     check "a state missing a component is rejected"
-      (decodeCache (sign ("{\"v\":2,\"segments\":[],\"state\":{\"issues\":"
+      (decodeCache (sign ("{\"v\":3,\"segments\":[],\"state\":{\"issues\":"
         ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache (sign ("{\"v\":2,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+      (decodeCache (sign ("{\"v\":3,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
@@ -504,7 +504,7 @@ def cacheVersionGuardTests : List Outcome :=
   -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
   -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
-    (2, "7194777635966312595")
+    (3, "7258734232952399290")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩

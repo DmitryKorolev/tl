@@ -893,9 +893,13 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
   return { data := issueObj v i, human := s!"Updated {displayId i}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-/-- `tl reopen <id>`: a terminal issue back to `open`, clearing
-    `closeResolution` (ADR-0008's reopen delta). Idempotent — an already-open
-    issue is a no-op that appends nothing (mirroring the re-close rule). -/
+/-- `tl reopen <id>`: a terminal issue back to `open`, clearing both
+    `closeResolution` and the `assignee` as part of the closed→open transition
+    (ADR-0008's reopen delta + ADR-0013: the prior claim ended with the close).
+    Idempotent — an already-open issue is a no-op that appends nothing (mirroring
+    the re-close rule); it needs no clear since a well-formed open issue is
+    already unassigned (every path to open runs the assignee-clearing reopen, or
+    never claimed), so the no-op guard is not widened. -/
 def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do

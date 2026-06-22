@@ -691,9 +691,10 @@ GARBAGE
       (fun j => jStr j "assignee" == some "eve"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- the claim command itself discloses supersession in its human line (parity
-  -- with close): a reopened issue keeps its assignee, so it is ready (status
-  -- Open) yet a higher-stamped foreign claim outranks the fresh one on the
-  -- assignee LWW — current ≠ actor, so "Claimed …" would be a lie
+  -- with close): a higher-stamped foreign reopen clears the assignee and sets
+  -- the issue Open (so it is ready), and that reopen outranks the fresh local
+  -- claim on both the status and assignee LWW — current ≠ actor, so "Claimed …"
+  -- would be a lie (ADR-0013: reopen clears assignee)
   let dir3b ← freshDir
   let tgt2 ← mkIssue dir3b "Reassigned"
   let base ← nowMs
@@ -708,6 +709,18 @@ GARBAGE
       [check "claim command reports superseded in JSON" (outc == some "superseded") s!"outcome={outc}",
        check "claim command discloses supersession in the human line"
          ((out.human.splitOn "superseded").length == 2) out.human]
+  -- reopen clears the assignee (ADR-0013): a claimed-then-reopened issue is Open
+  -- AND unassigned (the prior claim ended with the close the reopen reverses).
+  -- omit-empty ⇒ the assignee field is absent once cleared.
+  let dirRC ← freshDir
+  let tgtRC ← mkIssue dirRC "ClaimedThenReopened"
+  let baseRC ← nowMs
+  let segRC := foreignLine (.claim tgtRC "frank") ((baseRC + 20000) * 2 ^ 16) "2zzzzzzzzzzzz" "frank" 1 ++ "\n"
+            ++ foreignLine (.reopen tgtRC) ((baseRC + 40000) * 2 ^ 16) "2zzzzzzzzzzzz" "frank" 2 ++ "\n"
+  IO.FS.writeFile (System.FilePath.mk dirRC / "log" / "2zzzzzzzzzzzz.jsonl") segRC
+  o := o ++ [← expectData "reopen clears the assignee: a reopened claimed issue is Open and unassigned"
+      ["show", "tl-" ++ tgtRC, "--dir", dirRC, "--json"]
+      (fun j => jStr j "status" == some "open" && (jGet j "assignee").isNone)]
   -- doctor survives store damage as a failing check
   let dir4 ← freshDir
   let _ ← mkIssue dir4 "Healthy"
