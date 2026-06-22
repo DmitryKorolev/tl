@@ -896,15 +896,20 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
 /-- `tl reopen <id>`: a terminal issue back to `open`, clearing both
     `closeResolution` and the `assignee` as part of the closed→open transition
     (ADR-0008's reopen delta + ADR-0013: the prior claim ended with the close).
-    Idempotent — an already-open issue is a no-op that appends nothing (mirroring
-    the re-close rule); it needs no clear since a well-formed open issue is
-    already unassigned (every path to open runs the assignee-clearing reopen, or
-    never claimed), so the no-op guard is not widened. -/
+    Idempotent on *value equality* — a no-op only when the issue already equals
+    reopen's whole target (open, no resolution, no assignee), mirroring the
+    re-close guard. This is deliberately not narrowed to `status == open`: a CRDT
+    merge of a foreign/imported `create` (which seeds `assignee` verbatim) with a
+    claim can materialize an open-but-assigned issue that no reopen produced, and
+    no write-time guard can forbid that merge (CLAUDE.md §2). Firing reopen on it
+    restores the claim-only invariant — the only CLI path back to open+unassigned. -/
 def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
-    if (ctx.loaded.state.issueData i).statusOf == .Open then .ok []
+    let dta := ctx.loaded.state.issueData i
+    if dta.statusOf == .Open && (dta.closeResolution.value.getD none).isNone
+        && (dta.assignee.value.getD none).isNone then .ok []
     else .ok [.reopen i])
   let v := writeNow ctx parsed
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)

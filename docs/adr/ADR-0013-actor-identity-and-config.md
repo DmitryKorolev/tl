@@ -102,11 +102,19 @@ CLI ossifies:
   facet grammar is settled separately). One flag no longer carries both
   provenance and assignment.
 - **Claim-only `assignee`.** The `assignee` field is written only by `claim`
-  and `claim --steal`, and cleared by `reopen`; `create` and `update` cannot set
-  it. An open issue therefore never carries an assignee without a live claim —
-  the state the superseded signal and a future `list --stale` would misread. It
-  holds by construction: the `update` op drops `assignee` from its settable
-  fields (ADR-0008), so no write-time guard is needed.
+  and `claim --steal`, and cleared by `reopen`; neither `create` nor `update`
+  may set it (a record carrying an `assignee` key preserves it in the unknown
+  bag, never applied). An open issue therefore never carries an assignee without
+  a live claim — the state the superseded signal and a future `list --stale`
+  would misread. It holds **by construction**, not by a write-time guard (which a
+  CRDT merge could not enforce anyway, §core-principle-2): every op that *sets*
+  the assignee (`claim`) sets `status = in_progress` at the same stamp, and every
+  op that *opens* the issue (`reopen`) clears the assignee at the same stamp, so
+  the status and assignee registers move together — open-and-assigned is not a
+  reachable LWW join. `tl reopen` is additionally a value-equality idempotent (it
+  fires unless the issue already equals open + no-resolution + no-assignee), so
+  even a hand-built record that smuggled an assignee onto an open issue is
+  restored to the invariant through the CLI.
 - **`reopen` clears `assignee`.** Returning a closed issue to `open` clears the
   assignee alongside `closeResolution`; `claimedAt` is already absent after a
   reopen, so the issue becomes unassigned until re-claimed (the ADR-0008 reopen

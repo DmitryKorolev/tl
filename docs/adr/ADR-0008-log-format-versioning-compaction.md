@@ -115,7 +115,7 @@ are not record-op values. The enum and its payloads:
 
 | wire `op` | kernel delta | payload (beyond the envelope) |
 |---|---|---|
-| `create` | create | `id`; optional initial scalars (`title`, `priority`, …); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
+| `create` | create | `id`; optional initial scalars (`title`, `priority`, `description`, `notes`, `slug`, and the lifecycle `status`/`deferUntil` seed) — **not** `assignee`, which is `claim`-only (ADR-0013; a carried `assignee` key is preserved in the unknown bag, never seeded onto the open issue); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
 | `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/`notes`/…). Lifecycle status/time fields and `assignee` use the distinguished verbs below so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, the 2026-06-21 ADR-0013 amendment) |
 | `claim` | setFields | `id`; sets `status=in_progress`, `assignee` |
 | `close` | setFields | `id`; sets `status` (`done`\|`cancelled`), `closeResolution` (with `--of <id>` the *command* additionally emits a separate `metaSet` record — composites below) |
@@ -139,12 +139,13 @@ any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.
 
 > **Amendment (2026-06-21) — `assignee` is claim-only.** Per the ADR-0013
 > amendment, the `assignee` field is written only by `claim`/`claim --steal`
-> and cleared by `reopen`. The delta rows above change accordingly: `update`
-> drops `assignee` from its settable scalars (an `update` record still carrying
-> an `assignee` key preserves it in the unknown bag and never applies it —
-> additive evolution, no `v` bump), and `reopen` adds an `assignee` clear. Both
-> change the `WireOp.toOp` fold projection, so the implementation handles the
-> ADR-0022 cache-version obligation (no on-disk bytes or `v` change).
+> and cleared by `reopen`. The delta rows above change accordingly: neither
+> `create` nor `update` may set `assignee` (a record carrying an `assignee` key
+> preserves it in the unknown bag and never applies it — additive evolution, no
+> `v` bump), and `reopen` adds an `assignee` clear. The `create`/`update` decode
+> classification and the `reopen` `WireOp.toOp` projection both change, so the
+> implementation handles the ADR-0022 cache-version obligation (no on-disk bytes
+> or `v` change).
 
 Stability rules follow from the verb/delta split:
 

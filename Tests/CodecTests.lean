@@ -252,15 +252,18 @@ def foldSmokeTests : List Outcome :=
      check "blocks edge is present"
        (s.blockersOf idA = [idB]) s!"got {repr (s.blockersOf idA)}"]
 
-/-- Assignee is claim-only (ADR-0013): an `update` carrying an `assignee` routes
-    it to the unknown bag (never consumed into the op, so the fold never applies
-    it), and `reopen` clears the assignee as part of closed→open. -/
+/-- Assignee is claim-only (ADR-0013): neither `create` nor `update` may set it
+    (a record carrying it routes it to the unknown bag, never consumed into the
+    op), and `reopen` clears it as part of closed→open. So assignee and status
+    move together (claim sets both, reopen clears assignee + opens) and an
+    open-but-assigned state is unreachable by construction. -/
 def assigneeSemanticsTests : List Outcome :=
   let envAt (op hlc : String) : String := (env op).replace "0000018d07f4c812" hlc
+  let createA := envAt "create" "0000018d07f4c810" ++ s!"\"assignee\":\"erin\",\"id\":\"{idA}\",\"status\":\"open\",\"title\":\"t\"}"
   let updLine := envAt "update" "0000018d07f4c813" ++ s!"\"assignee\":\"dana\",\"id\":\"{idA}\",\"title\":\"t2\"}"
-  -- decode-gate: the update's assignee is not read into the op's writes
-  let updGate := match decodeLine updLine with
-    | .ok p => match p.op with | .update _ w => w.assignee.isNone | _ => false
+  -- decode-gate: neither create nor update reads assignee into the op's writes
+  let opAssigneeNone (line : String) : Bool := match decodeLine line with
+    | .ok p => match p.op with | .create _ w | .update _ w => w.assignee.isNone | _ => false
     | .error _ => false
   let base :=
     [envAt "create" "0000018d07f4c811" ++ s!"\"id\":\"{idA}\",\"title\":\"t\"}",
@@ -271,8 +274,12 @@ def assigneeSemanticsTests : List Outcome :=
     match lines.mapM decodeLine with
     | .error _ => none
     | .ok ps => some ((Tl.Kernel.fold (ps.map ParsedOp.kernelOp)).issueData idA |>.assignee.value.getD none)
-  [check "update's assignee is routed to the unknown bag, not consumed into the op"
-     updGate "update.assignee was consumed into the op",
+  [check "create's assignee is routed to the unknown bag, not consumed into the op"
+     (opAssigneeNone createA) "create.assignee was consumed into the op",
+   check "update's assignee is routed to the unknown bag, not consumed into the op"
+     (opAssigneeNone updLine) "update.assignee was consumed into the op",
+   check "a create carrying assignee folds to an unassigned issue (no open+assigned by construction)"
+     (assigneeOf [createA] == some none) s!"got {repr (assigneeOf [createA])}",
    check "an update carrying assignee does not change the materialized assignee (stays carol)"
      (assigneeOf base == some (some "carol")) s!"got {repr (assigneeOf base)}",
    check "reopen clears the assignee (closed→open drops the prior claim)"

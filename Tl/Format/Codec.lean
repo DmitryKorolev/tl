@@ -274,13 +274,14 @@ private def reqObserved (fs : List (String × Json)) :
     return FinSet.union acc (FinSet.singleton st)) FinSet.empty
 
 /-- Decode a scalar field set (the `create`/`update` payloads). `lifecycle`
-    admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) and
-    `allowAssignee` the seed `assignee` — both true only for `create`'s initial
-    seed; `update` leaves them to the distinguished verbs (`claim`/`reopen` own
-    assignee, ADR-0013), so an `update` record carrying them keeps them in the
-    unknown bag instead (ADR-0008). Returns the writes plus clamp warnings. -/
-def decodeScalars (fs : List (String × Json)) (lifecycle : Bool)
-    (allowAssignee : Bool := lifecycle) :
+    admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) — true
+    only for `create`'s initial seed; `update` leaves them to the distinguished
+    verbs. `assignee` is read by neither: it is claim-only (`claim`/`claim --steal`
+    set it, `reopen` clears it — ADR-0013), so a `create` or `update` record
+    carrying it keeps it in the unknown bag instead (ADR-0008), and it is never
+    seeded onto an open issue (which would forge a no-claim assignee). Returns the
+    writes plus clamp warnings. -/
+def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
     Except Tl.Error (ScalarWrites × List String) := do
   let mut w : ScalarWrites := {}
   let mut warns : List String := []
@@ -297,9 +298,8 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool)
         warns := warns ++ [s!"priority {i} out of range; clamped to {p.val} (0-4)"]
       w := { w with priority := some p }
     | .error _ => throw (malformed "'priority' must be an integer")
-  if allowAssignee then
-    if let some j := field? fs "assignee" then
-      w := { w with assignee := some (← strOrNull "assignee" j) }
+  -- `assignee` is intentionally not read here (claim-only, ADR-0013) — a create/
+  -- update record carrying it preserves it in the unknown bag, never applied.
   if let some j := field? fs "description" then
     w := { w with description := some (← strOrNull "description" j) }
   if let some j := field? fs "notes" then
@@ -333,7 +333,7 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool)
 /-- The payload keys each verb consumes; everything else in the record is
     preserved verbatim in the unknown bag (additive evolution, ADR-0008). -/
 def consumedKeys : String → List String
-  | "create" => ["id", "title", "status", "priority", "assignee", "description",
+  | "create" => ["id", "title", "status", "priority", "description",
                  "notes", "slug", "deferUntil", "closeResolution"]
   | "update" => ["id", "title", "priority", "description", "notes", "slug"]
   | "claim" => ["id", "assignee"]
