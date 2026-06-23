@@ -500,7 +500,9 @@ def issueObj (v : View) (i : IssueId) : Json :=
     ++ optField "closedAt" (pr.closedAt.map (Json.str ∘ hlcIso))
     ++ optField "claimedAt" (pr.claimedAt.map (Json.str ∘ hlcIso))
     ++ [("provenance", Json.mkObj <|
-          [("source", Json.str "native"),
+          -- an `import:source` meta marks an imported issue (ADR-0005); else native
+          [("source", Json.str (match (d.metadata.find "import:source").bind (·.value) with
+            | some (some _) => "imported" | _ => "native")),
            ("createdBy", pr.createdBy.elim Json.null (Json.str ∘ sanitizeSingle))]
           ++ optField "replica" (pr.createdReplica.map (Json.str ∘ (toCrockford · 13))))]
 
@@ -522,6 +524,10 @@ def issueRow (v : View) (i : IssueId) : Json :=
      ("dependentCount", jnum (v.dependents i).length)]
     ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
     ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
+    -- the wake-up time, only while actively deferred — the triage info `tl list
+    -- --deferred` needs (a past `deferUntil` already resumed, so it is omitted)
+    ++ optField "deferUntil"
+        (if v.deferred i then (d.deferUntilOf).map (Json.str ∘ Time.isoOfEpochMs) else none)
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
     ++ optField "updatedAt" (pr.updatedAt.map (Json.str ∘ hlcIso))
 
@@ -529,10 +535,14 @@ def issueRow (v : View) (i : IssueId) : Json :=
 def issueLine (v : View) (i : IssueId) : String :=
   let d := v.issueData i
   let title := sanitizeSingle ((d.title.value).getD "(untitled)")
+  -- show the wake-up time on the deferred flag (triage), not just `[deferred]`
+  let deferFlag := match (if v.deferred i then d.deferUntilOf else none) with
+    | some t => s!" [deferred until {Time.isoOfEpochMs t}]"
+    | none => ""
   let flags := String.intercalate ""
     [if v.isEpic i then " [epic]" else "",
      if v.blocked i then " [blocked]" else "",
-     if v.deferred i then " [deferred]" else ""]
+     deferFlag]
   s!"{displayId i}  p{d.priorityOf.val}  {statusWire (v.effStatus i)}  {title}{flags}"
 
 end Tl.Cli

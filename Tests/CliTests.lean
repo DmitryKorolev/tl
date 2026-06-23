@@ -2731,6 +2731,21 @@ def cliLogTimeTests : IO (List Outcome) := do
   o := o ++ [← expectData "log --since a far-future date is empty"
     ["log", "--since", "2099-01-01", "--json", "--dir", dir]
     (fun j => jNat j "count" == some 0)]
+  -- a time-started --since must return the skipped frontier, not an empty cursor:
+  -- resuming with it continues from the query point, never replays the history
+  let resumeRow ← (match ← run' ["log", "--since", "2099-01-01", "--json", "--dir", dir] with
+    | .ok out => do
+      let cur := (jSub out.data "cursor" "since").getD ""
+      let r ← run' ["log", "--since", cur, "--json", "--dir", dir]
+      pure (if cur.isEmpty then
+              check "resuming a time-started --since does not replay the skipped history" false
+                "cursor.since was empty (an empty cursor replays the whole log)"
+            else match r with
+              | .ok rr => check "resuming a time-started --since does not replay the skipped history"
+                  (jNat rr.data "count" == some 0) rr.data.compress
+              | .error e => { name := "time --since resume", passed := false, msg := e.message })
+    | .error e => pure { name := "time --since cursor", passed := false, msg := e.message })
+  o := o ++ [resumeRow]
   o := o ++
     [← expectData "log --until a far-future date includes all"
        ["log", "--until", "2099-01-01", "--json", "--dir", dir]
@@ -2872,6 +2887,10 @@ def cliListDeferredTests : IO (List Outcome) := do
       && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ b))
       && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ a))
       && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ c)))]
+  -- the list row carries the wake-up deferUntil (triage; human/json parity with show)
+  o := o ++ [← expectData "an actively-deferred list row carries the deferUntil wake-up time"
+    ["list", "--deferred", "--flat", "--dir", dir, "--json"]
+    (fun j => (jArr j "items").all (fun r => (jStr r "deferUntil").isSome))]
   let _ ← run' ["undefer", "tl-" ++ b, "--dir", dir, "--actor", "t"]
   o := o ++ [← expectData "after undefer, list --deferred is empty"
     ["list", "--deferred", "--flat", "--dir", dir, "--json"]
@@ -2940,6 +2959,9 @@ def cliImportTests : IO (List Outcome) := do
          && jNat j "priority" == some 1 && (jArr j "labels").length == 1),
      ← expectData "imported done issue is closed done"
        ["show", idOf "PROJ-7", "--dir", dir] (fun j => jStr j "status" == some "done"),
+     ← expectData "an imported issue reports provenance.source = imported (not native)"
+       ["show", idOf "PROJ-42", "--dir", dir]
+       (fun j => ((jGet j "provenance").bind (fun p => jStr p "source")) == some "imported"),
      ← expectData "imported epic is an epic (rolled up over its children)"
        ["show", idOf "PROJ-1", "--dir", dir] (fun j => jBool j "isEpic" == some true),
      ← expectData "imported issue: out-of-range priority clamped to 4, deferred set"
@@ -3067,8 +3089,15 @@ def cliDeferTests : IO (List Outcome) := do
        ["defer", tid, "--for", "0h", "--dir", dir, "--actor", "t"] .usage,
      ← expectErr "defer --for a bare number is usage"
        ["defer", tid, "--for", "10", "--dir", dir, "--actor", "t"] .usage,
+     -- a --for so large the instant exceeds the canonical wire range is rejected
+     -- (rendering a 5-digit year would make the next read refuse our own segment)
+     ← expectErr "defer --for beyond the representable range (year 9999) is usage"
+       ["defer", tid, "--for", "3000000d", "--dir", dir, "--actor", "t"] .usage,
      ← expectErr "defer an unknown id is not-found"
        ["defer", "tl-zzzzzzzzzzzzzzzz", "--for", "1h", "--dir", dir, "--actor", "t"] .notFound]
+  -- the rejected over-range defer left the own segment readable (no corrupt write)
+  o := o ++ [← expectData "a rejected over-range defer does not corrupt the own segment"
+    ["show", tid, "--dir", dir] (fun j => (jStr j "id").isSome)]
   return o
 
 def cliTests : IO (List Outcome) := do

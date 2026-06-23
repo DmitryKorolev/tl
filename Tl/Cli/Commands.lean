@@ -790,10 +790,15 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
   -- forward remainder is reached by `cursor.since` (the until edge then points into
   -- pre-feed history, and a one-op page makes the two edges coincide — expected,
   -- not a skip; see `cliLogUntilTests` (windowed forward + limit)).
-  -- a time bound has no version-vector base, so accumulate the page onto the empty
-  -- cursor — the returned `cursor.since`/`cursor.until` lets a human who started
-  -- from a time resume exactly (machine-precise) from here on.
-  let sinceBase := match sinceBound with | .cursor c => c | .timeMs _ => AMap.empty
+  -- a time bound has no input version-vector base. For `--since` seed the base
+  -- with the frontier of the ops BELOW the since-time (the history the time filter
+  -- skipped), so resuming the returned `cursor.since` continues from the query
+  -- point instead of replaying that already-skipped history (review). A time-based
+  -- `--until` is best-effort backward browsing (ADR-0025), so its base stays empty
+  -- (its resume-back edge is the delivered page's min frontier).
+  let sinceBase := match sinceBound with
+    | .cursor c => c
+    | .timeMs t => advanceCursor AMap.empty (visible.filter (fun p => p.stamp.hlc / 2 ^ 16 < t))
   let untilBase := match untilBound with | .cursor c => c | .timeMs _ => AMap.empty
   let sinceEdge := if sinceGiven then advanceCursor sinceBase capped else advanceCursor AMap.empty visible
   -- accumulate from the input upper bound, not from empty: a replica bounded by a
@@ -1218,8 +1223,13 @@ def cmdDefer (dirOverride : Option String) (tok : String)
     let untilMs := match target with
       | .abs ms => ms
       | .after durMs => ctx.now + durMs
+    -- reject an instant beyond the canonical wire range (`--for` can overflow):
+    -- rendering a 5-digit year would make the next read refuse our own segment
+    -- as malformed (Time.maxRenderableInstantMs)
+    if untilMs > Time.maxRenderableInstantMs then
+      .error (.mk' .usage "defer time is beyond the representable range (year 9999) — use a smaller --for duration or an absolute --until")
     -- idempotent: an LWW re-write of the same instant changes nothing
-    if (ctx.loaded.state.issueData i).deferUntilOf == some untilMs then .ok []
+    else if (ctx.loaded.state.issueData i).deferUntilOf == some untilMs then .ok []
     else .ok [.defer i untilMs])
   let v := writeNow ctx parsed
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
@@ -2027,6 +2037,21 @@ def readImportLines (path : String) : TlM (List (String × String)) := do
   return fileContents.flatMap (fun (f, c) =>
     (c.splitOn "\n").filterMap (fun l => if l.trimAscii.toString.isEmpty then none else some (f, l)))
 
+/-- The import input's total byte size from file *metadata* — no content is read,
+    so the resource bound (ADR-0005) is enforced before a huge/hostile input is
+    loaded into memory. A directory sums its `*.jsonl` files. -/
+def importInputBytes (path : String) : TlM Nat := do
+  let fp := System.FilePath.mk path
+  let md ← liftSys (fun e => .mk' .notFound s!"cannot read import path '{path}': {e}") fp.metadata
+  match md.type with
+  | .dir =>
+    let entries ← liftSys (fun e => .mk' .internal s!"{e}") fp.readDir
+    let files := (entries.toList.filter (·.fileName.endsWith ".jsonl")).map (·.path)
+    files.foldlM (fun acc f => do
+      let m ← liftSys (fun e => .mk' .internal s!"reading {f}: {e}") f.metadata
+      pure (acc + m.byteSize.toNat)) 0
+  | _ => pure md.byteSize.toNat
+
 /-- Whether the repo already holds task state: any non-empty local segment, or a
     present `refs/tl/log` (the `--force` gate's "non-empty op-log", ADR-0005). The
     ref check is best-effort — outside a git repo it is simply absent. -/
@@ -2046,11 +2071,12 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
     (force allowLarge : Bool) (maxArg : Option Nat) : TlM CmdOut := do
   let opts : Tl.Import.ImportOptions :=
     { sourceTag := sourceTagArg.getD "import", force, allowLarge, maxBytes := maxArg.getD 5000000 }
+  -- resource-bounds gate from file metadata, BEFORE reading any content into
+  -- memory (so a huge/hostile input is refused without loading it; ADR-0005)
+  let inputBytes ← importInputBytes path
+  if inputBytes > opts.maxBytes && !allowLarge then
+    throw (.mk' .forceRequired s!"import input is {inputBytes} bytes, over the {opts.maxBytes}-byte bound — pass --allow-large, or raise --max <bytes>, for a trusted local migration")
   let fileLines ← readImportLines path
-  -- resource-bounds gate, before any op is emitted (ADR-0005 §bounds override)
-  let totalBytes := fileLines.foldl (fun acc (_, l) => acc + l.toUTF8.size) 0
-  if totalBytes > opts.maxBytes && !allowLarge then
-    throw (.mk' .forceRequired s!"import input is {totalBytes} bytes, over the {opts.maxBytes}-byte bound — pass --allow-large, or raise --max <bytes>, for a trusted local migration")
   -- parse every line; fail-closed on a malformed line or a duplicate source id.
   -- `seen` is a set (O(1)); buildSeed re-sorts, so the cons order is irrelevant.
   let mut records : List (String × Tl.Import.ImportRecord) := []

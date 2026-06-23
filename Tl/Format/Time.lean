@@ -219,6 +219,14 @@ def parseUntilInstant? (offsetMinutes : Int) (s : String) : Option Nat :=
   | some ms => some ms
   | none => (parseCivilDate? s).map (fun (y, mo, d) => startOfDayUtcMs offsetMinutes y mo d)
 
+/-- The largest instant `isoOfEpochMs` renders within the canonical wire range
+    (year ≤ 9999) — `9999-12-31T23:59:59.999Z`, the largest `ms` that round-trips
+    through `epochMsOfIso?`. A write path producing a `deferUntil` must reject or
+    clamp a value above this: rendering it emits a 5-digit year that the next
+    read's strict decode refuses as malformed (the `isoOfEpochMs` round-trip
+    precondition). -/
+def maxRenderableInstantMs : Nat := 253402300799999
+
 /-- Parse a compact relative duration — `45m`, `1h`, `24h`, `7d`, `30s`, `500ms`
     — to milliseconds. The numeric part is digits-only and the unit is one of
     `ms`/`s`/`m`/`h`/`d` (lowercase). There is no default unit: a bare number,

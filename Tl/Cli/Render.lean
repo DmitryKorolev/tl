@@ -125,7 +125,12 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
   let epic := if v.isEpic i then " " ++ st.paint "1" "[epic]" else ""
   let titleRaw := sanitizeSingle ((d.title.value).getD "(untitled)")
   let title := if ds == .done || ds == .cancelled then st.paint "2" titleRaw else titleRaw
-  s!"{glyph} {id} {prio}{epic} {title}"
+  -- the wake-up time on an actively-deferred row (dimmed) — the triage info
+  -- `tl list --deferred` needs, mirroring the row's `deferUntil` JSON field
+  let deferUntil := match (if v.deferred i then d.deferUntilOf else none) with
+    | some t => " " ++ st.paint "2" s!"(until {Time.isoOfEpochMs t})"
+    | none => ""
+  s!"{glyph} {id} {prio}{epic} {title}{deferUntil}"
 
 /-! ## Edge tree (ADR-0017 §2) — total on cyclic/dangling graphs -/
 
