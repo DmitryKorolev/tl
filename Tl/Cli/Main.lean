@@ -186,10 +186,19 @@ def runVerb : List String → TlM CmdOut
         | _ => throw (usageErr "log takes at most one issue id")
       let since := a.get? "since"
       let untilC := a.get? "until"
+      -- `--last N` is the count tail (newest N); it caps like `--limit`, so the two
+      -- together are a usage error rather than a silent precedence.
+      if (a.get? "last").isSome && (a.get? "limit").isSome then
+        throw (usageErr "log takes either --limit or --last, not both")
+      let lastN ← match a.get? "last" with
+        | none => pure none
+        | some v => match v.toNat? with
+          | some n => pure (some n)
+          | none => throw (usageErr s!"--last must be a whole number (got '{v}')")
       -- `--since` drains (forward feed, exactly-once); plain and `--until` page
       -- (default 10, newest-first history browsing).
       let limit ← MonadExcept.ofExcept (natFlag a "limit" (if since.isSome then 0 else 10))
-      cmdLog (a.get? "dir") idTok limit since untilC (a.has "skip-bad")
+      cmdLog (a.get? "dir") idTok limit lastN since untilC (a.has "skip-bad")
     | "stats" => do
       let a ← parse "stats"
       MonadExcept.ofExcept (noPositionals a "stats")

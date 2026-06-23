@@ -96,14 +96,17 @@ The cursor primitive above is the load-bearing part; these build on it additivel
   replicas the per-replica thresholds differ by the `(hlc, replica, nonce)`
   tie-break. `--since` drains by default (`--limit 0`); `--until` and plain log
   page (`--limit 10`).
-- **`--since` / `--until` as the universal temporal-bound pair (planned).** Beyond
-  the cursor value (log only, shipped above), `--since`/`--until` will also accept
-  a duration (`1h`, `7d`) or a date/timestamp (`2026-06-21`) — the same meaning in
-  every command that takes a time, with `--last N` a count tail and `--since all`
-  an explicit from-start. That duration/date grammar is decided once and shared
-  with `defer` (`--until`/`--for`, ADR-0010) — not a second parser. Times are
-  best-effort over physical wall-clock (skew-sensitive); the cursor is the exact,
-  resumable form.
+- **`--since` / `--until` as the universal temporal-bound pair (shipped).** Beyond
+  the cursor value (log only, shipped above), `--since`/`--until` on `tl log` also
+  accept a duration ago (`1h`, `7d`), a date (`2026-06-20`, local start-of-day), or
+  a timestamp (`…Z`/`±HH:MM`), with `--last N` a count tail (newest-first, mutually
+  exclusive with `--limit`) and `--since all` an explicit from-start. The value is
+  dispatched by shape — a `:`-bearing non-timestamp routes to the cursor parser.
+  That duration/date grammar is the same one `defer` uses (`--until`/`--for`,
+  ADR-0010: `parseDurationMs?` / `parseUntilInstant?`) — not a second parser. A
+  time bound is inclusive on both edges and best-effort over the op's HLC
+  physical-ms component (skew-sensitive); the cursor stays the exact, resumable
+  form, and a time-started page still returns a cursor to resume from.
 - **Title in the human view (shipped).** The human `log` line shows each target's current
   title (sanitized, ADR-0014; truncated to ~48 chars with an ellipsis; via the
   indexed view, ADR-0024 `View.issueData`, not an O(N) find per op); a dangling or

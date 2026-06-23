@@ -2712,6 +2712,61 @@ def cliLogUntilTests : IO (List Outcome) := do
       (fun j => jNat j "count" == some 12 && (jArr j "entries").length == 10)]
   return o
 
+/-- `tl log` time selectors (ADR-0025): `--since`/`--until` accepting a duration,
+    date, timestamp, or `all` alongside the cursor, plus `--last N`. Time bounds
+    are best-effort over wall-clock; the rows stay deterministic by using `all`,
+    a `1h` window (every just-created op is within the last hour), and far
+    past/future absolute bounds whose verdict no timezone can flip. The cursor
+    regression row pins that a version-vector value still routes to the exact path. -/
+def cliLogTimeTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  for k in [0:4] do let _ ← mkIssue dir s!"t{k}"   -- 4 create ops
+  o := o ++ [← expectData "log --since all returns the full history (oldest-first)"
+    ["log", "--since", "all", "--json", "--dir", dir]
+    (fun j => jNat j "count" == some 4 && (jArr j "entries").length == 4)]
+  o := o ++ [← expectData "log --since 1h includes every recent op and emits a resume cursor"
+    ["log", "--since", "1h", "--json", "--dir", dir]
+    (fun j => jNat j "count" == some 4 && ((jSub j "cursor" "since").getD "").length > 0)]
+  o := o ++ [← expectData "log --since a far-future date is empty"
+    ["log", "--since", "2099-01-01", "--json", "--dir", dir]
+    (fun j => jNat j "count" == some 0)]
+  o := o ++
+    [← expectData "log --until a far-future date includes all"
+       ["log", "--until", "2099-01-01", "--json", "--dir", dir]
+       (fun j => jNat j "count" == some 4),
+     ← expectData "log --until a far-past date is empty"
+       ["log", "--until", "2000-01-01", "--json", "--dir", dir]
+       (fun j => jNat j "count" == some 0),
+     ← expectData "log --until a far-future timestamp (explicit offset) includes all"
+       ["log", "--until", "2099-01-01T00:00:00Z", "--json", "--dir", dir]
+       (fun j => jNat j "count" == some 4)]
+  o := o ++ [← expectData "log --last 2 returns the newest 2 (count discloses the full 4)"
+    ["log", "--last", "2", "--json", "--dir", dir]
+    (fun j => jNat j "count" == some 4 && (jArr j "entries").length == 2)]
+  o := o ++ [← expectData "log --last 0 returns all (mirrors --limit 0)"
+    ["log", "--last", "0", "--json", "--dir", dir]
+    (fun j => (jArr j "entries").length == 4)]
+  o := o ++ [← expectData "log --since all --last 2 tails the newest 2 of the window"
+    ["log", "--since", "all", "--last", "2", "--json", "--dir", dir]
+    (fun j => jNat j "count" == some 4 && (jArr j "entries").length == 2)]
+  -- a version-vector value still routes to the exact frontier path (regression)
+  let cursorRow ← (match ← run' ["log", "--json", "--dir", dir] with
+    | .ok out => do
+      let cur := (jSub out.data "cursor" "since").getD ""
+      match ← run' ["log", "--since", cur, "--json", "--dir", dir] with
+      | .ok r => pure (check "a cursor value still routes to the exact path (no ops after the full frontier)"
+          (jNat r.data "count" == some 0) r.data.compress)
+      | .error e => pure { name := "cursor regression resume", passed := false, msg := e.message }
+    | .error e => pure { name := "cursor regression precondition", passed := false, msg := e.message })
+  o := o ++ [cursorRow]
+  o := o ++
+    [← expectErr "log --since junk is usage" ["log", "--since", "soon", "--dir", dir] .usage,
+     ← expectErr "log --last a non-number is usage" ["log", "--last", "abc", "--dir", dir] .usage,
+     ← expectErr "log --limit together with --last is usage"
+       ["log", "--limit", "5", "--last", "3", "--dir", dir] .usage]
+  return o
+
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
     the ready exclusion + auto-resume on a past instant, idempotent re-defer and
     undefer, and the teaching usage errors on bad input. The offset-timestamp row
@@ -2797,6 +2852,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliDeferTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

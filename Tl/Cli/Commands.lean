@@ -657,6 +657,39 @@ private def parseCursor (edge : String) (s : String) : Except Tl.Error LogCursor
         s!"--{edge}: bad cursor segment '{piece}' (expected <replica>:<hlc>:<nonce>) — pass the `cursor.{edge}` from a prior `tl log --json`")
   return c
 
+/-- A resolved `--since`/`--until` bound: either the exact per-replica version
+    vector (`cursor`, the resumable machine form) or a wall-clock instant in ms
+    (`timeMs`, the best-effort human form — compared against an op's HLC physical
+    component). ADR-0025: the cursor is exact/resumable, a time is skew-sensitive. -/
+private inductive LogBound where
+  | cursor (c : LogCursor)
+  | timeMs (ms : Nat)
+
+private def boundFormHelp (edge got : String) : Tl.Error :=
+  .mk' .usage
+    s!"--{edge}: '{got}' is not a recognized bound — use a duration ago (1h, 7d), a date (2026-06-20), a timestamp (…Z or ±HH:MM), `all` (from the start), or the `cursor.{edge}` from a prior `tl log --json`"
+
+/-- Resolve a `--since`/`--until` value by shape (ADR-0025 shared time grammar):
+    empty or `all` ⇒ unbounded (the empty cursor); a duration ⇒ that long *ago*
+    (`now − dur`, shared with `defer`, ADR-0010); a date ⇒ local start-of-day; a
+    timestamp with an offset ⇒ that instant; otherwise a version-vector cursor
+    (its own strict validation). A `:`-bearing non-timestamp routes to the cursor
+    parser for its detailed errors; anything else teaches the full set of forms.
+    The duration/date/timestamp parsers are exactly `defer`'s — not a second set. -/
+private def parseLogBound (edge : String) (now : Nat) (offset : Int) (raw : String) :
+    Except Tl.Error LogBound :=
+  let t := raw.trimAscii.toString
+  if t.isEmpty || t.toLower == "all" then .ok (.cursor AMap.empty)
+  else match Time.parseDurationMs? t with
+    | some ms => .ok (.timeMs (now - ms))
+    | none => match Time.parseOffsetDateTime? t with
+      | some inst => .ok (.timeMs inst)
+      | none => match Time.parseCivilDate? t with
+        | some (y, mo, d) => .ok (.timeMs (Time.startOfDayUtcMs offset y mo d))
+        | none =>
+          if t.contains ':' then LogBound.cursor <$> parseCursor edge t
+          else .error (boundFormHelp edge t)
+
 /-- `tl log [<id>] [--since <cursor>] [--until <cursor>]`: an HLC-ordered
     projection over the op log (ADR-0008), optionally filtered to ops touching one
     issue. Without bounds it lists newest-first (capped by `--limit`). `--since` is
@@ -668,34 +701,58 @@ private def parseCursor (edge : String) (s : String) : Except Tl.Error LogCursor
     names match the flags) so each page is self-navigating: pass `cursor.since` to
     `--since` to continue forward, `cursor.until` to `--until` to page older. The
     cursor is scoped to the `<id>` filter it was produced under: resume with the
-    same filter. -/
+    same filter.
+
+    Each bound also accepts a *time* instead of a cursor (ADR-0025): a duration
+    ago (`1h`, `7d`), a date (`2026-06-20`, local start-of-day), a timestamp
+    (`…Z`/`±HH:MM`), or `all` (from the start). A time bound is best-effort over
+    the op's HLC physical-ms component (skew-sensitive), inclusive on both edges
+    — `--since` keeps ops at/after it, `--until` ops at/before it; the resumable
+    `cursor` is still emitted from the delivered page. `--last N` is a count tail
+    (the newest N, newest-first) and is mutually exclusive with `--limit`. -/
 def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
-    (since untilC : Option String) (skipBad : Bool) : TlM CmdOut := do
-  -- parse both cursors before loading, so a malformed bound fails fast
-  let sinceCur ← MonadExcept.ofExcept (parseCursor "since" (since.getD ""))
-  let untilCur ← MonadExcept.ofExcept (parseCursor "until" (untilC.getD ""))
+    (lastN : Option Nat) (since untilC : Option String) (skipBad : Bool) : TlM CmdOut := do
   let sinceGiven := since.isSome
   let untilGiven := untilC.isSome
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
+  -- the injected UTC offset is needed only to resolve a bare-date bound to local
+  -- start-of-day; read it (best-effort) only when a bound is in fact a bare date
+  let isBareDate (o : Option String) : Bool :=
+    (o.map (fun s => (Time.parseCivilDate? s.trimAscii.toString).isSome)).getD false
+  let offset : Int ← if isBareDate since || isBareDate untilC then
+      liftSys (fun e => .mk' .internal s!"timezone read failed: {e}") localOffsetMinutes
+    else pure 0
+  -- resolve each bound by shape (cursor vs duration/date/timestamp vs `all`)
+  let sinceBound ← MonadExcept.ofExcept (parseLogBound "since" v.now offset (since.getD ""))
+  let untilBound ← MonadExcept.ofExcept (parseLogBound "until" v.now offset (untilC.getD ""))
   let visible ← match idTok with
     | none => pure v.loaded.ops
     | some tok =>
       let i ← MonadExcept.ofExcept (resolveToken v.state tok)
       pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
-  -- `--since` keeps ops strictly after its lower cursor (per replica), `--until`
-  -- strictly before its upper cursor; together a bounded window. Each bound is
-  -- per-replica (HLC, nonce), so an absent edge is unconstrained on that side.
+  -- the op's wall-clock instant: the HLC physical component (ADR-0007 packing)
+  let physMs (p : ParsedOp) : Nat := p.stamp.hlc / 2 ^ 16
+  -- `--since` keeps ops after its lower bound, `--until` before its upper bound;
+  -- together a window. A cursor bound is per-replica (HLC, nonce) (exact); a time
+  -- bound compares the physical-ms instant (inclusive). An absent flag is no bound.
+  let matchesSince (p : ParsedOp) : Bool := match sinceBound with
+    | .cursor c => stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold c p.stamp.replica)
+    | .timeMs t => decide (t ≤ physMs p)
+  let matchesUntil (p : ParsedOp) : Bool := match untilBound with
+    | .cursor c => stampBefore p.stamp.hlc p.stamp.nonce (cursorThreshold c p.stamp.replica)
+    | .timeMs t => decide (physMs p ≤ t)
   let matching := visible.filter (fun p =>
-    (!sinceGiven || stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold sinceCur p.stamp.replica))
-      && (!untilGiven || stampBefore p.stamp.hlc p.stamp.nonce (cursorThreshold untilCur p.stamp.replica)))
-  -- `--since` is a forward feed (oldest-first); plain and `--until` read
-  -- newest-first (backward browsing). Both use the full stamp order
+    (!sinceGiven || matchesSince p) && (!untilGiven || matchesUntil p))
+  -- `--since` (no `--last`) is a forward feed (oldest-first); plain log, `--until`,
+  -- and any `--last` tail read newest-first. Both use the full stamp order
   -- (deterministic on equal HLCs).
+  let newestFirst := lastN.isSome || !sinceGiven
   let ordered :=
-    if sinceGiven then matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le a.stamp b.stamp))
-    else matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
-  let capped := if limit == 0 then ordered else ordered.take limit
+    if newestFirst then matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le b.stamp a.stamp))
+    else matching.mergeSort (fun a b => decide (Tl.Crdt.TotalOrd.le a.stamp b.stamp))
+  let effLimit := lastN.getD limit
+  let capped := if effLimit == 0 then ordered else ordered.take effLimit
   -- Resume-forward (since) edge: in since-mode the lower cursor raised by the
   -- delivered (capped) page, so a paged resume never skips/replays; otherwise the
   -- full frontier of the visible log (a point to tail from the newest). Resume-back
@@ -705,12 +762,17 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
   -- forward remainder is reached by `cursor.since` (the until edge then points into
   -- pre-feed history, and a one-op page makes the two edges coincide — expected,
   -- not a skip; see `cliLogUntilTests` (windowed forward + limit)).
-  let sinceEdge := if sinceGiven then advanceCursor sinceCur capped else advanceCursor AMap.empty visible
+  -- a time bound has no version-vector base, so accumulate the page onto the empty
+  -- cursor — the returned `cursor.since`/`cursor.until` lets a human who started
+  -- from a time resume exactly (machine-precise) from here on.
+  let sinceBase := match sinceBound with | .cursor c => c | .timeMs _ => AMap.empty
+  let untilBase := match untilBound with | .cursor c => c | .timeMs _ => AMap.empty
+  let sinceEdge := if sinceGiven then advanceCursor sinceBase capped else advanceCursor AMap.empty visible
   -- accumulate from the input upper bound, not from empty: a replica bounded by a
   -- prior backward page must stay bounded, or paging further back re-delivers its
   -- already-seen ops (a replica absent from this page would otherwise reset to
-  -- unconstrained). The dual of `advanceCursor sinceCur` for the forward feed.
-  let untilEdge := retreatCursor untilCur capped
+  -- unconstrained). The dual of `advanceCursor sinceBase` for the forward feed.
+  let untilEdge := retreatCursor untilBase capped
   let entry (p : ParsedOp) : Json :=
     Json.mkObj
       [("timestamp", Json.str (hlcIso p.stamp.hlc)),
@@ -739,13 +801,15 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
       String.intercalate ", " ((opTargets p.op).map (fun t => displayId t ++ titleSuffix t))
   let sinceStr := renderCursor sinceEdge
   let untilStr := renderCursor untilEdge
-  -- newest-first pages (plain/`--until`) overflow into "older"; the forward feed
-  -- (`--since`) overflows into "more".
+  -- newest-first pages (plain/`--until`/`--last`) overflow into "older"; the
+  -- forward feed (`--since` without `--last`) overflows into "more".
+  let overflowMore := if newestFirst then "older" else "more"
+  let limitHint := if lastN.isSome then "raise --last" else "--limit 0 for all"
   let body :=
     if matching.isEmpty then "no ops"
     else String.intercalate "\n" (capped.map line)
       ++ (if capped.length < matching.length then
-            s!"\n… {matching.length - capped.length} {if sinceGiven then "more" else "older"} (--limit 0 for all)" else "")
+            s!"\n… {matching.length - capped.length} {overflowMore} ({limitHint})" else "")
   let cursorParts := (if sinceStr.isEmpty then [] else [s!"since={sinceStr}"])
                    ++ (if untilStr.isEmpty then [] else [s!"until={untilStr}"])
   return { data := Json.mkObj [("count", jnum matching.length),
