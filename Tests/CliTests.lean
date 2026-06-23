@@ -2853,6 +2853,98 @@ def cliStealthTests : IO (List Outcome) := do
     | .error e => { name := "ready --sync in stealth", passed := false, msg := e.message })]
   return o
 
+/-- `tl import` (ADR-0005) — the differential test: import a committed-format
+    fixture, then assert the materialized state matches the records' fields,
+    statuses, and edges, and `ready` matches the unblocked set the graph implies.
+    Plus determinism (byte-stable re-import), the two safety gates, and the
+    fail-closed malformed-line paths. The fixture mirrors `Tests/fixtures/
+    import-sample.jsonl` (kept inline so the test is host-independent). -/
+def cliImportTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let fixture :=
+    "{\"id\":\"PROJ-1\",\"title\":\"Epic: parser\",\"status\":\"open\",\"priority\":0}\n" ++
+    "{\"id\":\"PROJ-7\",\"title\":\"Lexer\",\"status\":\"done\",\"closedAt\":\"2026-03-01T10:00:00Z\",\"parent\":\"PROJ-1\"}\n" ++
+    "{\"id\":\"PROJ-42\",\"title\":\"Write the parser\",\"status\":\"in_progress\",\"assignee\":\"alice\",\"priority\":1,\"blockedBy\":[\"PROJ-7\"],\"parent\":\"PROJ-1\",\"labels\":[\"area:parser\"],\"related\":[\"PROJ-9\"],\"meta\":{\"ext:jira\":\"PROJ-42\"}}\n" ++
+    "{\"id\":\"PROJ-9\",\"title\":\"Docs\",\"priority\":7,\"deferUntil\":\"2099-01-01T00:00:00Z\"}\n" ++
+    "{\"id\":\"PROJ-3\",\"title\":\"Dupe\",\"status\":\"cancelled\",\"closeResolution\":\"duplicate\",\"duplicateOf\":\"PROJ-7\",\"blockedBy\":[\"MISSING-1\"]}\n"
+  let root ← IO.FS.createTempDir
+  let fpath := (root / "in.jsonl").toString
+  IO.FS.writeFile (root / "in.jsonl") fixture
+  let dir := (root / ".tl").toString
+  let idOf (src : String) : String := "tl-" ++ Tl.Import.importIssueId "import" src
+  -- import: 5 issues, the priority clamp + the dangling edge both disclosed
+  o := o ++ [← expectData "import seeds the issues and discloses the clamp + the dangling edge"
+    ["import", fpath, "--dir", dir]
+    (fun j => jNat j "issues" == some 5 && jNat j "ops" != some 0
+      && (jArr j "disclosures").any (fun d => ((d.getStr?.toOption.getD "").splitOn "clamped").length > 1)
+      && (jArr j "disclosures").any (fun d => ((d.getStr?.toOption.getD "").splitOn "not in the import").length > 1))]
+  -- differential oracle: each record materializes to its fields/status
+  o := o ++
+    [← expectData "imported in_progress issue: status / assignee / priority / labels"
+       ["show", idOf "PROJ-42", "--dir", dir]
+       (fun j => jStr j "status" == some "in_progress" && jStr j "assignee" == some "alice"
+         && jNat j "priority" == some 1 && (jArr j "labels").length == 1),
+     ← expectData "imported done issue is closed done"
+       ["show", idOf "PROJ-7", "--dir", dir] (fun j => jStr j "status" == some "done"),
+     ← expectData "imported epic is an epic (rolled up over its children)"
+       ["show", idOf "PROJ-1", "--dir", dir] (fun j => jBool j "isEpic" == some true),
+     ← expectData "imported issue: out-of-range priority clamped to 4, deferred set"
+       ["show", idOf "PROJ-9", "--dir", dir]
+       (fun j => jNat j "priority" == some 4 && jBool j "deferred" == some true && (jStr j "deferUntil").isSome),
+     ← expectData "imported duplicate is cancelled"
+       ["show", idOf "PROJ-3", "--dir", dir] (fun j => jStr j "status" == some "cancelled")]
+  -- edges: blocks (blocker done ⇒ not blocked), parent, related all present
+  o := o ++ [← expectData "imported edges: blocks + parent + related, not blocked (blocker is done)"
+    ["show", idOf "PROJ-42", "--dir", dir]
+    (fun j => jBool j "blocked" == some false
+      && (jArr j "dependencies").any (fun e => jStr e "type" == some "blocks")
+      && (jArr j "dependencies").any (fun e => jStr e "type" == some "parent")
+      && (jArr j "dependencies").any (fun e => jStr e "type" == some "related"))]
+  -- ready matches the import graph: nothing workable (done / in_progress / deferred / epic)
+  o := o ++ [← expectData "ready matches the unblocked set the import implies (none)"
+    ["ready", "--dir", dir] (fun j => jNat j "count" == some 0)]
+  -- determinism: a re-import into a fresh repo yields a byte-identical segment
+  let readSeg (dpath : String) : IO String := do
+    let entries ← (System.FilePath.mk dpath / "log").readDir
+    let parts ← entries.toList.mapM (fun e => IO.FS.readFile e.path)
+    pure (String.join parts)
+  let root2 ← IO.FS.createTempDir
+  IO.FS.writeFile (root2 / "in.jsonl") fixture
+  let dir2 := (root2 / ".tl").toString
+  let _ ← run' ["import", (root2 / "in.jsonl").toString, "--dir", dir2]
+  o := o ++ [check "re-import is byte-stable (identical seed segment)"
+    ((← readSeg dir) == (← readSeg dir2)) "segment bytes differ across imports"]
+  -- the --force gate: a non-empty log refuses, --force proceeds
+  o := o ++
+    [← expectErr "import into a non-empty log needs --force"
+       ["import", fpath, "--dir", dir] .forceRequired,
+     ← expectData "import --force re-seeds the non-empty log"
+       ["import", fpath, "--dir", dir, "--force"] (fun j => jNat j "issues" == some 5)]
+  -- the bounds gate (separate from --force): over --max refuses, --allow-large proceeds
+  let root3 ← IO.FS.createTempDir
+  IO.FS.writeFile (root3 / "in.jsonl") fixture
+  let dir3 := (root3 / ".tl").toString
+  o := o ++
+    [← expectErr "import over the size bound needs --allow-large or a raised --max"
+       ["import", (root3 / "in.jsonl").toString, "--dir", dir3, "--max", "10"] .forceRequired,
+     ← expectData "import --allow-large proceeds past the bound"
+       ["import", (root3 / "in.jsonl").toString, "--dir", dir3, "--max", "10", "--allow-large"]
+       (fun j => jNat j "issues" == some 5)]
+  -- fail-closed malformed-line paths
+  let badDir ← IO.FS.createTempDir
+  let writeBad (name content : String) : IO String := do
+    IO.FS.writeFile (badDir / name) content; pure (badDir / name).toString
+  o := o ++
+    [← expectErr "invalid JSON is malformed-line"
+       ["import", (← writeBad "a.jsonl" "{not json}\n"), "--dir", (badDir / "a").toString] .malformedLine,
+     ← expectErr "a missing title is malformed-line"
+       ["import", (← writeBad "b.jsonl" "{\"id\":\"X\"}\n"), "--dir", (badDir / "b").toString] .malformedLine,
+     ← expectErr "an unknown status is malformed-line"
+       ["import", (← writeBad "c.jsonl" "{\"id\":\"X\",\"title\":\"t\",\"status\":\"wat\"}\n"), "--dir", (badDir / "c").toString] .malformedLine,
+     ← expectErr "a duplicate source id is malformed-line"
+       ["import", (← writeBad "d.jsonl" "{\"id\":\"X\",\"title\":\"a\"}\n{\"id\":\"X\",\"title\":\"b\"}\n"), "--dir", (badDir / "d").toString] .malformedLine]
+  return o
+
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
     the ready exclusion + auto-resume on a past instant, idempotent re-defer and
     undefer, and the teaching usage errors on bad input. The offset-timestamp row
@@ -2938,6 +3030,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

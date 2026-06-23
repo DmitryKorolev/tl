@@ -90,6 +90,17 @@ def commandSpecs : List CommandSpec :=
       flags :=
         [ { name := "stealth", value := false,
             summary := "local-only state, never shared: no auto-sync, no discovery pointer; `tl sync` is disabled (ADR-0001 §7)" } ] },
+    { command := "import", positionals := "<path>",
+      summary := "one-shot bulk import of tl's JSONL format into a deterministic seed log",
+      flags :=
+        [ { name := "source", value := true,
+            summary := "source tag for deterministic ids + provenance (default 'import'); distinct sources never collide" },
+          { name := "force", value := false,
+            summary := "seed even though the repo already has task state (the clobber gate; distinct from --allow-large)" },
+          { name := "allow-large", value := false,
+            summary := "proceed past the input-size bound for a trusted local migration (the bounds gate)" },
+          { name := "max", value := true,
+            summary := "raise the input-size bound, in bytes (default 5000000)" } ] },
     { command := "create", positionals := "<title> [-]",
       summary := "add an issue, wiring deps inline; body via --description, or `-` to read stdin",
       flags :=

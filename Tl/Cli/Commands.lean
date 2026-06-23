@@ -19,6 +19,7 @@ import Tl.Kernel.Path
 import Tl.Sync.Local
 import Tl.Sync.Remote
 import Tl.Sync.AutoSync
+import Tl.Import.Bulk
 
 namespace Tl.Cli
 
@@ -1906,33 +1907,34 @@ def readmePrimer : String :=
   "  tl doctor                project health\n" ++
   "  tl help                  all commands (tl help --json for the grammar)\n"
 
-def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
-  -- the override is --dir, else TL_DIR (ADR-0012: the same explicit-state
-  -- mechanism, --dir wins) — so `TL_DIR=… tl init && tl create …` binds one
-  -- directory, not two
+/-- Where `init`/`import` place state (ADR-0001 §4, ADR-0012): the `--dir`/`TL_DIR`
+    override wins; else the enclosing repo's toplevel; outside any repo, the cwd
+    (with a local-only note). Shared by `cmdInit` and `cmdImport`'s implicit init. -/
+def initTarget (dirOverride : Option String) : TlM (System.FilePath × List String) := do
   let override : Option String ← match dirOverride with
     | some p => pure (some p)
     | none => liftSys (fun e => .mk' .internal s!"environment read failed: {e}") (IO.getEnv "TL_DIR")
-  -- placement (ADR-0001 §4): the override wins; else the enclosing repo's
-  -- toplevel; outside any repo, the cwd (with a local-only note)
-  let (target, note) ← match override with
-    | some p => pure (System.FilePath.mk p, ([] : List String))
-    | none =>
-      let cwd ← liftSys (fun e => .mk' .internal s!"{e}") IO.currentDir
-      let rec findRoot (dir : System.FilePath) (fuel : Nat) : TlM (Option System.FilePath) := do
-        match fuel with
-        | 0 => return none
-        | fuel + 1 =>
-          if ← liftSys (fun e => .mk' .internal s!"{e}") (hasGitBoundary dir) then
-            return some dir
-          else
-            match dir.parent with
-            | some p => if p == dir then return none else findRoot p fuel
-            | none => return none
-      match ← findRoot cwd 256 with
-      | some root => pure (root / ".tl", [])
-      | none => pure (cwd / ".tl",
-          ["not inside a git repository — state stays local-only until used under a git repo with a remote"])
+  match override with
+  | some p => pure (System.FilePath.mk p, [])
+  | none =>
+    let cwd ← liftSys (fun e => .mk' .internal s!"{e}") IO.currentDir
+    let rec findRoot (dir : System.FilePath) (fuel : Nat) : TlM (Option System.FilePath) := do
+      match fuel with
+      | 0 => return none
+      | fuel + 1 =>
+        if ← liftSys (fun e => .mk' .internal s!"{e}") (hasGitBoundary dir) then
+          return some dir
+        else
+          match dir.parent with
+          | some p => if p == dir then return none else findRoot p fuel
+          | none => return none
+    match ← findRoot cwd 256 with
+    | some root => pure (root / ".tl", [])
+    | none => pure (cwd / ".tl",
+        ["not inside a git repository — state stays local-only until used under a git repo with a remote"])
+
+def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
+  let (target, note) ← initTarget dirOverride
   let created ← initAt target
   let dirs := Dirs.ofStatePath target.toString
   let replica ← loadReplica dirs
@@ -1988,6 +1990,76 @@ def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
         | none => pure [])
     catch _ => pure ([] : List String))
   return { data, human, notes := note ++ stealthNote ++ pointerNote ++ autosyncNote ++ gitFloorNote }
+
+/-- Read the import input: a single JSONL file, or a directory of `*.jsonl`
+    (sorted by name, unioned). Returns the non-blank lines (ADR-0005). -/
+def readImportLines (path : String) : TlM (List String) := do
+  let fp := System.FilePath.mk path
+  let md ← liftSys (fun e => .mk' .notFound s!"cannot read import path '{path}': {e}") fp.metadata
+  let contents ← match md.type with
+    | .dir =>
+      let entries ← liftSys (fun e => .mk' .internal s!"{e}") fp.readDir
+      let files := (entries.toList.filter (·.fileName.endsWith ".jsonl")).map (·.path)
+      let sorted := files.mergeSort (fun a b => decide (a.toString ≤ b.toString))
+      sorted.mapM (fun f => liftSys (fun e => .mk' .internal s!"reading {f}: {e}") (IO.FS.readFile f))
+    | _ =>
+      let c ← liftSys (fun e => .mk' .internal s!"reading {path}: {e}") (IO.FS.readFile fp)
+      pure [c]
+  return (contents.flatMap (·.splitOn "\n")).filter (fun l => !l.trimAscii.toString.isEmpty)
+
+/-- Whether the repo already holds task state: any non-empty local segment, or a
+    present `refs/tl/log` (the `--force` gate's "non-empty op-log", ADR-0005). The
+    ref check is best-effort — outside a git repo it is simply absent. -/
+def logIsNonEmpty (d : Dirs) : TlM Bool := do
+  let (segs, _) ← readSegments d
+  if segs.any (fun s => s.bytes.size > 0) then return true
+  match ← ((Tl.Sync.refTip d).run.toBaseIO : IO _) with
+  | .ok (.ok (some _)) => return true
+  | _ => return false
+
+/-- `tl import <path>` (ADR-0005): parse tl's bulk-import format into a
+    deterministic seed op-log under an import replica. Implicit-inits a fresh
+    repo; refuses a non-empty log without `--force`; bounds the input size unless
+    `--allow-large`/`--max`. Both gates are separate — neither flag bypasses the
+    other (ADR-0014 T6). Every clamp, skipped edge, and fallback time is disclosed. -/
+def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Option String)
+    (force allowLarge : Bool) (maxArg : Option Nat) : TlM CmdOut := do
+  let opts : Tl.Import.ImportOptions :=
+    { sourceTag := sourceTagArg.getD "import", force, allowLarge, maxBytes := maxArg.getD 5000000 }
+  let lines ← readImportLines path
+  -- resource-bounds gate, before any op is emitted (ADR-0005 §bounds override)
+  let totalBytes := lines.foldl (fun acc l => acc + l.toUTF8.size) 0
+  if totalBytes > opts.maxBytes && !allowLarge then
+    throw (.mk' .forceRequired s!"import input is {totalBytes} bytes, over the {opts.maxBytes}-byte bound — pass --allow-large, or raise --max <bytes>, for a trusted local migration")
+  -- parse every line; fail-closed on a malformed line or a duplicate source id
+  let mut records : List Tl.Import.ImportRecord := []
+  let mut parseDisc : List String := []
+  let mut seen : List String := []
+  for line in lines do
+    let (r, dsc) ← MonadExcept.ofExcept (Tl.Import.parseRecord line)
+    if seen.contains r.sourceId then
+      throw (.mk' .malformedLine s!"import has two records with id '{r.sourceId}' — source ids map 1:1 to a tl id, so they must be unique")
+    seen := seen ++ [r.sourceId]
+    records := records ++ [r]
+    parseDisc := parseDisc ++ dsc
+  -- resolve the target + implicit init (the documented exception to no-auto-init)
+  let (target, _) ← initTarget dirOverride
+  let _ ← initAt target
+  let d := Dirs.ofStatePath target.toString
+  -- the --force gate (distinct from the bounds gate): refuse to double-seed
+  if (← logIsNonEmpty d) && !force then
+    throw (.mk' .forceRequired "this repo already holds task state (a local segment or refs/tl/log) — `import` refuses to double-seed; pass --force to append the import as a fresh seed")
+  let result := Tl.Import.buildSeed opts records parseDisc
+  let bytes := String.join (result.lines.map (· ++ "\n"))
+  Tl.Sync.writeForeignSegment d result.segmentReplica bytes.toUTF8
+  let data := Json.mkObj
+    [("issues", jnum result.issueCount), ("ops", jnum result.opCount),
+     ("replica", Json.str result.segmentReplica), ("source", Json.str opts.sourceTag),
+     ("disclosures", Json.arr (result.disclosures.map (Json.str ∘ sanitizeSingle)).toArray)]
+  return { data
+           human := s!"Imported {result.issueCount} issue(s), {result.opCount} ops, under source '{sanitizeSingle opts.sourceTag}'"
+                    ++ (if result.disclosures.isEmpty then "" else s!" ({result.disclosures.length} disclosure(s))")
+           notes := result.disclosures.map sanitizeSingle }
 
 /-- The product version (keep in lockstep with lakefile.lean's package
     version; `tl version` is the single user-facing source). -/

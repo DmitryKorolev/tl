@@ -28,7 +28,7 @@ private def jStr (j : Json) (k : String) : Option String :=
 /-- The verbs the dispatcher actually handles (kept beside the dispatch; the
     test below proves it matches the schema both ways). -/
 private def dispatchVerbs : List String :=
-  ["init", "create", "ready", "claim", "close", "update", "reopen", "defer", "undefer",
+  ["init", "import", "create", "ready", "claim", "close", "update", "reopen", "defer", "undefer",
    "dep add", "dep remove", "dep cycles", "dep critical", "dep path", "dep relate", "dep unrelate",
    "parent set", "parent remove",
    "label add", "label remove", "label list",

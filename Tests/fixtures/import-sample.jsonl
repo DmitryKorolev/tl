@@ -1,0 +1,5 @@
+{"id":"PROJ-1","title":"Epic: parser","status":"open","priority":0}
+{"id":"PROJ-7","title":"Lexer","status":"done","closedAt":"2026-03-01T10:00:00Z","parent":"PROJ-1"}
+{"id":"PROJ-42","title":"Write the parser","status":"in_progress","assignee":"alice","priority":1,"blockedBy":["PROJ-7"],"parent":"PROJ-1","labels":["area:parser"],"related":["PROJ-9"],"meta":{"ext:jira":"PROJ-42"}}
+{"id":"PROJ-9","title":"Docs","priority":7,"deferUntil":"2099-01-01T00:00:00Z"}
+{"id":"PROJ-3","title":"Dupe","status":"cancelled","closeResolution":"duplicate","duplicateOf":"PROJ-7","blockedBy":["MISSING-1"]}

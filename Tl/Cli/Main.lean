@@ -144,6 +144,15 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "init"
       MonadExcept.ofExcept (noPositionals a "init")
       cmdInit (a.get? "dir") (a.has "stealth")
+    | "import" => do
+      let a ← parse "import"
+      let tok ← MonadExcept.ofExcept (onePositional a "import" "a path to a .jsonl file or directory")
+      let maxN ← match a.get? "max" with
+        | none => pure none
+        | some v => match v.toNat? with
+          | some n => pure (some n)
+          | none => throw (usageErr s!"--max must be a whole number of bytes (got '{v}')")
+      cmdImport (a.get? "dir") tok (a.get? "source") (a.has "force") (a.has "allow-large") maxN
     | "create" => do
       let a ← parse "create"
       -- positionals: <title>, optionally a trailing `-` (the stdin sentinel)
