@@ -1105,13 +1105,16 @@ def cmdDefer (dirOverride : Option String) (tok : String)
       throw (.mk' .usage "defer takes one of --until <date> or --for <duration>, not both")
     | none, none =>
       throw (.mk' .usage "defer needs --until <date> or --for <duration> (e.g. --until 2026-07-01, --for 36h)")
-    | some u, none => do
-      -- the offset is read best-effort and used only when `u` is a bare date
-      -- (an offset-bearing timestamp carries its own); a failure floors to UTC
-      let off ← liftSys (fun e => .mk' .internal s!"timezone read failed: {e}") localOffsetMinutes
-      match Time.parseUntilInstant? off u with
-      | some ms => pure (DeferTarget.abs ms)
-      | none => throw (deferUntilHelp u)
+    | some u, none =>
+      -- an offset-bearing timestamp carries its own zone — resolve it without
+      -- touching the system tz; only a bare date needs the injected local offset
+      if let some ms := Time.parseOffsetDateTime? u then
+        pure (DeferTarget.abs ms)
+      else do
+        let off ← liftSys (fun e => .mk' .internal s!"timezone read failed: {e}") localOffsetMinutes
+        match Time.parseUntilInstant? off u with
+        | some ms => pure (DeferTarget.abs ms)
+        | none => throw (deferUntilHelp u)
     | none, some f => do
       match Time.parseDurationMs? f with
       | some 0 => throw (.mk' .usage s!"--for needs a positive duration, not zero (got '{f}')")
@@ -1129,10 +1132,17 @@ def cmdDefer (dirOverride : Option String) (tok : String)
   let v := writeNow ctx parsed
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let untilIso := (v.issueData i).deferUntilOf.map Time.isoOfEpochMs |>.getD "—"
+  -- a deferUntil at or before now defers nothing (the ready conjunct holds
+  -- vacuously); say so loudly rather than let a past `--until` look effective
+  let elapsedNote : List String := match (v.issueData i).deferUntilOf with
+    | some t => if t ≤ v.now then
+        [s!"deferUntil {untilIso} is already past — {displayId i} is not deferred (still workable); use a future time or --for"]
+      else []
+    | none => []
   return { data := issueObj v i
            human := if parsed.isEmpty then s!"{displayId i} is already deferred until {untilIso}"
                     else s!"Deferred {displayId i} until {untilIso}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ elapsedNote ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-- `tl undefer <id>`: clear the `deferUntil`, making the issue workable now
     (ADR-0010). Idempotent — a no-op (and an honest "is not deferred") when no

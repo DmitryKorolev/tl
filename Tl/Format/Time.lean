@@ -139,8 +139,12 @@ def parseCivilDate? (s : String) : Option (Nat × Nat × Nat) :=
     one deliberate local-time use, threaded like `now` so parsing is
     deterministic). A pre-epoch result floors to `0`. -/
 def startOfDayUtcMs (offsetMinutes : Int) (y mo d : Nat) : Nat :=
+  -- a real UTC offset is within ±14h; clamp here — the one place the injected
+  -- offset enters arithmetic — so a stray value (a typo'd `TL_UTC_OFFSET`, a
+  -- corrupt tz read) shifts the day by at most that, never by days (review)
+  let off := max (-840) (min 840 offsetMinutes)
   let dayMs : Int := (daysFromCivil y mo d : Int) * 86400000
-  (max (dayMs - offsetMinutes * 60000) 0).toNat
+  (max (dayMs - off * 60000) 0).toNat
 
 /-- A zone designator at the end of a datetime: `Z` (UTC) or a numeric
     `±HH:MM` offset (`HH ≤ 14`, `MM < 60`), as signed minutes east of UTC. -/
@@ -163,10 +167,17 @@ private def parseZone? (cs : List Char) : Option Int :=
     `(milliseconds, offsetMinutes)`. -/
 private def parseFracZone? (rest : List Char) : Option (Nat × Int) :=
   match rest with
-  | '.' :: a :: b :: c :: zoneCs => do
-    let milli ← digitsN? [a, b, c]
-    let off ← parseZone? zoneCs
-    some (milli, off)
+  | '.' :: more =>
+    let frac := more.takeWhile Char.isDigit
+    if frac.isEmpty then none  -- a dot with no fraction digits is malformed
+    else do
+      -- ISO fractional seconds → milliseconds: right-pad/truncate the digit run
+      -- to exactly three (`.5`→500, `.05`→50, `.500`→500, `.5009`→500, sub-ms
+      -- dropped), so a non-three-digit fraction is accepted, not rejected
+      let ms3 := (frac.take 3) ++ List.replicate (3 - min frac.length 3) '0'
+      let milli ← digitsN? ms3
+      let off ← parseZone? (more.drop frac.length)
+      some (milli, off)
   | zoneCs => do
     let off ← parseZone? zoneCs
     some (0, off)
@@ -200,8 +211,9 @@ def parseOffsetDateTime? (s : String) : Option Nat := do
     with an explicit offset (`parseOffsetDateTime?`), or a bare date as local
     start-of-day under the injected offset. Any other shape — a bare datetime
     with no offset, junk — is `none` (the caller reports a teaching usage error).
-    This is the single shared duration/date grammar of ADR-0010, reused by the
-    `tl log` time selectors (ADR-0025) — not a second parser. -/
+    This is the shared *date/timestamp* resolver; relative durations go through
+    `parseDurationMs?`. Together they are the one time-input grammar of ADR-0010,
+    reused by the `tl log` selectors (ADR-0025) — not a second parser. -/
 def parseUntilInstant? (offsetMinutes : Int) (s : String) : Option Nat :=
   match parseOffsetDateTime? s with
   | some ms => some ms

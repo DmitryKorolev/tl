@@ -117,6 +117,11 @@ def offsetDateTimeTests : List Outcome :=
      ("2026-06-15T11:00:00+02:00", anchor),     -- 11:00 at +02:00 = 09:00 UTC
      ("2026-06-15T07:00:00-02:00", anchor),     -- 07:00 at −02:00 = 09:00 UTC
      ("2026-06-15T09:00:00.500Z", anchor + 500),
+     ("2026-06-15T09:00:00.5Z", anchor + 500),     -- 1-digit fraction = 500ms
+     ("2026-06-15T09:00:00.05Z", anchor + 50),     -- 2-digit fraction = 50ms
+     ("2026-06-15T09:00:00.5009Z", anchor + 500),  -- sub-ms digits dropped
+     ("2026-06-15T09:00:00.000Z", anchor),         -- explicit zero fraction
+     ("2026-06-15T11:00:00.250+02:00", anchor + 250),
      ("1970-01-01T00:00:00Z", 0)]
   let bad : List (String × String) :=
     [("2026-06-15T09:00:00", "no zone designator"),
@@ -126,6 +131,7 @@ def offsetDateTimeTests : List Outcome :=
      ("2026-06-15T09:00:00+02:60", "offset minute 60"),
      ("2026-06-15T24:00:00Z", "hour 24"),
      ("2026-06-15 09:00:00Z", "space separator"),
+     ("2026-06-15T09:00:00.Z", "a dot with no fraction digits"),
      ("2026-06-15", "date only, no time"),
      ("1970-01-01T00:00:00+02:00", "pre-epoch once the offset is applied")]
   (oks.map (fun (s, ms) =>
@@ -144,7 +150,9 @@ def startOfDayTests : List Outcome :=
     [(0, 2026, 6, 15, sod0),
      (120, 2026, 6, 15, sod0 - 7200000),    -- UTC+2: local midnight is 22:00 the prior UTC day
      (-300, 2026, 6, 15, sod0 + 18000000),  -- UTC−5: local midnight is 05:00 UTC
-     (120, 1970, 1, 1, 0)]                   -- a pre-epoch result floors to 0
+     (120, 1970, 1, 1, 0),                   -- a pre-epoch result floors to 0
+     (99999, 2026, 6, 15, sod0 - 50400000), -- out-of-range offset clamps to +14h (+840)
+     (-99999, 2026, 6, 15, sod0 + 50400000)] -- and to −14h (−840)
   rows.map (fun (off, y, m, d, expect) =>
     check s!"startOfDayUtcMs {off} {y}-{m}-{d} = {expect}"
       (Time.startOfDayUtcMs off y m d = expect)
