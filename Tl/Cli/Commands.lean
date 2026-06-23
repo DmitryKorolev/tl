@@ -673,22 +673,28 @@ private def boundFormHelp (edge got : String) : Tl.Error :=
     empty or `all` ⇒ unbounded (the empty cursor); a duration ⇒ that long *ago*
     (`now − dur`, shared with `defer`, ADR-0010); a date ⇒ local start-of-day; a
     timestamp with an offset ⇒ that instant; otherwise a version-vector cursor
-    (its own strict validation). A `:`-bearing non-timestamp routes to the cursor
-    parser for its detailed errors; anything else teaches the full set of forms.
-    The duration/date/timestamp parsers are exactly `defer`'s — not a second set. -/
+    (its own strict validation). A cursor-shaped token routes to the cursor parser
+    for its detailed errors; anything else teaches the full set of forms. The
+    date/timestamp resolution is exactly `defer`'s `parseUntilInstant?` — not a
+    second parser. -/
 private def parseLogBound (edge : String) (now : Nat) (offset : Int) (raw : String) :
     Except Tl.Error LogBound :=
   let t := raw.trimAscii.toString
   if t.isEmpty || t.toLower == "all" then .ok (.cursor AMap.empty)
   else match Time.parseDurationMs? t with
+    -- a duration is "ago"; an over-large `--since` ago saturates `now - ms` to the
+    -- epoch — "since before any op" = full history — and the dual over-large
+    -- `--until` floors to 0 and matches nothing. Both are the intended limit.
     | some ms => .ok (.timeMs (now - ms))
-    | none => match Time.parseOffsetDateTime? t with
+    | none => match Time.parseUntilInstant? offset t with
       | some inst => .ok (.timeMs inst)
-      | none => match Time.parseCivilDate? t with
-        | some (y, mo, d) => .ok (.timeMs (Time.startOfDayUtcMs offset y mo d))
-        | none =>
-          if t.contains ':' then LogBound.cursor <$> parseCursor edge t
-          else .error (boundFormHelp edge t)
+      | none =>
+        -- route to the cursor parser only for a cursor-shaped token: a version
+        -- vector is `:`-separated and never contains '-' (Crockford), whereas a
+        -- malformed date/timestamp does — so the latter gets the form help, not a
+        -- misleading "bad cursor segment" (review).
+        if t.contains ':' && !t.contains '-' then LogBound.cursor <$> parseCursor edge t
+        else .error (boundFormHelp edge t)
 
 /-- `tl log [<id>] [--since <cursor>] [--until <cursor>]`: an HLC-ordered
     projection over the op log (ADR-0008), optionally filtered to ops touching one
@@ -731,19 +737,19 @@ def cmdLog (dirOverride : Option String) (idTok : Option String) (limit : Nat)
     | some tok =>
       let i ← MonadExcept.ofExcept (resolveToken v.state tok)
       pure (v.loaded.ops.filter (fun p => (opTargets p.op).contains i))
-  -- the op's wall-clock instant: the HLC physical component (ADR-0007 packing)
-  let physMs (p : ParsedOp) : Nat := p.stamp.hlc / 2 ^ 16
   -- `--since` keeps ops after its lower bound, `--until` before its upper bound;
   -- together a window. A cursor bound is per-replica (HLC, nonce) (exact); a time
-  -- bound compares the physical-ms instant (inclusive). An absent flag is no bound.
-  let matchesSince (p : ParsedOp) : Bool := match sinceBound with
+  -- bound compares the op's wall-clock instant — the HLC physical component
+  -- (ADR-0007 packing), computed once per op — inclusive. Absent flag = no bound.
+  let okSince (p : ParsedOp) (phys : Nat) : Bool := match sinceBound with
     | .cursor c => stampAfter p.stamp.hlc p.stamp.nonce (cursorThreshold c p.stamp.replica)
-    | .timeMs t => decide (t ≤ physMs p)
-  let matchesUntil (p : ParsedOp) : Bool := match untilBound with
+    | .timeMs t => decide (t ≤ phys)
+  let okUntil (p : ParsedOp) (phys : Nat) : Bool := match untilBound with
     | .cursor c => stampBefore p.stamp.hlc p.stamp.nonce (cursorThreshold c p.stamp.replica)
-    | .timeMs t => decide (physMs p ≤ t)
+    | .timeMs t => decide (phys ≤ t)
   let matching := visible.filter (fun p =>
-    (!sinceGiven || matchesSince p) && (!untilGiven || matchesUntil p))
+    let phys := p.stamp.hlc / 2 ^ 16
+    (!sinceGiven || okSince p phys) && (!untilGiven || okUntil p phys))
   -- `--since` (no `--last`) is a forward feed (oldest-first); plain log, `--until`,
   -- and any `--last` tail read newest-first. Both use the full stamp order
   -- (deterministic on equal HLCs).

@@ -2764,7 +2764,16 @@ def cliLogTimeTests : IO (List Outcome) := do
     [← expectErr "log --since junk is usage" ["log", "--since", "soon", "--dir", dir] .usage,
      ← expectErr "log --last a non-number is usage" ["log", "--last", "abc", "--dir", dir] .usage,
      ← expectErr "log --limit together with --last is usage"
-       ["log", "--limit", "5", "--last", "3", "--dir", dir] .usage]
+       ["log", "--limit", "5", "--last", "3", "--dir", dir] .usage,
+     -- a bad-offset timestamp (has '-') teaches the bound forms, not a cursor error
+     ← expectErr "log --since a bad-offset timestamp teaches the forms (not a cursor error)"
+       ["log", "--since", "2026-06-20T12:00:00+25:00", "--dir", dir] .usage
+       (fun e => (e.message.splitOn "recognized bound").length > 1),
+     -- a cursor-shaped token (':' and no '-') still gets the cursor-specific error
+     ← expectErr "log --since a malformed cursor still gets the cursor error"
+       ["log", "--since", "notareplica:1:2", "--dir", dir] .usage
+       (fun e => (e.message.splitOn "cursor").length > 1
+                 && (e.message.splitOn "recognized bound").length == 1)]
   return o
 
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
