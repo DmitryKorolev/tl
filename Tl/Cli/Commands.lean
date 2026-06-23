@@ -155,6 +155,14 @@ def remoteSyncNotice (remote : String) : String :=
     so `doctor`/`ready` never contact the remote themselves (ADR-0016). Shared by
     `cmdSync` and the `--sync` flag. -/
 def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome × List String) := do
+  -- stealth (ADR-0001 §7): never publish or push. Explicit `tl sync` fails closed
+  -- earlier (`cmdSync`); the best-effort `--sync`/`--verify` brackets funnel here,
+  -- so short-circuiting to a no-op note keeps *every* sharing path off the ref and
+  -- the remote — a single chokepoint rather than a guard per write verb.
+  if ← isStealth d then
+    return ({ ran := false, published := false, absorbed := [], tip := none },
+            { ran := false, remote := "", pushed := false, pulled := false, tip := none },
+            ["sync skipped: stealth repo — local-only, never shared (remove `.tl/local/stealth` to un-stealth)"])
   let own ← loadReplica d
   let ownId := own.map (·.id)
   let l ← Tl.Sync.syncLocal d ownId

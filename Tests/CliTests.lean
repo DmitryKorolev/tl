@@ -2838,6 +2838,19 @@ def cliStealthTests : IO (List Outcome) := do
   let _ ← run' ["create", "stealth write must not publish", "--dir", aDir, "--actor", "a"]
   o := o ++ [← expectData "stealth write does not auto-publish even with tl.autosync on"
     ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 0)]
+  -- (8) no --sync/--verify bracket reaches refs/tl/log: exercise every sync-bearing
+  -- path in the stealth repo, then assert the shared ref was never created
+  let _ ← run' ["ready", "--sync", "--dir", aDir]
+  let _ ← run' ["doctor", "--sync", "--dir", aDir]
+  let _ ← run' ["create", "via preWriteRefresh", "--dir", aDir, "--actor", "a"]
+  let refLs ← (IO.Process.output { cmd := "git", args := #["-C", groot.toString, "rev-parse", "--verify", "--quiet", "refs/tl/log"] } : IO _)
+  o := o ++ [check "no --sync path ever creates refs/tl/log in a stealth repo"
+    (refLs.exitCode != 0) s!"refs/tl/log exists: {refLs.stdout}"]
+  -- the best-effort --sync bracket discloses the skip rather than silently sharing
+  o := o ++ [(match ← run' ["ready", "--sync", "--dir", aDir] with
+    | .ok out => check "ready --sync in stealth discloses the skip"
+        (out.notes.any (fun n => (n.splitOn "stealth").length > 1)) (String.intercalate " | " out.notes)
+    | .error e => { name := "ready --sync in stealth", passed := false, msg := e.message })]
   return o
 
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,

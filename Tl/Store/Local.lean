@@ -215,7 +215,11 @@ def storeLastSync (d : Dirs) (ms : Nat) (tip : Option String) : TlM Unit :=
     is present. While stealth, sharing is disabled (`tl sync` fails closed and
     auto-sync never publishes); reads are unaffected. -/
 def isStealth (d : Dirs) : TlM Bool := do
-  return (← fileContents d d.relStealth).isSome
+  -- a present marker ⇒ stealth; absent (ENOENT ⇒ `none`) ⇒ not. A present-but-
+  -- unreadable marker (e.g. a directory at the path, a permission error) errs
+  -- toward stealth — on doubt, never share (fail-safe for a privacy mode).
+  try return (← fileContents d d.relStealth).isSome
+  catch _ => return true
 
 /-- Mark this state stealth (write the `.tl/local/stealth` marker, atomic-replace
     like the other `.tl/local` markers). Written only by `tl init --stealth` at

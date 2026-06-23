@@ -237,6 +237,11 @@ private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOut
     problem is not hidden: the subsequent `readState` fold re-encounters and
     surfaces it through the normal read policy. -/
 def refreshFromRef (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
+  -- stealth (ADR-0001 §7): a single local replica that is never shared — so it
+  -- neither publishes nor absorbs. Skip the ref entirely (no `rev-parse`, no
+  -- foreign-segment writeback): a clean no-op, not a degraded read.
+  if ← isStealth d then
+    return { refreshed := false, absorbed := [], tip := none, degraded := none }
   match ← ((refreshBody d ownReplica).run.toBaseIO : IO _) with
   | .ok (.ok o) => return o
   | .ok (.error e) =>
