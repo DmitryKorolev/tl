@@ -86,7 +86,10 @@ private def staleFlag : FlagSpec :=
 
 /-- The whole grammar. -/
 def commandSpecs : List CommandSpec :=
-  [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)" },
+  [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)",
+      flags :=
+        [ { name := "stealth", value := false,
+            summary := "local-only state, never shared: no auto-sync, no discovery pointer; `tl sync` is disabled (ADR-0001 §7)" } ] },
     { command := "create", positionals := "<title> [-]",
       summary := "add an issue, wiring deps inline; body via --description, or `-` to read stdin",
       flags :=

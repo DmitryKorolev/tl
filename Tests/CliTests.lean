@@ -2776,6 +2776,70 @@ def cliLogTimeTests : IO (List Outcome) := do
                  && (e.message.splitOn "recognized bound").length == 1)]
   return o
 
+/-- `tl init --stealth` (ADR-0001 §7): local-only state with zero repo-visible
+    trace. Pins the marker, the suppressed discovery pointer, that writes still
+    work, that `tl sync` fails closed with `stealth-mode`, the creation-fixed mode
+    (re-init neither converts nor un-stealths), the marker-removal un-stealth, and
+    that auto-sync never publishes even when `tl.autosync` is set by hand. -/
+def cliStealthTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- (1) stealth init: created, marked, no sharing affordances
+  let root ← IO.FS.createTempDir
+  let dir := (root / ".tl").toString
+  o := o ++ [(match ← run' ["init", "--stealth", "--dir", dir] with
+    | .ok out => check "init --stealth reports stealth, notes local-only, suppresses the discovery pointer"
+        (jBool out.data "stealth" == some true
+          && out.notes.any (fun n => (n.splitOn "local-only").length > 1)
+          && !out.notes.any (fun n => (n.splitOn "discoverable").length > 1))
+        (String.intercalate " | " out.notes)
+    | .error e => { name := "init --stealth", passed := false, msg := e.message })]
+  o := o ++ [check "init --stealth wrote the gitignored stealth marker"
+    (← (root / ".tl" / "local" / "stealth").pathExists)]
+  -- (2) writes work in stealth (the CRDT degenerates to a single-replica fold)
+  let sid ← mkIssue dir "stealth work"
+  o := o ++ [← expectData "a stealth repo still creates and lists issues" ["ready", "--dir", dir]
+    (fun j => (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ sid)))]
+  -- (3) tl sync is refused with the stable stealth-mode code, not a silent no-op
+  o := o ++ [← expectErr "tl sync in a stealth repo is stealth-mode" ["sync", "--dir", dir] .stealthMode]
+  -- (4) the mode is fixed at creation: re-init --stealth is idempotent, a plain
+  -- re-init does not un-stealth
+  o := o ++
+    [← expectData "re-init --stealth stays stealth (created false)" ["init", "--stealth", "--dir", dir]
+       (fun j => jBool j "stealth" == some true && jBool j "created" == some false),
+     ← expectData "a plain re-init does not un-stealth" ["init", "--dir", dir]
+       (fun j => jBool j "stealth" == some true)]
+  -- (5) un-stealth = remove the marker; sync no longer reports stealth-mode
+  IO.FS.removeFile (root / ".tl" / "local" / "stealth")
+  o := o ++ [(match ← run' ["sync", "--dir", dir] with
+    | .ok _ => check "after removing the marker, sync runs (no stealth-mode)" true ""
+    | .error e => check "after removing the marker, sync is not stealth-mode"
+        (e.code != .stealthMode) e.code.wire)]
+  -- (6) control: a normal init is not stealth and offers the discovery pointer
+  let root2 ← IO.FS.createTempDir
+  IO.FS.writeFile (root2 / "AGENTS.md") "# p\n"
+  let nDir := (root2 / ".tl").toString
+  o := o ++ [(match ← run' ["init", "--dir", nDir] with
+    | .ok out => check "a normal init is not stealth and offers the discovery pointer"
+        (jBool out.data "stealth" == some false
+          && out.notes.any (fun n => (n.splitOn "discoverable").length > 1))
+        (String.intercalate " | " out.notes)
+    | .error e => { name := "normal init control", passed := false, msg := e.message })]
+  o := o ++ [← expectData "--stealth on an existing non-stealth repo is ignored (mode fixed at creation)"
+    ["init", "--stealth", "--dir", nDir] (fun j => jBool j "stealth" == some false)]
+  -- (7) auto-sync gate: in a git repo with tl.autosync set by hand, a stealth
+  -- write still does not publish, so a sibling clone sees nothing
+  let groot ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", groot.toString, "init", "-q"] } : IO _)
+  let aDir := (groot / ".tl").toString
+  let bDir := (groot / ".tlB").toString
+  let _ ← run' ["init", "--stealth", "--dir", aDir]
+  let _ ← run' ["init", "--dir", bDir]
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", groot.toString, "config", "tl.autosync", "true"] } : IO _)
+  let _ ← run' ["create", "stealth write must not publish", "--dir", aDir, "--actor", "a"]
+  o := o ++ [← expectData "stealth write does not auto-publish even with tl.autosync on"
+    ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 0)]
+  return o
+
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
     the ready exclusion + auto-resume on a past instant, idempotent re-defer and
     undefer, and the teaching usage errors on bad input. The offset-timestamp row
@@ -2861,6 +2925,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

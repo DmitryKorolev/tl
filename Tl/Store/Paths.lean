@@ -71,6 +71,12 @@ def relLastSync (d : Dirs) : String := d.tlRel ++ "/local/last-sync"
     `.tl/.gitignore` (the whole `.tl/local/` subtree is covered) — that file is
     the only thing keeping the cache untracked. -/
 def relCache (d : Dirs) : String := d.tlRel ++ "/local/cache"
+/-- The stealth marker (ADR-0001 §7): present iff `tl init --stealth` created
+    this state. While present, sharing is disabled — `tl sync` fails closed with
+    `stealth-mode` and auto-sync never publishes — so the replica stays local-only
+    with zero repo-visible trace. Gitignored, local-only, no log-format impact;
+    removing it (then `tl sync`) is the whole of un-stealthing. -/
+def relStealth (d : Dirs) : String := d.tlRel ++ "/local/stealth"
 def relLog (d : Dirs) : String := d.tlRel ++ "/log"
 def relSegment (d : Dirs) (replicaId : String) : String :=
   d.tlRel ++ "/log/" ++ replicaId ++ ".jsonl"

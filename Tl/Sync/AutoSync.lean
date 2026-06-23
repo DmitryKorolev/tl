@@ -54,6 +54,9 @@ def preWriteRefresh (dirOverride : Option String) :
     `IO.Error`s, mirroring `refreshFromRef`. The remote leg stays explicit. -/
 def autoSyncLocal (d : Dirs) (replica : Option Replica) : TlM (List String) := do
   if (← gitConfig d "tl.autosync") != some "true" then return []
+  -- stealth (ADR-0001 §7) never publishes, even if a user set tl.autosync by hand:
+  -- the marker is the authority on "never shared" (reached only when autosync is on)
+  if ← isStealth d then return []
   match ← ((syncLocal d (replica.map (·.id))).run.toBaseIO : IO _) with
   | .ok (.ok _) => return []
   | .ok (.error e) =>

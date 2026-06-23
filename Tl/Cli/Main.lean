@@ -143,7 +143,7 @@ def runVerb : List String → TlM CmdOut
     | "init" => do
       let a ← parse "init"
       MonadExcept.ofExcept (noPositionals a "init")
-      cmdInit (a.get? "dir")
+      cmdInit (a.get? "dir") (a.has "stealth")
     | "create" => do
       let a ← parse "create"
       -- positionals: <title>, optionally a trailing `-` (the stdin sentinel)

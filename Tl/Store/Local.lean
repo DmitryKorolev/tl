@@ -211,6 +211,18 @@ def loadLastSync (d : Dirs) : TlM (Option (Nat × Option String)) := do
 def storeLastSync (d : Dirs) (ms : Nat) (tip : Option String) : TlM Unit :=
   writeLocalFile d d.relLastSync s!"{ms} {tip.getD "-"}\n"
 
+/-- Whether this state is stealth (ADR-0001 §7): the `.tl/local/stealth` marker
+    is present. While stealth, sharing is disabled (`tl sync` fails closed and
+    auto-sync never publishes); reads are unaffected. -/
+def isStealth (d : Dirs) : TlM Bool := do
+  return (← fileContents d d.relStealth).isSome
+
+/-- Mark this state stealth (write the `.tl/local/stealth` marker, atomic-replace
+    like the other `.tl/local` markers). Written only by `tl init --stealth` at
+    creation; removing the marker (then `tl sync`) un-stealths. -/
+def markStealth (d : Dirs) : TlM Unit :=
+  writeLocalFile d d.relStealth "1\n"
+
 /-- The `corrupt-clock` saturation error (ADR-0007: removing the clock file
     cannot clear range exhaustion — the reseed re-derives the same near-max
     value from the segments). -/

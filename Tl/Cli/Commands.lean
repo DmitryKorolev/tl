@@ -1840,6 +1840,12 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     remote is configured. -/
 def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
+  -- stealth (ADR-0001 §7): fail closed rather than silently no-op, so a stealth
+  -- repo never leaks and the user learns how to un-stealth (the `code` is stable).
+  if ← isStealth d then
+    throw { code := .stealthMode
+            message := "this is a stealth repo (`tl init --stealth`): task state is local-only and never shared, so `tl sync` is disabled — to start sharing, remove the stealth marker `.tl/local/stealth` and run `tl sync` again"
+            context := [] }
   let (l, r, pnotes) ← performSync d
   let localLeg : Json :=
     if l.ran then
@@ -1892,7 +1898,7 @@ def readmePrimer : String :=
   "  tl doctor                project health\n" ++
   "  tl help                  all commands (tl help --json for the grammar)\n"
 
-def cmdInit (dirOverride : Option String) : TlM CmdOut := do
+def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
   -- the override is --dir, else TL_DIR (ADR-0012: the same explicit-state
   -- mechanism, --dir wins) — so `TL_DIR=… tl init && tl create …` binds one
   -- directory, not two
@@ -1922,31 +1928,44 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
   let created ← initAt target
   let dirs := Dirs.ofStatePath target.toString
   let replica ← loadReplica dirs
+  -- stealth (ADR-0001 §7): mark at *creation* so sharing stays disabled. The mode
+  -- is fixed at creation — `--stealth` does not retroactively convert an existing
+  -- repo, and a plain re-init never un-stealths. `stealthy` is the resulting state.
+  if stealth && created.isSome then markStealth dirs
+  let stealthy ← isStealth dirs
+  let stealthNote : List String :=
+    if stealthy then
+      ["stealth: task state is local-only and never shared — `tl sync` is disabled and auto-sync stays off; to start sharing later, remove `.tl/local/stealth` and run `tl sync`"]
+    else if stealth then
+      ["--stealth ignored: already initialized and not stealth — the sharing mode is fixed at creation"]
+    else []
   -- auto-sync default (ADR-0021 §5 / ADR-0016 §4): ON for a linked worktree,
-  -- opt-in elsewhere, never overriding an existing knob.
-  let autosyncNote ← Tl.Sync.autoSyncInitDefault dirs
+  -- opt-in elsewhere, never overriding an existing knob. Stealth never auto-syncs.
+  let autosyncNote ← if stealthy then pure [] else Tl.Sync.autoSyncInitDefault dirs
   -- write/refresh the gitignored primer (ADR-0011 §3), through the no-follow
   -- shim like every other .tl write
   writeLocalFile dirs (dirs.tlRel ++ "/README.md") readmePrimer
   -- the committed discovery pointer: suggest adding it to a root agent file;
   -- never auto-edit the user's committed files (no-surprise ethos — ADR-0011
-  -- §3, decision: print, do not write; create no file when none exists)
-  let rootDir := target.parent.getD (System.FilePath.mk ".")
-  let mut existing : List String := []
-  for f in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] do
-    if ← liftSys (fun e => .mk' .internal s!"{e}") (rootDir / f).pathExists then
-      existing := existing ++ [f]
-  let pointerNote :=
+  -- §3, decision: print, do not write; create no file when none exists). Stealth
+  -- never offers it — a committed breadcrumb is the one thing stealth must avoid.
+  let pointerNote : List String ← if stealthy then pure [] else do
+    let rootDir := target.parent.getD (System.FilePath.mk ".")
+    let mut existing : List String := []
+    for f in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] do
+      if ← liftSys (fun e => .mk' .internal s!"{e}") (rootDir / f).pathExists then
+        existing := existing ++ [f]
     if existing.isEmpty then
-      s!"to make tl discoverable to agents, add this line to a root agent file (e.g. AGENTS.md):\n    {discoveryPointer}"
+      pure [s!"to make tl discoverable to agents, add this line to a root agent file (e.g. AGENTS.md):\n    {discoveryPointer}"]
     else
-      s!"to make tl discoverable, add this line to {String.intercalate " / " existing} if not already present:\n    {discoveryPointer}"
+      pure [s!"to make tl discoverable, add this line to {String.intercalate " / " existing} if not already present:\n    {discoveryPointer}"]
   let data := Json.mkObj
     [("root", Json.str target.toString),
      ("replica", (replica.map (·.id)).elim Json.null Json.str),
-     ("created", Json.bool created.isSome)]
+     ("created", Json.bool created.isSome),
+     ("stealth", Json.bool stealthy)]
   let human := match created with
-    | some r => s!"Initialized tl in {target} (replica {r.id})"
+    | some r => s!"Initialized tl in {target} (replica {r.id})" ++ (if stealthy then " — stealth (local-only)" else "")
     | none => s!"{target} already initialized — nothing to do (idempotent)"
   -- git runtime floor (ADR-0006): warn at setup if a present git is below 2.17, so
   -- the prerequisite is caught now rather than as a cryptic plumbing failure. git
@@ -1960,7 +1979,7 @@ def cmdInit (dirOverride : Option String) : TlM CmdOut := do
                     else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git"]
         | none => pure [])
     catch _ => pure ([] : List String))
-  return { data, human, notes := note ++ [pointerNote] ++ autosyncNote ++ gitFloorNote }
+  return { data, human, notes := note ++ stealthNote ++ pointerNote ++ autosyncNote ++ gitFloorNote }
 
 /-- The product version (keep in lockstep with lakefile.lean's package
     version; `tl version` is the single user-facing source). -/
