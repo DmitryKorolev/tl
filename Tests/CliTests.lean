@@ -2853,6 +2853,37 @@ def cliStealthTests : IO (List Outcome) := do
     | .error e => { name := "ready --sync in stealth", passed := false, msg := e.message })]
   return o
 
+/-- `tl list --deferred` (ADR-0010): the read facet over the `v.deferred` view —
+    only open issues whose `deferUntil` is still in the future. Pins that a
+    future-deferred issue appears, a past-deferUntil one does not (it auto-resumed),
+    a plain open one does not, undefer drops it, and the rows carry `deferred:true`. -/
+def cliListDeferredTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let a ← mkIssue dir "plain open"
+  let b ← mkIssue dir "deferred future"
+  let c ← mkIssue dir "deferred past"
+  let _ ← run' ["defer", "tl-" ++ b, "--until", "2099-01-01", "--dir", dir, "--actor", "t"]
+  let _ ← run' ["defer", "tl-" ++ c, "--until", "2000-01-01", "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "list --deferred shows only the open + future-deferUntil issue"
+    ["list", "--deferred", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").all (fun r => jBool r "deferred" == some true)
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ b))
+      && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ a))
+      && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ c)))]
+  let _ ← run' ["undefer", "tl-" ++ b, "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "after undefer, list --deferred is empty"
+    ["list", "--deferred", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  let _ ← run' ["defer", "tl-" ++ a, "--for", "48h", "--dir", dir, "--actor", "t"]
+  let humanRow ← (match ← run' ["list", "--deferred", "--dir", dir] with
+    | .ok out => pure (check "list --deferred human summary names the facet"
+        ((out.human.splitOn "deferred issue").length > 1) out.human)
+    | .error e => pure { name := "list --deferred human", passed := false, msg := e.message })
+  o := o ++ [humanRow]
+  return o
+
 /-- `tl import` (ADR-0005) — the differential test: import a committed-format
     fixture, then assert the materialized state matches the records' fields,
     statuses, and edges, and `ready` matches the unblocked set the graph implies.
@@ -3030,6 +3061,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

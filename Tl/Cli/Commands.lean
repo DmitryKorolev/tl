@@ -278,7 +278,7 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
 def claimStaleDeadlineMs (claimedHlc windowMs : Nat) : Nat := claimedHlc / 2 ^ 16 + windowMs
 
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
-    (labels : List String) (staleArg : Option String) : TlM CmdOut := do
+    (labels : List String) (staleArg : Option String) (deferred : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- every issue, oldest first; then by default hide effectively-closed
@@ -297,6 +297,12 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
   let sorted := if labels.isEmpty then sorted
     else sorted.filter (fun i => labels.all (v.issueData i).labels.presentElements.contains)
+  -- `--deferred` facet (ADR-0010): keep only deferred issues — open with a
+  -- `deferUntil` still in the future (the `v.deferred` derived view, the exact
+  -- complement of `ready`'s defer conjunct). The deferred set is open work, so
+  -- like `--stale` it bypasses the `--all` effClosed gate below (a deferred epic
+  -- that rolled up to done is still authoritatively in the deferred set).
+  let sorted := if deferred then sorted.filter (v.deferred ·) else sorted
   -- `--stale <duration>` (mandatory arg, no default — ADR-0011 amendment): keep
   -- only stale claims — InProgress with a `claimedAt` older than the window,
   -- mirroring `doctor`/`claim --steal` via the shared `claimStaleDeadlineMs`.
@@ -317,11 +323,13 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- exactly the lingering claim to surface, and `doctor`'s staleClaims (raw status,
   -- no effClosed gate) lists it. So a stale query bypasses the effClosed filter and
   -- is `--all`-independent, keeping the two surfaces in agreement (ADR-0013).
-  let visible := if showAll || staleArg.isSome then sorted else sorted.filter (fun i => !v.effClosed i)
+  let visible := if showAll || staleArg.isSome || deferred then sorted else sorted.filter (fun i => !v.effClosed i)
   let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
   let summary :=
-    if staleArg.isSome then
+    if deferred then
+      s!"{visible.length} deferred issue(s) (open, deferred until a future time)"
+    else if staleArg.isSome then
       s!"{visible.length} stale claim(s) (in progress, older than the --stale window)"
     else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress)"
     else s!"{visible.length} open issues ({inProg} in progress) — --all includes closed"
