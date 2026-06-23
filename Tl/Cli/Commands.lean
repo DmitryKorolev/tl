@@ -1993,19 +1993,26 @@ def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
 
 /-- Read the import input: a single JSONL file, or a directory of `*.jsonl`
     (sorted by name, unioned). Returns the non-blank lines (ADR-0005). -/
-def readImportLines (path : String) : TlM (List String) := do
+def readImportLines (path : String) : TlM (List (String × String)) := do
   let fp := System.FilePath.mk path
   let md ← liftSys (fun e => .mk' .notFound s!"cannot read import path '{path}': {e}") fp.metadata
-  let contents ← match md.type with
+  let fileContents : List (String × String) ← match md.type with
     | .dir =>
       let entries ← liftSys (fun e => .mk' .internal s!"{e}") fp.readDir
       let files := (entries.toList.filter (·.fileName.endsWith ".jsonl")).map (·.path)
       let sorted := files.mergeSort (fun a b => decide (a.toString ≤ b.toString))
-      sorted.mapM (fun f => liftSys (fun e => .mk' .internal s!"reading {f}: {e}") (IO.FS.readFile f))
+      sorted.mapM (fun f => do
+        let c ← liftSys (fun e => .mk' .internal s!"reading {f}: {e}") (IO.FS.readFile f)
+        -- the file's *name*, not its absolute path: re-importing the same-named
+        -- file from any location stays byte-stable (ADR-0005 determinism)
+        pure ((f.fileName).getD f.toString, c))
     | _ =>
       let c ← liftSys (fun e => .mk' .internal s!"reading {path}: {e}") (IO.FS.readFile fp)
-      pure [c]
-  return (contents.flatMap (·.splitOn "\n")).filter (fun l => !l.trimAscii.toString.isEmpty)
+      pure [((fp.fileName).getD path, c)]
+  -- (source-file, line) for every non-blank line — file provenance feeds the
+  -- deterministic (source-file, source-id) ordering + fingerprint (ADR-0005)
+  return fileContents.flatMap (fun (f, c) =>
+    (c.splitOn "\n").filterMap (fun l => if l.trimAscii.toString.isEmpty then none else some (f, l)))
 
 /-- Whether the repo already holds task state: any non-empty local segment, or a
     present `refs/tl/log` (the `--force` gate's "non-empty op-log", ADR-0005). The
@@ -2026,24 +2033,25 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
     (force allowLarge : Bool) (maxArg : Option Nat) : TlM CmdOut := do
   let opts : Tl.Import.ImportOptions :=
     { sourceTag := sourceTagArg.getD "import", force, allowLarge, maxBytes := maxArg.getD 5000000 }
-  let lines ← readImportLines path
+  let fileLines ← readImportLines path
   -- resource-bounds gate, before any op is emitted (ADR-0005 §bounds override)
-  let totalBytes := lines.foldl (fun acc l => acc + l.toUTF8.size) 0
+  let totalBytes := fileLines.foldl (fun acc (_, l) => acc + l.toUTF8.size) 0
   if totalBytes > opts.maxBytes && !allowLarge then
     throw (.mk' .forceRequired s!"import input is {totalBytes} bytes, over the {opts.maxBytes}-byte bound — pass --allow-large, or raise --max <bytes>, for a trusted local migration")
-  -- parse every line; fail-closed on a malformed line or a duplicate source id
-  let mut records : List Tl.Import.ImportRecord := []
+  -- parse every line; fail-closed on a malformed line or a duplicate source id.
+  -- `seen` is a set (O(1)); buildSeed re-sorts, so the cons order is irrelevant.
+  let mut records : List (String × Tl.Import.ImportRecord) := []
   let mut parseDisc : List String := []
-  let mut seen : List String := []
-  for line in lines do
+  let mut seen : Std.HashSet String := ∅
+  for (f, line) in fileLines do
     let (r, dsc) ← MonadExcept.ofExcept (Tl.Import.parseRecord line)
     if seen.contains r.sourceId then
       throw (.mk' .malformedLine s!"import has two records with id '{r.sourceId}' — source ids map 1:1 to a tl id, so they must be unique")
-    seen := seen ++ [r.sourceId]
-    records := records ++ [r]
+    seen := seen.insert r.sourceId
+    records := (f, r) :: records
     parseDisc := parseDisc ++ dsc
   -- resolve the target + implicit init (the documented exception to no-auto-init)
-  let (target, _) ← initTarget dirOverride
+  let (target, initNotes) ← initTarget dirOverride
   let _ ← initAt target
   let d := Dirs.ofStatePath target.toString
   -- the --force gate (distinct from the bounds gate): refuse to double-seed
@@ -2052,6 +2060,7 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
   let result := Tl.Import.buildSeed opts records parseDisc
   let bytes := String.join (result.lines.map (· ++ "\n"))
   Tl.Sync.writeForeignSegment d result.segmentReplica bytes.toUTF8
+  let notes := result.disclosures ++ initNotes
   let data := Json.mkObj
     [("issues", jnum result.issueCount), ("ops", jnum result.opCount),
      ("replica", Json.str result.segmentReplica), ("source", Json.str opts.sourceTag),
@@ -2059,7 +2068,7 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
   return { data
            human := s!"Imported {result.issueCount} issue(s), {result.opCount} ops, under source '{sanitizeSingle opts.sourceTag}'"
                     ++ (if result.disclosures.isEmpty then "" else s!" ({result.disclosures.length} disclosure(s))")
-           notes := result.disclosures.map sanitizeSingle }
+           notes := notes.map sanitizeSingle }
 
 /-- The product version (keep in lockstep with lakefile.lean's package
     version; `tl version` is the single user-facing source). -/

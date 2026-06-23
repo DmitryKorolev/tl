@@ -195,16 +195,26 @@ def parseRecord (line : String) : Except Tl.Error (ImportRecord × List String) 
       | some ms => pure (some ms)
       | none => throw (malformed s!"import record {sid}: \"deferUntil\" ('{s}') is not a canonical ISO-8601 UTC instant")
     | some _ => throw (malformed s!"import record {sid}: \"deferUntil\" must be a string")
+  -- a closeResolution is "only when closed" (ADR-0005): require a matching closed
+  -- status, fail-closed on a contradiction (e.g. status done + closeResolution
+  -- cancelled, or a closeResolution on an open issue) — never silently coerce
+  match closeRes with
+  | some res =>
+    if !decide (status = statusOfResolution res) then
+      throw (malformed s!"import record {sid}: closeResolution is inconsistent with status — a closeResolution requires the matching closed status (done, or cancelled for cancelled/duplicate)")
+  | none => pure ()
   -- provenance timestamps: lenient (fallback + disclose)
   let (createdAt, d1) := optInstantField j sid "createdAt"
   let (closedAt, d2) := optInstantField j sid "closedAt"
   let (claimedAt, d3) := optInstantField j sid "claimedAt"
   disc := disc ++ d1 ++ d2 ++ d3
-  -- meta: the explicit object, plus every unknown key under `import:<k>`
-  let metaExplicit : List (String × String) :=
-    match (j.getObjVal? "meta").toOption.bind (·.getObj?.toOption) with
-    | some o => o.toArray.toList.map (fun (k, v) => (k, jsonToMetaStr v))
-    | none => []
+  -- meta: the explicit object (fail-closed on a non-object), plus every unknown
+  -- key under `import:<k>`
+  let metaExplicit : List (String × String) ← match (j.getObjVal? "meta").toOption with
+    | none | some Json.null => pure []
+    | some mj => match mj.getObj?.toOption with
+      | some o => pure (o.toArray.toList.map (fun (k, v) => (k, jsonToMetaStr v)))
+      | none => throw (malformed s!"import record {sid}: \"meta\" must be an object")
   let unknownMeta : List (String × String) :=
     match j.getObj?.toOption with
     | some o => (o.toArray.toList.filter (fun (k, _) => k ∉ knownKeys)).map
@@ -229,33 +239,43 @@ structure ImportResult where
   opCount : Nat
   disclosures : List String
 
+/-- Dedup `(key, value)` pairs by key, keeping the first occurrence (so the
+    derived `ext:`/`import:source`/`duplicate-of` keys win over a colliding user
+    meta key), then key-sort for a canonical, input-order-independent log. -/
+private def dedupByKey (kvs : List (String × Option String)) : List (String × Option String) :=
+  (kvs.foldl (fun acc (k, v) => if acc.any (·.1 == k) then acc else acc ++ [(k, v)]) [])
+    |>.mergeSort (fun a b => decide (a.1 ≤ b.1))
+
 /-- Build the seed op-log for parsed records (ADR-0005 §seed op-log). Records are
     ordered by source id (the stable ordinal for fallback timestamps); ids,
     replica, nonces, and timestamps are all deterministic, so re-import is
     byte-stable. A blockedBy/parent/related endpoint absent from the import is
     skipped and disclosed. -/
-def buildSeed (opts : ImportOptions) (records : List ImportRecord)
+def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
     (parseDisc : List String) : ImportResult :=
   let tag := opts.sourceTag
   -- stable order: by source id (deterministic ordinal for fallback times)
-  let ordered := records.mergeSort (fun a b => decide (a.sourceId ≤ b.sourceId))
+  let ordered := records.mergeSort (fun a b =>
+    decide (a.1 < b.1 || (a.1 == b.1 && a.2.sourceId ≤ b.2.sourceId)))
   -- source fingerprint over the sorted (id, record-hash) manifest
   let manifest := String.intercalate "\n"
-    (ordered.map (fun r => s!"{r.sourceId} {Sha256.toHex (Sha256.digestString r.raw)}"))
+    (ordered.map (fun (f, r) => s!"{f}\t{r.sourceId}\t{Sha256.toHex (Sha256.digestString r.raw)}"))
   let replicaId := importReplicaId tag (Sha256.toHex (Sha256.digestString manifest))
   let replicaNat := (ofCrockford? replicaId).getD 0
-  -- every source id present, for edge-endpoint resolution
-  let present : List String := ordered.map (·.sourceId)
+  -- a present-source-id set for O(1) edge-endpoint resolution
+  let present : Std.HashSet String := ordered.foldl (fun s (_, r) => s.insert r.sourceId) ∅
   let idOf (srcId : String) : String := importIssueId tag srcId
   let actor : Option String := some tag
   -- per record, with its ordinal for the fallback time
-  let perRecord := ordered.zipIdx.map (fun (rk : ImportRecord × Nat) => Id.run do
-    let r := rk.1
-    let k := rk.2
+  let perRecord := ordered.zipIdx.map (fun (frk : (String × ImportRecord) × Nat) => Id.run do
+    let r := frk.1.2
+    let k := frk.2
     let id := idOf r.sourceId
     let createMs := r.createdAt.getD (fallbackBaseMs + k)
     let claimMs := max (r.claimedAt.getD (fallbackBaseMs + k)) createMs
-    let closeMs := max (r.closedAt.getD (fallbackBaseMs + k)) createMs
+    -- close after claim after create (causality): clamp so the +0/+1/+2 logical
+    -- bumps never invert under odd source timestamps (a claimedAt with no closedAt)
+    let closeMs := max (r.closedAt.getD (fallbackBaseMs + k)) claimMs
     let stamp (role : String) (hlc : Nat) : Stamp :=
       ⟨hlc, replicaNat, importNonce tag r.sourceId role id⟩
     -- create carries the scalars (status/assignee come from the lifecycle ops)
@@ -265,10 +285,10 @@ def buildSeed (opts : ImportOptions) (records : List ImportRecord)
         deferUntil := r.deferUntil.map some }
     let createOp := parsedLine (.create id createWrites) (stamp "create" (packHlc createMs 0)) actor
     -- meta: source ref + import marker + explicit/unknown meta + duplicate-of
-    let metaPairs : List (String × Option String) :=
-      [(s!"ext:{tag}", some r.sourceId), ("import:source", some tag)]
-      ++ r.metaKv.map (fun (k, v) => (k, some v))
-      ++ (match r.duplicateOf with | some d => [("duplicate-of", some (idOf d))] | none => [])
+    let metaPairs := dedupByKey
+      ([(s!"ext:{tag}", some r.sourceId), ("import:source", some tag)]
+       ++ r.metaKv.map (fun (k, v) => (k, some v))
+       ++ (match r.duplicateOf with | some d => [("duplicate-of", some (idOf d))] | none => []))
     let metaOps := metaPairs.map (fun (k, v) =>
       parsedLine (.metaSet id k v) (stamp s!"meta:{k}" (packHlc createMs 0)) actor)
     -- lifecycle: claim (assignee/in_progress) then close (terminal). A closed
@@ -277,6 +297,14 @@ def buildSeed (opts : ImportOptions) (records : List ImportRecord)
       | .InProgress => true
       | .Open => false
       | _ => r.assignee.isSome
+    -- disclose the assignee edge cases rather than silently dropping/inventing one
+    let mut lifeDisc : List String := []
+    match r.status with
+    | .Open => if r.assignee.isSome then
+        lifeDisc := [s!"import record {r.sourceId}: assignee dropped — an open issue cannot be assigned (assignee is set by a claim → in_progress)"]
+    | .InProgress => if r.assignee.isNone then
+        lifeDisc := [s!"import record {r.sourceId}: in_progress with no assignee — recorded the source tag '{tag}' as the assignee"]
+    | _ => pure ()
     let claimOps := if wantsClaim then
         [parsedLine (.claim id (r.assignee.getD tag)) (stamp "claim" (packHlc claimMs 1)) actor]
       else []
@@ -306,7 +334,7 @@ def buildSeed (opts : ImportOptions) (records : List ImportRecord)
         let e : Edge := if decide (id ≤ a) then (id, a, EdgeKind.Related) else (a, id, EdgeKind.Related)
         edgeOps := edgeOps ++ [parsedLine (.relate e) (stamp s!"related:{rel}" (packHlc createMs 0)) actor]
       else edgeDisc := edgeDisc ++ [s!"import record {r.sourceId}: related '{rel}' is not in the import — edge skipped"]
-    (createOp :: (metaOps ++ claimOps ++ closeOps ++ labelOps ++ edgeOps), edgeDisc))
+    (createOp :: (metaOps ++ claimOps ++ closeOps ++ labelOps ++ edgeOps), edgeDisc ++ lifeDisc))
   let lines := perRecord.flatMap (·.1)
   let edgeDiscs := perRecord.flatMap (·.2)
   { segmentReplica := replicaId, lines, issueCount := ordered.length,
