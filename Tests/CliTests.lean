@@ -2882,6 +2882,29 @@ def cliListDeferredTests : IO (List Outcome) := do
         ((out.human.splitOn "deferred issue").length > 1) out.human)
     | .error e => pure { name := "list --deferred human", passed := false, msg := e.message })
   o := o ++ [humanRow]
+  -- tree mode (the default render): a facet must hide a non-matching child of a
+  -- matching parent — the tree shows exactly the filtered rows the count reports
+  let dir3 ← freshDir
+  let e ← mkIssue dir3 "deferred epic Etitle"
+  let _ ← mkIssue dir3 "child Tnotdeferred" ["--parent", "tl-" ++ e]
+  let _ ← run' ["defer", "tl-" ++ e, "--for", "72h", "--dir", dir3, "--actor", "t"]
+  let treeRow ← (match ← run' ["list", "--deferred", "--dir", dir3] with
+    | .ok out => pure (check "list --deferred (tree) shows the deferred epic but hides its non-deferred child"
+        ((out.human.splitOn "Etitle").length > 1 && (out.human.splitOn "Tnotdeferred").length == 1) out.human)
+    | .error e => pure { name := "list --deferred tree", passed := false, msg := e.message })
+  o := o ++ [treeRow]
+  -- composes with --label (AND): only deferred issues carrying the label
+  let dir4 ← freshDir
+  let p ← mkIssue dir4 "deferred labeled"
+  let q ← mkIssue dir4 "deferred unlabeled"
+  let _ ← run' ["label", "add", "tl-" ++ p, "area:x", "--dir", dir4, "--actor", "t"]
+  let _ ← run' ["defer", "tl-" ++ p, "--until", "2099-01-01", "--dir", dir4, "--actor", "t"]
+  let _ ← run' ["defer", "tl-" ++ q, "--until", "2099-01-01", "--dir", dir4, "--actor", "t"]
+  o := o ++ [← expectData "list --deferred --label composes as AND (only the labeled deferred issue)"
+    ["list", "--deferred", "--label", "area:x", "--flat", "--dir", dir4, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p))
+      && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ q)))]
   return o
 
 /-- `tl import` (ADR-0005) — the differential test: import a committed-format

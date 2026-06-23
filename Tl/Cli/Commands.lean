@@ -348,7 +348,12 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
       let isRoot (i : IssueId) : Bool := match canonicalParentE v i with
         | none => true | some p => !visSet.contains p
       let roots := visible.filter isRoot
-      let keep : IssueId → Bool := if showAll then (fun _ => true) else (fun i => !v.effClosed i)
+      -- a child renders iff it is in the visible (post-filter) set — so the tree
+      -- shows exactly the filtered rows the --json `count` reports. This is
+      -- `!v.effClosed` for the default and always-true for `--all` (both are then
+      -- `visible`), and under a facet (--label/--stale/--deferred) it correctly
+      -- hides a non-matching child of a matching parent (review).
+      let keep : IssueId → Bool := visSet.contains
       fun st =>
         if roots.isEmpty then (if visible.isEmpty then "no issues" else "(no top-level issues)")
         else
