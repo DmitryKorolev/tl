@@ -2712,6 +2712,78 @@ def cliLogUntilTests : IO (List Outcome) := do
       (fun j => jNat j "count" == some 12 && (jArr j "entries").length == 10)]
   return o
 
+/-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
+    the ready exclusion + auto-resume on a past instant, idempotent re-defer and
+    undefer, and the teaching usage errors on bad input. The offset-timestamp row
+    pins the UTC normalization; bare-date offset interpretation is exercised at
+    the pure-parser tier (`Tests.TimeTests`, deterministic), so these rows stay
+    independent of the test host's timezone by using far past/future dates. -/
+def cliDeferTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let id ← mkIssue dir "deferrable task"
+  let tid := "tl-" ++ id
+  -- --for: deferred, deferUntil set, dropped from ready
+  o := o ++ [← expectData "defer --for marks the issue deferred"
+    ["defer", tid, "--for", "36h", "--dir", dir, "--actor", "t"]
+    (fun j => jBool j "deferred" == some true && (jStr j "deferUntil").isSome
+              && jBool j "ready" == some false)]
+  o := o ++ [← expectData "a deferred issue drops out of ready" ["ready", "--dir", dir]
+    (fun j => (jArr j "items").all (fun r => jStr r "id" != some tid))]
+  -- undefer: cleared, back in ready
+  o := o ++ [← expectData "undefer clears the deferral"
+    ["undefer", tid, "--dir", dir, "--actor", "t"]
+    (fun j => jBool j "deferred" == some false && (jStr j "deferUntil").isNone
+              && jBool j "ready" == some true)]
+  o := o ++ [← expectData "undefer returns the issue to ready" ["ready", "--dir", dir]
+    (fun j => (jArr j "items").any (fun r => jStr r "id" == some tid))]
+  -- --until a far-future date: deferred (timezone-independent)
+  o := o ++ [← expectData "defer --until a future date defers"
+    ["defer", tid, "--until", "2099-01-01", "--dir", dir, "--actor", "t"]
+    (fun j => jBool j "deferred" == some true && jBool j "ready" == some false)]
+  -- --until a far-past date: the instant is already gone, so it is NOT deferred
+  -- (auto-resume — the conjunct holds vacuously once now ≥ deferUntil)
+  o := o ++ [← expectData "defer --until a past date is not deferred (already elapsed)"
+    ["defer", tid, "--until", "2000-01-01", "--dir", dir, "--actor", "t"]
+    (fun j => jBool j "deferred" == some false && jBool j "ready" == some true)]
+  -- --until a timestamp with an explicit offset, normalized to UTC
+  o := o ++ [← expectData "defer --until an offset timestamp normalizes to UTC"
+    ["defer", tid, "--until", "2099-01-01T00:00:00+02:00", "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "deferUntil" == some "2098-12-31T22:00:00Z" && jBool j "deferred" == some true)]
+  -- re-defer to the identical instant is an idempotent no-op
+  o := o ++ [(match ← run' ["defer", tid, "--until", "2099-01-01T00:00:00+02:00",
+                            "--dir", dir, "--actor", "t"] with
+    | .ok out => check "re-defer to the same instant is an idempotent no-op"
+        ((out.human.splitOn "already deferred").length > 1) out.human
+    | .error e => { name := "re-defer to the same instant is an idempotent no-op",
+                    passed := false, msg := e.message })]
+  -- undefer twice: the second is an idempotent no-op with an honest message
+  let _ ← run' ["undefer", tid, "--dir", dir, "--actor", "t"]
+  o := o ++ [(match ← run' ["undefer", tid, "--dir", dir, "--actor", "t"] with
+    | .ok out => check "undefer on a non-deferred issue is a no-op"
+        ((out.human.splitOn "is not deferred").length > 1) out.human
+    | .error e => { name := "undefer on a non-deferred issue is a no-op",
+                    passed := false, msg := e.message })]
+  -- usage / not-found errors, each a teaching message behind a stable code
+  o := o ++
+    [← expectErr "defer with neither flag is usage"
+       ["defer", tid, "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer with both flags is usage"
+       ["defer", tid, "--until", "2099-01-01", "--for", "1h", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer --until junk is usage"
+       ["defer", tid, "--until", "soon", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer --until an invalid date is usage"
+       ["defer", tid, "--until", "2026-13-40", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer --until a bare datetime (no offset) is usage"
+       ["defer", tid, "--until", "2099-01-01T09:00:00", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer --for zero is usage"
+       ["defer", tid, "--for", "0h", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer --for a bare number is usage"
+       ["defer", tid, "--for", "10", "--dir", dir, "--actor", "t"] .usage,
+     ← expectErr "defer an unknown id is not-found"
+       ["defer", "tl-zzzzzzzzzzzzzzzz", "--for", "1h", "--dir", dir, "--actor", "t"] .notFound]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -2725,6 +2797,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliDeferTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

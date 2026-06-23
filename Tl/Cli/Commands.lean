@@ -1081,6 +1081,76 @@ def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : Tl
                     else s!"Reopened {displayId i}"
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
+/-- Where a `defer` lands: an absolute instant (`--until`, resolved before the
+    lock) or a delay applied to the under-lock `now` (`--for`, so the deferral
+    is measured from the same clock the stamp is minted against). -/
+private inductive DeferTarget where
+  | abs (ms : Nat)
+  | after (durMs : Nat)
+
+private def deferUntilHelp (got : String) : Tl.Error :=
+  .mk' .usage
+    s!"--until wants a date (YYYY-MM-DD, local start-of-day) or a timestamp with an explicit offset (e.g. 2026-07-01T09:00:00Z or …+02:00) — got '{got}'; for a relative delay use --for (e.g. --for 36h)"
+
+/-- `tl defer <id> --until <date|timestamp>` / `--for <duration>`: set the
+    `deferUntil` instant so `ready` excludes the issue until the time passes,
+    then auto-resurfaces it (ADR-0010). Exactly one of `--until`/`--for`. A
+    re-defer to the identical instant appends nothing (idempotent on value,
+    mirroring re-close/reopen). The deferral is a field on an otherwise-open
+    issue — no status guard (a merge could not honor one anyway, CLAUDE.md §2). -/
+def cmdDefer (dirOverride : Option String) (tok : String)
+    (untilArg forArg : Option String) (actor : String) : TlM CmdOut := do
+  let target ← match untilArg, forArg with
+    | some _, some _ =>
+      throw (.mk' .usage "defer takes one of --until <date> or --for <duration>, not both")
+    | none, none =>
+      throw (.mk' .usage "defer needs --until <date> or --for <duration> (e.g. --until 2026-07-01, --for 36h)")
+    | some u, none => do
+      -- the offset is read best-effort and used only when `u` is a bare date
+      -- (an offset-bearing timestamp carries its own); a failure floors to UTC
+      let off ← liftSys (fun e => .mk' .internal s!"timezone read failed: {e}") localOffsetMinutes
+      match Time.parseUntilInstant? off u with
+      | some ms => pure (DeferTarget.abs ms)
+      | none => throw (deferUntilHelp u)
+    | none, some f => do
+      match Time.parseDurationMs? f with
+      | some 0 => throw (.mk' .usage s!"--for needs a positive duration, not zero (got '{f}')")
+      | some ms => pure (DeferTarget.after ms)
+      | none => throw (.mk' .usage s!"--for wants a duration like 36h, 7d, or 90m (got '{f}')")
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let i ← resolveToken ctx.loaded.state tok
+    let untilMs := match target with
+      | .abs ms => ms
+      | .after durMs => ctx.now + durMs
+    -- idempotent: an LWW re-write of the same instant changes nothing
+    if (ctx.loaded.state.issueData i).deferUntilOf == some untilMs then .ok []
+    else .ok [.defer i untilMs])
+  let v := writeNow ctx parsed
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  let untilIso := (v.issueData i).deferUntilOf.map Time.isoOfEpochMs |>.getD "—"
+  return { data := issueObj v i
+           human := if parsed.isEmpty then s!"{displayId i} is already deferred until {untilIso}"
+                    else s!"Deferred {displayId i} until {untilIso}"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `tl undefer <id>`: clear the `deferUntil`, making the issue workable now
+    (ADR-0010). Idempotent — a no-op (and an honest "is not deferred") when no
+    deferral is set, mirroring `reopen`'s already-open path. -/
+def cmdUndefer (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let i ← resolveToken ctx.loaded.state tok
+    match (ctx.loaded.state.issueData i).deferUntilOf with
+    | none => .ok []
+    | some _ => .ok [.undefer i])
+  let v := writeNow ctx parsed
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  return { data := issueObj v i
+           human := if parsed.isEmpty then s!"{displayId i} is not deferred"
+                    else s!"Undeferred {displayId i}"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
 def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do

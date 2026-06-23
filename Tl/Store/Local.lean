@@ -35,6 +35,24 @@ def nowMs : IO Nat := do
   let ms := t.toMillisecondsSinceUnixEpoch.toInt
   return (max ms 0).toNat
 
+/-- The system's current local UTC offset in minutes (local = UTC + offset),
+    used only to resolve a bare `--until <date>` to *local* start-of-day — the
+    one deliberate local-time use in an otherwise UTC-pure system (ADR-0010).
+    `TL_UTC_OFFSET` (signed minutes) overrides, making the date path
+    deterministic for tests and pinnable for a fixed-offset deployment.
+    Best-effort: an absent/unreadable timezone database (or unparsable override)
+    falls back to `0` (UTC) rather than failing the command. -/
+def localOffsetMinutes : IO Int := do
+  match ← IO.getEnv "TL_UTC_OFFSET" with
+  | some raw => return (raw.trimAscii.toString.toInt?.getD 0)
+  | none =>
+    match ← (do
+      let tm ← Std.Time.Timestamp.now
+      let rules ← Std.Time.Database.defaultGetLocalZoneRules
+      pure ((Std.Time.ZonedDateTime.ofTimestamp tm rules).offset.second.val / 60)).toBaseIO with
+    | .ok m => return m
+    | .error _ => return 0
+
 private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
   let r ← (Sys.withFd d.base rel 0 Sys.readAll).toBaseIO
   match r with

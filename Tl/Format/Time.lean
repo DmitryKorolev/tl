@@ -119,6 +119,94 @@ def epochMsOfIso? (s : String) : Option Nat := do
     else none
   | _ => none
 
+/-- Parse a bare civil date `YYYY-MM-DD` (exactly 4-2-2 digits, no time, no
+    separator beyond the two `-`), validating field ranges month-aware like
+    `epochMsOfIso?`. The shared lenient front-end for a `--until <date>` value
+    (ADR-0010) — distinct from the strict stored-instant codec above. -/
+def parseCivilDate? (s : String) : Option (Nat × Nat × Nat) :=
+  match s.toList with
+  | [y1, y2, y3, y4, '-', mo1, mo2, '-', d1, d2] => do
+    let y ← digitsN? [y1, y2, y3, y4]
+    let mo ← digits2? [mo1, mo2]
+    let d ← digits2? [d1, d2]
+    if 1970 ≤ y && y ≤ 9999 && 1 ≤ mo && mo ≤ 12 && 1 ≤ d && d ≤ daysInMonth y mo then
+      some (y, mo, d)
+    else none
+  | _ => none
+
+/-- Local start-of-day (midnight) for a civil date as a UTC epoch-ms instant,
+    given the injected UTC offset in minutes (local = UTC + offset; ADR-0010's
+    one deliberate local-time use, threaded like `now` so parsing is
+    deterministic). A pre-epoch result floors to `0`. -/
+def startOfDayUtcMs (offsetMinutes : Int) (y mo d : Nat) : Nat :=
+  let dayMs : Int := (daysFromCivil y mo d : Int) * 86400000
+  (max (dayMs - offsetMinutes * 60000) 0).toNat
+
+/-- A zone designator at the end of a datetime: `Z` (UTC) or a numeric
+    `±HH:MM` offset (`HH ≤ 14`, `MM < 60`), as signed minutes east of UTC. -/
+private def parseZone? (cs : List Char) : Option Int :=
+  match cs with
+  | ['Z'] => some 0
+  | [sgn, h1, h2, ':', m1, m2] =>
+    if sgn = '+' || sgn = '-' then do
+      let h ← digits2? [h1, h2]
+      let m ← digits2? [m1, m2]
+      if h ≤ 14 && m < 60 then
+        let mag : Int := (h * 60 + m : Nat)
+        some (if sgn = '-' then -mag else mag)
+      else none
+    else none
+  | _ => none
+
+/-- The suffix after `YYYY-MM-DDTHH:MM:SS`: an optional `.mmm` millisecond
+    fraction (exactly three digits) then a required zone designator. Returns
+    `(milliseconds, offsetMinutes)`. -/
+private def parseFracZone? (rest : List Char) : Option (Nat × Int) :=
+  match rest with
+  | '.' :: a :: b :: c :: zoneCs => do
+    let milli ← digitsN? [a, b, c]
+    let off ← parseZone? zoneCs
+    some (milli, off)
+  | zoneCs => do
+    let off ← parseZone? zoneCs
+    some (0, off)
+
+/-- Parse an ISO-8601 datetime carrying an explicit zone designator — `Z` or a
+    numeric `±HH:MM` offset — to a UTC epoch-ms instant. Fields are range-checked
+    like `epochMsOfIso?`; the offset is subtracted to normalize to UTC. A bare
+    datetime with no zone designator is rejected (`none`), so `--until` never
+    silently guesses a zone (ADR-0010). The `.mmm` fraction is optional. -/
+def parseOffsetDateTime? (s : String) : Option Nat := do
+  let cs := s.toList
+  let (datePart, rest) := (cs.take 19, cs.drop 19)
+  match datePart with
+  | [y1, y2, y3, y4, '-', mo1, mo2, '-', d1, d2, 'T', h1, h2, ':', mi1, mi2, ':', s1, s2] => do
+    let y ← digitsN? [y1, y2, y3, y4]
+    let mo ← digits2? [mo1, mo2]
+    let d ← digits2? [d1, d2]
+    let h ← digits2? [h1, h2]
+    let mi ← digits2? [mi1, mi2]
+    let sec ← digits2? [s1, s2]
+    let (milli, offMin) ← parseFracZone? rest
+    if 1970 ≤ y && y ≤ 9999 && 1 ≤ mo && mo ≤ 12 && 1 ≤ d && d ≤ daysInMonth y mo
+        && h < 24 && mi < 60 && sec < 60 then
+      let baseMs : Nat := ((daysFromCivil y mo d * 24 + h) * 60 + mi) * 60 * 1000 + sec * 1000 + milli
+      let utc : Int := (baseMs : Int) - offMin * 60000
+      if utc ≥ 0 then some utc.toNat else none
+    else none
+  | _ => none
+
+/-- Resolve a `--until`-style absolute time value to a UTC instant: a timestamp
+    with an explicit offset (`parseOffsetDateTime?`), or a bare date as local
+    start-of-day under the injected offset. Any other shape — a bare datetime
+    with no offset, junk — is `none` (the caller reports a teaching usage error).
+    This is the single shared duration/date grammar of ADR-0010, reused by the
+    `tl log` time selectors (ADR-0025) — not a second parser. -/
+def parseUntilInstant? (offsetMinutes : Int) (s : String) : Option Nat :=
+  match parseOffsetDateTime? s with
+  | some ms => some ms
+  | none => (parseCivilDate? s).map (fun (y, mo, d) => startOfDayUtcMs offsetMinutes y mo d)
+
 /-- Parse a compact relative duration — `45m`, `1h`, `24h`, `7d`, `30s`, `500ms`
     — to milliseconds. The numeric part is digits-only and the unit is one of
     `ms`/`s`/`m`/`h`/`d` (lowercase). There is no default unit: a bare number,

@@ -87,7 +87,91 @@ def durationParseTests : List Outcome :=
     check s!"parseDurationMs? rejects {why} ('{s}')" (Time.parseDurationMs? s).isNone
       s!"parsed to {repr (Time.parseDurationMs? s)}"))
 
+/-- `parseCivilDate?` — the strict `YYYY-MM-DD` front-end for `--until <date>`
+    (ADR-0010); month-aware ranges, padded fields only, no trailing time. -/
+def civilDateTests : List Outcome :=
+  let oks : List (String × (Nat × Nat × Nat)) :=
+    [("2026-07-01", (2026, 7, 1)), ("1970-01-01", (1970, 1, 1)),
+     ("2024-02-29", (2024, 2, 29)), ("9999-12-31", (9999, 12, 31))]
+  let bad : List (String × String) :=
+    [("2026-13-01", "month 13"), ("2026-00-10", "month 0"), ("2026-02-30", "Feb 30"),
+     ("2025-02-29", "Feb 29 in a non-leap year"), ("2026-06-31", "June 31"),
+     ("2026-06-00", "day 0"), ("2026-7-01", "unpadded month"), ("2026-07-1", "unpadded day"),
+     ("2026/07/01", "slash separators"), ("2026-07-01T00:00:00Z", "trailing time"),
+     ("", "empty"), ("not-a-date", "junk")]
+  (oks.map (fun (s, ymd) =>
+    check s!"parseCivilDate? '{s}'" (Time.parseCivilDate? s = some ymd)
+      s!"got {repr (Time.parseCivilDate? s)}"))
+  ++ (bad.map (fun (s, why) =>
+    check s!"parseCivilDate? rejects {why} ('{s}')" (Time.parseCivilDate? s).isNone
+      s!"parsed to {repr (Time.parseCivilDate? s)}"))
+
+/-- `parseOffsetDateTime?` — a timestamp with an explicit `Z` / `±HH:MM` zone,
+    normalized to UTC; a bare datetime (no zone) is rejected. Anchored on
+    `2026-06-15T09:00:00Z = 1781514000000` (a `timeVectors` row). -/
+def offsetDateTimeTests : List Outcome :=
+  let anchor := 1781514000000
+  let oks : List (String × Nat) :=
+    [("2026-06-15T09:00:00Z", anchor),
+     ("2026-06-15T09:00:00+00:00", anchor),
+     ("2026-06-15T11:00:00+02:00", anchor),     -- 11:00 at +02:00 = 09:00 UTC
+     ("2026-06-15T07:00:00-02:00", anchor),     -- 07:00 at −02:00 = 09:00 UTC
+     ("2026-06-15T09:00:00.500Z", anchor + 500),
+     ("1970-01-01T00:00:00Z", 0)]
+  let bad : List (String × String) :=
+    [("2026-06-15T09:00:00", "no zone designator"),
+     ("2026-06-15T09:00:00z", "lowercase z"),
+     ("2026-06-15T09:00:00+0200", "offset without a colon"),
+     ("2026-06-15T09:00:00+15:00", "offset hour > 14"),
+     ("2026-06-15T09:00:00+02:60", "offset minute 60"),
+     ("2026-06-15T24:00:00Z", "hour 24"),
+     ("2026-06-15 09:00:00Z", "space separator"),
+     ("2026-06-15", "date only, no time"),
+     ("1970-01-01T00:00:00+02:00", "pre-epoch once the offset is applied")]
+  (oks.map (fun (s, ms) =>
+    check s!"parseOffsetDateTime? '{s}' = {ms}" (Time.parseOffsetDateTime? s = some ms)
+      s!"got {repr (Time.parseOffsetDateTime? s)}"))
+  ++ (bad.map (fun (s, why) =>
+    check s!"parseOffsetDateTime? rejects {why} ('{s}')" (Time.parseOffsetDateTime? s).isNone
+      s!"parsed to {repr (Time.parseOffsetDateTime? s)}"))
+
+/-- `startOfDayUtcMs` — local midnight as a UTC instant under an injected
+    offset (local = UTC + offset), clamped at the epoch. `sod0` is
+    `2026-06-15T00:00:00Z`. -/
+def startOfDayTests : List Outcome :=
+  let sod0 := 1781481600000
+  let rows : List (Int × Nat × Nat × Nat × Nat) :=
+    [(0, 2026, 6, 15, sod0),
+     (120, 2026, 6, 15, sod0 - 7200000),    -- UTC+2: local midnight is 22:00 the prior UTC day
+     (-300, 2026, 6, 15, sod0 + 18000000),  -- UTC−5: local midnight is 05:00 UTC
+     (120, 1970, 1, 1, 0)]                   -- a pre-epoch result floors to 0
+  rows.map (fun (off, y, m, d, expect) =>
+    check s!"startOfDayUtcMs {off} {y}-{m}-{d} = {expect}"
+      (Time.startOfDayUtcMs off y m d = expect)
+      s!"got {Time.startOfDayUtcMs off y m d}")
+
+/-- `parseUntilInstant?` — the shared dispatch: an offset-bearing timestamp
+    ignores the injected offset, a bare date uses it, a bare datetime is
+    rejected (ADR-0010 / ADR-0025 shared grammar). -/
+def untilInstantTests : List Outcome :=
+  [check "parseUntilInstant? — offset timestamp ignores the injected offset"
+     (Time.parseUntilInstant? 999 "2026-06-15T09:00:00Z" = some 1781514000000)
+     s!"got {repr (Time.parseUntilInstant? 999 "2026-06-15T09:00:00Z")}",
+   check "parseUntilInstant? — bare date at UTC"
+     (Time.parseUntilInstant? 0 "2026-06-15" = some 1781481600000)
+     s!"got {repr (Time.parseUntilInstant? 0 "2026-06-15")}",
+   check "parseUntilInstant? — bare date at +120 is local start-of-day"
+     (Time.parseUntilInstant? 120 "2026-06-15" = some (1781481600000 - 7200000))
+     s!"got {repr (Time.parseUntilInstant? 120 "2026-06-15")}",
+   check "parseUntilInstant? — rejects a bare datetime (no offset)"
+     (Time.parseUntilInstant? 0 "2026-06-15T09:00:00").isNone
+     s!"got {repr (Time.parseUntilInstant? 0 "2026-06-15T09:00:00")}",
+   check "parseUntilInstant? — rejects junk"
+     (Time.parseUntilInstant? 0 "soon").isNone
+     s!"got {repr (Time.parseUntilInstant? 0 "soon")}"]
+
 def timeTests : List Outcome :=
   timeVectorTests ++ timeRejectTests ++ timeRoundtripProp ++ durationParseTests
+  ++ civilDateTests ++ offsetDateTimeTests ++ startOfDayTests ++ untilInstantTests
 
 end Tl.Tests

@@ -166,9 +166,11 @@ was superseded.
 
 ## Not yet available
 
-There is no `tl defer`, `tl edit`, or `tl dep path/critical` yet. The
+There is no `tl edit` yet. The
 **remote** sync leg is still explicit (`tl sync`); only the local-ref publish
-auto-runs (see Sharing). `tl label add/remove/list`, `tl list --label <l>`
+auto-runs (see Sharing). `tl defer <id> --until <date>/--for <dur>` and
+`tl undefer` (timed postponement, ADR-0010), `tl dep path`/`dep critical`,
+`tl label add/remove/list`, `tl list --label <l>`
 (repeatable ⇒ AND), `tl parent set/remove` (reparenting), and on-write
 auto-sync of the local ref **are** available. `tl help --json` is always the
 authoritative list of what this binary actually supports.

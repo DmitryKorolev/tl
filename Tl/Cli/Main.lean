@@ -199,6 +199,16 @@ def runVerb : List String → TlM CmdOut
       let tok ← MonadExcept.ofExcept (onePositional a "reopen" "an issue id")
       let actor ← actorOf a
       cmdReopen (a.get? "dir") tok actor
+    | "defer" => do
+      let a ← parse "defer"
+      let tok ← MonadExcept.ofExcept (onePositional a "defer" "an issue id")
+      let actor ← actorOf a
+      cmdDefer (a.get? "dir") tok (a.get? "until") (a.get? "for") actor
+    | "undefer" => do
+      let a ← parse "undefer"
+      let tok ← MonadExcept.ofExcept (onePositional a "undefer" "an issue id")
+      let actor ← actorOf a
+      cmdUndefer (a.get? "dir") tok actor
     | "show" => do
       let a ← parse "show"
       let tok ← MonadExcept.ofExcept (onePositional a "show" "an issue id")
