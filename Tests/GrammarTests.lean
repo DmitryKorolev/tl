@@ -11,6 +11,7 @@ flag it omits is rejected, and the `--json` envelope is the pinned shape.
 -/
 import Tl.Cli.Main
 import Tests.Harness
+import Tests.JsonUtil
 
 namespace Tl.Tests
 
@@ -18,12 +19,6 @@ open Tl.Cli
 open Lean (Json)
 
 private def run' (args : List String) : IO (Except Tl.Error CmdOut) := (runVerb args).run
-
-private def jGet (j : Json) (k : String) : Option Json := (j.getObjVal? k).toOption
-private def jArr (j : Json) (k : String) : List Json :=
-  ((jGet j k).bind (fun v => v.getArr?.toOption)).map (·.toList) |>.getD []
-private def jStr (j : Json) (k : String) : Option String :=
-  (jGet j k).bind (fun v => v.getStr?.toOption)
 
 /-- The verbs the dispatcher actually handles (kept beside the dispatch; the
     test below proves it matches the schema both ways). -/

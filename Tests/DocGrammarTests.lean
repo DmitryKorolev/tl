@@ -19,18 +19,13 @@ fails. Tested I/O shell (ADR-0004); no Mathlib (ADR-0009).
 -/
 import Tl.Cli.Grammar
 import Tests.Harness
+import Tests.JsonUtil
 
 namespace Tl.Tests
 
 open System (FilePath)
 open Tl.Cli
 open Lean (Json)
-
-private def jGet (j : Json) (k : String) : Option Json := (j.getObjVal? k).toOption
-private def jArr (j : Json) (k : String) : List Json :=
-  ((jGet j k).bind (fun v => v.getArr?.toOption)).map (·.toList) |>.getD []
-private def jStr (j : Json) (k : String) : Option String :=
-  (jGet j k).bind (fun v => v.getStr?.toOption)
 
 /-- Does `hay` contain `needle` as a substring? -/
 private def lineHas (hay needle : String) : Bool := (hay.splitOn needle).length > 1
@@ -69,9 +64,13 @@ def docGrammarTests : IO (List Outcome) := do
       s!"could not find {visionPath} under cwd {(← IO.currentDir)} — run tltest from the repo root"]
   let content ← IO.FS.readFile visionPath
   let lines := content.splitOn "\n"
-  -- The fenced authoritative region, exclusive of the marker lines.
-  let afterStart := (lines.dropWhile (fun l => !(lineHas l "tl:grammar-surface start"))).drop 1
-  let region := afterStart.takeWhile (fun l => !(lineHas l "tl:grammar-surface end"))
+  -- The fenced authoritative region, exclusive of the marker lines. Boundaries
+  -- must be the HTML-comment sentinels themselves (`<!-- … -->`), not prose that
+  -- merely mentions the marker text — so the region can't be hijacked by docs.
+  let afterStart := (lines.dropWhile
+    (fun l => !(l.startsWith "<!--" && lineHas l "tl:grammar-surface start"))).drop 1
+  let region := afterStart.takeWhile
+    (fun l => !(l.startsWith "<!--" && lineHas l "tl:grammar-surface end"))
   -- Keep only the command lines: drop the code-fence markers and blanks. No
   -- trim needed — the tokenizer drops empty tokens, so indented command lines
   -- still parse, while a stray fence line fails loudly rather than passing.
@@ -84,6 +83,7 @@ def docGrammarTests : IO (List Outcome) := do
   let gramCmds := grammarSurface.map (·.1)
   let overPromised := docCmds.filter (fun c => !(gramCmds.contains c))
   let underDocumented := gramCmds.filter (fun c => !(docCmds.contains c))
+  let docDupes := docCmds.filter (fun c => (docCmds.filter (· == c)).length > 1)
   let mut outs : List Outcome :=
     [ check "vision tl:grammar-surface region parsed the shipped command set"
         (docSurface.length ≥ 30)
@@ -95,11 +95,17 @@ def docGrammarTests : IO (List Outcome) := do
         s!"docs/vision.md tl:grammar-surface lists {overPromised}, absent from Grammar.commandSpecs — drop them from the block or add the verb to the grammar",
       check "every shipped command is in the vision surface block (under-document guard)"
         underDocumented.isEmpty
-        s!"Grammar.commandSpecs has {underDocumented}, absent from the docs/vision.md tl:grammar-surface block — add them" ]
-  -- Per-command flag equality, for the commands the grammar actually ships.
-  for (cmd, gFlags) in grammarSurface do
-    match docSurface.find? (·.1 == cmd) with
-    | some (_, dFlags) =>
+        s!"Grammar.commandSpecs has {underDocumented}, absent from the docs/vision.md tl:grammar-surface block — add them",
+      check "no command is listed more than once in the vision surface block"
+        docDupes.isEmpty
+        s!"docs/vision.md tl:grammar-surface repeats {docDupes} — each command must appear on exactly one line (a duplicated, separately-edited line would otherwise slip past the per-command check)" ]
+  -- Per-command flag equality. Iterate the DOC lines (not the grammar) so a
+  -- duplicated-and-edited command line is also validated; find? on the grammar
+  -- side is safe because commandSpecs keys are unique. Commands absent from the
+  -- grammar are already reported by the over-promise guard.
+  for (cmd, dFlags) in docSurface do
+    match grammarSurface.find? (·.1 == cmd) with
+    | some (_, gFlags) =>
         outs := outs ++ [check s!"surface flags match grammar for `{cmd}`"
           (sameSet dFlags gFlags)
           s!"vision block lists {dFlags}; grammar has {gFlags} — reconcile the tl:grammar-surface line for `{cmd}`"]
