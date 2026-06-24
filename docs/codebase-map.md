@@ -352,6 +352,9 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   parent cycles keep the distinct cycle marker)
   GrammarTests.lean     --   the commandSpecs grammar: per-verb spec coverage,
                         --   help-text/`--json` schema generation, flag parsing
+  DocGrammarTests.lean  --   docs↔grammar drift guard: the fenced shipped-surface
+                        --   block in vision.md must equal commandSpecs (so the
+                        --   prose can't silently over-promise/under-document verbs)
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,

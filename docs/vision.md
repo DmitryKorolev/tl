@@ -166,7 +166,7 @@ Read / visibility
 | `tl doctor [--sync]` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints, `duplicate-of` hygiene (dangling/self/chained targets, ADR-0008); plus a local sync-posture row (upstream / lastSync / ahead, no remote contact; `--sync` = reconcile first — ADR-0011/0001) |
 | `tl help [<cmd>]` / `tl <cmd> --help` | human help: top-level overview or per-command usage |
 | `tl help [<cmd>] --json` | the same grammar machine-readably, for agent introspection (ADR-0011) |
-| `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` also reports log/JSON schema versions, plus build provenance once the release pipeline exists (ADR-0006/0008/0020) |
+| `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` adds the supported log-format version as `logFormat` (the JSON-envelope schema version travels as the top-level `schemaVersion` on every `--json` response, ADR-0020), plus build provenance once the release pipeline exists (ADR-0006/0008) |
 | `tl --licenses` | print bundled third-party license notices and link-time dependency attribution (ADR-0006) |
 
 `dep remove` / `unrelate` are first-class, not afterthoughts: they are the
@@ -302,6 +302,61 @@ each stage shippable and testable on its own:
 A reader who implements only Stage 1 has a useful, autonomous-agent-ready
 tracker; later stages are additive and never change the Stage-0 format or
 theorems.
+
+### Shipped CLI surface
+
+The exact command + flag surface the binary ships **today**, kept in lockstep
+with `Tl.Cli.Grammar.commandSpecs` by a build-gate test (`Tests.DocGrammarTests`):
+adding or removing a verb or flag without updating the fenced block below fails
+the suite, so these docs cannot silently over-promise — or under-document — the
+grammar again. The narrative tables above are the *destination* surface and
+intentionally name not-yet-built verbs (`edit`, `--licenses`, `ready
+--assignee`); the block below is only what is wired today. It is machine-checked
+— edit it by hand only to mirror a real grammar change. Each line is a command
+key followed by its long flags; positionals and the global flags
+(`--json`/`--dir`/`--skip-bad`/`--color`/`--glyphs`/`--plain`, pinned separately
+in `Tests.GrammarTests`) are omitted.
+
+<!-- tl:grammar-surface start -->
+```
+init --stealth
+import --source --force --allow-large --max
+create --priority --blocked-by --blocks --parent --related --description --slug --actor
+ready --limit --sync
+claim --actor --sync --verify --steal --stale
+close --as --of --actor
+update --title --priority --description --notes --append-notes --slug --actor
+reopen --actor
+defer --until --for --actor
+undefer --actor
+dep add --actor
+dep remove --actor
+dep cycles
+dep critical
+dep path
+dep relate --actor
+dep unrelate --actor
+parent set --actor
+parent remove --actor
+why
+unblocks
+show
+list --limit --all --flat --label --stale --deferred
+label add --actor
+label remove --actor
+label list
+meta set --actor
+meta get
+meta clear --actor
+meta list
+log --limit --since --until --last
+stats
+sync
+doctor --sync
+version
+help
+```
+<!-- tl:grammar-surface end -->
 
 ## What is deliberately out of scope
 

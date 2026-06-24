@@ -15,6 +15,7 @@ import Tests.CliTests
 import Tests.CrossTests
 import Tests.SanitizeTests
 import Tests.GrammarTests
+import Tests.DocGrammarTests
 import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
@@ -27,6 +28,7 @@ def main : IO UInt32 := do
   let store ← storeTests
   let cli ← cliTests
   let grammar ← grammarTests
+  let docGrammar ← docGrammarTests
   let sync ← syncTests
   let cacheIo ← cacheIoTests
   let perf ← perfTests
@@ -51,6 +53,7 @@ def main : IO UInt32 := do
     ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
     ("Render sanitization (ADR-0014)", sanitizeTests),
     ("Grammar: tl help --json schema & parser agreement", grammar),
+    ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
     ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
     ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
     ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),

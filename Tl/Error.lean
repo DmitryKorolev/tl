@@ -34,6 +34,12 @@ inductive ErrorCode where
   | corruptClock
   | corruptReplica
   | pushRejected
+  /-- Reserved (exit 11), reported as data — never `throw`n. `tl sync` returns
+      `{ ran := false, reason := "no-upstream" }` when no git remote is
+      configured: a successful local-only publish, not a failure. It is the one
+      reserved code with no emission site, by design; `force-required` and
+      `stealth-mode` (once likewise reserved-only) now throw, from the importer
+      and stealth-sync guards respectively. -/
   | noUpstream
   | stealthMode
   | lockBusy
