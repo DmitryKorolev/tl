@@ -195,8 +195,8 @@ many issues carry it, sorted by name; `count` is the number of distinct labels.
 } }
 ```
 
-(`tl list --label <l>` is the issue-facet counterpart — repeatable, AND across
-repeats; its rows are the pinned `list` item shape, unchanged.)
+(`tl list --label <l>` is the issue-facet counterpart; its rows are the pinned
+`list` item shape, unchanged — see *`tl list` filter facets* below.)
 
 **`tl why <id> --json`** — the not-ready reasons, flat and omit-empty;
 `blockedBy` is the *transitive unclosed* blocker set (ADR-0004 thm 10) with
@@ -357,6 +357,48 @@ context, same additive-only discipline): `not-claimable` → `id`, `reasons`
 `lock-busy` → `path`, `timeoutMs`; `corrupt-clock` → `reason`
 (`"unreadable"` | `"saturated"` — the two need different fixes, ADR-0007).
 Every `message` teaches the fix (ADR-0008).
+
+### `tl list` filter facets
+
+`tl list` takes filter facets that narrow which issues appear. **Rows stay the
+pinned `list` item shape above and `count` reports the post-filter total** — the
+filters change the membership of `items`, never the JSON shape.
+
+| Flag | Match |
+|---|---|
+| `--status <s>` | `open` / `in_progress` / `done` / `cancelled`; repeatable ⇒ **OR**; matches the row's `effectiveStatus` (rolled-up epics included). Naming a closed status (`done`/`cancelled`) includes closed issues without `--all` — it bypasses the default open-only gate, like `--stale`/`--deferred`. |
+| `--assignee <name>` | the live-claim `assignee`; repeatable ⇒ **OR**; **exact**, case-sensitive (an identity is discrete, not free text). The reserved token `me` resolves to the **ambient** actor — the env/identity part of the ADR-0013 chain (`TL_ACTOR` → git config → `user@host`); a read filter has no `--actor` write-provenance override, and an actor literally named `me` is shadowed by the token. The raw `me` is echoed in the human summary, not the resolved identity. |
+| `--priority <n>` | `0`–`4`; repeatable ⇒ **OR**; exact. There is deliberately no threshold form — a future `--min-priority` / `--max-priority` can be added additively without redefining `--priority N`. |
+| `--blocked` | boolean; issues with ≥1 unclosed blocker (the derived `blocked` view). Stays within the open set — it does **not** bypass the closed-issue gate. Not the inverse of `tl ready` (which additionally excludes epics, in-progress, and deferred items) — just the blocked open set. |
+| `--label <l>` | repeatable ⇒ **AND**; exact membership. |
+| `--deferred` / `--stale <dur>` / `--all` / `--flat` / `--limit <n>` | the read facets and output controls carried elsewhere in the surface. |
+
+Composition:
+
+- **Different facets compose with AND** (each narrows). **Repeats within one
+  facet are OR where an issue holds a single value (status / assignee /
+  priority) and AND where it holds many (`--label`)** — an issue cannot be two
+  statuses but can carry two labels.
+- A flag value is the next token or `--flag=value`; repeat the flag to add (no
+  comma-lists). The facets inherit the uniform `tl` parser and add no parsing
+  rules of their own — including no new short aliases, though the global `-p` ⇒
+  `--priority` alias reaches `list --priority` as it does every other command.
+- The default open-only gate is bypassed by `--all`, `--stale`, `--deferred`,
+  and a `--status` naming a closed status; the remaining facets refine whatever
+  set those produce.
+- The human summary names the active filters (`[filtered by …]`), with every
+  echoed value sanitized so untrusted assignee/label text never reaches the
+  terminal raw (the ADR-0017 render contract).
+
+Two filters are intentionally **out** of this surface, each addable later as a
+pure extension that redefines nothing above:
+
+- **`--text <q>`** (free-text search) — the facets above are exact checks over
+  materialized fields; text search carries its own open questions (which fields,
+  substring vs. word boundary, ranking) and is the one filter a consumer
+  trivially reproduces client-side (`tl list --json | jq` / grep), so it is left
+  out until designed on its own evidence.
+- **`--unassigned` / `--assignee none`** (issues with no live claim).
 
 ## Consequences
 
