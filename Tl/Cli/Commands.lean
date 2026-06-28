@@ -277,8 +277,31 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
     past this. -/
 def claimStaleDeadlineMs (claimedHlc windowMs : Nat) : Nat := claimedHlc / 2 ^ 16 + windowMs
 
+/-- A single `--priority` value: a 0–4 priority, or a `usage` error. The sole home
+    of the 0–4 contract and its message — shared by `create`/`update`'s
+    `priorityFlag` and `list --priority`, so the same typo teaches the same fix
+    everywhere (ADR-0008: a `message` says what to do next). -/
+def parsePriorityValue (v : String) : Except Tl.Error Nat :=
+  match v.toNat? with
+  | some n => if n ≤ 4 then .ok n
+      else .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
+  | none => .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
+
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
-    (labels : List String) (staleArg : Option String) (deferred : Bool) : TlM CmdOut := do
+    (labels : List String) (staleArg : Option String) (deferred : Bool)
+    (statuses assignees : List String) (meActor : Option String)
+    (priorities : List String) (blocked : Bool) : TlM CmdOut := do
+  -- validate the `--status`/`--priority` spellings BEFORE the (potentially large)
+  -- log fold, so a typo is rejected with zero I/O. The parsed forms feed the
+  -- filters and the closed-gate decision below.
+  let wantStatuses : List Status ← statuses.mapM (fun s => match statusOfWire? s with
+    | some st => pure st
+    | none => throw (.mk' .usage
+        s!"--status: '{sanitizeSingle s}' is not a status — use open, in_progress, done, or cancelled"))
+  let wantPriorities : List Nat ← priorities.mapM (fun p => MonadExcept.ofExcept (parsePriorityValue p))
+  -- `--assignee me` matches the resolved current actor; other names match verbatim.
+  -- The raw `assignees` (incl. `me`) are kept for the human summary.
+  let assigneeTargets := assignees.map (fun t => if t == "me" then meActor.getD t else t)
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- every issue, oldest first; then by default hide effectively-closed
@@ -318,20 +341,57 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
           && match (v.provFor i).claimedAt with
              | some h => v.now > claimStaleDeadlineMs h w
              | none => false)
+  -- `--status <s>` facet (repeatable ⇒ OR; ADR-0020): keep issues whose
+  -- effectiveStatus is one of the named statuses. Matching effectiveStatus — the
+  -- shown column — means a named closed status authoritatively selects closed
+  -- issues, so the effClosed gate below yields to it.
+  let sorted := if wantStatuses.isEmpty then sorted
+    else sorted.filter (fun i => wantStatuses.contains (v.effStatus i))
+  -- `--assignee <name>` facet (repeatable ⇒ OR; exact, case-sensitive — an identity
+  -- is discrete, not free text). `me` was resolved to the actor above.
+  let sorted := if assigneeTargets.isEmpty then sorted
+    else sorted.filter (fun i => match (v.issueData i).assignee.value.getD none with
+      | some a => assigneeTargets.contains a
+      | none => false)
+  -- `--priority <n>` facet (repeatable ⇒ OR; exact 0–4). No threshold form is
+  -- frozen — `--priority N` matches exactly N.
+  let sorted := if wantPriorities.isEmpty then sorted
+    else sorted.filter (fun i => wantPriorities.contains (v.issueData i).priorityOf.val)
+  -- `--blocked` facet: open issues with ≥1 unclosed blocker (the derived `blocked`
+  -- view). Within the open set, so it does NOT bypass the effClosed gate (a blocked
+  -- issue is open by construction). Not the inverse of `ready`, which additionally
+  -- excludes epics, in-progress, and deferred items.
+  let sorted := if blocked then sorted.filter (v.blocked ·) else sorted
   -- `--stale` already restricts to raw-InProgress claims; it must NOT then re-hide
   -- one whose epic rolled up to done (raw in_progress but effClosed) — that is
   -- exactly the lingering claim to surface, and `doctor`'s staleClaims (raw status,
   -- no effClosed gate) lists it. So a stale query bypasses the effClosed filter and
   -- is `--all`-independent, keeping the two surfaces in agreement (ADR-0013).
-  let visible := if showAll || staleArg.isSome || deferred then sorted else sorted.filter (fun i => !v.effClosed i)
+  let visible := if showAll || staleArg.isSome || deferred || !wantStatuses.isEmpty then sorted
+    else sorted.filter (fun i => !v.effClosed i)
   let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
+  -- the human summary always names which filters produced the shown rows (the JSON
+  -- `count` already reflects them); a stable clause order, `me` echoed verbatim. The
+  -- distinctive deferred/stale headlines and the `--all` open/in-progress breakdown
+  -- are preserved, with the filter clause appended to each.
+  -- the values are untrusted (assignee/label are free text); sanitize every echoed
+  -- token so no control/ANSI byte reaches the footer (Tl/Cli/Sanitize.lean contract)
+  let clause := fun (k : String) (vs : List String) =>
+    if vs.isEmpty then [] else [s!"{k} {String.intercalate ", " (vs.map sanitizeSingle)}"]
+  let filterClauses :=
+    clause "status" statuses ++ clause "label" labels ++ clause "assignee" assignees
+      ++ clause "priority" priorities ++ (if blocked then ["blocked"] else [])
+  let filterSuffix := if filterClauses.isEmpty then ""
+    else s!" [filtered by {String.intercalate "; " filterClauses}]"
   let summary :=
     if deferred then
-      s!"{visible.length} deferred issue(s) (open, deferred until a future time)"
+      s!"{visible.length} deferred issue(s) (open, deferred until a future time){filterSuffix}"
     else if staleArg.isSome then
-      s!"{visible.length} stale claim(s) (in progress, older than the --stale window)"
-    else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress)"
+      s!"{visible.length} stale claim(s) (in progress, older than the --stale window){filterSuffix}"
+    else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress){filterSuffix}"
+    else if !statuses.isEmpty then s!"{visible.length} issue(s){filterSuffix}"
+    else if !filterClauses.isEmpty then s!"{visible.length} open issue(s) ({inProg} in progress){filterSuffix}"
     else s!"{visible.length} open issues ({inProg} in progress) — --all includes closed"
   -- the --json data is the flat items array (the tree is a human browse mode
   -- only — ADR-0017 §2; a recursive JSON shape isn't pinned)

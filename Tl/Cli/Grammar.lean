@@ -176,7 +176,15 @@ def commandSpecs : List CommandSpec :=
                 { name := "stale", value := true,
                   summary := "only stale claims: in-progress, claimed longer ago than this window (e.g. 45m, 1h, 24h); no default" },
                 { name := "deferred", value := false,
-                  summary := "only deferred issues: open with a deferUntil still in the future (ADR-0010)" }] },
+                  summary := "only deferred issues: open with a deferUntil still in the future (ADR-0010)" },
+                { name := "status", value := true, repeatable := true,
+                  summary := "only issues with this status: open | in_progress | done | cancelled (repeatable ⇒ OR; a named closed status self-includes)" },
+                { name := "assignee", value := true, repeatable := true,
+                  summary := "only issues assigned to this actor (repeatable ⇒ OR); `me` is the current actor" },
+                { name := "priority", value := true, repeatable := true,
+                  summary := "only issues at this priority, 0–4 (repeatable ⇒ OR)" },
+                { name := "blocked", value := false,
+                  summary := "only blocked issues: open with at least one unclosed blocker" }] },
     { command := "label add", positionals := "<id> <label>",
       summary := "add a label to an issue", flags := [actorFlag] },
     { command := "label remove", positionals := "<id> <label>",
@@ -221,10 +229,14 @@ def valFlagsOf (cmd : String) : List String :=
 def boolFlagsOf (cmd : String) : List String :=
   ((specOf cmd).map (fun c => c.flags.filter (fun f => !f.value) |>.map (·.name))).getD []
 
-/-- Every value flag that may legitimately repeat (for the parser's
-    repeated-flag check) — derived, so it can never disagree with the table. -/
-def repeatableFlags : List String :=
-  (commandSpecs.flatMap (·.flags) |>.filter (fun f => f.value && f.repeatable) |>.map (·.name)).eraseDups
+/-- The value flags a *specific* command may repeat (for the parser's
+    repeated-flag check) — derived, so it can never disagree with the table.
+    Per-command, NOT a global union: a flag that repeats on one command must not
+    relax the single-value duplicate guard on another command that takes the same
+    name single-valued (e.g. `list`'s repeatable `--priority` vs `create`/
+    `update`'s single `--priority`). -/
+def repeatableFlagsOf (cmd : String) : List String :=
+  ((specOf cmd).map (fun c => c.flags.filter (fun f => f.value && f.repeatable) |>.map (·.name))).getD []
 
 /-! ### The `--json` schema (forever contract, ADR-0020) -/
 

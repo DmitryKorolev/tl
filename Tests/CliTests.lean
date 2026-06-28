@@ -2926,6 +2926,254 @@ def cliListDeferredTests : IO (List Outcome) := do
       && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ q)))]
   return o
 
+/-- `tl list --status` (ADR-0020): repeatable ⇒ OR over effectiveStatus;
+    a named closed status self-includes (bypasses the default open-only gate); a
+    bad spelling is a usage error; the match is on effectiveStatus, not raw status. -/
+def cliListStatusTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let openId ← mkIssue dir "open task"
+  let inProgId ← mkIssue dir "in-progress task"
+  let doneId ← mkIssue dir "done task"
+  let cancId ← mkIssue dir "cancelled task"
+  let _ ← run' ["claim", "tl-" ++ inProgId, "--dir", dir, "--actor", "alice"]
+  let _ ← run' ["close", "tl-" ++ doneId, "--as", "done", "--dir", dir, "--actor", "alice"]
+  let _ ← run' ["close", "tl-" ++ cancId, "--as", "cancelled", "--dir", dir, "--actor", "alice"]
+  o := o ++ [← expectData "list --status open keeps only the open issue"
+    ["list", "--status", "open", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ openId))
+      && (jArr j "items").all (fun r => jStr r "effectiveStatus" == some "open"))]
+  o := o ++ [← expectData "list --status repeats compose as OR (open or in_progress)"
+    ["list", "--status", "open", "--status", "in_progress", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ inProgId)))]
+  -- the facets inherit the uniform parser: the `--flag=value` form is accepted
+  -- (ADR-0020 — frozen intentionally, not a facet-specific rule)
+  o := o ++ [← expectData "list --status=open (the = value form) is accepted"
+    ["list", "--status=open", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1)]
+  o := o ++ [← expectData "list --status done self-includes closed (no --all needed)"
+    ["list", "--status", "done", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ doneId)))]
+  o := o ++ [← expectData "list --status done --status cancelled OR-includes both closed"
+    ["list", "--status", "done", "--status", "cancelled", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ doneId))
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ cancId)))]
+  o := o ++ [← expectErr "list --status with a bad value is usage"
+    ["list", "--status", "stuck", "--dir", dir] .usage]
+  -- matches effectiveStatus, not raw status: an epic rolled up to done by its
+  -- only child matches --status done and is excluded from --status open
+  let dir2 ← freshDir
+  let epic ← mkIssue dir2 "rolled-up epic"
+  let kid ← mkIssue dir2 "only child" ["--parent", "tl-" ++ epic]
+  let _ ← run' ["close", "tl-" ++ kid, "--as", "done", "--dir", dir2, "--actor", "t"]
+  o := o ++ [← expectData "list --status done matches an epic rolled up to done (effectiveStatus)"
+    ["list", "--status", "done", "--flat", "--dir", dir2, "--json"]
+    (fun j => (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ epic)))]
+  o := o ++ [← expectData "list --status open excludes the rolled-up-done epic"
+    ["list", "--status", "open", "--flat", "--dir", dir2, "--json"]
+    (fun j => !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ epic)))]
+  let humanRow ← (match ← run' ["list", "--status", "open", "--flat", "--dir", dir] with
+    | .ok out => pure (check "list --status human summary names the facet"
+        ((out.human.splitOn "filtered by status open").length > 1) out.human)
+    | .error e => pure { name := "list --status human", passed := false, msg := e.message })
+  o := o ++ [humanRow]
+  -- composes with another facet as AND (status AND priority)
+  let dir3 ← freshDir
+  let _ ← mkIssue dir3 "open p0" ["-p", "0"]
+  let openP2 ← mkIssue dir3 "open p2"
+  o := o ++ [← expectData "list --status open --priority 2 composes as AND"
+    ["list", "--status", "open", "--priority", "2", "--flat", "--dir", dir3, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ openP2)))]
+  return o
+
+/-- `tl list --assignee` (ADR-0013): repeatable ⇒ OR; exact, case-sensitive (an
+    identity is discrete); `me` resolves to the current actor. -/
+def cliListAssigneeTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let a ← mkIssue dir "alice work"
+  let b ← mkIssue dir "bob work"
+  let _ ← mkIssue dir "unassigned work"
+  let _ ← run' ["claim", "tl-" ++ a, "--dir", dir, "--actor", "alice"]
+  let _ ← run' ["claim", "tl-" ++ b, "--dir", dir, "--actor", "bob"]
+  o := o ++ [← expectData "list --assignee alice keeps only alice's issue"
+    ["list", "--assignee", "alice", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ a)))]
+  o := o ++ [← expectData "list --assignee repeats compose as OR (alice or bob)"
+    ["list", "--assignee", "alice", "--assignee", "bob", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2)]
+  o := o ++ [← expectData "list --assignee with no holder matches nothing"
+    ["list", "--assignee", "carol", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  o := o ++ [← expectData "list --assignee is case-sensitive (Alice ≠ alice)"
+    ["list", "--assignee", "Alice", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  -- `me` resolves to the current actor: claim without --actor, then filter by me —
+  -- both resolve through the same actor chain, so they agree regardless of env
+  let dir2 ← freshDir
+  let mine ← mkIssue dir2 "my work"
+  let _ ← mkIssue dir2 "not claimed"
+  let _ ← run' ["claim", "tl-" ++ mine, "--dir", dir2]
+  o := o ++ [← expectData "list --assignee me resolves to the current actor"
+    ["list", "--assignee", "me", "--flat", "--dir", dir2, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ mine)))]
+  -- the human summary echoes the raw `me` token, not the resolved actor (no
+  -- identity/email leaked into the headline)
+  let meHuman ← (match ← run' ["list", "--assignee", "me", "--flat", "--dir", dir2] with
+    | .ok out => pure (check "list --assignee me echoes `me` in the summary, not the resolved actor"
+        ((out.human.splitOn "filtered by assignee me").length > 1) out.human)
+    | .error e => pure { name := "list --assignee me human", passed := false, msg := e.message })
+  o := o ++ [meHuman]
+  -- a closed-but-still-assigned issue: --assignee refines the open set (hidden by
+  -- the default gate), --all surfaces it (close does not clear the assignee register)
+  let dir3 ← freshDir
+  let ca ← mkIssue dir3 "closed but assigned"
+  let _ ← run' ["claim", "tl-" ++ ca, "--dir", dir3, "--actor", "alice"]
+  let _ ← run' ["close", "tl-" ++ ca, "--as", "done", "--dir", dir3, "--actor", "alice"]
+  o := o ++ [← expectData "list --assignee alice hides a closed-but-assigned issue (open gate)"
+    ["list", "--assignee", "alice", "--flat", "--dir", dir3, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  o := o ++ [← expectData "list --assignee alice --all surfaces the closed-but-assigned issue"
+    ["list", "--assignee", "alice", "--all", "--flat", "--dir", dir3, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ca)))]
+  -- the summary echoes untrusted assignee text: a control byte in the matched
+  -- assignee must be stripped from the human footer (Tl/Cli/Sanitize.lean contract)
+  let esc := Char.ofNat 27
+  let evil := String.ofList [esc, 'r', 'e', 'd']
+  let dir4 ← freshDir
+  let ev ← mkIssue dir4 "evil assignee work"
+  let _ ← run' ["claim", "tl-" ++ ev, "--dir", dir4, "--actor", evil]
+  let sanRow ← (match ← run' ["list", "--assignee", evil, "--flat", "--dir", dir4] with
+    | .ok out => pure (check "list --assignee strips control bytes from the human summary"
+        (!out.human.toList.contains esc) out.human)
+    | .error e => pure { name := "list --assignee sanitize", passed := false, msg := e.message })
+  o := o ++ [sanRow]
+  return o
+
+/-- `tl list --priority` (ADR-0020): repeatable ⇒ OR; exact 0–4; a
+    non-0–4 value is a usage error; it refines the open set (no gate bypass). -/
+def cliListPriorityTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let p0 ← mkIssue dir "p0 work" ["-p", "0"]
+  let p2 ← mkIssue dir "p2 work"
+  let p4 ← mkIssue dir "p4 work" ["-p", "4"]
+  o := o ++ [← expectData "list --priority 0 keeps only p0"
+    ["list", "--priority", "0", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p0)))]
+  -- the global `-p` ⇒ `--priority` alias also reaches the facet (ADR-0020 —
+  -- frozen intentionally; the facets add no parsing rules of their own)
+  o := o ++ [← expectData "list -p 0 (the global -p alias) works for the facet"
+    ["list", "-p", "0", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p0)))]
+  o := o ++ [← expectData "list --priority repeats compose as OR (0 or 4)"
+    ["list", "--priority", "0", "--priority", "4", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p0))
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p4)))]
+  o := o ++ [← expectData "list --priority 2 matches the default-priority issue"
+    ["list", "--priority", "2", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ p2)))]
+  o := o ++ [← expectErr "list --priority out of range is usage"
+    ["list", "--priority", "9", "--dir", dir] .usage]
+  o := o ++ [← expectErr "list --priority non-number is usage"
+    ["list", "--priority", "high", "--dir", dir] .usage]
+  -- refines the open set: a done p1 is hidden unless --all (no closed-gate bypass)
+  let dir2 ← freshDir
+  let donep1 ← mkIssue dir2 "done p1" ["-p", "1"]
+  let _ ← run' ["close", "tl-" ++ donep1, "--as", "done", "--dir", dir2, "--actor", "t"]
+  o := o ++ [← expectData "list --priority 1 hides a closed match (no gate bypass)"
+    ["list", "--priority", "1", "--flat", "--dir", dir2, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  o := o ++ [← expectData "list --priority 1 --all surfaces the closed match"
+    ["list", "--priority", "1", "--all", "--flat", "--dir", dir2, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ donep1)))]
+  let prioHuman ← (match ← run' ["list", "--priority", "0", "--flat", "--dir", dir] with
+    | .ok out => pure (check "list --priority human summary names the facet"
+        ((out.human.splitOn "filtered by priority 0").length > 1) out.human)
+    | .error e => pure { name := "list --priority human", passed := false, msg := e.message })
+  o := o ++ [prioHuman]
+  -- `--priority` repeats only on `list`; making it repeatable there must NOT relax
+  -- the single-value duplicate guard on create/update (per-command repeatable scope)
+  o := o ++ [← expectErr "create rejects a duplicate --priority (single-value flag)"
+    ["create", "dup prio", "--priority", "1", "--priority", "2", "--dir", dir] .usage]
+  o := o ++ [← expectErr "update rejects a duplicate --priority (single-value flag)"
+    ["update", "tl-" ++ p0, "--priority", "1", "--priority", "2", "--dir", dir] .usage]
+  return o
+
+/-- `tl list --blocked`: open issues with ≥1 unclosed blocker (the derived
+    `blocked` view); closing the blocker discharges it. -/
+def cliListBlockedTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let blocker ← mkIssue dir "the blocker"
+  let blockedId ← mkIssue dir "the dependent" ["--blocked-by", "tl-" ++ blocker]
+  let _ ← mkIssue dir "free work"
+  o := o ++ [← expectData "list --blocked keeps only the blocked issue"
+    ["list", "--blocked", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ blockedId))
+      && (jArr j "items").all (fun r => jBool r "blocked" == some true))]
+  let _ ← run' ["close", "tl-" ++ blocker, "--as", "done", "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "list --blocked is empty after the blocker closes"
+    ["list", "--blocked", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  -- human summary names the blocked facet via the `filtered by` suffix — a token
+  -- the legend ("! blocked") and the row's `[blocked]` flag do NOT carry, so this
+  -- actually proves the suffix is emitted (not just any "blocked" on the page)
+  let dir2 ← freshDir
+  let bk ← mkIssue dir2 "bk"
+  let _ ← mkIssue dir2 "bd" ["--blocked-by", "tl-" ++ bk]
+  let humanRow ← (match ← run' ["list", "--blocked", "--flat", "--dir", dir2] with
+    | .ok out => pure (check "list --blocked human summary names the facet"
+        ((out.human.splitOn "filtered by blocked").length > 1) out.human)
+    | .error e => pure { name := "list --blocked human", passed := false, msg := e.message })
+  o := o ++ [humanRow]
+  return o
+
+/-- Cross-facet composition (ADR-0020: different facets compose with
+    AND): the gate-bypassing / AND-within facets (`--deferred`/`--label`) combined
+    with the new single-valued facets still narrow to the intersection. -/
+def cliListFacetComposeTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- --deferred (gate-bypassing) AND --priority (open-set refinement)
+  let dir ← freshDir
+  let dp0 ← mkIssue dir "deferred p0" ["-p", "0"]
+  let dp2 ← mkIssue dir "deferred p2"
+  let _ ← run' ["defer", "tl-" ++ dp0, "--until", "2099-01-01", "--dir", dir, "--actor", "t"]
+  let _ ← run' ["defer", "tl-" ++ dp2, "--until", "2099-01-01", "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "list --deferred --priority 0 composes as AND"
+    ["list", "--deferred", "--priority", "0", "--flat", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ dp0))
+      && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ dp2)))]
+  -- --label (AND-within) AND a closed --status: the label refines the closed set
+  -- that --status surfaced (both bypass/extend the open gate, and still intersect)
+  let dir2 ← freshDir
+  let ld ← mkIssue dir2 "labeled done"
+  let ud ← mkIssue dir2 "unlabeled done"
+  let _ ← run' ["label", "add", "tl-" ++ ld, "x", "--dir", dir2, "--actor", "t"]
+  let _ ← run' ["close", "tl-" ++ ld, "--as", "done", "--dir", dir2, "--actor", "t"]
+  let _ ← run' ["close", "tl-" ++ ud, "--as", "done", "--dir", dir2, "--actor", "t"]
+  o := o ++ [← expectData "list --label x --status done composes as AND (label refines the closed set)"
+    ["list", "--label", "x", "--status", "done", "--flat", "--dir", dir2, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ld))
+      && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ud)))]
+  return o
+
 /-- `tl import` (ADR-0005) — the differential test: import a committed-format
     fixture, then assert the materialized state matches the records' fields,
     statuses, and edges, and `ready` matches the unblocked set the graph implies.
@@ -3113,6 +3361,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
-    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
+    ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
 
 end Tl.Tests
