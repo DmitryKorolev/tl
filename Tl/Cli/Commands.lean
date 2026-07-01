@@ -287,6 +287,36 @@ def parsePriorityValue (v : String) : Except Tl.Error Nat :=
       else .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
   | none => .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
 
+/-- One `tl list` facet (`--label`/`--deferred`/`--stale`/`--status`/
+    `--assignee`/`--priority`/`--blocked`): a predicate over the sorted set,
+    gated by whether the facet is even in play (`active` — an absent/empty
+    flag is a no-op, not a false-matching filter), plus whether a match on it
+    already licenses showing a closed/rolled-up issue. `applyFacets`/
+    `facetsBypassGate` fold a `List ListFacet` in place of what used to be one
+    hand-threaded `let sorted := if active then sorted.filter pred else
+    sorted` reassignment per facet, plus a separately-maintained gate
+    condition (`showAll || staleArg.isSome || deferred || …`) — a new facet is
+    one list entry, not two edits kept in sync only by a comment. -/
+structure ListFacet where
+  active : Bool
+  pred : IssueId → Bool
+  /-- `--deferred`/`--stale`/`--status` all select *into* the closed/rolled-up
+      set on purpose, so an active match there licenses standing down the
+      default effClosed gate; `--label`/`--assignee`/`--priority`/`--blocked`
+      only ever refine the existing open set, so they leave the gate standing
+      (`false`, the default). -/
+  bypassClosedGate : Bool := false
+
+/-- Every active facet's predicate, ANDed onto `sorted` (fold order doesn't
+    change the result, only which predicate runs first). -/
+def applyFacets (facets : List ListFacet) (sorted : List IssueId) : List IssueId :=
+  facets.foldl (fun acc f => if f.active then acc.filter f.pred else acc) sorted
+
+/-- Whether any active facet in the list licenses bypassing the default
+    effClosed gate. -/
+def facetsBypassGate (facets : List ListFacet) : Bool :=
+  facets.any (fun f => f.active && f.bypassClosedGate)
+
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
     (labels : List String) (staleArg : Option String) (deferred : Bool)
     (statuses assignees : List String) (meActor : Option String)
@@ -317,57 +347,52 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   let sorted := (v.present.map (fun i => (createdAt i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
-  -- `--label` facet (repeatable ⇒ AND): keep issues carrying every given label
-  let sorted := if labels.isEmpty then sorted
-    else sorted.filter (fun i => labels.all (v.issueData i).labels.presentElements.contains)
-  -- `--deferred` facet (ADR-0010): keep only deferred issues — open with a
-  -- `deferUntil` still in the future (the `v.deferred` derived view, the exact
-  -- complement of `ready`'s defer conjunct). The deferred set is open work, so
-  -- like `--stale` it bypasses the `--all` effClosed gate below (a deferred epic
-  -- that rolled up to done is still authoritatively in the deferred set).
-  let sorted := if deferred then sorted.filter (v.deferred ·) else sorted
-  -- `--stale <duration>` (mandatory arg, no default — ADR-0011 amendment): keep
-  -- only stale claims — InProgress with a `claimedAt` older than the window,
-  -- mirroring `doctor`/`claim --steal` via the shared `claimStaleDeadlineMs`.
+  -- `--stale <duration>` (mandatory arg, no default — ADR-0011 amendment): parse
+  -- the window up front, so the facet below need only read it.
   let staleWindow : Option Nat ← match staleArg with
     | none => pure none
     | some raw => match Time.parseDurationMs? raw with
       | some w => pure (some w)
       | none => throw (.mk' .usage s!"--stale: '{sanitizeSingle raw}' is not a valid duration — use e.g. 45m, 1h, 24h")
-  let sorted := match staleWindow with
-    | none => sorted
-    | some w => sorted.filter (fun i =>
-        (v.issueData i).statusOf == .InProgress
-          && match (v.provFor i).claimedAt with
-             | some h => v.now > claimStaleDeadlineMs h w
-             | none => false)
-  -- `--status <s>` facet (repeatable ⇒ OR; ADR-0020): keep issues whose
-  -- effectiveStatus is one of the named statuses. Matching effectiveStatus — the
-  -- shown column — means a named closed status authoritatively selects closed
-  -- issues, so the effClosed gate below yields to it.
-  let sorted := if wantStatuses.isEmpty then sorted
-    else sorted.filter (fun i => wantStatuses.contains (v.effStatus i))
-  -- `--assignee <name>` facet (repeatable ⇒ OR; exact, case-sensitive — an identity
-  -- is discrete, not free text). `me` was resolved to the actor above.
-  let sorted := if assigneeTargets.isEmpty then sorted
-    else sorted.filter (fun i => match (v.issueData i).assignee.value.getD none with
-      | some a => assigneeTargets.contains a
-      | none => false)
-  -- `--priority <n>` facet (repeatable ⇒ OR; exact 0–4). No threshold form is
-  -- frozen — `--priority N` matches exactly N.
-  let sorted := if wantPriorities.isEmpty then sorted
-    else sorted.filter (fun i => wantPriorities.contains (v.issueData i).priorityOf.val)
-  -- `--blocked` facet: open issues with ≥1 unclosed blocker (the derived `blocked`
-  -- view). Within the open set, so it does NOT bypass the effClosed gate (a blocked
-  -- issue is open by construction). Not the inverse of `ready`, which additionally
-  -- excludes epics, in-progress, and deferred items.
-  let sorted := if blocked then sorted.filter (v.blocked ·) else sorted
-  -- `--stale` already restricts to raw-InProgress claims; it must NOT then re-hide
-  -- one whose epic rolled up to done (raw in_progress but effClosed) — that is
-  -- exactly the lingering claim to surface, and `doctor`'s staleClaims (raw status,
-  -- no effClosed gate) lists it. So a stale query bypasses the effClosed filter and
-  -- is `--all`-independent, keeping the two surfaces in agreement (ADR-0013).
-  let visible := if showAll || staleArg.isSome || deferred || !wantStatuses.isEmpty then sorted
+  -- The seven `list` facets — `--label` (repeatable ⇒ AND), `--deferred`
+  -- (ADR-0010: open with a still-future `deferUntil`, the `v.deferred` derived
+  -- view — the exact complement of `ready`'s defer conjunct), `--stale`
+  -- (InProgress with a `claimedAt` older than the window, mirroring
+  -- `doctor`/`claim --steal` via `claimStaleDeadlineMs`), `--status` (repeatable
+  -- ⇒ OR over effectiveStatus — the shown column, ADR-0020), `--assignee`
+  -- (repeatable ⇒ OR, exact/case-sensitive — an identity is discrete, not free
+  -- text; `me` was resolved to the actor above), `--priority` (repeatable ⇒ OR,
+  -- exact 0–4 — no threshold form is frozen), and `--blocked` (the derived
+  -- `blocked` view — open issues with ≥1 unclosed blocker; not the inverse of
+  -- `ready`, which additionally excludes epics, in-progress, and deferred
+  -- items). `--deferred`/`--stale`/`--status` select *into* the closed/rolled-up
+  -- set on purpose, so they bypass the effClosed gate below — `--stale` in
+  -- particular must not re-hide a claim whose epic rolled up to done: that is
+  -- exactly the lingering claim to surface, which `doctor`'s staleClaims (raw
+  -- status, no effClosed gate) also lists, keeping the two surfaces in
+  -- agreement (ADR-0013).
+  let facets : List ListFacet :=
+    [ { active := !labels.isEmpty
+        pred := fun i => labels.all (v.issueData i).labels.presentElements.contains },
+      { active := deferred, pred := v.deferred, bypassClosedGate := true },
+      { active := staleWindow.isSome, bypassClosedGate := true
+        pred := fun i => match staleWindow with
+          | none => false
+          | some w => (v.issueData i).statusOf == .InProgress
+              && match (v.provFor i).claimedAt with
+                 | some h => v.now > claimStaleDeadlineMs h w
+                 | none => false },
+      { active := !wantStatuses.isEmpty, bypassClosedGate := true
+        pred := fun i => wantStatuses.contains (v.effStatus i) },
+      { active := !assigneeTargets.isEmpty
+        pred := fun i => match (v.issueData i).assignee.value.getD none with
+          | some a => assigneeTargets.contains a
+          | none => false },
+      { active := !wantPriorities.isEmpty
+        pred := fun i => wantPriorities.contains (v.issueData i).priorityOf.val },
+      { active := blocked, pred := v.blocked } ]
+  let sorted := applyFacets facets sorted
+  let visible := if showAll || facetsBypassGate facets then sorted
     else sorted.filter (fun i => !v.effClosed i)
   let openN := (sorted.filter (fun i => (v.issueData i).statusOf == .Open)).length
   let inProg := (sorted.filter (fun i => (v.issueData i).statusOf == .InProgress)).length
