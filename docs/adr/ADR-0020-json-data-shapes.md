@@ -390,15 +390,17 @@ Composition:
   echoed value sanitized so untrusted assignee/label text never reaches the
   terminal raw (the ADR-0017 render contract).
 
-Two filters are intentionally **out** of this surface, each addable later as a
-pure extension that redefines nothing above:
+Deliberately **not** in this surface:
 
-- **`--text <q>`** (free-text search) — the facets above are exact checks over
-  materialized fields; text search carries its own open questions (which fields,
-  substring vs. word boundary, ranking) and is the one filter a consumer
-  trivially reproduces client-side (`tl list --json | jq` / grep), so it is left
-  out until designed on its own evidence.
-- **`--unassigned` / `--assignee none`** (issues with no live claim).
+- **`--text <q>`** (free-text search) — **out of scope**, not merely deferred.
+  The facets above are exact checks over materialized fields; a substring search
+  without ranking or tokenization sets a find-everything expectation the tool
+  would not meet, and doing it well is a project of its own. Full-text matching
+  is also the one filter a consumer already has client-side (`tl list --json |
+  jq` / grep). `tl`'s value is the structured facets; text search is not the
+  tracker's job.
+- **`--unassigned` / `--assignee none`** (issues with no live claim) — not built,
+  but a clean additive extension if a real need appears.
 
 ## Consequences
 

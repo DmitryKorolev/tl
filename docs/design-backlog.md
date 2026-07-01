@@ -40,11 +40,6 @@ Kernel theorems still to decide whether to commit to:
 
 ## CLI surface (before CLI freeze)
 
-- `tl list` facet flags & text match [low] — open issues, `--limit`, the
-  default forest (`--flat` for one-line rows), and `--label` are built and pinned
-  (ADR-0020 / ADR-0017 §2). Still open: the *other* facet flag spellings
-  (status / assignee / priority / text) and text-match semantics (substring vs
-  word, case folding, which fields) (vision / ADR-0020).
 - `--json` `data` shapes for the later `dep` utilities
   (`tree`/`path`/`critical`) [low] — the existing command shapes are pinned in
   ADR-0020; these `dep` utilities pin when built, following its conventions.

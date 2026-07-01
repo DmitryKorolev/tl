@@ -159,7 +159,7 @@ Read / visibility
 |---|---|
 | `tl show <id>` | one issue, with blockers + dependents + parent/children inline |
 | `tl log [<id>]` | chronological action history (HLC-ordered); per-issue when `<id>` given (ADR-0008) |
-| `tl list [filters]` | many: `--status` / `--assignee` / `--label` / `--priority` / `--blocked` / `--deferred` / `--stale <dur>` (a mandatory duration, no default, ADR-0013); `--all` includes closed, `--flat` for rows. Facet spellings + match semantics are frozen in ADR-0020 (repeat ⇒ OR within single-valued facets, AND within `--label`; `me`→actor; closed `--status` self-includes); free-text `--text` is deferred. See §Staged implementation for what ships today |
+| `tl list [filters]` | many: `--status` / `--assignee` / `--label` / `--priority` / `--blocked` / `--deferred` / `--stale <dur>` (a mandatory duration, no default, ADR-0013); `--all` includes closed, `--flat` for rows. Facet spellings + match semantics are frozen in ADR-0020 (repeat ⇒ OR within single-valued facets, AND within `--label`; `me`→actor; closed `--status` self-includes). Free-text search is out of scope — use `--json` + grep. See §Staged implementation for what ships today |
 | `tl label add <id> <label>` / `label remove <id> <label>` / `label list [<id>]` | manage categorical label tags (filter-only; drive nothing) |
 | `tl meta set <id> <key> <value>` / `meta get <id> [<key>]` / `meta clear <id> <key>` / `meta list [<id>]` | manage the opaque metadata side-channel — `ext:<system>` refs, imported fields (ADR-0002/0005); drives nothing |
 | `tl stats` | counts by state, #ready, #blocked, #cycles |
