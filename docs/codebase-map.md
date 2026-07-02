@@ -1,10 +1,9 @@
 # Codebase map
 
-> Stages 0–1 and most of Stage 2–3 are built: the verified kernel (`Tl/Crdt/`,
+> Everything mapped here is built: the verified kernel (`Tl/Crdt/`,
 > `Tl/Kernel/`) and the tested shell — `Tl/Error`, `Tl/Format/`, `Tl/Hash/`,
-> `Tl/Store/` (with the `ffi/tlsys.c` shim), `Tl/Clock/`, `Tl/Sync/`, and
-> `Tl/Cli/`. Only `Tl/Import/` remains *(planned — Stage 3)*; for it this map is
-> the module-layout contract, not a description of code. The line that matters:
+> `Tl/Store/` (with the `ffi/tlsys.c` shim), `Tl/Clock/`, `Tl/Sync/`,
+> `Tl/Import/`, and `Tl/Cli/`. The line that matters:
 > the verified kernel has no I/O, and everything that touches the world is a
 > separate, tested shell.
 
@@ -280,8 +279,13 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   autoSyncInitDefault (init's linked-worktree default-
                         --   on). No CLI types — the write verbs just call it
 
-Tl/Import/              -- I/O shell: one-shot bulk import (planned — Stage 3)
-  Bulk.lean
+Tl/Import/              -- I/O shell: one-shot bulk import (tested, ADR-0005)
+  Bulk.lean             --   JSONL records → a deterministic seed op-log under
+                        --   a SHA-256-derived single-writer import replica
+                        --   (ids/nonces/fallback timestamps source-derived, so
+                        --   re-import is byte-stable); dangling edge endpoints
+                        --   skipped + disclosed; two safety gates (--force
+                        --   clobber, --allow-large/--max bounds)
 
 Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Envelope.lean         --   the --json envelope (schemaVersion/ok/data|error) in
@@ -326,6 +330,9 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
 
 Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   Harness.lean          --   assertion + seeded-generator harness
+  JsonUtil.lean         --   shared option-returning JSON accessors for the
+                        --   suites that walk helpJson/envelope JSON (one
+                        --   definition so the grammar suites cannot drift)
   CrockfordTests.lean   --   encode/decode round-trips
   HlcTests.lean         --   HLC update rules + hex codec branches
   RecordTests.lean      --   envelope round-trip + canonical order

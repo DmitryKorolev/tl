@@ -30,9 +30,10 @@ reps until the small time again exceeds 30ms. The fast branch being taken
 at these very scales is asserted by its own row (a scale-dependent
 certificate rejection would otherwise read as a quiet slowdown). The full
 diagnostics command path additionally pays the
-OR-Set view scans (`presentElements`), which are superlinear today and
-tracked as their own task; that total is pinned by an explicit absolute
-ceiling row, not a ratio. If the certificate were ever rejected, the
+OR-Set view scans (`presentElements`, one pass over the entry list —
+near-linear on tombstone-light logs) and the accepted SCC witness-grouping
+residual (Θ(cyclic-nodes × cycle-components), zero on healthy graphs);
+that total is pinned by an explicit absolute ceiling row, not a ratio. If the certificate were ever rejected, the
 fallback's quadratic cost would blow the machinery ratios — and the
 fast-branch-taken tests in `CrossTests` catch it sooner and by name.
 -/
@@ -197,8 +198,8 @@ def perfTests : IO (List Outcome) := do
     -- hoisted once: adjacency bucketing, presence/rollup hash views, Tarjan,
     -- the checker, and witness reconstruction — the cycleCount shape (three
     -- graphs). The full command path additionally pays the OR-Set view
-    -- scans (presentIssues/presentEdges/parentEdges), superlinear today and
-    -- tracked as their own work — the ceiling row below pins that total.
+    -- scans (presentIssues/presentEdges/parentEdges — near-linear on
+    -- tombstone-light logs) — the ceiling row below pins that total.
     let present := s.presentIssues
     let edges := s.presentEdges
     let pe := s.parentEdges
@@ -308,9 +309,9 @@ def perfTests : IO (List Outcome) := do
     for ((name, tS), (_, tB)) in small.zip big do
       o := o ++ [ratioRow name tS tB]
     -- the full diagnostics command path = view scans + SCC machinery. The
-    -- view scans (OR-Set presentElements) are superlinear today — tracked
-    -- as their own task — so this is an explicit wall-clock ceiling, not a
-    -- ratio dressed up by the noise floor.
+    -- accepted witness-grouping residual is superlinear only on shattered
+    -- cyclic sets, so this is an explicit wall-clock ceiling as a backstop,
+    -- not a ratio dressed up by the noise floor.
     let fullSmall := ((fulls.head?).map (·.2)).getD 0
     let fullBig := (fulls.getLast?.map (·.2)).getD 0
     o := o ++ [check

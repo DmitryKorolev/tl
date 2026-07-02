@@ -13,8 +13,9 @@ from component indices, over successor functions whose edge/rollup/presence
 views are hoisted into hash structures once per call. A rejected
 certificate falls back to the proved cached-closure path (`sccWitnessesF`),
 so correctness never depends on the Tarjan core — only speed does, and
-that is pinned by tests. One accepted residual, recorded as a tracked
-task: witness grouping (`groupSCCH`, a hash covered-set over
+that is pinned by tests. One accepted residual, recorded as an
+accepted-cost compromise (the ADR-0023 discipline; a fix was considered and
+declined): witness grouping (`groupSCCH`, a hash covered-set over
 `groupSCCGoF`'s recursion) filters the cyclic set once per emitted
 component — Θ(cyclic-nodes × cycle-components). That is zero on a healthy
 graph and linear for one big cycle, but quadratic when the cyclic set

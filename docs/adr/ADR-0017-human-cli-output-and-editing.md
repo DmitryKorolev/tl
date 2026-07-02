@@ -172,23 +172,20 @@ painful as `--description "…"`. So:
   `tl create "<title>"` is always non-interactive (no surprise editor in a
   TTY — important for quick-start and agents); pass `--description "…"` (or `-`
   to read stdin) for the body, or `--edit` to open the editor.
-- Description input precedence for `create` (amended 2026-06-14, see below):
+- Description input precedence for `create`:
   `--description <text>` is the body; stdin is read to EOF as the body **only on
   the explicit `-` sentinel** — `--description -`, or a trailing `-` positional
   (`tl create "<title>" -`). With no `--description` and no `-`, the body is
   absent unless `--edit` is explicit; `tl create` **never reads an unrequested
   stdin**. A missing title is a `usage` error in non-TTY mode and whenever
   `--json` is requested; it never blocks waiting for interactive input.
-
-  > **Amendment (2026-06-14).** The original rule was "if stdin is not a TTY,
-  > `tl create` reads stdin to EOF as the body." That silently hung the tool's
-  > primary caller: an agent that spawns `tl create "<title>"` with an
-  > inherited, held-open pipe as stdin (not closed, not `/dev/null`, never
-  > reaching EOF) blocked indefinitely in `readToEnd`, emitting nothing. A
-  > non-blocking peek cannot distinguish that from a slow legitimate writer, so
-  > the read is now opt-in via the `-` sentinel. Trade-off: bare
-  > `echo body | tl create "t"` no longer feeds the body — add `-`
-  > (`echo body | tl create "t" -`).
+  The sentinel is deliberate, not a convenience gap: an auto-read of any
+  non-TTY stdin silently hung the tool's primary caller — an agent that
+  spawns `tl create "<title>"` with an inherited, held-open pipe as stdin
+  (not closed, not `/dev/null`, never reaching EOF) blocked indefinitely in
+  `readToEnd`, and a non-blocking peek cannot distinguish that from a slow
+  legitimate writer. Trade-off, accepted: bare `echo body | tl create "t"`
+  does not feed the body — add `-` (`echo body | tl create "t" -`).
 - `tl edit <id>` opens the issue's editable fields (title, description, notes) in
   `$EDITOR` and applies the diff on save.
 - Resolution order `$VISUAL` → `$EDITOR` → a sensible fallback; aborting the

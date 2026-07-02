@@ -3183,20 +3183,21 @@ def cliListFacetComposeTests : IO (List Outcome) := do
       && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ud)))]
   return o
 
-/-- `tl import` (ADR-0005) — the differential test: import a committed-format
-    fixture, then assert the materialized state matches the records' fields,
-    statuses, and edges, and `ready` matches the unblocked set the graph implies.
-    Plus determinism (byte-stable re-import), the two safety gates, and the
-    fail-closed malformed-line paths. The fixture mirrors `Tests/fixtures/
-    import-sample.jsonl` (kept inline so the test is host-independent). -/
+/-- `tl import` (ADR-0005) — the differential test: import the committed
+    fixture `Tests/fixtures/import-sample.jsonl`, then assert the materialized
+    state matches the records' fields, statuses, and edges, and `ready`
+    matches the unblocked set the graph implies. Plus determinism (byte-stable
+    re-import), the two safety gates, and the fail-closed malformed-line
+    paths. The fixture is read from the repo checkout (cwd-relative, like the
+    imports/doc-grammar suites) and copied into a temp dir before importing,
+    so import behavior itself stays temp-dir hermetic. -/
 def cliImportTests : IO (List Outcome) := do
   let mut o : List Outcome := []
-  let fixture :=
-    "{\"id\":\"PROJ-1\",\"title\":\"Epic: parser\",\"status\":\"open\",\"priority\":0}\n" ++
-    "{\"id\":\"PROJ-7\",\"title\":\"Lexer\",\"status\":\"done\",\"closedAt\":\"2026-03-01T10:00:00Z\",\"parent\":\"PROJ-1\"}\n" ++
-    "{\"id\":\"PROJ-42\",\"title\":\"Write the parser\",\"status\":\"in_progress\",\"assignee\":\"alice\",\"priority\":1,\"blockedBy\":[\"PROJ-7\"],\"parent\":\"PROJ-1\",\"labels\":[\"area:parser\"],\"related\":[\"PROJ-9\"],\"meta\":{\"ext:jira\":\"PROJ-42\"}}\n" ++
-    "{\"id\":\"PROJ-9\",\"title\":\"Docs\",\"priority\":7,\"deferUntil\":\"2099-01-01T00:00:00Z\"}\n" ++
-    "{\"id\":\"PROJ-3\",\"title\":\"Dupe\",\"status\":\"cancelled\",\"closeResolution\":\"duplicate\",\"duplicateOf\":\"PROJ-7\",\"blockedBy\":[\"MISSING-1\"]}\n"
+  let fixturePath : System.FilePath := "Tests" / "fixtures" / "import-sample.jsonl"
+  if !(← fixturePath.pathExists) then
+    return [check "import: committed fixture present at cwd" false
+      s!"could not find {fixturePath} under cwd {(← IO.currentDir)} — run tltest from the repo root"]
+  let fixture ← IO.FS.readFile fixturePath
   let root ← IO.FS.createTempDir
   let fpath := (root / "in.jsonl").toString
   IO.FS.writeFile (root / "in.jsonl") fixture

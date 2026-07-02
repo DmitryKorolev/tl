@@ -98,6 +98,11 @@ selection) plus two graph counts:
 `blocks` edges (the fold already has them; agents triage on fan-out without a
 per-row `show`).
 
+`ready`'s `data` additionally carries a top-level `staleness` — always
+present, the ADR-0011 sync-freshness advisory string or `null` when the view
+is current (the pinned `|null` convention above). `tl list` does not emit
+it.
+
 **`tl show <id> --json`** — the full ADR-0003 issue object (all scalar fields
 present-if-valued, `labels`, `meta`, `dependencies` + `parent`, provenance
 projections, derived booleans), plus `claim: { outcome, currentAssignee }`

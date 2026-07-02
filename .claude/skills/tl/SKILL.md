@@ -49,7 +49,7 @@ tl help <command>  # one command (human)
 1. `tl ready --json` — the ranked queue of workable items (open, unblocked,
    non-epic, not deferred; epics and blocked items are excluded by
    construction). Take the top one. Use `--limit 0` to see all; the default
-   caps at 10 and discloses the total in `count`.
+   caps at 50 and discloses the total in `count`.
 2. `tl claim <id> --json` — take it. It succeeds only if the item is *still*
    ready; otherwise `not-claimable` with `reasons` (blockers / already claimed /
    epic / deferred / closed). On `not-claimable`, skip to the next ready item.
@@ -80,7 +80,7 @@ tl help <command>  # one command (human)
 ## Creating and shaping work
 
 ```
-tl create "<title>" [-p 0-4] [--description <body>]        # body can also be piped on stdin
+tl create "<title>" [-p 0-4] [--description <body>]        # pipe the body with a trailing `-`: echo body | tl create "<title>" -
 tl create "<title>" --blocked-by <id> --blocks <id> --parent <id> --related <id>
 tl update <id> [--title T] [-p N] [--description D] [--notes N]   # non-lifecycle fields
 tl dep add <A> <B>       # A becomes blocked by B
@@ -129,7 +129,7 @@ tl parent remove <id> <parent>      # detach <id> from that parent
 - Ids resolve by any unambiguous `tl-`-prefixed prefix, case-insensitively;
   a bare token (no `tl-`) is a slug. `ambiguous-id` lists the candidates.
 - On a write, set who is acting with `--actor <name>`, or the `TL_ACTOR`
-  env var (otherwise it falls back to git identity). This is provenance, and
+  env var (otherwise it falls back to git `user.email`, then `user@host`). This is provenance, and
   the actor on a claim becomes the issue's assignee.
 
 ## Sharing

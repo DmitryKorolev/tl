@@ -73,30 +73,23 @@ different consumers and are deliberately not merged:
 - `tl doctor` — the health/triage surface. Consumer: anyone checking *is
   anything wrong*. In Stage 1 it covers local replica-id/clock/log integrity,
   graph diagnostics (cycles, multi-parent, dangling edges), and — when a window
-  is configured — stale claims (the `tl.staleAfter` git config; **no default**,
-  so the check is silent until set; see the amendment below). In Stage 3, once
-  sharing lands, it also reports remote sync posture.
+  is configured — stale claims. The stale window is the `tl.staleAfter` git
+  config (a compact relative duration — `45m`, `1h`, `24h`) with **no
+  hardcoded default**: `doctor` omits the staleClaims check when it is unset,
+  reports it with the active `window` when set, and yields a row teaching the
+  format on an unparseable value. It also reports the remote sync posture
+  (below).
 
 Different cadence, different consumer, different question — folding them into
 one command would couple two things that evolve independently. The rest of the
-read surface (`tl show <id>`, `tl list --deferred`, `tl dep cycles`,
-`tl why`/`tl unblocks`) covers the remaining queries on demand. (Shipped today:
-`show`, `dep cycles`, `why`, `unblocks`, and `tl list --stale <duration>`.
-`tl list --deferred` is the remaining planned read facet — not yet in the
-grammar; until it lands, `why`/`show`/`doctor` are the surfaces.
-Shipped-vs-intended is tracked in the backlog and the tracker.)
-
-> **Amendment (2026-06-16) — stale has no default window.** The original text
-> advertised `tl list --stale` as a present read facet and `doctor` baked a
-> 24-hour default. Removed: there is **no hardcoded default**. The stale window
-> is the `tl.staleAfter` git config (a compact relative duration — `45m`, `1h`,
-> `24h`). `tl doctor` omits the staleClaims check when it is unset, reports it
-> with the active `window` when set, and yields a row teaching the format on an
-> unparseable value. A dedicated `tl list --stale <duration>` facet —
-> **mandatory duration, also no default** — shipped 2026-06-21: it filters the
-> list to in-progress claims older than the passed window (the same
-> `claimStaleDeadlineMs` boundary as `doctor`/`claim --steal`). `doctor` remains
-> the `tl.staleAfter`-config-driven surface; `list --stale` is the ad-hoc one.
+read surface — `tl show <id>`, `tl dep cycles`, `tl why`/`tl unblocks`, and
+the `tl list` filter facets (`--deferred`, `--stale <duration>`, `--status`,
+`--assignee`, `--priority`, `--blocked`, `--label` — ADR-0020) — covers the
+remaining queries on demand. `tl list --stale <duration>` takes a
+**mandatory duration, no default**: it filters to in-progress claims older
+than the passed window, the same `claimStaleDeadlineMs` boundary as
+`doctor`/`claim --steal` — `doctor` is the `tl.staleAfter`-config-driven
+stale surface; `list --stale` is the ad-hoc one.
 
 Sync-freshness — the "is my view stale before I trust `ready`?" signal —
 is rehomed onto these two commands rather than carried by a bundled snapshot:
@@ -117,13 +110,12 @@ is rehomed onto these two commands rather than carried by a bundled snapshot:
   sync / last synced N ago; run `tl sync`"), so an agent selecting work sees
   staleness *inline* without a second call. It is advisory, derived, local-only
   state — it never blocks, alters, or networks on the read.
-- **Amendment (2026-06-16, built): `--sync`.** Detecting how far *behind the
-  remote* you are requires the network, which `ready`/`doctor` must not do on
-  every (hot-path) call. So neither contacts the remote unless run with `--sync`,
-  which is exactly `tl sync` *then* the command (reconcile, then read the fresh
-  state) — the single opt-in freshness lever, also on `claim` (ADR-0001 §5). This
-  supersedes the original "doctor computes live ahead/behind every call": the
-  default posture is local; `--sync` is how you get a remote-fresh one.
+- `--sync` is the single opt-in freshness lever. Detecting how far *behind
+  the remote* you are requires the network, which `ready`/`doctor` must not do
+  on every (hot-path) call — so neither contacts the remote unless run with
+  `--sync`, which is exactly `tl sync` *then* the command (reconcile, then
+  read the fresh state); also on `claim` (ADR-0001 §5). The default posture is
+  local; `--sync` is how you get a remote-fresh one.
 
 Untrusted content stays explicit. Any command that emits issue objects
 (`ready`, `show`, `list`) carries per-issue `provenance`

@@ -15,10 +15,10 @@ discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
 (local leg, read-time refresh, remote fetch/union/push, and the HLC skew window
 — proved convergence-safe), and **auto-sync** (ADR-0021: the best-effort
 post-write local publish, plus the symmetric pre-transact absorb that refreshes
-a write's view before its guards — ADR-0016 §3 amendment) have landed. Still
-open: the Stage-2 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical`
-— the dependency trees render on `why`/`unblocks`, not a separate `dep tree`
-verb — and `edit`), and bulk `import` (Stage 3).
+a write's view before its guards — ADR-0016 §3 amendment), the Stage-2
+ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical` — the
+dependency trees render on `why`/`unblocks`, not a separate `dep tree` verb),
+and bulk `import` (Stage 3) have landed. Still open: `edit`.
 Everything below remains stage-gated (decide when building that surface) or a
 forever-contract surface that freezes on first implementation.
 
@@ -37,12 +37,6 @@ Kernel theorems still to decide whether to commit to:
   unobserved add survives a concurrent remove; a removed element is re-addable with
   a fresh tag — not a 2P-set), so the `dep remove`/`unrelate` guarantee is a
   theorem rather than a consequence left implicit in the join laws (ADR-0002/0004).
-
-## CLI surface (before CLI freeze)
-
-- `--json` `data` shapes for the later `dep` utilities
-  (`tree`/`path`/`critical`) [low] — the existing command shapes are pinned in
-  ADR-0020; these `dep` utilities pin when built, following its conventions.
 
 ## Log format, versioning & compaction
 
@@ -69,38 +63,6 @@ Kernel theorems still to decide whether to commit to:
   Decide; if detect, give `doctor` (and optionally `init`) a best-effort FS-type
   probe that *warns* (not a hard error, since convergence is unaffected) —
   ADR-0015 + ADR-0011/doctor.
-- The committed discovery pointer has no home when no agent file exists [low] —
-  ADR-0011's cross-clone discovery path is a one-line pointer `init` offers to add
-  to a root agent file (`AGENTS.md`/`CLAUDE.md`/…); the local `.tl/README.md` is
-  gitignored and does not travel. Decide what `init` does when none of those
-  files exist (create a minimal one? which? skip — leaving no committed
-  discovery?) — ADR-0011 / ADR-0001 §4.
-
-## Import (bulk)
-
-- Pin the bulk-import record schema [low] — finalize the import-format fields,
-  each mapping to a tl field or an explicit, disclosed drop (ADR-0005).
-- Differential-import fixtures, equality relation, and mapping matrix [low] —
-  the differential-import test is mandated but these aren't pinned; commit
-  import-format fixtures + an expected-state oracle under `Tests/fixtures/`, one row per mapping
-  (ADR-0005 / overview).
-- Import's deterministic per-op nonce derivation is informal [low] — the
-  import-seed id and import replica-id are pinned to full precision (named SHA-256
-  preimage, bit-slice, encoding), but the per-op nonce is only "derived from the
-  source record + op role + target id" — no hash, preimage, or width — even though
-  it is part of the OR-Set add-tag string and LWW triple that must be byte-identical
-  for re-import idempotence (the differential-import oracle above). Pin it like its
-  siblings (e.g. `crockford32(SHA-256("import-nonce:" ++ … ))[0..128]` → 26 chars) —
-  ADR-0005.
-- Priority on import [low] — the format's `priority` is 0–4 directly; an
-  out-of-range value clamps with disclosure (ADR-0002/0005).
-- Import `--force` is overloaded; the bounds-override flag is inconsistent [low]
-  — ADR-0005 uses `--force` both to override import-into-existing state *and* (as
-  `force-required`) to override the resource bounds; ADR-0014 T6 names the bounds
-  override "`--force`/`--max`". Conflating two distinct safety gates means one
-  `--force` bypasses both. Decide distinct flags (e.g. `--force` for clobber-existing,
-  `--max`/`--allow-large` for bounds) and reconcile ADR-0005 × ADR-0014 T6.
-
 ## Build & proof infra
 
 - Compiled-kernel-vs-spec property cross-check [low] — the mechanism now

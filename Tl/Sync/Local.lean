@@ -40,7 +40,9 @@ structure LocalOutcome where
   published : Bool
   /-- The sibling replica ids whose local cache was (re)materialized. -/
   absorbed : List String
-  /-- The resulting `refs/tl/log` tip (`none` only when `ran` is false). -/
+  /-- The resulting `refs/tl/log` tip. `none` when `ran` is false, or when
+      the ref does not exist yet and this replica had nothing to publish
+      into it (the no-publish reconcile path). -/
   tip : Option String
 deriving Repr, Inhabited
 
