@@ -218,11 +218,17 @@ discharge (Trusted section). None was downgraded to a test (Definition-of-Done #
   follows from add-tag/stamp uniqueness — a **tier-3 carried assumption** (Trusted
   section), correctly *not* a `sorry`/`axiom` and not a forced theorem.
 
-Reserved (proved when its feature is built). *Destructive-GC fold-preservation* —
-`fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable version-vector
-frontier `F` — the obligation a future log GC must discharge to discard the ops
-below `F` without changing the materialized state (deferred with destructive GC,
-ADR-0008). The non-destructive snapshot needs no reserved theorem: it is the
+Reserved (proved when its feature is built). The destructive-GC set, pinned
+with the compaction design (ADR-0008): *fold-preservation* —
+`fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable
+version-vector frontier `F` (discharge path: filter-partition +
+`fold_perm`/`fold_append`); *overlap tolerance* — the fold is equal for any
+retained superset of the above-`F` ops (via `fold_eq_of_mem_iff`), which
+makes keep-everything unions and crash-regrowth state-harmless; and
+*frontier join* — below-`F` of the pointwise-max of two frontiers is the
+union of their below-`F` sets. Causal stability of `F` itself joins the
+Trusted section as a tier-3 carried assumption when built. The
+non-destructive snapshot needs no reserved theorem: it is the
 content-keyed fold cache, already anchored by the proved `fold_append`/`fold_perm`
 (ADR-0022), and it discards nothing — so any `tl log --since` cursor stays
 serviceable (ADR-0025).
@@ -261,15 +267,15 @@ git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,
 ADR-0001);
-SHA-256 collision/second-preimage freeness for the fold cache (ADR-0022):
-cache validity concludes "the live segment still carries the cached prefix
-byte-for-byte" from a 256-bit digest match, and the cache file's own
-checksum line guards its values the same way — a colliding rewrite would
-silently fold a wrong prefix. Negligible accidentally (full 256-bit match,
-far below the 80-bit issue-id bound already carried) and adversarially moot
-inside `.tl/` (anyone who can rewrite a segment is already a trusted writer,
-ADR-0014); worst case is bounded — a wrong *cache*, never wrong log bytes,
-discarded by any later rebuild; and
+fold-cache checksum adequacy (ADR-0022): cache validity concludes "the live
+segment still carries the cached prefix byte-for-byte" from core's
+non-crypto `ByteArray.hash`, and the cache file's own checksum line guards
+its values the same way — the cache carries no crypto assumption, only that
+an *accidental* corruption colliding the hash is negligible; adversarially
+it is moot inside `.tl/` (anyone who can rewrite a segment is already a
+trusted writer, and the cache is a discardable rot-check, not a security
+surface, ADR-0014); worst case is bounded — a wrong *cache*, never wrong
+log bytes, discarded by any later rebuild; and
 clocks/IDs/actor entering as data — each discharged by a test or trusted by
 construction when implementation begins.
 

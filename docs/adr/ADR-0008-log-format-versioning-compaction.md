@@ -11,7 +11,8 @@ lifecycle of the log (it grows forever without compaction). The format
 is a *permanent* compatibility surface: once a replica has written it,
 every future reader must cope with it. Compaction, in turn, is harder than
 it looks under a CRDT — dropping data safely is a distributed-GC problem —
-so it is deferred, but the format must leave room for it now.
+so its implementation is deferred, but the destructive design is pinned in
+the compaction section and the format leaves room for it now.
 
 ## Decision
 
@@ -228,8 +229,8 @@ graph-hygiene findings (additive checks, ADR-0020) rather than errors.
 
 - `v` is a monotonic integer. The policy is fail-closed on newer:
   a reader that encounters `v` greater than it supports refuses the segment
-  carrying it (not the whole log — see *Failure scope* below) and tells the
-  user to upgrade, rather than silently mis-folding.
+  carrying it (not the whole log — see the corruption policy below) and tells
+  the user to upgrade, rather than silently mis-folding.
 - Within a version, only additive changes are allowed: new *optional*
   envelope/payload fields (preserved by older readers via preserve-unknown).
 - Any change an old reader could mis-fold — a new `op` kind, a new
@@ -367,7 +368,7 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   assignee as applicable). Agents branch on the structured outcome or error
   code, not on prose.
 
-### Compaction — a non-destructive snapshot, with destructive GC deferred
+### Compaction — a non-destructive snapshot; the destructive path pinned, deferred
 
 Two separable concerns hide under "compaction." tl does the first; the second is
 deferred.
@@ -387,29 +388,93 @@ deferred.
   clone or CI run need not fold from genesis. As a side cache, not a log record, it
   needs no format `v` bump and is forward-compatible: a reader that ignores it just
   folds the log.
-- **Destructive GC — bounding log size; deferred, opt-in, lossy.** Actually
-  discarding ops below `F` to bound on-disk/transport size is the hard,
+- **Destructive GC — bounding log size; designed, deferred, opt-in, lossy.**
+  Actually discarding ops below `F` to bound on-disk/transport size is the hard,
   CRDT-hostile part: an op or OR-Set tombstone may be dropped only once every
   replica has observed it, or a still-unmerged replica re-merges and *resurrects* a
   removed element. That needs a real causal-stability frontier (a version vector
   below which all replicas provably agree), and an offline clone can always sync an
   ancient op below any chosen `F` — so a safe automatic GC is genuinely hard. It is
   not needed at the expected scale (thousands of ops; small JSONL, git-packed on
-  the ref; the fold cache bounds read cost regardless of length), so it is deferred
-  — logged here, not silent (AGENTS.md). If ever built it is an explicit,
-  user-driven `tl compact` (one-way, destructive of the `tl log` history a slow
-  replica might still want), it carries a format `v` bump (the `snapshot` record
-  kind becomes load-bearing — an old reader that ignored it would under-fold, so it
+  the ref; the fold cache bounds read cost regardless of length), so the
+  *implementation* is deferred until a real size trigger — logged here, not
+  silent (AGENTS.md). The *design* is pinned below, because two of its
+  consequences are freeze-sensitive: the transport must start carrying unknown
+  tree entries before the first release, and the `--json`/error surface it will
+  need must stay additive. If built it is an explicit, user-driven `tl compact`
+  (one-way, destructive of the `tl log` history a slow replica might still
+  want), it carries a format `v` bump (the `snapshot` record kind becomes
+  load-bearing — an old reader that ignored it would under-fold, so it
   fail-closes with an upgrade message), and it owes the change-feed a
   retention-horizon and gap/resync contract (ADR-0025).
-- **The reserved theorem (ADR-0004): fold-preservation.** The destructive-GC
-  snapshot — a `snapshot` record at a causally-stable version-vector frontier `F` —
-  owes `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`: what lets it discard
-  the ops below `F` without changing the materialized state, and, with the
-  union-merge interaction (design-backlog), guards against a strictly-growing
-  line-union resurrecting retired ops. Recorded now; proved if destructive GC is
-  built. The non-destructive content cache above needs only `fold_append`/
-  `fold_perm`, already proved (ADR-0022).
+
+The pinned destructive design (implementation deferred):
+
+- **Transport preserve-unknown.** `tl sync` carries any `refs/tl/log` tree
+  entry it does not recognize through the union verbatim — the transport-level
+  analogue of the record-level preserve-unknown rule above. (Today's transport
+  drops non-replica-named tree entries on every sync; fixing that is
+  freeze-sensitive and ships pre-release as its own change — an old binary that
+  strips the snapshot entry on every sync would otherwise fight the compactor.)
+  This amends ADR-0001's "the tree *is* the `.tl/log/` contents": the tree is
+  the per-replica segment blobs *plus* reserved non-replica entries, carried
+  verbatim.
+- **Placement: the snapshot is a reserved non-replica-named tree entry** in
+  `refs/tl/log`, line-unioned like any segment (two concurrent compactors'
+  records both survive the union), and never enumerated as an on-disk segment
+  (the store's junk filter is unchanged — a non-replica name never folds as a
+  segment). Rejected placements: a synthetic-replica snapshot *segment* (a
+  permanent violation of the replica-id-uniqueness carried assumption, and its
+  owner stamps would be forgeries poisoning provenance); a non-replica entry
+  *without* transport preserve-unknown (old binaries silently drop it); a
+  separate ref (breaks the single-commit CAS atomicity of ADR-0001); a
+  frontier-dropping union (silently loses never-observed ops — the same class
+  as best-effort compaction below).
+- **Trimmed segments carry `compacted` marker records** (with the `v` bump)
+  through an explicit owner-check carve-out in materialization — never forged
+  owner stamps. A marker byte-sorts into position after any union like every
+  other line; nothing may assume it holds the first line of a segment.
+- **Mixed-version reality, stated honestly.** After a compaction, an old
+  binary still reads `ok: true` with an under-folded board (a foreign-segment
+  refusal never fails a command — the corruption policy above), and its next
+  `tl sync` *regrows* the trimmed lines from its on-disk foreign caches (the
+  reconcile unions the pre-absorb local segments, and a line-union never
+  re-shrinks). Physical removal therefore converges only once every replica
+  runs the new format and a later `tl compact` re-trims. **Pinned choice:
+  regrowth-until-recompact is the accepted, disclosed cost.** The overlap
+  tolerance theorem below makes resurrected lines state-harmless, and no
+  workload needs hard size bounds yet. The alternative — a sync-side
+  trim-at-marker in the new format — is rejected: it reintroduces a residual
+  never-observed-op hazard that would have to ride the destructive
+  confirmation.
+- **Crash order.** A compact publishes the ref first (snapshot + trimmed
+  blobs, one CAS commit), then absorbs, and trims its own segment *last* (an
+  atomic rename under the mutation lock). A crash at any point degrades to
+  harmless regrowth, never loss.
+- **Preconditions and hygiene.** `tl compact` aborts on any refused segment;
+  the frontier excludes skew-deferred lines; a re-trim recomputes a fresh
+  snapshot from the currently visible lines, never re-cuts at the old `F`.
+  `snapshot`/`compacted` records are exempt from skew deferral (the carve-out
+  keeps the proved admission predicate intact for op records); the clock
+  reseed floor takes `max(frontier)` into account; the fold-cache version
+  bumps; `tl log --since` below the horizon answers the additive
+  `compacted-gap` error code with a resync cursor (the ADR-0025 reserved
+  contract), plain `tl log` discloses "earlier ops compacted"; and the feed,
+  `stats`, and provenance projections exclude both record kinds.
+- **The theorems (ADR-0004): reserved, proved when built.**
+  *Fold-preservation* — `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`
+  for a causally-stable frontier `F`; the discharge path is filter-partition
+  plus the proved `fold_perm`/`fold_append`. *Overlap tolerance* — the fold is
+  equal for **any** retained superset of the above-`F` ops (via
+  `fold_eq_of_mem_iff`): the theorem that makes keep-everything unions and
+  crash-regrowth provably state-harmless, and the reason the pinned choice
+  above is safe. *Frontier join* — below-`F` of the pointwise-max of two
+  frontiers is the union of their below-`F` sets (two compactors compose).
+  Causal stability of `F` itself is not provable in-kernel: it becomes an
+  explicit tier-3 carried assumption when built, held up operationally by
+  `tl compact` requiring a successful preflight fetch and an explicit
+  destructive confirmation. The non-destructive content cache above needs
+  only `fold_append`/`fold_perm`, already proved (ADR-0022).
 - **The version vector serves two roles of the same shape.** Per-replica
   high-water marks back both the snapshot frontier here and the change-feed cursor
   (ADR-0025) — distinct uses (global causal-stability vs per-consumer position),
@@ -419,9 +484,10 @@ deferred.
 
 - Debuggable, git-friendly, ethos-aligned. JSONL diffs cleanly, is
   human-readable (AGENTS.md), and makes preserve-unknown trivial.
-- Reading model: materialization is fold-per-invocation —
-  `snapshot ⊕ fold(tails)` on each command (ADR-0001). Caching/incremental
-  materialization is a later optimization, not needed at expected scale.
+- Reading model: materialization is `snapshot ⊕ fold(tails)` on each
+  command — the shipped content-keyed fold cache (ADR-0022) folds only each
+  segment's appended suffix, rebuilding from the segments on any other
+  divergence.
 - A non-destructive snapshot needs no format change — it is a side cache
   (ADR-0022), so an old reader that ignores it simply folds the log, and the
   format stays `v=1`. Only a future destructive GC bumps `v`: once ops below the

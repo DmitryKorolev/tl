@@ -38,18 +38,6 @@ Kernel theorems still to decide whether to commit to:
   a fresh tag — not a 2P-set), so the `dep remove`/`unrelate` guarantee is a
   theorem rather than a consequence left implicit in the join laws (ADR-0002/0004).
 
-## Log format, versioning & compaction
-
-- Destructive GC (physical op removal) is deferred and undesigned [low] — the
-  non-destructive split is settled (ADR-0008, ADR-0022): the snapshot is the
-  content-keyed fold cache, the ops stay, the log never shrinks, no `v` bump.
-  Still open is *physical* removal — discarding ops below a causally-stable
-  frontier — which needs a `snapshot` record + `v` bump, must answer the
-  strictly-growing per-segment line-union so an un-compacted replica cannot
-  re-add retired ops (ADR-0008 × ADR-0001 §5 × ADR-0015 §3), and carries the
-  reserved *fold-preservation* theorem `fold ops = snapshot(F) ⊕ fold(ops above
-  F)` for a causally-stable frontier (ADR-0004/0008).
-
 ## Sync, discovery & local concurrency
 
 - Discovery: bare repos, `.git`-file worktrees, `GIT_DIR`/`GIT_WORK_TREE` [low]

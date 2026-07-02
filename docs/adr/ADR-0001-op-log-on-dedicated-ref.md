@@ -53,8 +53,12 @@ task state is thus fully decoupled from code commits, and is branch-independent
 tracker wants).
 
 In-ref encoding (decided, built in `Tl/Sync/Ref`): the ref commit's tree
-holds one blob per replica named `<replica-id>.jsonl` at the root — the tree
-*is* the `.tl/log/` contents, no prefix. Commits are **parent-chained** (each
+holds one blob per replica named `<replica-id>.jsonl` at the root — the
+segment blobs *are* the `.tl/log/` contents, no prefix. The tree may also
+carry reserved non-replica-named entries (the compaction snapshot,
+ADR-0008): a sync carries any tree entry it does not recognize through the
+union verbatim — transport-level preserve-unknown — rather than silently
+dropping it. Commits are **parent-chained** (each
 push's commit parents the prior tip), so a non-fast-forward push is
 detectable (§5) and the ref carries history. The author/committer is a
 **fixed neutral `tl <tl@localhost>`** set via `GIT_*` env, never the user's
@@ -126,7 +130,9 @@ longer file" is only a valid shortcut when one is a prefix of the other — the
 common case — not the general rule.) It is a trivial, total operation `tl`
 performs in the tested shell. It is line-granular (never tears a
 line); reordered or dropped-byte-identical lines are absorbed by the fold's
-order/duplicate-insensitivity (ADR-0004). This is the *only* merge `tl` does —
+order/duplicate-insensitivity (ADR-0004). Non-replica tree entries ride the
+same line-union (two concurrent writers of a reserved entry both survive) and
+pass through otherwise untouched. This is the *only* merge `tl` does —
 the lattice join a CRDT tool is meant to own, not a conflict-resolution driver.
 
 Because a push touches only `refs/tl/log`, it is safe to automate (no
