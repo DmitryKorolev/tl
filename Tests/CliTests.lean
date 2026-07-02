@@ -3372,7 +3372,7 @@ def cliShapePinTests : IO (List Outcome) := do
   let sub ← mkIssue dir "Parse digits" ["--blocked-by", "tl-" ++ leaf]
   let solo ← mkIssue dir "Wire the CLI"
   -- the issueObj echo for a titled, undescribed, unclaimed native create:
-  -- every always-present field plus title/slug/timestamps, nothing else
+  -- every always-present field plus title and timestamps, nothing else
   let echoKeys : List String :=
     ["blocked", "createdAt", "deferred", "dependencies", "effectiveStatus",
      "id", "isEpic", "labels", "meta", "priority", "provenance", "ready",
@@ -3385,8 +3385,8 @@ def cliShapePinTests : IO (List Outcome) := do
       && (jArr j "freed").all (fun r =>
            jKeys r == ["effectiveStatus", "id", "status", "title"]
            && jStr r "status" == some "open" && jStr r "effectiveStatus" == some "open")
-      && (jArr j "freed").all (fun r =>
-           jStr r "id" == some ("tl-" ++ leaf) || jStr r "id" == some ("tl-" ++ mid))),
+      && (let ids := (jArr j "freed").filterMap (fun r => jStr r "id")
+          ids.length == 2 && ids.contains ("tl-" ++ leaf) && ids.contains ("tl-" ++ mid))),
    ← expectData "unblocks keeps the shape when freed is empty"
       ["unblocks", "tl-" ++ solo, "--dir", dir]
     (fun j => jKeys j == ["count", "freed", "id"] && jNat j "count" == some 0)]
@@ -3420,15 +3420,19 @@ def cliShapePinTests : IO (List Outcome) := do
     (fun j => jKeys j == ["from", "status", "to", "type"]
       && jStr j "type" == some "related" && jStr j "status" == some "added"
       && jStr j "from" == some ("tl-" ++ leaf) && jStr j "to" == some ("tl-" ++ solo)),
-   ← expectData "re-relating an already-related pair still answers added"
+   ← expectData "re-relating (swapped args) still answers added, echoing argument order"
       ["dep", "relate", "tl-" ++ solo, "tl-" ++ leaf, "--dir", dir, "--actor", "t"]
-    (fun j => jStr j "status" == some "added"),
+    (fun j => jStr j "status" == some "added"
+      && jStr j "from" == some ("tl-" ++ solo) && jStr j "to" == some ("tl-" ++ leaf)),
    ← expectData "dep unrelate answers removed"
       ["dep", "unrelate", "tl-" ++ leaf, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
     (fun j => jKeys j == ["from", "status", "to", "type"]
       && jStr j "status" == some "removed"),
    ← expectData "unrelating an unrelated pair is the noop"
       ["dep", "unrelate", "tl-" ++ leaf, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "status" == some "noop"),
+   ← expectData "self-unrelate is the noop"
+      ["dep", "unrelate", "tl-" ++ solo, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
     (fun j => jStr j "status" == some "noop"),
    ← expectErr "self-relate is a usage refusal"
       ["dep", "relate", "tl-" ++ solo, "tl-" ++ solo, "--dir", dir, "--actor", "t"] .usage]
@@ -3462,7 +3466,10 @@ def cliShapePinTests : IO (List Outcome) := do
   o := o ++ [← expectData "meta set pins {id, key, status, value}"
       ["meta", "set", "tl-" ++ solo, "owner", "carol", "--dir", dir, "--actor", "t"]
     (fun j => jKeys j == ["id", "key", "status", "value"]
-      && jStr j "status" == some "set" && jStr j "value" == some "carol")]
+      && jStr j "status" == some "set" && jStr j "value" == some "carol"),
+   ← expectData "re-setting a set key still answers set (an LWW write is never a noop)"
+      ["meta", "set", "tl-" ++ solo, "owner", "carol", "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "status" == some "set" && jStr j "value" == some "carol")]
   let _ ← run' ["meta", "set", "tl-" ++ solo, "area", "kernel", "--dir", dir, "--actor", "t"]
   o := o ++ [← expectData "keyed meta get pins {id, key, value}"
       ["meta", "get", "tl-" ++ solo, "owner", "--dir", dir]
@@ -3480,6 +3487,11 @@ def cliShapePinTests : IO (List Outcome) := do
       ["meta", "list", "tl-" ++ solo, "--dir", dir]
     (fun j => jKeys j == ["count", "id", "keys"]
       && (jArr j "keys").map (·.getStr?.toOption) == [some "area", some "owner"]),
+   ← expectData "global meta list pins key-ascending rows with per-key counts"
+      ["meta", "list", "--dir", dir]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "keys").map (fun r => jStr r "key") == [some "area", some "owner"]
+      && (jArr j "keys").map (fun r => jNat r "count") == [some 1, some 1]),
    ← expectData "meta clear pins {id, key, status} — no value field"
       ["meta", "clear", "tl-" ++ solo, "owner", "--dir", dir, "--actor", "t"]
     (fun j => jKeys j == ["id", "key", "status"] && jStr j "status" == some "cleared"),
@@ -3488,8 +3500,9 @@ def cliShapePinTests : IO (List Outcome) := do
     (fun j => jStr j "status" == some "noop"),
    ← expectData "global meta list pins {count, keys} with {count, key} rows"
       ["meta", "list", "--dir", dir]
-    (fun j => jKeys j == ["count", "keys"]
-      && (jArr j "keys").all (fun r => jKeys r == ["count", "key"]))]
+    (fun j => jKeys j == ["count", "keys"] && jNat j "count" == some 1
+      && (jArr j "keys").all (fun r => jKeys r == ["count", "key"])
+      && (jArr j "keys").map (fun r => jStr r "key") == [some "area"])]
   -- import: the five-field summary; disclosures duplicate into envelope notes
   let importRoot ← IO.FS.createTempDir
   let batch := importRoot / "batch.jsonl"
@@ -3513,6 +3526,68 @@ def cliShapePinTests : IO (List Outcome) := do
   | .error e =>
     o := o ++ [check "import pins {disclosures, issues, ops, replica, source}"
       false s!"{e.code.wire}: {e.message}"]
+  -- past-instant defer: deferUntil stays in the echo, the issue stays
+  -- workable, and the elapsed deferral is disclosed as a top-level note
+  let past ← mkIssue dir "Sort the imports"
+  match ← run' ["defer", "tl-" ++ past, "--until", "2000-01-01", "--dir", dir, "--actor", "t"] with
+  | .ok out =>
+    o := o ++
+      [check "a past defer keeps deferUntil in the echo and stays workable"
+        (jKeys out.data
+            == ["blocked", "createdAt", "deferUntil", "deferred", "dependencies",
+                "effectiveStatus", "id", "isEpic", "labels", "meta", "priority",
+                "provenance", "ready", "status", "title", "updatedAt"]
+          && jBool out.data "deferred" == some false
+          && jBool out.data "ready" == some true)
+        out.data.compress,
+       check "a past defer discloses the elapsed deferral in the envelope notes"
+        (out.notes.any (fun n => (n.splitOn "already past").length > 1))
+        (String.intercalate " | " out.notes)]
+  | .error e =>
+    o := o ++ [check "a past defer keeps deferUntil in the echo and stays workable"
+      false s!"{e.code.wire}: {e.message}"]
+  -- untitled rows (reachable only via merge): a freed row omits title, a
+  -- dep critical row carries the empty title
+  let dirU ← freshDir
+  let victim ← mkIssue dirU "Titled blocker"
+  let victim2 ← mkIssue dirU "Downstream leaf"
+  IO.FS.writeFile (System.FilePath.mk dirU / "log" / "1zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create "aaaabbbbccccdddd" {}) 50 "1zzzzzzzzzzzz" "eve" ++ "\n")
+  let _ ← run' ["dep", "add", "tl-aaaabbbbccccdddd", "tl-" ++ victim, "--dir", dirU, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ victim2, "tl-aaaabbbbccccdddd", "--dir", dirU, "--actor", "t"]
+  o := o ++ [← expectData "an untitled freed row omits the title key"
+      ["unblocks", "tl-" ++ victim, "--dir", dirU]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "freed").all (fun r => jKeys r == ["effectiveStatus", "id", "status"])),
+   ← expectData "an untitled dep critical row carries the empty title"
+      ["dep", "critical", "--dir", dirU]
+    (fun j => (jArr j "items").any (fun r =>
+        jStr r "id" == some "tl-aaaabbbbccccdddd" && jStr r "title" == some ""
+        && jKeys r == ["id", "status", "title", "weight"]))]
+  -- dep critical tie-break: equal weights order by id ascending
+  let dirT ← freshDir
+  let hubA ← mkIssue dirT "First hub"
+  let hubB ← mkIssue dirT "Second hub"
+  let _ ← mkIssue dirT "Leaf one" ["--blocked-by", "tl-" ++ hubA]
+  let _ ← mkIssue dirT "Leaf two" ["--blocked-by", "tl-" ++ hubB]
+  let tieOrder := if hubA ≤ hubB then [some ("tl-" ++ hubA), some ("tl-" ++ hubB)]
+                  else [some ("tl-" ++ hubB), some ("tl-" ++ hubA)]
+  o := o ++ [← expectData "dep critical breaks weight ties by id ascending"
+      ["dep", "critical", "--dir", dirT]
+    (fun j => ((jArr j "items").map (fun r => jStr r "id")) == tieOrder
+      && ((jArr j "items").map (fun r => jNat r "weight")) == [some 1, some 1])]
+  -- fail-closed import: '-' is a filename, and a malformed line writes nothing
+  let mixedBatch := importRoot / "mixed.jsonl"
+  IO.FS.writeFile mixedBatch
+    ("{\"id\":\"EXT-1\",\"title\":\"Good line\",\"status\":\"open\"}\nnot json at all\n")
+  let dir4 ← freshDir
+  o := o ++ [← expectErr "import of the literal filename '-' is not-found"
+      ["import", "-", "--dir", dir4] .notFound,
+   ← expectErr "a malformed line rejects the whole batch"
+      ["import", mixedBatch.toString, "--dir", dir4] .malformedLine,
+   ← expectData "the rejected batch wrote nothing"
+      ["list", "--all", "--dir", dir4]
+    (fun j => jNat j "count" == some 0)]
   let cleanBatch := importRoot / "clean.jsonl"
   IO.FS.writeFile cleanBatch "{\"id\":\"EXT-9\",\"title\":\"Imported solo\",\"status\":\"open\"}\n"
   let dir3 ← freshDir

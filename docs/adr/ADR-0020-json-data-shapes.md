@@ -34,10 +34,11 @@ object (ADR-0025) happened entirely pre-release within `schemaVersion: 1`.
 - **Omit-empty**: an optional field with no value is absent, not `null`.
   (Wire records distinguish null-vs-absent for *writes*, ADR-0002; the read
   projection has no clear-vs-unset distinction to preserve.) The pinned
-  `|null` exceptions: `provenance.createdBy` and `claim.currentAssignee` (as
-  ADR-0003 pins them), `log`'s per-entry `actor`, and the keyed
-  `meta get` `value` — each is a field whose *value* is the answer, so the
-  field stays present and `null` says "none".
+  `|null` exceptions — each a field whose *value* is the answer, so the field
+  stays present and `null` says "none": `provenance.createdBy` and
+  `claim.currentAssignee` (as ADR-0003 pins them), `log`'s per-entry `actor`,
+  `ready`'s top-level `staleness`, `doctor`'s sync-check `upstream`
+  and `lastSync`, `init`'s `replica`, and the keyed `meta get` `value`.
 - **Ids render in display form** — `tl-` prefixed (ADR-0007: the prefix is
   added on render, and error messages already name the full `tl-…` form).
 - **Timestamps** are ISO-8601 UTC with millisecond precision (the HLC's
@@ -159,8 +160,11 @@ applied-vs-noop marker (the human line words the difference).
 
 **`tl reopen <id> --json`** — the reopened issue (echo, exactly as `create`):
 `status` back to `open`, `closeResolution` and `closedAt` absent, any
-holdover `assignee` cleared. Reopening a never-closed open issue is the
-idempotent no-op — same echo, nothing appended.
+holdover `assignee` cleared. The no-op is value equality, deliberately not
+just `status == open`: only an issue that is already open with no
+`closeResolution` and no assignee appends nothing (same echo either way) — a
+merge-materialized open-but-assigned issue still gets a real reopen that
+clears the assignee.
 
 **`tl dep add / dep remove --json`** — a relationship ack in the pinned edge
 orientation (`from` blocks `to`; for `parent`, `from` is the parent —
@@ -200,7 +204,7 @@ from `A` to `B` inclusive, empty exactly when `found` is `false`:
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
   "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
-  "path": ["tl-kz8w2n4jp7e9h3vt", "tl-0ld3p1cqv2m8e4ha", "tl-9f3cq7rkv2m8e4ha"],
+  "path": ["tl-kz8w2n4jp7e9h3vt", "tl-0dd3p1cqv2m8e4ha", "tl-9f3cq7rkv2m8e4ha"],
   "found": true
 } }
 ```
@@ -234,7 +238,7 @@ courtesy *replace* (drop the child's other parent edges, add the target);
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "parent": "tl-kz8w2n4jp7e9h3vt", "...": "…",
-  "reparent": { "status": "set", "replaced": ["tl-0ld3p1cqv2m8e4ha"] }
+  "reparent": { "status": "set", "replaced": ["tl-0dd3p1cqv2m8e4ha"] }
 } }
 ```
 
@@ -265,8 +269,9 @@ many issues carry it, sorted by name; `count` is the number of distinct labels.
 (`tl list --label <l>` is the issue-facet counterpart; its rows are the pinned
 `list` item shape, unchanged — see *`tl list` filter facets* below.)
 
-**`tl meta set / meta clear <id> <key> --json`** — a metadata ack in the
-relationship-ack shape:
+**`tl meta set / meta clear <id> <key> --json`** — a metadata ack: its own
+`{id, key, value, status}` fields (no `type`/`from`/`to` — the ack names a
+key, not an edge) with the relationship ack's `status` discipline:
 
 ```json
 { "schemaVersion": 1, "ok": true, "data": {
@@ -487,8 +492,9 @@ fail-closed batch wrote. All five fields always present:
 (default `import`). `disclosures` are ADR-0005's per-record disclosures
 (clamped priority, skipped dangling edge, timestamp fallback, …); the same
 strings are duplicated into the envelope's top-level `notes` (and stderr) —
-in `data` they travel with the summary an agent stores. `<path>` is a real
-file (`/dev/stdin` works; a literal `-` is just a filename, so `not-found`).
+in `data` they travel with the summary an agent stores. `<path>` is a JSONL
+file or a directory of `*.jsonl`, unioned (ADR-0005); `/dev/stdin` works,
+and a literal `-` is just a filename, so `not-found`.
 A malformed line rejects the whole batch (`malformed-line`, nothing
 written); re-seeding a repo that already holds task state requires
 `--force`, and an input over the byte budget `--allow-large` (both refusals
