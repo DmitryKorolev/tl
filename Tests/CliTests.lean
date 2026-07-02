@@ -794,7 +794,7 @@ def cliDescriptionTests : IO (List Outcome) := do
   let q (s : String) : String := "'" ++ s ++ "'"
   let hasDesc (out body : String) : Bool := (out.splitOn s!"\"description\":\"{body}\"").length == 2
   let noDesc (out : String) : Bool := (out.splitOn "\"description\"").length == 1
-  -- ADR-0017 §8 (amended 2026-06-14): without the `-` sentinel, stdin is not
+  -- ADR-0017 §8: without the `-` sentinel, stdin is not
   -- read — the body stays absent even with data on the pipe. The regression
   -- guard for the hang: an unrequested stdin is never consumed.
   let nodash ← sh s!"printf 'from\nstdin' | {q exe.toString} create NoDash --dir {q dir} --actor t --json"
@@ -2277,7 +2277,7 @@ def cliClaimStealTests : IO (List Outcome) := do
       (fun e => (e.message.splitOn "not a valid duration").length == 2)]
   return o
 
-/-- `tl list --stale <duration>` (ADR-0011 amendment): a mandatory-window read
+/-- `tl list --stale <duration>` (ADR-0011): a mandatory-window read
     facet showing only stale claims (in-progress, claimed longer ago than the
     window), via the same `claimStaleDeadlineMs` as doctor / claim --steal. No
     default; a bad value is usage; open and freshly-claimed items are excluded. -/
@@ -3197,7 +3197,10 @@ def cliImportTests : IO (List Outcome) := do
   if !(← fixturePath.pathExists) then
     return [check "import: committed fixture present at cwd" false
       s!"could not find {fixturePath} under cwd {(← IO.currentDir)} — run tltest from the repo root"]
-  let fixture ← IO.FS.readFile fixturePath
+  let fixture? ← try pure (some (← IO.FS.readFile fixturePath)) catch e => do
+    o := o ++ [check "import: committed fixture readable" false s!"{fixturePath}: {e}"]
+    pure none
+  let some fixture := fixture? | return o
   let root ← IO.FS.createTempDir
   let fpath := (root / "in.jsonl").toString
   IO.FS.writeFile (root / "in.jsonl") fixture

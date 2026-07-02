@@ -210,11 +210,15 @@ cannot be deleted.
 A hostile import file the user *chooses* to import can resource-bomb (deep
 parent chains, huge fields, excess edges) or bulk-seed injection payloads.
 
-Stance: mitigate — DONE (ADR-0005). The importer bounds field size, dotting
-depth, edge count, and total seed size (loud `--force`/`--max` override +
-disclosure), reconstructs dotted-id parents iteratively with a visited bound
-(refusing self/cyclic dotting), and tags imported issues `source: "imported"` so
-the read commands surface lower trust. Injection content is handled by T1's render-layer
+Stance: mitigate — partially done (ADR-0005). The importer bounds the total
+input size (a fail-closed `force-required` refusal; `--allow-large`/`--max`
+is the loud bounds override, distinct from `--force`, the
+clobber-existing-state gate — the two are never conflated, ADR-0005),
+skips-and-discloses dangling edge endpoints rather than fabricating
+placeholders, and tags imported issues `source: "imported"` so
+the read commands surface lower trust. The granular bounds ADR-0005 specs —
+per-field size, label count, parent-chain depth, edge count, derived seed
+size — are not yet enforced; that residual is open, tracked work. Injection content is handled by T1's render-layer
 defenses. Document that import adopts opaque content from a possibly-untrusted
 source.
 

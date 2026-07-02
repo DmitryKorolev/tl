@@ -88,8 +88,9 @@ only outside a git repo; since the remote leg landed (`Tl/Sync/Remote.lean`,
 ADR-0001 §5 built form) it is its own leg-result object —
 `{ "ran": false, "reason": "no-upstream" }` when no remote is configured.
 In a leg that ran, `tip` is always present: the resulting `refs/tl/log` OID,
-or `null` when the ref does not exist yet (nothing published, nothing
-fetched); the `{"ran": false}` leg forms carry no `tip`.
+or `null` when the ref does not exist yet and the run published nothing into
+it — nothing new to publish, or no readable local replica to publish from;
+the `{"ran": false}` leg forms carry no `tip`.
 
 ### 2. Worktree sharing uses the shared common-`.git` ref
 

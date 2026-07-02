@@ -331,8 +331,8 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
 Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   Harness.lean          --   assertion + seeded-generator harness
   JsonUtil.lean         --   shared option-returning JSON accessors for the
-                        --   suites that walk helpJson/envelope JSON (one
-                        --   definition so the grammar suites cannot drift)
+                        --   grammar suites (GrammarTests/DocGrammarTests) —
+                        --   one definition so they cannot drift apart
   CrockfordTests.lean   --   encode/decode round-trips
   HlcTests.lean         --   HLC update rules + hex codec branches
   RecordTests.lean      --   envelope round-trip + canonical order

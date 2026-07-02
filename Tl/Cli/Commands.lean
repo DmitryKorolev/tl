@@ -347,7 +347,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   let sorted := (v.present.map (fun i => (createdAt i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
-  -- `--stale <duration>` (mandatory arg, no default — ADR-0011 amendment): parse
+  -- `--stale <duration>` (mandatory arg, no default — ADR-0011): parse
   -- the window up front, so the facet below need only read it.
   let staleWindow : Option Nat ← match staleArg with
     | none => pure none
@@ -499,7 +499,7 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   if State.isReadyWith v.rollup s v.now i then
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
              human := s!"{displayId i} is ready", notes }
-  -- fuel = |presentIssues|; reuse the view's hoisted scan (presentElements is Θ(N²))
+  -- fuel = |presentIssues|; reuse the view's hoisted scan (one present pass, not redone here)
   let trans := State.whyFastH v.idx.btgt v.idx.presentH v.idx.rollupH s v.present.length i
   -- a node's children in the why-tree are its LIVE direct blockers (present and
   -- not effectively-closed) — the same liveSuccE relation whyFast's transitive
@@ -577,8 +577,8 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
                 ("issues", Json.arr (issues.map (Json.str ∘ displayId)).toArray)]
   -- each diagnostic computed exactly once per invocation (the fast forms,
   -- bridged to the spec by cyclesFast_eq/precCyclesFast_eq), and over the
-  -- view's pre-hoisted present/edges/pedges so the Θ(N²) scans aren't redone
-  -- per graph (cyclesFastWith/precCyclesFastWith)
+  -- view's pre-hoisted present/edges/pedges so the present scans aren't
+  -- redone per graph (cyclesFastWith/precCyclesFastWith)
   let blocksCycles := State.cyclesFastWith v.present v.edges EdgeKind.Blocks
   let parentCycles := State.cyclesFastWith v.present v.edges EdgeKind.Parent
   let structural := blocksCycles ++ parentCycles
@@ -597,7 +597,7 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 
 /-- The cycle count (structural per kind + the non-duplicate readiness
     deadlocks), shared with `doctor`'s graph check. Reads the view's
-    pre-hoisted present/edges/pedges (one Θ(N²)/Θ(E²) scan total, not three). -/
+    pre-hoisted present/edges/pedges (one scan total, not three). -/
 private def cycleCount (v : View) : Nat :=
   let s := v.state
   let structural := State.cyclesFastWith v.present v.edges EdgeKind.Blocks

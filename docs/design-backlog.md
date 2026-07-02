@@ -63,6 +63,7 @@ Kernel theorems still to decide whether to commit to:
   Decide; if detect, give `doctor` (and optionally `init`) a best-effort FS-type
   probe that *warns* (not a hard error, since convergence is unaffected) —
   ADR-0015 + ADR-0011/doctor.
+
 ## Build & proof infra
 
 - Compiled-kernel-vs-spec property cross-check [low] — the mechanism now

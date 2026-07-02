@@ -41,8 +41,9 @@ structure LocalOutcome where
   /-- The sibling replica ids whose local cache was (re)materialized. -/
   absorbed : List String
   /-- The resulting `refs/tl/log` tip. `none` when `ran` is false, or when
-      the ref does not exist yet and this replica had nothing to publish
-      into it (the no-publish reconcile path). -/
+      the ref does not exist yet and this run published nothing into it —
+      nothing new to publish, or no readable local replica to publish from
+      (the no-publish reconcile path). -/
   tip : Option String
 deriving Repr, Inhabited
 

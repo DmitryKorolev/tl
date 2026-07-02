@@ -308,10 +308,11 @@ def perfTests : IO (List Outcome) := do
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
       o := o ++ [ratioRow name tS tB]
-    -- the full diagnostics command path = view scans + SCC machinery. The
-    -- accepted witness-grouping residual is superlinear only on shattered
-    -- cyclic sets, so this is an explicit wall-clock ceiling as a backstop,
-    -- not a ratio dressed up by the noise floor.
+    -- the full diagnostics command path = view scans + SCC machinery,
+    -- pinned by an explicit wall-clock ceiling as a conservative backstop.
+    -- On these fixtures the accepted witness-grouping residual contributes
+    -- nothing; whether the path can graduate to a ratio row awaits
+    -- re-measurement now that the view scans are one-pass.
     let fullSmall := ((fulls.head?).map (·.2)).getD 0
     let fullBig := (fulls.getLast?.map (·.2)).getD 0
     o := o ++ [check

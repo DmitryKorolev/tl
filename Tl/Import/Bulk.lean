@@ -4,8 +4,9 @@ import format (a JSONL of issue records) into a deterministic seed op-log.
 
 This is tested I/O shell, not kernel. Determinism is the load-bearing property
 (re-importing a source byte-stably reproduces the log): every id, replica id,
-nonce, and fallback timestamp derives from the source data via SHA-256, never
-from `now()` or entropy. The seed ops are written under a deterministic *import
+and nonce derives from the source data via SHA-256, and every fallback
+timestamp from a fixed base plus a per-record ordinal (causality-clamped) —
+never from `now()` or entropy. The seed ops are written under a deterministic *import
 replica* (a single-writer segment), so the live replica is untouched and a
 later `tl create` is an ordinary second replica.
 
