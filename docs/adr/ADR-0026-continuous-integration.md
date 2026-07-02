@@ -32,17 +32,20 @@ install, so a violation fails early:
 
 - *Hard gate — Mathlib import scope.* Direct `import Mathlib` is allowed only
   in the ADR-0009 allowlist (`Tl/Kernel/Path.lean`, `Tl/Kernel/Reach.lean`,
-  `Tl/Kernel/ReachBFS.lean`). Widening the scope means amending ADR-0009
-  first.
+  `Tl/Kernel/ReachBFS.lean`); every other module in the ADR-0009 scope gets
+  Mathlib transitively through these and needs no direct import. Widening the
+  scope means amending ADR-0009 *and* the workflow's allowlist in the same
+  change.
 - *Hard gate — no `sorry`/`admit` in the verified cone.* This duplicates the
   build gate (`sorry` emits a warning, so `--wfail` is the authority); the
   grep exists to fail the same defect before the build starts.
-- *Hard gate — no `axiom`, `native_decide`, or `ofReduceBool` in the verified
-  cone.* These compile **without warnings**, so the build gate cannot catch
-  them; until a checked-in `#print axioms` probe closes the remaining
-  false-negative holes (e.g. exotic same-line forms), this grep is the only
-  CI net for the fixed trust boundary. Once the probe lands, the grep can
-  demote to an advisory fast-fail.
+- *Hard gate — no `axiom` and no native evaluation (`native_decide`,
+  `decide +native`, the `ofReduce*` axioms) in the verified cone.* These
+  compile **without warnings**, so the build gate cannot catch them; until a
+  checked-in `#print axioms` probe closes the remaining false-negative holes
+  (e.g. exotic same-line forms), this grep is the only CI net for the fixed
+  trust boundary. Once the probe lands, the grep can demote to an advisory
+  fast-fail.
 - *Advisory — task-tracker-id leakage.* Warns on full display-form ids in
   tracked sources (excluding the two files that legitimately embed example
   ids). It stays advisory until the pattern and exclusion set are pinned by
@@ -62,11 +65,12 @@ two development platforms:
   (the harness expects the `tl` binary at `.lake/build/bin/tl` and the repo
   sources/fixtures at the working directory). The suite needs no network, no
   git identity, and no ambient environment variables.
-- Both are driven through `leanprover/lean-action` (SHA-pinned), which
-  installs elan and runs `lake exe cache get` before building. Two of its
-  features are deliberately disabled: its bundled `.lake` GitHub cache (see
-  Caches) and its `lake test` step (the package declares no Lake
-  test_driver; the suite runs as an explicit step instead).
+- The build runs through `leanprover/lean-action` (SHA-pinned), which
+  installs elan and runs `lake exe cache get` first; the suite step is *not*
+  part of the action — it is a plain workflow step that uses the toolchain
+  the action put on PATH, because the package declares no Lake test_driver
+  for the action's `lake test` to drive. The action's bundled `.lake` GitHub
+  cache is also deliberately disabled (see Caches).
 - The ubuntu leg uploads the built `tl` and `tltest` binaries as a
   short-lived artifact for the floor job.
 
@@ -99,7 +103,7 @@ Four caches, each keyed by exactly what invalidates it:
 | --- | --- | --- |
 | `~/.elan` | OS + arch + `lean-toolchain` hash | toolchain download |
 | `~/.cache/mathlib` | `lake-manifest.json` + `lean-toolchain` hash | deliberately OS-agnostic — the `.ltar` archives are platform-independent, so one entry serves both runners |
-| `.lake/packages` minus each package's `.lake` | `lake-manifest.json` hash | dependency *sources* only |
+| `.lake/packages` | `lake-manifest.json` hash | dependency *sources* only: an explicit restore/save split, with the per-package `.lake` build dirs pruned before the save (actions/cache path exclusions cannot carve subtrees out of a bare directory pattern — a directory path is archived recursively, so the exclusion must happen by pruning). Saved from one matrix leg; the clones are platform-independent |
 | `.lake/build` | OS + arch + manifest/toolchain hash + commit, with a restore-key falling back to the newest prior commit | tl's own incremental build |
 
 Two prohibitions:
@@ -123,6 +127,11 @@ bump procedure.
 
 - Concurrency: superseded runs are cancelled on PRs and feature refs, never
   on `main` — main runs populate the shared caches that PR runs restore.
+- `git-floor` starts only after the whole build matrix (GitHub Actions
+  cannot depend on a single matrix leg), although it consumes only the
+  ubuntu artifact. This is an accepted latency cost: splitting the matrix
+  into per-OS jobs would let the floor job start as soon as the ubuntu
+  binaries exist, and is the move if time-to-green starts to matter.
 - Branch protection requires all four checks: `lint`,
   `build-and-test (ubuntu-latest)`, `build-and-test (macos-latest)`,
   `git-floor`. No merge queue — a single-contributor repository does not

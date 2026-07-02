@@ -37,10 +37,10 @@ jobs:
           Tl/Kernel/Reach.lean
           Tl/Kernel/ReachBFS.lean'
           hits=$(git grep -l '^import Mathlib' -- '*.lean' || true)
-          bad=$(comm -23 <(sort -u <<<"$hits") <(sort <<<"$allowed" | sed 's/^ *//') | sed '/^$/d')
+          bad=$(comm -23 <(sort -u <<<"$hits") <(sort <<<"$allowed") | sed '/^$/d')
           if [ -n "$bad" ]; then
             echo "$bad"
-            echo "::error::'import Mathlib' outside the ADR-0009 allowlist. Move the proof into the reachability/cardinality modules, prove it over batteries instead, or record a scope widening in docs/adr/ADR-0009-proof-dependencies.md first."
+            echo "::error::direct 'import Mathlib' outside the ADR-0009 allowlist. Move the proof into the reachability/cardinality modules, prove it over batteries instead, or — for a genuine scope widening — record it in docs/adr/ADR-0009-proof-dependencies.md and add the file to this workflow's allowlist in the same change."
             exit 1
           fi
 
@@ -63,8 +63,8 @@ jobs:
             echo "::error::axiom declaration found. The trust boundary is fixed by docs/overview.md; expanding it is a deliberate, recorded decision — state the residual as a carried assumption there instead of adding an axiom."
             exit 1
           fi
-          if git grep -nE '(^|[^[:alnum:]_])(native_decide|ofReduceBool)($|[^[:alnum:]_])' -- 'Tl/*.lean' Tl.lean Main.lean; then
-            echo "::error::native_decide/ofReduceBool bypasses the Lean kernel (trusts the compiler instead). Use decide or an explicit proof term."
+          if git grep -nE '(^|[^[:alnum:]_])(native_decide|ofReduceBool|ofReduceNat)($|[^[:alnum:]_])|decide[[:space:]]+\+[[:space:]]*native' -- 'Tl/*.lean' Tl.lean Main.lean; then
+            echo "::error::native evaluation (native_decide / decide +native / the ofReduce* axioms) bypasses the Lean kernel and trusts the compiler instead. Use decide or an explicit proof term."
             exit 1
           fi
 
@@ -98,6 +98,9 @@ jobs:
       # mathlib oleans, multi-GB — `lake exe cache get` restores them from
       # ~/.cache/mathlib in seconds) and never cache .tl/local/ (a byte-copy
       # of a replica id would violate a carried assumption; docs/overview.md).
+      # The sources cache uses an explicit restore/save split because
+      # actions/cache path exclusions cannot carve the build dirs out of a
+      # bare directory pattern: the save step below prunes them first.
       - name: cache elan + toolchain
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -112,12 +115,11 @@ jobs:
           # platform-independent, so both runners share one entry.
           key: mathlib-cache-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
 
-      - name: cache dependency sources
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: restore dependency sources
+        id: deps-src
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            .lake/packages
-            !.lake/packages/*/.lake
+          path: .lake/packages
           key: lake-packages-src-${{ hashFiles('lake-manifest.json') }}
 
       - name: cache tl build
@@ -158,6 +160,20 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # The sources cache must hold sources only: prune the per-package .lake
+      # build dirs (the unpacked oleans) before saving. Saved from one leg —
+      # the clones are platform-independent.
+      - name: prune dependency build dirs before caching sources
+        if: matrix.os == 'ubuntu-latest' && steps.deps-src.outputs.cache-hit != 'true'
+        run: rm -rf .lake/packages/*/.lake
+
+      - name: save dependency sources
+        if: matrix.os == 'ubuntu-latest' && steps.deps-src.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .lake/packages
+          key: lake-packages-src-${{ hashFiles('lake-manifest.json') }}
+
   # ADR-0006 pins a runtime floor of git >= 2.17; this job proves the suite
   # still passes at exactly that floor, so a plumbing dependency above it
   # cannot slip in unnoticed. git 2.17.1 is built from a hash-pinned tarball
@@ -178,7 +194,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/git-floor
-          key: git-floor-2.17.1-${{ runner.os }}-${{ runner.arch }}-79136e7a
+          key: git-floor-${{ runner.os }}-${{ runner.arch }}-${{ env.GIT_FLOOR_VERSION }}-${{ env.GIT_FLOOR_SHA256 }}
 
       # Minimal build: no curl/openssl/expat/gettext/perl/python/tcltk — the
       # transport tl exercises is local plumbing only. The kernel.org
@@ -188,10 +204,12 @@ jobs:
       # regardless of which mirror answered.
       - name: build git 2.17.1 from the hash-pinned tarball
         run: |
-          if [ -x "$HOME/git-floor/bin/git" ]; then
-            echo "floor git restored from cache"
+          if [ -x "$HOME/git-floor/bin/git" ] \
+             && [ "$("$HOME/git-floor/bin/git" --version)" = "git version ${GIT_FLOOR_VERSION}" ]; then
+            echo "floor git ${GIT_FLOOR_VERSION} restored from cache"
             exit 0
           fi
+          rm -rf "$HOME/git-floor"
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends gcc make zlib1g-dev xz-utils
           tmp=$(mktemp -d)
@@ -199,8 +217,13 @@ jobs:
           for url in \
             "https://mirror.csclub.uwaterloo.ca/kernel.org/software/scm/git/git-${GIT_FLOOR_VERSION}.tar.xz" \
             "https://distfiles.macports.org/git/git-${GIT_FLOOR_VERSION}.tar.xz"; do
+            rm -f git.tar.xz
             if curl -sfL --retry 3 -o git.tar.xz "$url"; then break; fi
           done
+          if [ ! -s git.tar.xz ]; then
+            echo "::error::could not download git ${GIT_FLOOR_VERSION} from any mirror — check mirror availability or add a mirror to this step (keep the pinned sha256)."
+            exit 1
+          fi
           echo "${GIT_FLOOR_SHA256}  git.tar.xz" | sha256sum -c -
           tar xf git.tar.xz
           make -C "git-${GIT_FLOOR_VERSION}" -j"$(nproc)" prefix="$HOME/git-floor" \
@@ -220,7 +243,11 @@ jobs:
         run: |
           chmod +x .lake/build/bin/tl .lake/build/bin/tltest
           export PATH="$HOME/git-floor/bin:$PATH"
-          test "$(git --version)" = "git version ${GIT_FLOOR_VERSION}"
+          v=$(git --version)
+          if [ "$v" != "git version ${GIT_FLOOR_VERSION}" ]; then
+            echo "::error::expected the floor git ${GIT_FLOOR_VERSION} on PATH, got '${v}' — the PATH override or the floor-git cache is broken."
+            exit 1
+          fi
           .lake/build/bin/tltest
 
       # Floor smoke: doctor's gitVersion row must report the floor git as ok
@@ -229,14 +256,21 @@ jobs:
       - name: floor smoke — init + doctor at git 2.17
         run: |
           export PATH="$HOME/git-floor/bin:$PATH"
-          test "$(git --version)" = "git version ${GIT_FLOOR_VERSION}"
+          v=$(git --version)
+          if [ "$v" != "git version ${GIT_FLOOR_VERSION}" ]; then
+            echo "::error::expected the floor git ${GIT_FLOOR_VERSION} on PATH, got '${v}' — the PATH override or the floor-git cache is broken."
+            exit 1
+          fi
           tlbin="$PWD/.lake/build/bin/tl"
           scratch=$(mktemp -d)
           cd "$scratch"
           git init -q .
           "$tlbin" init --json > init.json
           cat init.json
-          ! grep -q 'below the required floor' init.json
+          if grep -q 'below the required floor' init.json; then
+            echo "::error::tl init emitted the below-floor note at the floor git — parseGitVersion / gitMeetsFloor or the init note plumbing regressed."
+            exit 1
+          fi
           "$tlbin" doctor --json > doctor.json
           cat doctor.json
           jq -e '.data.checks[] | select(.name == "gitVersion") | (.status == "ok") and (.version == "2.17")' doctor.json

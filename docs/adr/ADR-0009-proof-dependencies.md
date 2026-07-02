@@ -61,9 +61,12 @@ to build fast off `batteries`; only the reachability/cardinality proof modules
 `import Mathlib` — `Reach.lean` and its dependents, which include the O(V+E)
 frontier engines `ReachBFS.lean` (`reachBFS`, the closure behind a `Std.HashSet`
 view) and `Path.lean` (the `dep path` parent-recording BFS). CI's lint gate
-enforces this as a direct-import allowlist
-([ADR-0026](ADR-0026-continuous-integration.md)): an `import Mathlib` outside
-these modules fails the build until the scope widening is recorded here. The tactic
+enforces the *direct-import* face of this scope as an allowlist
+([ADR-0026](ADR-0026-continuous-integration.md)): only `Reach.lean`,
+`ReachBFS.lean`, and `Path.lean` may write `import Mathlib` themselves — the
+other dependents receive Mathlib transitively through them and need no direct
+import. Adding a direct import elsewhere fails CI until the widening is both
+recorded here and added to the workflow's allowlist, in the same change. The tactic
 discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
