@@ -60,7 +60,10 @@ already-proved convergence/frame/close theorems (`State`/`Op`/`Apply`/`Rollup`/
 to build fast off `batteries`; only the reachability/cardinality proof modules
 `import Mathlib` — `Reach.lean` and its dependents, which include the O(V+E)
 frontier engines `ReachBFS.lean` (`reachBFS`, the closure behind a `Std.HashSet`
-view) and `Path.lean` (the `dep path` parent-recording BFS). The tactic
+view) and `Path.lean` (the `dep path` parent-recording BFS). CI's lint gate
+enforces this as a direct-import allowlist
+([ADR-0026](ADR-0026-continuous-integration.md)): an `import Mathlib` outside
+these modules fails the build until the scope widening is recorded here. The tactic
 discipline (explicit `calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
@@ -73,7 +76,12 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
   `leanprover/lean4` release; `lakefile.lean` requires `batteries` (std4) at a
   pinned git rev (an immutable commit, not a branch/tag); `lake-manifest.json`
   is checked in. CI installs that exact toolchain via `elan` on every target.
-  Bumping any pin is a deliberate, reviewed change (recorded by a note here).
+  Bumping any pin is a deliberate, reviewed change (recorded by a note here),
+  and part of the bump is verifying that `lake exe cache get` still reports a
+  full hit — every dependency rev in `lake-manifest.json` must byte-match
+  mathlib's own manifest at the pinned mathlib rev, or CI falls off the olean
+  cache and cold-builds the dependency cone
+  ([ADR-0026](ADR-0026-continuous-integration.md)).
   This is what makes "a green `lake build` proves the theorems" reproducible, and
   it is the floor for the reproducible-build goal (ADR-0006). *(The concrete
   version/rev strings are set when the project is scaffolded; the policy is fixed

@@ -66,7 +66,7 @@ for the decisions and their rationale, read the ADRs in
   executable (does compilation preserve the theorems?), **never a substitute
   for the `Tl/Kernel` + `Tl/Crdt` theorems** themselves (ADR-0004).
 
-CI gates (mirror these locally before declaring done):
+CI gates (mechanized in `.github/workflows/ci.yml`, [ADR-0026](docs/adr/ADR-0026-continuous-integration.md); mirror these locally before declaring done):
 - Warning-free `lake build`.
 - No `sorry`, `admit`, or new `axiom` under `Tl/`; theorem completion reports
   must include a `#print axioms` check for new theorem names, with only the

@@ -138,9 +138,11 @@ The runtime check shipped 2026-06-21: `Tl.Sync.parseGitVersion` /
 `gitMeetsFloor` / `gitVersion` (a bounded `git --version`), surfaced as a
 `doctor` `gitVersion` check row (`ok` at/above the floor, a teaching `warn`
 below it or when git is unreadable — a warn, never a doctor failure) and an
-`init` below-floor note. The CI job pinned to git 2.17 is still pending — the
-repo has no CI infrastructure yet, so it is tracked separately as standing CI up
-from scratch.
+`init` below-floor note. The CI leg is the `git-floor` job
+([ADR-0026](ADR-0026-continuous-integration.md)): it builds git 2.17.1 from a
+hash-pinned tarball, runs the full test suite under it, and smoke-asserts that
+`doctor` reports the floor git's `gitVersion` row as `ok` — so a future
+plumbing dependency above the floor cannot slip in unnoticed.
 
 ### Release integrity and provenance
 
