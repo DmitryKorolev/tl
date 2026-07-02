@@ -1,0 +1,242 @@
+# CI for tl — platform, job graph, gates, and cache strategy are recorded in
+# docs/adr/ADR-0026-continuous-integration.md. The gate list itself lives in
+# AGENTS.md ("CI gates"); this workflow is its mechanization.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on PRs and feature refs, but never on main: main runs
+# populate the shared caches that PR runs restore from.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Fast source-level gates. These run in seconds, before any toolchain
+  # install, so a violation fails minutes — not tens of minutes — early.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Mathlib import scope (ADR-0009 allowlist)
+        run: |
+          allowed='Tl/Kernel/Path.lean
+          Tl/Kernel/Reach.lean
+          Tl/Kernel/ReachBFS.lean'
+          hits=$(git grep -l '^import Mathlib' -- '*.lean' || true)
+          bad=$(comm -23 <(sort -u <<<"$hits") <(sort <<<"$allowed" | sed 's/^ *//') | sed '/^$/d')
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            echo "::error::'import Mathlib' outside the ADR-0009 allowlist. Move the proof into the reachability/cardinality modules, prove it over batteries instead, or record a scope widening in docs/adr/ADR-0009-proof-dependencies.md first."
+            exit 1
+          fi
+
+      # `lake build --wfail` is the authority for sorry/admit (both warn);
+      # this grep only fails the same defect before the build starts.
+      - name: no sorry/admit under Tl/
+        run: |
+          if git grep -nE '(^|[^[:alnum:]_])(sorry|admit)($|[^[:alnum:]_])' -- 'Tl/*.lean' Tl.lean Main.lean; then
+            echo "::error::sorry/admit found in the verified cone. Finish the proof, or decompose it and record the residual as a carried assumption in docs/overview.md (never ship a hole). If this hit is prose in a comment, reword the comment."
+            exit 1
+          fi
+
+      # Axioms and kernel-bypassing evaluation compile without any warning, so
+      # --wfail cannot catch them: until a checked-in `#print axioms` probe
+      # closes the remaining holes (same-line attribute forms), this grep is
+      # the only CI net for the "no new axiom" gate. Hard by necessity.
+      - name: no new axiom / native_decide under Tl/
+        run: |
+          if git grep -nE '^[[:space:]]*(@\[[^]]*\][[:space:]]*)?((private|protected|noncomputable|unsafe)[[:space:]]+)*axiom([[:space:]]|$)' -- 'Tl/*.lean' Tl.lean Main.lean; then
+            echo "::error::axiom declaration found. The trust boundary is fixed by docs/overview.md; expanding it is a deliberate, recorded decision — state the residual as a carried assumption there instead of adding an axiom."
+            exit 1
+          fi
+          if git grep -nE '(^|[^[:alnum:]_])(native_decide|ofReduceBool)($|[^[:alnum:]_])' -- 'Tl/*.lean' Tl.lean Main.lean; then
+            echo "::error::native_decide/ofReduceBool bypasses the Lean kernel (trusts the compiler instead). Use decide or an explicit proof term."
+            exit 1
+          fi
+
+      # Advisory until the regex and exclusion set are pinned by their own
+      # decision; the exclusions below are the two files that legitimately
+      # embed full example ids today.
+      - name: task-id leakage (advisory)
+        continue-on-error: true
+        run: |
+          if git grep -nE '(^|[^0-9a-zA-Z-])tl-[0-9a-z]{16}($|[^0-9a-z])' -- . ':(exclude)Tests/CliTests.lean' ':(exclude)docs/adr/ADR-0020-json-data-shapes.md'; then
+            echo "::warning::possible task-tracker id in tracked sources — artifacts must stand on their own; describe the substance instead (AGENTS.md, 'Artifacts must be human-readable')."
+            exit 1
+          fi
+
+  # Proof verification + the full outside-TCB suite, on both supported dev
+  # platforms. `lake build --wfail` turns any warning (including
+  # cache-replayed ones) into failure — this is the warning-free-build gate.
+  build-and-test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Cache strategy (ADR-0026): four caches, each keyed by what actually
+      # invalidates it. Never cache .lake/packages/*/.lake (the unpacked
+      # mathlib oleans, multi-GB — `lake exe cache get` restores them from
+      # ~/.cache/mathlib in seconds) and never cache .tl/local/ (a byte-copy
+      # of a replica id would violate a carried assumption; docs/overview.md).
+      - name: cache elan + toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
+
+      - name: cache mathlib olean archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/mathlib
+          # Deliberately OS-agnostic: the .ltar archives are
+          # platform-independent, so both runners share one entry.
+          key: mathlib-cache-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
+
+      - name: cache dependency sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .lake/packages
+            !.lake/packages/*/.lake
+          key: lake-packages-src-${{ hashFiles('lake-manifest.json') }}
+
+      - name: cache tl build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .lake/build
+          key: tl-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}-${{ github.sha }}
+          restore-keys: |
+            tl-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}-
+
+      # lean-action installs elan, runs `lake exe cache get` (a full hit while
+      # every dep rev byte-matches mathlib's manifest — the ADR-0009 pin-bump
+      # check), and builds. Its own .lake cache is disabled: it would re-ship
+      # the unpacked mathlib oleans per commit. No lake test_driver is
+      # declared, so the suite runs as an explicit step below.
+      - name: build (lake build --wfail)
+        uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0
+        with:
+          auto-config: "false"
+          build: "true"
+          build-args: "--wfail"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "false"
+
+      - name: test (lake exe tltest)
+        run: lake exe tltest
+
+      - name: upload binaries for the git-floor job
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tl-binaries-linux
+          path: |
+            .lake/build/bin/tl
+            .lake/build/bin/tltest
+          if-no-files-found: error
+          retention-days: 1
+
+  # ADR-0006 pins a runtime floor of git >= 2.17; this job proves the suite
+  # still passes at exactly that floor, so a plumbing dependency above it
+  # cannot slip in unnoticed. git 2.17.1 is built from a hash-pinned tarball
+  # on the modern runner (an ubuntu:18.04 container cannot run current
+  # node-based actions), and the PATH override is scoped to the test steps —
+  # checkout and the action steps keep the runner's modern git.
+  git-floor:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GIT_FLOOR_VERSION: "2.17.1"
+      GIT_FLOOR_SHA256: "79136e7aa83abae4d8a25c8111f113d3c5a63aeb5fd93cc72c26d49c6d5ba65e"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: cache the floor git
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/git-floor
+          key: git-floor-2.17.1-${{ runner.os }}-${{ runner.arch }}-79136e7a
+
+      # Minimal build: no curl/openssl/expat/gettext/perl/python/tcltk — the
+      # transport tl exercises is local plumbing only. The kernel.org
+      # /pub/software tree no longer serves old release tarballs (404), so
+      # two independent mirrors are tried; the pinned sha256 (which matches
+      # the upstream-signed sha256sums.asc) keeps the download trustworthy
+      # regardless of which mirror answered.
+      - name: build git 2.17.1 from the hash-pinned tarball
+        run: |
+          if [ -x "$HOME/git-floor/bin/git" ]; then
+            echo "floor git restored from cache"
+            exit 0
+          fi
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends gcc make zlib1g-dev xz-utils
+          tmp=$(mktemp -d)
+          cd "$tmp"
+          for url in \
+            "https://mirror.csclub.uwaterloo.ca/kernel.org/software/scm/git/git-${GIT_FLOOR_VERSION}.tar.xz" \
+            "https://distfiles.macports.org/git/git-${GIT_FLOOR_VERSION}.tar.xz"; do
+            if curl -sfL --retry 3 -o git.tar.xz "$url"; then break; fi
+          done
+          echo "${GIT_FLOOR_SHA256}  git.tar.xz" | sha256sum -c -
+          tar xf git.tar.xz
+          make -C "git-${GIT_FLOOR_VERSION}" -j"$(nproc)" prefix="$HOME/git-floor" \
+            NO_CURL=1 NO_OPENSSL=1 NO_EXPAT=1 NO_GETTEXT=1 NO_PERL=1 NO_PYTHON=1 NO_TCLTK=1 \
+            install >/dev/null
+
+      - name: download the tl binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tl-binaries-linux
+          path: .lake/build/bin
+
+      # tltest expects the tl binary at <cwd>/.lake/build/bin/tl and the repo
+      # sources/fixtures at cwd, so it runs from the checkout root against the
+      # artifact binaries — no toolchain needed in this job.
+      - name: run the suite under git 2.17
+        run: |
+          chmod +x .lake/build/bin/tl .lake/build/bin/tltest
+          export PATH="$HOME/git-floor/bin:$PATH"
+          test "$(git --version)" = "git version ${GIT_FLOOR_VERSION}"
+          .lake/build/bin/tltest
+
+      # Floor smoke: doctor's gitVersion row must report the floor git as ok
+      # (the row can only ever warn, never flip doctor's exit code — so the
+      # assertion is on the row itself, not on `healthy`).
+      - name: floor smoke — init + doctor at git 2.17
+        run: |
+          export PATH="$HOME/git-floor/bin:$PATH"
+          test "$(git --version)" = "git version ${GIT_FLOOR_VERSION}"
+          tlbin="$PWD/.lake/build/bin/tl"
+          scratch=$(mktemp -d)
+          cd "$scratch"
+          git init -q .
+          "$tlbin" init --json > init.json
+          cat init.json
+          ! grep -q 'below the required floor' init.json
+          "$tlbin" doctor --json > doctor.json
+          cat doctor.json
+          jq -e '.data.checks[] | select(.name == "gitVersion") | (.status == "ok") and (.version == "2.17")' doctor.json
