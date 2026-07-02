@@ -33,9 +33,11 @@ object (ADR-0025) happened entirely pre-release within `schemaVersion: 1`.
   there are no notes, so the steady-state shape is byte-unchanged.
 - **Omit-empty**: an optional field with no value is absent, not `null`.
   (Wire records distinguish null-vs-absent for *writes*, ADR-0002; the read
-  projection has no clear-vs-unset distinction to preserve.) Two exceptions
-  stay `|null` as ADR-0003 pins them: `provenance.createdBy` and
-  `claim.currentAssignee`.
+  projection has no clear-vs-unset distinction to preserve.) The pinned
+  `|null` exceptions: `provenance.createdBy` and `claim.currentAssignee` (as
+  ADR-0003 pins them), `log`'s per-entry `actor`, and the keyed
+  `meta get` `value` — each is a field whose *value* is the answer, so the
+  field stays present and `null` says "none".
 - **Ids render in display form** — `tl-` prefixed (ADR-0007: the prefix is
   added on render, and error messages already name the full `tl-…` form).
 - **Timestamps** are ISO-8601 UTC with millisecond precision (the HLC's
@@ -144,6 +146,22 @@ lists every closed id in an additional `closed: [ids]` array.
 **`tl update <id> … --json`** — the updated issue (the mutating-verb echo
 convention, exactly as `create`; no additional fields).
 
+**`tl defer <id> --until <date> | --for <duration> --json`** /
+**`tl undefer <id> --json`** — the deferred (or restored) issue, the
+mutating-verb echo exactly as `create`; no additional fields. The observable
+change is `deferUntil` (present while a deferral is set — even one already in
+the past — absent after `undefer`) plus the recomputed `deferred`/`ready`
+booleans. Deferring to an instant at or before now leaves the issue workable
+and discloses it with a top-level note (`…already past — not deferred`);
+re-deferring to the identical instant, or undeferring an undeferred issue,
+appends nothing and still echoes the issue — the JSON carries no
+applied-vs-noop marker (the human line words the difference).
+
+**`tl reopen <id> --json`** — the reopened issue (echo, exactly as `create`):
+`status` back to `open`, `closeResolution` and `closedAt` absent, any
+holdover `assignee` cleared. Reopening a never-closed open issue is the
+idempotent no-op — same echo, nothing appended.
+
 **`tl dep add / dep remove --json`** — a relationship ack in the pinned edge
 orientation (`from` blocks `to`; for `parent`, `from` is the parent —
 ADR-0003):
@@ -157,6 +175,55 @@ ADR-0003):
 
 (`"status": "removed"` for `dep remove`; a remove that observed no live tags
 still succeeds — add-wins semantics — with `"status": "noop"`.)
+
+**`tl dep relate / dep unrelate --json`** — the relationship ack with
+`type: "related"`. `from`/`to` echo the *argument* order; the stored edge is
+undirected (canonicalized to the sorted endpoint pair), so `relate A B` and
+`relate B A` write the same edge:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "type": "related", "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
+  "status": "added"
+} }
+```
+
+(`dep unrelate` answers `"status": "removed"`, or `"noop"` when the pair was
+not related. `relate` has no noop: re-relating a related pair appends another
+observed-add and still answers `"added"` — add-wins, same observable state. A
+self-`relate` is a `usage` refusal; a self-`unrelate` is the `noop`.)
+
+**`tl dep path <A> <B> --json`** — the blocks-chain witness between two
+issues; all four fields always present, `path` the consecutive `blocks` chain
+from `A` to `B` inclusive, empty exactly when `found` is `false`:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
+  "path": ["tl-kz8w2n4jp7e9h3vt", "tl-0ld3p1cqv2m8e4ha", "tl-9f3cq7rkv2m8e4ha"],
+  "found": true
+} }
+```
+
+**`tl dep critical --json`** — the open issues that block others, ranked;
+`{count, items}` discipline:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "count": 2,
+  "items": [
+    { "id": "tl-kz8w2n4jp7e9h3vt", "title": "Design the AST", "status": "open", "weight": 3 },
+    { "id": "tl-9f3cq7rkv2m8e4ha", "title": "Write the parser", "status": "open", "weight": 1 }
+  ]
+} }
+```
+
+`weight` is the transitive dependent count over `blocks` (the proved reach⁺
+cardinality — how much a close would help free); rows are the issues with
+*effective* status `open` and `weight > 0`, ordered by `weight` descending,
+ties by id ascending. In these rows `status` carries the effective status —
+constant `"open"` by construction of the selection — and `title` is always
+present, `""` when untitled.
 
 **`tl parent set / parent remove --json`** — reparenting echoes the full issue
 object (so the top-level `parent` field already shows the new canonical parent),
@@ -198,6 +265,44 @@ many issues carry it, sorted by name; `count` is the number of distinct labels.
 (`tl list --label <l>` is the issue-facet counterpart; its rows are the pinned
 `list` item shape, unchanged — see *`tl list` filter facets* below.)
 
+**`tl meta set / meta clear <id> <key> --json`** — a metadata ack in the
+relationship-ack shape:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "id": "tl-9f3cq7rkv2m8e4ha", "key": "owner", "value": "carol", "status": "set"
+} }
+```
+
+(`meta set` always answers `"set"` and echoes the written `value` — an LWW
+register write is never a noop. `meta clear` answers `{id, key, status}` with
+no `value` field: `"cleared"` when a value was present, `"noop"` when the key
+was already clear.)
+
+**`tl meta get <id> [<key>] --json`** — a read, two forms. Keyed:
+`{id, key, value}` where `value` is the string value or `null` when the key
+is absent (the pinned `|null` field — a missing key is an answer, not an
+error). Keyless: every value-bearing key on the issue, key-ascending:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "key": "owner", "value": "carol" } }
+{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 1, "meta": [ { "key": "owner", "value": "carol" } ] } }
+```
+
+**`tl meta list [<id>] --json`** — the key vocabulary. With an id: that
+issue's value-bearing keys as an array of strings. Without: the project-wide
+vocabulary in the `label list` shape — key-sorted rows, per-row `count` = how
+many issues carry the key:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 2, "keys": ["area", "owner"] } }
+{ "schemaVersion": 1, "ok": true, "data": { "count": 2, "keys": [ { "key": "area", "count": 3 }, { "key": "owner", "count": 1 } ] } }
+```
+
+(The two forms share the `keys` name with different element shapes — a bare
+string per key on one issue, a `{key, count}` row project-wide; the presence
+of `id` discriminates.)
+
 **`tl why <id> --json`** — the not-ready reasons, flat and omit-empty;
 `blockedBy` is the *transitive unclosed* blocker set (ADR-0004 thm 10) with
 enough context to act on each:
@@ -215,6 +320,26 @@ enough context to act on each:
 
 (`deferUntil` appears when defer is a reason; a ready issue answers
 `"ready": true` with no reason fields.)
+
+**`tl unblocks <id> --json`** — the pre-close query dual to
+`close.unblocked`: what closing `<id>` would make ready, computed without
+writing anything. `freed` may be empty; `count` = its length:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "id": "tl-9f3cq7rkv2m8e4ha",
+  "count": 1,
+  "freed": [
+    { "id": "tl-kz8w2n4jp7e9h3vt", "title": "Design the AST",
+      "status": "open", "effectiveStatus": "open" }
+  ]
+} }
+```
+
+Each `freed` row carries the stored `status` and the rollup-aware
+`effectiveStatus`; `title` is omit-empty. The set and its order are the
+kernel's `unblocks` (ADR-0004 thm 10) — the same set `close` then echoes as
+`unblocked`.
 
 **`tl dep cycles --json`** — the node-set witness per cyclic SCC (ADR-0004
 thm 6), one entry per witness:
@@ -346,6 +471,29 @@ are each delivered exactly once on the forward feed. A malformed cursor is a
 `targets` is the issue id(s) the op touched (one for scalar/meta/label ops,
 both endpoints for edge ops — the same set `tl log <id>` filters on).
 
+**`tl import <path> … --json`** — the import summary (ADR-0005): what one
+fail-closed batch wrote. All five fields always present:
+
+```json
+{ "schemaVersion": 1, "ok": true, "data": {
+  "issues": 3, "ops": 15,
+  "replica": "chp14mvsxr027", "source": "github",
+  "disclosures": []
+} }
+```
+
+`issues` counts the imported records, `ops` the seed-log lines written,
+`replica` the deterministic import replica id, `source` the `--source` tag
+(default `import`). `disclosures` are ADR-0005's per-record disclosures
+(clamped priority, skipped dangling edge, timestamp fallback, …); the same
+strings are duplicated into the envelope's top-level `notes` (and stderr) —
+in `data` they travel with the summary an agent stores. `<path>` is a real
+file (`/dev/stdin` works; a literal `-` is just a filename, so `not-found`).
+A malformed line rejects the whole batch (`malformed-line`, nothing
+written); re-seeding a repo that already holds task state requires
+`--force`, and an input over the byte budget `--allow-large` (both refusals
+are `force-required`).
+
 **Error context fields** (extending ADR-0008's pinned codes with their named
 context, same additive-only discipline): `not-claimable` → `id`, `reasons`
 (above); `not-closeable` → `id`, `reasons` (omit-empty: `isEpic: true` with
@@ -409,9 +557,12 @@ Deliberately **not** in this surface:
 - Agents get a uniform read/act loop: mutations return the updated issue, so
   `create → claim → close` needs no interleaved `show`s; `close.unblocked`
   feeds the next `claim` directly.
-- Later commands (`log`, `stats`, `dep path`, `unblocks`, …) pin their
-  shapes when built, following these conventions; the backlog keeps carrying
-  them until then.
+- A command built after the stage-1 set pins its shape here in the same
+  change, following these conventions — as `log`, `stats`, `import`, and the
+  `defer`/`reopen`/`meta`/`dep path`/`dep critical`/`dep relate`/`unblocks`
+  families above now do; the backlog carries any not-yet-built verb until
+  then. (`tl sync`'s payload is pinned where its semantics live, ADR-0016 —
+  not duplicated here.)
 - `dependencies` stays the flat edge-triple array (ADR-0003). Inlining full
   issue snapshots inside it was rejected: it freezes a recursive shape and
   duplicates rows `--json` consumers can join by id; a richer view remains an

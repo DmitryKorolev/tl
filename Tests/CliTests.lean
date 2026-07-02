@@ -38,6 +38,15 @@ private def jArr (j : Json) (k : String) : List Json :=
 private def jSub (j : Json) (k sub : String) : Option String :=
   (jGet j k).bind (fun c => jStr c sub)
 
+/-- Top-level member names of a JSON object, key-ascending (the canonical
+    member order); `[]` for non-objects. Backs the exact-key-set shape pins:
+    a field-presence predicate cannot catch an accidentally added or renamed
+    payload field, `jKeys` equality can. -/
+private def jKeys (j : Json) : List String :=
+  match j with
+  | .obj kvs => (kvs.toArray.map (·.1)).toList
+  | _ => []
+
 private def run' (args : List String) : IO (Except Tl.Error CmdOut) :=
   (runVerb args).run
 
@@ -3348,6 +3357,171 @@ def cliDeferTests : IO (List Outcome) := do
     ["show", tid, "--dir", dir] (fun j => (jStr j "id").isSome)]
   return o
 
+/-- ADR-0020 shape pins for the later-built verbs (`defer`/`undefer`,
+    `reopen`, `dep relate`/`unrelate`/`path`/`critical`, `unblocks`, the
+    `meta` family, `import`): exact top-level key sets plus the pinned enum
+    values and orderings — the freeze the ADR's per-command sections state.
+    Value-level behavior is covered by the per-verb groups; these rows guard
+    the *shape*. -/
+def cliShapePinTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let hub ← mkIssue dir "Design the AST"
+  let leaf ← mkIssue dir "Write the parser" ["--blocked-by", "tl-" ++ hub]
+  let mid ← mkIssue dir "Name the fields" ["--blocked-by", "tl-" ++ hub]
+  let sub ← mkIssue dir "Parse digits" ["--blocked-by", "tl-" ++ leaf]
+  let solo ← mkIssue dir "Wire the CLI"
+  -- the issueObj echo for a titled, undescribed, unclaimed native create:
+  -- every always-present field plus title/slug/timestamps, nothing else
+  let echoKeys : List String :=
+    ["blocked", "createdAt", "deferred", "dependencies", "effectiveStatus",
+     "id", "isEpic", "labels", "meta", "priority", "provenance", "ready",
+     "status", "title", "updatedAt"]
+  -- unblocks: {count, freed, id}; each freed row {effectiveStatus, id, status, title}
+  o := o ++ [← expectData "unblocks pins {count, freed, id}"
+      ["unblocks", "tl-" ++ hub, "--dir", dir]
+    (fun j => jKeys j == ["count", "freed", "id"]
+      && jNat j "count" == some 2
+      && (jArr j "freed").all (fun r =>
+           jKeys r == ["effectiveStatus", "id", "status", "title"]
+           && jStr r "status" == some "open" && jStr r "effectiveStatus" == some "open")
+      && (jArr j "freed").all (fun r =>
+           jStr r "id" == some ("tl-" ++ leaf) || jStr r "id" == some ("tl-" ++ mid))),
+   ← expectData "unblocks keeps the shape when freed is empty"
+      ["unblocks", "tl-" ++ solo, "--dir", dir]
+    (fun j => jKeys j == ["count", "freed", "id"] && jNat j "count" == some 0)]
+  -- dep path: {found, from, path, to}, all four present in both answers
+  o := o ++ [← expectData "dep path pins {found, from, path, to}"
+      ["dep", "path", "tl-" ++ hub, "tl-" ++ sub, "--dir", dir]
+    (fun j => jKeys j == ["found", "from", "path", "to"]
+      && jBool j "found" == some true
+      && (jArr j "path").map (·.getStr?.toOption)
+           == [some ("tl-" ++ hub), some ("tl-" ++ leaf), some ("tl-" ++ sub)]),
+   ← expectData "dep path keeps all four fields when no path exists"
+      ["dep", "path", "tl-" ++ sub, "tl-" ++ hub, "--dir", dir]
+    (fun j => jKeys j == ["found", "from", "path", "to"]
+      && jBool j "found" == some false && (jArr j "path").isEmpty)]
+  -- dep critical: {count, items}; rows {id, status, title, weight},
+  -- weight-descending, status = the (necessarily open) effective status
+  o := o ++ [← expectData "dep critical pins {count, items} and the row shape"
+      ["dep", "critical", "--dir", dir]
+    (fun j => jKeys j == ["count", "items"]
+      && jNat j "count" == some 2
+      && (jArr j "items").all (fun r =>
+           jKeys r == ["id", "status", "title", "weight"]
+           && jStr r "status" == some "open")
+      && ((jArr j "items").map (fun r => jStr r "id"))
+           == [some ("tl-" ++ hub), some ("tl-" ++ leaf)]
+      && ((jArr j "items").map (fun r => jNat r "weight")) == [some 3, some 1])]
+  -- dep relate / unrelate: {from, status, to, type}; relate is always
+  -- "added" (add-wins, no noop), unrelate is removed-then-noop
+  o := o ++ [← expectData "dep relate pins the related ack"
+      ["dep", "relate", "tl-" ++ leaf, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == ["from", "status", "to", "type"]
+      && jStr j "type" == some "related" && jStr j "status" == some "added"
+      && jStr j "from" == some ("tl-" ++ leaf) && jStr j "to" == some ("tl-" ++ solo)),
+   ← expectData "re-relating an already-related pair still answers added"
+      ["dep", "relate", "tl-" ++ solo, "tl-" ++ leaf, "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "status" == some "added"),
+   ← expectData "dep unrelate answers removed"
+      ["dep", "unrelate", "tl-" ++ leaf, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == ["from", "status", "to", "type"]
+      && jStr j "status" == some "removed"),
+   ← expectData "unrelating an unrelated pair is the noop"
+      ["dep", "unrelate", "tl-" ++ leaf, "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "status" == some "noop"),
+   ← expectErr "self-relate is a usage refusal"
+      ["dep", "relate", "tl-" ++ solo, "tl-" ++ solo, "--dir", dir, "--actor", "t"] .usage]
+  -- defer / undefer / reopen: the bare issue echo — deferUntil is the only
+  -- key the deferral adds, and closing/reopening adds/removes exactly
+  -- {closeResolution, closedAt, unblocked}
+  o := o ++ [← expectData "defer echoes the issue plus deferUntil only"
+      ["defer", "tl-" ++ solo, "--until", "2098-06-01", "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j
+        == ["blocked", "createdAt", "deferUntil", "deferred", "dependencies",
+            "effectiveStatus", "id", "isEpic", "labels", "meta", "priority",
+            "provenance", "ready", "status", "title", "updatedAt"]
+      && jBool j "deferred" == some true && (jStr j "deferUntil").isSome),
+   ← expectData "undefer drops deferUntil and nothing else"
+      ["undefer", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == echoKeys && jBool j "deferred" == some false),
+   ← expectData "close adds exactly closeResolution/closedAt/unblocked"
+      ["close", "tl-" ++ solo, "--as", "done", "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j
+        == ["blocked", "closeResolution", "closedAt", "createdAt", "deferred",
+            "dependencies", "effectiveStatus", "id", "isEpic", "labels", "meta",
+            "priority", "provenance", "ready", "status", "title",
+            "unblocked", "updatedAt"]),
+   ← expectData "reopen restores the bare echo (no closeResolution/closedAt)"
+      ["reopen", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == echoKeys && jStr j "status" == some "open"),
+   ← expectData "reopening an open issue is the idempotent no-op, same echo"
+      ["reopen", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == echoKeys)]
+  -- meta: set/clear acks, keyed and keyless get, per-id and global list
+  o := o ++ [← expectData "meta set pins {id, key, status, value}"
+      ["meta", "set", "tl-" ++ solo, "owner", "carol", "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == ["id", "key", "status", "value"]
+      && jStr j "status" == some "set" && jStr j "value" == some "carol")]
+  let _ ← run' ["meta", "set", "tl-" ++ solo, "area", "kernel", "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "keyed meta get pins {id, key, value}"
+      ["meta", "get", "tl-" ++ solo, "owner", "--dir", dir]
+    (fun j => jKeys j == ["id", "key", "value"] && jStr j "value" == some "carol"),
+   ← expectData "keyed meta get of an absent key answers value:null"
+      ["meta", "get", "tl-" ++ solo, "nope", "--dir", dir]
+    (fun j => jKeys j == ["id", "key", "value"]
+      && (match jGet j "value" with | some Json.null => true | _ => false)),
+   ← expectData "keyless meta get pins {count, id, meta}, key-ascending rows"
+      ["meta", "get", "tl-" ++ solo, "--dir", dir]
+    (fun j => jKeys j == ["count", "id", "meta"] && jNat j "count" == some 2
+      && (jArr j "meta").all (fun r => jKeys r == ["key", "value"])
+      && (jArr j "meta").map (fun r => jStr r "key") == [some "area", some "owner"]),
+   ← expectData "per-id meta list pins {count, id, keys} with string keys"
+      ["meta", "list", "tl-" ++ solo, "--dir", dir]
+    (fun j => jKeys j == ["count", "id", "keys"]
+      && (jArr j "keys").map (·.getStr?.toOption) == [some "area", some "owner"]),
+   ← expectData "meta clear pins {id, key, status} — no value field"
+      ["meta", "clear", "tl-" ++ solo, "owner", "--dir", dir, "--actor", "t"]
+    (fun j => jKeys j == ["id", "key", "status"] && jStr j "status" == some "cleared"),
+   ← expectData "clearing a clear key is the noop"
+      ["meta", "clear", "tl-" ++ solo, "owner", "--dir", dir, "--actor", "t"]
+    (fun j => jStr j "status" == some "noop"),
+   ← expectData "global meta list pins {count, keys} with {count, key} rows"
+      ["meta", "list", "--dir", dir]
+    (fun j => jKeys j == ["count", "keys"]
+      && (jArr j "keys").all (fun r => jKeys r == ["count", "key"]))]
+  -- import: the five-field summary; disclosures duplicate into envelope notes
+  let importRoot ← IO.FS.createTempDir
+  let batch := importRoot / "batch.jsonl"
+  IO.FS.writeFile batch
+    ("{\"id\":\"EXT-1\",\"title\":\"Imported epic\",\"status\":\"open\"}\n"
+      ++ "{\"id\":\"EXT-2\",\"title\":\"Imported leaf\",\"status\":\"open\",\"blockedBy\":[\"GHOST-1\"]}\n")
+  let dir2 ← freshDir
+  match ← run' ["import", batch.toString, "--source", "ext", "--dir", dir2] with
+  | .ok out =>
+    o := o ++
+      [check "import pins {disclosures, issues, ops, replica, source}"
+        (jKeys out.data == ["disclosures", "issues", "ops", "replica", "source"])
+        out.data.compress,
+       check "import counts the records and echoes the source tag"
+        (jNat out.data "issues" == some 2 && jStr out.data "source" == some "ext")
+        out.data.compress,
+       check "the dangling-edge disclosure rides data and the envelope notes"
+        ((jArr out.data "disclosures").length == 1
+          && out.notes.any (fun n => (n.splitOn "GHOST-1").length > 1))
+        (String.intercalate " | " out.notes)]
+  | .error e =>
+    o := o ++ [check "import pins {disclosures, issues, ops, replica, source}"
+      false s!"{e.code.wire}: {e.message}"]
+  let cleanBatch := importRoot / "clean.jsonl"
+  IO.FS.writeFile cleanBatch "{\"id\":\"EXT-9\",\"title\":\"Imported solo\",\"status\":\"open\"}\n"
+  let dir3 ← freshDir
+  o := o ++ [← expectData "a clean import keeps the shape with empty disclosures"
+      ["import", cleanBatch.toString, "--source", "ext", "--dir", dir3]
+    (fun j => jKeys j == ["disclosures", "issues", "ops", "replica", "source"]
+      && (jArr j "disclosures").isEmpty)]
+  return o
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -3362,6 +3536,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
     ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
-    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliBinaryTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests)
 
 end Tl.Tests
