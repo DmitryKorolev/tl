@@ -234,7 +234,7 @@ graph-hygiene findings (additive checks, ADR-0020) rather than errors.
 - Within a version, only additive changes are allowed: new *optional*
   envelope/payload fields (preserved by older readers via preserve-unknown).
 - Any change an old reader could mis-fold — a new `op` kind, a new
-  *record kind* (e.g. the `snapshot` below), a changed field meaning —
+  *record kind* (e.g. the `compacted` marker below), a changed field meaning —
   requires a `v` bump. New readers always read old `v`. Preserve-unknown
   covers unknown *fields*, not unknown `op`/record kinds: a reader that
   meets an `op` or record kind it does not know fails closed on that segment
@@ -403,22 +403,28 @@ deferred.
   tree entries before the first release, and the `--json`/error surface it will
   need must stay additive. If built it is an explicit, user-driven `tl compact`
   (one-way, destructive of the `tl log` history a slow replica might still
-  want), it carries a format `v` bump (the `snapshot` record kind becomes
-  load-bearing — an old reader that ignored it would under-fold, so it
-  fail-closes with an upgrade message), and it owes the change-feed a
-  retention-horizon and gap/resync contract (ADR-0025).
+  want), it carries a format `v` bump — the bumped `compacted` marker inside
+  each trimmed segment is what an old reader actually meets, so it
+  fail-closes on that segment with an upgrade message instead of silently
+  under-folding — and it owes the change-feed a retention-horizon and
+  gap/resync contract (ADR-0025).
 
 The pinned destructive design (implementation deferred):
 
 - **Transport preserve-unknown.** `tl sync` carries any `refs/tl/log` tree
-  entry it does not recognize through the union verbatim — the transport-level
-  analogue of the record-level preserve-unknown rule above. (Today's transport
-  drops non-replica-named tree entries on every sync; fixing that is
-  freeze-sensitive and ships pre-release as its own change — an old binary that
-  strips the snapshot entry on every sync would otherwise fight the compactor.)
-  This amends ADR-0001's "the tree *is* the `.tl/log/` contents": the tree is
-  the per-replica segment blobs *plus* reserved non-replica entries, carried
-  verbatim.
+  entry it does not recognize into the next commit's tree *verbatim* (blob
+  bytes untouched) — the transport-level analogue of the record-level
+  preserve-unknown rule above. Unknown entries are carried in the ref only:
+  they are never materialized into `.tl/log/` (the read path's segment-name
+  filter and the store's junk defense are unchanged, so a crafted tree entry
+  still cannot become a local file). A *reserved* entry a new-format binary
+  does recognize — the snapshot below — is line-unioned rather than carried
+  one-sided. (Today's transport drops non-replica-named tree entries on
+  every sync; fixing that is freeze-sensitive and ships pre-release as its
+  own change — an old binary that strips the snapshot entry on every sync
+  would otherwise fight the compactor.) This amends ADR-0001's "the tree
+  *is* the `.tl/log/` contents": the tree is the per-replica segment blobs
+  *plus* reserved and unknown non-replica entries.
 - **Placement: the snapshot is a reserved non-replica-named tree entry** in
   `refs/tl/log`, line-unioned like any segment (two concurrent compactors'
   records both survive the union), and never enumerated as an on-disk segment
@@ -435,25 +441,36 @@ The pinned destructive design (implementation deferred):
   owner stamps. A marker byte-sorts into position after any union like every
   other line; nothing may assume it holds the first line of a segment.
 - **Mixed-version reality, stated honestly.** After a compaction, an old
-  binary still reads `ok: true` with an under-folded board (a foreign-segment
-  refusal never fails a command — the corruption policy above), and its next
-  `tl sync` *regrows* the trimmed lines from its on-disk foreign caches (the
-  reconcile unions the pre-absorb local segments, and a line-union never
-  re-shrinks). Physical removal therefore converges only once every replica
-  runs the new format and a later `tl compact` re-trims. **Pinned choice:
-  regrowth-until-recompact is the accepted, disclosed cost.** The overlap
-  tolerance theorem below makes resurrected lines state-harmless, and no
-  workload needs hard size bounds yet. The alternative — a sync-side
-  trim-at-marker in the new format — is rejected: it reintroduces a residual
-  never-observed-op hazard that would have to ride the destructive
-  confirmation.
+  binary's first refresh replaces its foreign caches with the trimmed
+  segments, whose bumped `compacted` markers it then refuses *wholesale* —
+  its board degrades to an own-segment-only view served with `ok: true` and
+  refusal disclosures (a foreign-segment refusal never fails a command — the
+  corruption policy above; an observer clone with no own ops instead fails
+  the read under the every-segment-refused rule) until it upgrades. And
+  every replica — old or new — *regrows* the ref with whatever untrimmed
+  lines its local segments still hold when it syncs (the reconcile unions
+  the pre-absorb local segments, and a line-union never re-shrinks): its own
+  segment until it has itself compacted, plus any foreign cache holding
+  untrimmed lines — including lines re-absorbed from a not-yet-compacted
+  sibling. Every replica having compacted on the new format is therefore
+  only the *necessary* floor: physical removal converges through **repeated
+  compacts across the fleet** — each compact trims that replica's own
+  segment and refreshes its caches, monotonically shrinking what can
+  regrow, while a mere upgrade or sync advances nothing. **Pinned choice:
+  regrowth-until-recompact is the accepted, disclosed cost.** The overlap tolerance theorem below makes resurrected
+  lines state-harmless, and no workload needs hard size bounds yet. The
+  alternative — a sync-side trim-at-marker in the new format — is rejected:
+  it reintroduces a residual never-observed-op hazard that would have to
+  ride the destructive confirmation.
 - **Crash order.** A compact publishes the ref first (snapshot + trimmed
   blobs, one CAS commit), then absorbs, and trims its own segment *last* (an
   atomic rename under the mutation lock). A crash at any point degrades to
   harmless regrowth, never loss.
 - **Preconditions and hygiene.** `tl compact` aborts on any refused segment;
-  the frontier excludes skew-deferred lines; a re-trim recomputes a fresh
-  snapshot from the currently visible lines, never re-cuts at the old `F`.
+  the frontier excludes skew-deferred lines; a re-trim cuts at a fresh
+  frontier computed from the currently visible lines, never re-cuts at the
+  old `F` (how its record seeds from and composes with surviving prior
+  records is open point (a) below).
   `snapshot`/`compacted` records are exempt from skew deferral (the carve-out
   keeps the proved admission predicate intact for op records); the clock
   reseed floor takes `max(frontier)` into account; the fold-cache version
@@ -464,11 +481,13 @@ The pinned destructive design (implementation deferred):
 - **The theorems (ADR-0004): reserved, proved when built.**
   *Fold-preservation* — `fold ops = snapshot(stateAt F) ⊕ fold(ops above F)`
   for a causally-stable frontier `F`; the discharge path is filter-partition
-  plus the proved `fold_perm`/`fold_append`. *Overlap tolerance* — the fold is
-  equal for **any** retained superset of the above-`F` ops (via
-  `fold_eq_of_mem_iff`): the theorem that makes keep-everything unions and
-  crash-regrowth provably state-harmless, and the reason the pinned choice
-  above is safe. *Frontier join* — below-`F` of the pointwise-max of two
+  plus the proved `fold_perm`/`fold_append`. *Overlap tolerance* —
+  continuing the fold from `snapshot(stateAt F)` over **any** retained
+  superset of the above-`F` ops still yields `fold allOps` (as line sets,
+  below-`F` ∪ retained = the original set, so `fold_append` +
+  `fold_eq_of_mem_iff` close it): the theorem that makes keep-everything
+  unions and crash-regrowth provably state-harmless, and the reason the
+  pinned choice above is safe. *Frontier join* — below-`F` of the pointwise-max of two
   frontiers is the union of their below-`F` sets (two compactors compose).
   Causal stability of `F` itself is not provable in-kernel: it becomes an
   explicit tier-3 carried assumption when built, held up operationally by
@@ -479,6 +498,18 @@ The pinned destructive design (implementation deferred):
   high-water marks back both the snapshot frontier here and the change-feed cursor
   (ADR-0025) — distinct uses (global causal-stability vs per-consumer position),
   one primitive.
+- **Two named open points, resolved before implementation.** The pin above
+  deliberately leaves these undecided rather than guessing: (a) *reader
+  selection and re-trim composition* — with both-survive union, several
+  `snapshot` records can coexist; which one a reader seeds from, and what
+  frontier a re-trim's record must carry (the join of every surviving
+  frontier, including the incomparable-coordinate case where a fully-trimmed
+  replica's coordinate resets), must be pinned so a stale surviving record
+  can never seed an under-fold; (b) *snapshot-record supersession* — under
+  both-survive union a superseded full-state record is never removed, so the
+  reserved entry grows by one materialized state per compact; the
+  supersession or accepted-growth story needs its own decision. Both gate
+  the destructive implementation, not the transport rule above.
 
 ## Consequences
 
@@ -491,9 +522,10 @@ The pinned destructive design (implementation deferred):
 - A non-destructive snapshot needs no format change — it is a side cache
   (ADR-0022), so an old reader that ignores it simply folds the log, and the
   format stays `v=1`. Only a future destructive GC bumps `v`: once ops below the
-  frontier are discarded, an old reader that ignored the `snapshot` record would
-  under-fold, so a GC'd log fail-closes with an upgrade message rather than
-  silently mis-folding.
+  frontier are discarded, the bumped `compacted` marker inside each trimmed
+  segment makes an old reader fail-close on that segment with an upgrade
+  message rather than silently under-fold (the snapshot entry itself is
+  invisible to old readers — it is not a segment).
 - Fail-closed is honest. A user on an old binary gets a clear "upgrade"
   message, never a silently wrong fold.
 - The log doubles as an action history (`tl log`, and the `--since` change-feed,

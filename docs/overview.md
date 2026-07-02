@@ -222,9 +222,10 @@ Reserved (proved when its feature is built). The destructive-GC set, pinned
 with the compaction design (ADR-0008): *fold-preservation* —
 `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable
 version-vector frontier `F` (discharge path: filter-partition +
-`fold_perm`/`fold_append`); *overlap tolerance* — the fold is equal for any
-retained superset of the above-`F` ops (via `fold_eq_of_mem_iff`), which
-makes keep-everything unions and crash-regrowth state-harmless; and
+`fold_perm`/`fold_append`); *overlap tolerance* — continuing the fold from `snapshot(stateAt F)` over
+any retained superset of the above-`F` ops still yields `fold allOps`
+(line-set equality closes it via `fold_append` + `fold_eq_of_mem_iff`),
+which makes keep-everything unions and crash-regrowth state-harmless; and
 *frontier join* — below-`F` of the pointwise-max of two frontiers is the
 union of their below-`F` sets. Causal stability of `F` itself joins the
 Trusted section as a tier-3 carried assumption when built. The

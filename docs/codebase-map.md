@@ -145,10 +145,11 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
   Time.lean             --   strict canonical ISO-8601 UTC ↔ epoch-ms codec
                         --   (deferUntil storage + the --json timestamps)
   Version.lean          --   v fail-closed-on-newer; v=0 is malformed, not older;
-                        --   the snapshot record stays reserved (ships with
-                        --   destructive log GC behind a v bump, ADR-0008; the
-                        --   non-destructive snapshot is the no-bump fold cache —
-                        --   a v1 reader refuses a GC'd log as unknown-version)
+                        --   destructive log GC ships behind a v bump carried by
+                        --   the compacted markers in trimmed segments, which a
+                        --   v1 reader refuses per segment as unknown-version
+                        --   (ADR-0008; the non-destructive snapshot is the
+                        --   no-bump fold cache)
   Ids.lean              --   issue-id mint (leftmost 80 SHA-256 bits over the
                         --   fixed-width preimage, ADR-0018) + the tl- display affix
 
@@ -208,8 +209,9 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   rather than owning segment I/O)
   Cache.lean            --   the materialization fold cache (ADR-0022): the
                         --   folded State persisted in gitignored .tl/local/cache,
-                        --   keyed per segment on (byteLen, sha256 prefix,
-                        --   lineCount, refused, deferred lines); valid ⇒ reads
+                        --   keyed per segment on (byteLen, non-crypto
+                        --   hash(prefix), lineCount, refused, deferred lines);
+                        --   valid ⇒ reads
                         --   and transact fold only appended suffixes + newly-
                         --   admissible deferred lines on top (fold_append +
                         --   order-insensitivity); stale/corrupt/absent ⇒ rebuilt

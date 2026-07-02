@@ -55,6 +55,10 @@ push` (ADR-0001).
 
 ### 3. `sync` never rewrites its own segment
 The replica's own segment is append-only authority; `sync` only *reads* it.
+(The one pinned, not-yet-built exception is the explicit destructive
+`tl compact`, which trims the own segment last via the same atomic
+temp-file + `rename` under the mutation lock — ADR-0008's pinned design; a
+routine `sync` never rewrites it.)
 `sync` = fetch `refs/tl/log` → union all segments → push a candidate ref. Locally
 it writes back only the other replicas' segments (read-only caches for
 folding), and does so atomically — write a temp file in `.tl/local/`, then

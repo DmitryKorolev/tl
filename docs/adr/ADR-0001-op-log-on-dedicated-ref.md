@@ -26,15 +26,18 @@ this ADR answers is where task state lives and how it is transported.
 - Each operation (`create`, `dep add`, `update`, `close`, …) is one immutable,
   timestamped log entry (the on-disk record schema is ADR-0008).
 - Each replica appends only to its own segment (`.tl/log/<replica-id>.jsonl`).
-  No replica rewrites another's segment or rewrites history.
+  No replica rewrites another's segment or rewrites history — with one pinned,
+  not-yet-built exception: an explicit destructive `tl compact` publishes
+  trimmed segment blobs and trims its own segment under the mutation lock
+  (ADR-0008's pinned compaction design).
 - Materialized state is `fold apply ∅ allOps`, where `allOps` is the multiset
   of entries across all segments. The fold is what the verified kernel reasons
   about (ADR-0004); the only correctness obligation transport imposes is that
   the fold not depend on the order or multiplicity of operations — exactly the
   permutation/duplicate-insensitivity proved in ADR-0004.
-- Materialization is fold-per-invocation — each command reads the segments
-  (`snapshot ⊕ fold(tails)`, ADR-0008) and answers. Comfortable at the expected
-  scale (thousands of ops); caching is a deferred optimization.
+- Materialization is `snapshot ⊕ fold(tails)` on each command — the shipped
+  content-keyed fold cache (ADR-0022) folds only each segment's appended
+  suffix, rebuilding from the segments on any other divergence.
 - Clocks and ids are data. Each op's HLC, replica-id, and nonce (ADR-0007)
   are minted by the tested I/O shell at write time and frozen into the entry;
   the fold reads no clock or RNG, so the kernel stays a deterministic pure
@@ -56,9 +59,11 @@ In-ref encoding (decided, built in `Tl/Sync/Ref`): the ref commit's tree
 holds one blob per replica named `<replica-id>.jsonl` at the root — the
 segment blobs *are* the `.tl/log/` contents, no prefix. The tree may also
 carry reserved non-replica-named entries (the compaction snapshot,
-ADR-0008): a sync carries any tree entry it does not recognize through the
-union verbatim — transport-level preserve-unknown — rather than silently
-dropping it. Commits are **parent-chained** (each
+ADR-0008), under the pinned transport rule: a sync carries any tree entry it
+does not recognize into the next commit verbatim, never materializing it
+locally — transport-level preserve-unknown. (Pinned, not yet built: today's
+transport still drops such entries; the fix ships pre-release, ADR-0008.)
+Commits are **parent-chained** (each
 push's commit parents the prior tip), so a non-fast-forward push is
 detectable (§5) and the ref carries history. The author/committer is a
 **fixed neutral `tl <tl@localhost>`** set via `GIT_*` env, never the user's
@@ -130,9 +135,11 @@ longer file" is only a valid shortcut when one is a prefix of the other — the
 common case — not the general rule.) It is a trivial, total operation `tl`
 performs in the tested shell. It is line-granular (never tears a
 line); reordered or dropped-byte-identical lines are absorbed by the fold's
-order/duplicate-insensitivity (ADR-0004). Non-replica tree entries ride the
-same line-union (two concurrent writers of a reserved entry both survive) and
-pass through otherwise untouched. This is the *only* merge `tl` does —
+order/duplicate-insensitivity (ADR-0004). Under the pinned, not-yet-built
+transport rule (§2 above, ADR-0008): a *reserved* non-replica entry a
+new-format binary recognizes (the compaction snapshot) rides the same
+line-union — two concurrent writers both survive — while an *unknown* entry
+passes through verbatim, untouched. This is the *only* merge `tl` does —
 the lattice join a CRDT tool is meant to own, not a conflict-resolution driver.
 
 Because a push touches only `refs/tl/log`, it is safe to automate (no
