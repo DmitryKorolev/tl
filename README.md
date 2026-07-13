@@ -11,12 +11,12 @@ tracker owes an agent:
 
 > *What can I work on right now, and is the dependency graph sane?*
 
-The answer survives a context clear, is shared by every agent and machine
-working the repo, and is computed by a kernel proved correct in Lean 4 —
-including on the cyclic or dangling dependency graphs that concurrent,
-merge-reconciled edits can produce. There is no server, no daemon, and no
-database: git moves the bytes, and a CRDT makes concurrent writes merge
-without conflicts.
+The answer survives a context clear, follows the repo to every agent and
+machine through ordinary git syncs, and is computed by a kernel proved
+correct in Lean 4 — including on the cyclic or dangling dependency graphs
+that concurrent, merge-reconciled edits can produce. There is no server, no
+daemon, and no database: git moves the bytes, and a CRDT makes concurrent
+writes merge without git conflicts or lost updates.
 
 > **Status: alpha.** Every command in this README works in the current
 > binary; the shipped command surface is pinned — machine-checked against
@@ -101,8 +101,9 @@ own state; a migration, not an ongoing integration
   tests (the boundary is drawn honestly below).
 - **Git-native and serverless.** State lives in the repo, moves between
   clones through your existing git remotes (`tl sync`), and merges without
-  conflicts by construction. No daemon, no account, no network dependency;
-  `git` is the only runtime prerequisite.
+  conflicts by construction. No daemon, no account, nothing to host;
+  everything works offline (a remote sync needs the remote, nothing else
+  does), and `git` is the only runtime prerequisite.
 - **Small on purpose.** The surface is an agent's work loop plus dependency
   and visibility verbs; what is deliberately out of scope is recorded as a
   contract in [docs/vision.md](docs/vision.md), not left as a backlog.
@@ -122,8 +123,8 @@ independent tasks, a TODO file is genuinely fine.
 | Tier | What lives there | Covered by |
 |---|---|---|
 | Proved | the kernel: CRDT convergence (same ops in any order, any duplication, same state), `ready` soundness + completeness, cycle diagnostics, epic rollup, liveness — all total, even on cyclic or dangling graphs | Lean 4 theorems, re-checked by every `lake build` |
-| Tested | the I/O shell: JSONL serialization, the git ref transport and sync, the clock, the importer, the CLI contract, caching, performance scaling | the test suite, branch by branch (`lake exe tltest`) |
-| Trusted | replica-id uniqueness, monotonic clock persistence, git moving bytes faithfully, the system clock | carried assumptions, each recorded explicitly |
+| Tested | the I/O shell: JSONL serialization, the git ref transport and sync, the clock, the importer, the CLI contract, caching, performance scaling | the test suite (`lake exe tltest`) — branch-level coverage is the mandate, and the remaining gaps are themselves recorded in [docs/overview.md](docs/overview.md) |
+| Trusted | the boundary — for example replica-id and per-op stamp uniqueness, monotonic clock persistence, git moving bytes faithfully, the system clock | carried assumptions, each recorded explicitly; the full inventory is in [docs/overview.md](docs/overview.md) |
 
 So "verified" means the core logic is mathematically proved correct. It
 does not mean the whole binary is bug-free, and it does not mean
@@ -132,13 +133,16 @@ table, theorem names included, is [docs/overview.md](docs/overview.md).
 
 ## How state moves
 
-There is no stored snapshot to fight over: every read is a fold over an
-append-only log of operations, and the proved kernel is that fold. Each
-working copy is a replica appending to its own log segment; the segments
-ride `refs/tl/log`, a dedicated git ref, so task state never touches your
-branches or commits. `tl sync` publishes your segment and absorbs everyone
-else's — and since the fold is insensitive to operation order and
-duplication, the union of two logs *is* the merge; nothing can conflict.
+The log is the only authority: state is a fold over an append-only log of
+operations, and the proved kernel is that fold. (Reads may resume from a
+local, content-keyed cache of the fold — discardable, rebuilt whenever
+stale, never shared.) Each working copy is a replica appending to its own
+log segment; the segments ride `refs/tl/log`, a dedicated git ref, so task
+state never touches your branches or commits. `tl sync` publishes your
+segment and absorbs everyone else's — and since the fold is insensitive to
+operation order and duplication, the union of two logs *is* the merge:
+no conflicts to resolve, no ops lost, and concurrent writes to the same
+field settled deterministically (last writer wins).
 
 ```
   agent writes                              agent reads
