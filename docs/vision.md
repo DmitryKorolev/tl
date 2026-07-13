@@ -310,7 +310,7 @@ with `Tl.Cli.Grammar.commandSpecs` by a build-gate test (`Tests.DocGrammarTests`
 adding or removing a verb or flag without updating the fenced block below fails
 the suite, so these docs cannot silently over-promise — or under-document — the
 grammar again. The narrative tables above are the *destination* surface and
-intentionally name not-yet-built verbs (`edit`, `--licenses`, `ready
+intentionally name not-yet-built verbs (`edit`, `ready
 --assignee`); the block below is only what is wired today. It is machine-checked
 — edit it by hand only to mirror a real grammar change. Each line is a command
 key followed by its long flags; positionals and the global flags
@@ -354,6 +354,7 @@ stats
 sync
 doctor --sync
 version
+licenses
 help
 ```
 <!-- tl:grammar-surface end -->

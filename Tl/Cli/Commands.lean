@@ -15,6 +15,7 @@ import Tl.Cli.Project
 import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
+import Tl.Cli.Licenses
 import Tl.Kernel.Path
 import Tl.Sync.Local
 import Tl.Sync.Remote
@@ -2210,5 +2211,16 @@ def productVersion : String := "0.1.0"
 def cmdVersion : CmdOut :=
   { data := Json.mkObj [("version", Json.str productVersion), ("logFormat", jnum supportedVersion)]
     human := s!"tl {productVersion} (log format v{supportedVersion})" }
+
+/-- `tl licenses` / `tl --licenses`: the third-party notice, embedded in the
+    binary (ADR-0006 compliance deliverable). Human output is the notice
+    itself; `--json` wraps the same text so the surface has human/json parity.
+    The human string drops the notice's final newline because the stream layer
+    prints it with `IO.println` — this keeps the process stdout byte-equal to
+    the `THIRD-PARTY-LICENSES` file (spawned-binary test). -/
+def cmdLicenses : CmdOut :=
+  { data := Json.mkObj [("text", Json.str thirdPartyLicenses)]
+    human := if thirdPartyLicenses.endsWith "\n"
+             then (thirdPartyLicenses.dropEnd 1).toString else thirdPartyLicenses }
 
 end Tl.Cli

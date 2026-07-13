@@ -1,0 +1,207 @@
+/-
+Regenerates the third-party license notice from the project's actual state:
+
+    lake env lean --run scripts/GenLicenses.lean
+
+Writes both `THIRD-PARTY-LICENSES` (repo root) and `Tl/Cli/Licenses.lean`
+(the copy embedded in the binary) in one pass, so the two cannot disagree.
+Inputs, all read from disk — never hardcoded: `lean-toolchain` (version and
+the elan toolchain directory), `lake-manifest.json` (every package pin),
+`.lake/packages/<pkg>/LICENSE` (each package's license, classified from its
+text), and the toolchain's bundled `LICENSES` file (LLVM / glibc / GMP /
+CaDiCaL / leantar notices, propagated verbatim). Fails loudly on anything it
+cannot classify — an unrecognized package license means the notice needs a
+human, not a silent guess. Run from the repo root after any toolchain or
+package bump (`Tests/CliTests.lean` carries the drift test that forces this).
+-/
+import Lean.Data.Json
+
+open Lean (Json)
+
+/-- A manifest package pin. -/
+structure Pkg where
+  name : String
+  url : String
+  rev : String
+  license : String
+
+private def bar : String := String.ofList (List.replicate 78 '=')
+
+/-- Classify a package's license from its LICENSE file text (fail-closed).
+    Anchored to the head of the file — a license names itself up top, and a
+    mere mention further down must not classify the file. Any GPL-family title
+    anywhere (GPL/LGPL/AGPL share the all-caps "GENERAL PUBLIC LICENSE"
+    substring) refuses classification even if the head looks permissive: a
+    dual/mixed grant needs a human decision (ADR-0006). -/
+def classify (name text : String) : IO String := do
+  let head := String.intercalate "\n" ((text.splitOn "\n").take 40)
+  if (text.splitOn "GENERAL PUBLIC LICENSE").length > 1 then
+    throw (IO.userError s!"package '{name}' carries a GPL-family license text — needs an ADR-0006 decision")
+  else if (head.splitOn "Apache License").length > 1
+       && (head.splitOn "Version 2.0").length > 1 then pure "Apache-2.0"
+  else if (head.splitOn "MIT License").length > 1
+       || (head.splitOn "Permission is hereby granted, free of charge").length > 1 then pure "MIT"
+  else throw (IO.userError
+    s!"cannot classify the license of package '{name}' — update scripts/GenLicenses.lean's classify for it")
+
+def readManifest : IO (List Pkg) := do
+  let j ← IO.ofExcept (Json.parse (← IO.FS.readFile "lake-manifest.json"))
+  let pkgs ← IO.ofExcept (j.getObjVal? "packages" >>= Json.getArr?)
+  pkgs.toList.mapM fun p => do
+    let name ← IO.ofExcept (p.getObjVal? "name" >>= Json.getStr?)
+    let url ← IO.ofExcept (p.getObjVal? "url" >>= Json.getStr?)
+    let rev ← IO.ofExcept (p.getObjVal? "rev" >>= Json.getStr?)
+    let licPath := System.FilePath.mk ".lake" / "packages" / name / "LICENSE"
+    let licText ← IO.FS.readFile licPath
+    pure { name, url, rev, license := ← classify name licText }
+
+/-- The libuv MIT notice: the Lean toolchain statically links libuv into every
+    Lean binary (`lib/libuv.a`) but omits it from its own LICENSES file, so the
+    entry is carried here (upstream text, indented). -/
+def libuvNotice : String :=
+"    Copyright (c) 2015-present libuv project contributors.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    \"Software\"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to permit
+    persons to whom the Software is furnished to do so, subject to the
+    following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+    NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+    DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+    OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+    USE OR OTHER DEALINGS IN THE SOFTWARE."
+
+def assemble (ver : String) (pkgs : List Pkg) (apache cliMit leanLicenses : String) : String :=
+  let pkgRows := pkgs.map fun p => s!"| {p.name} ({p.url}) | {p.rev} | {p.license} |"
+  let apachePkgs := (pkgs.filter (·.license == "Apache-2.0")).map (·.name)
+  let header := s!"THIRD-PARTY LICENSES for tl
+{bar}
+
+tl itself is published under the Apache License 2.0 (see LICENSE at the
+repository root). The compiled `tl` binary statically links the Lean 4
+runtime and the libraries below; this file carries the license notices that
+must travel with every distribution artifact (Release tarball, npm package,
+Homebrew bottle — ADR-0006). `tl --licenses` prints this same file.
+
+Generated by `lake env lean --run scripts/GenLicenses.lean` from
+lean-toolchain, lake-manifest.json, the packages' LICENSE files, and the
+toolchain's bundled LICENSES file — regenerate after any pin bump.
+
+Inventory (link-time and compile-time dependency cone of the shipped binary):
+
+| Component | Version / rev | License |
+|---|---|---|
+| Lean 4 runtime & stdlib | {ver} | Apache-2.0 |
+| GMP (bundled in the Lean toolchain, statically linked) | toolchain-bundled | LGPL-3.0-or-later (elected from the LGPLv3+/GPLv2+ dual license) |
+| libuv (bundled in the Lean toolchain, statically linked) | toolchain-bundled | MIT |
+| LLVM components (bundled in the Lean toolchain) | toolchain-bundled | Apache-2.0 WITH LLVM-exception (+ legacy NCSA parts) |
+| glibc (Linux artifacts only) | toolchain-bundled | LGPL-2.1 |
+| CaDiCaL (bundled in the Lean toolchain) | toolchain-bundled | MIT |
+| leantar (Lean tooling) | toolchain-bundled | Apache-2.0 |
+{String.intercalate "\n" pkgRows}
+
+GMP notice (LGPL-3.0-or-later, elected): tl links an UNMODIFIED GMP as bundled
+by the official Lean 4 toolchain. Corresponding source: https://gmplib.org/
+(the toolchain build recipe is https://github.com/leanprover/lean4). The full
+LGPLv3 text is in the propagated Lean notice below; relinking against a
+modified GMP is possible because tl is open source and its build (lake against
+the pinned toolchain in lean-toolchain) is reproducible from the repository.
+
+libuv notice (MIT): the Lean toolchain statically links libuv into every Lean
+binary (lib/libuv.a); the toolchain's own LICENSES file omits it, so the
+notice is carried here. Upstream: https://github.com/libuv/libuv (LICENSE at
+the repository root).
+
+{libuvNotice}
+
+Cli (lean4-cli) notice (MIT) — manifest-pinned via the toolchain dependency
+set and conservatively included:
+
+{cliMit}
+{bar}
+The Apache License 2.0 (covering tl, the Lean 4 runtime and stdlib,
+{String.intercalate ", " apachePkgs}, and leantar):
+{bar}
+
+{apache}
+{bar}
+Notices propagated verbatim from the Lean 4 toolchain's bundled LICENSES file
+(leanprover/lean4 {ver} — LLVM, glibc, GMP/LGPLv3, CaDiCaL, leantar):
+{bar}
+
+{leanLicenses}"
+  header
+
+/-- Escape a string into Lean string-literal syntax. -/
+def escLit (s : String) : String :=
+  s.foldl (fun acc c =>
+    acc ++ (if c == '\\' then "\\\\"
+            else if c == '"' then "\\\""
+            else if c == '\n' then "\\n"
+            else if c.toNat < 0x20 then
+              let hex := String.ofList (Nat.toDigits 16 c.toNat)
+              s!"\\u{String.ofList (List.replicate (4 - hex.length) '0') ++ hex}"
+            else String.singleton c)) ""
+
+def emitLean (text : String) : String := Id.run do
+  let lines := (text.splitOn "\n")
+  let step := 120
+  let mut chunks : List String := []
+  let mut i := 0
+  while i < lines.length do
+    let piece := String.intercalate "\n" (lines.drop i |>.take step)
+    let piece := if i + step < lines.length then piece ++ "\n" else piece
+    chunks := chunks ++ [piece]
+    i := i + step
+  let defs := chunks.zipIdx.map fun (c, i) =>
+    s!"private def part{i} : String :=\n  \"{escLit c}\""
+  let names := chunks.zipIdx.map fun (_, i) => s!"part{i}"
+  s!"/-
+`Tl.Cli.Licenses` — the THIRD-PARTY-LICENSES notice, embedded so the compiled
+binary is self-contained (`tl --licenses` must work from any artifact, with no
+repo checkout). GENERATED FILE — do not edit by hand: regenerate, together
+with the repo-root `THIRD-PARTY-LICENSES` it must stay byte-equal to
+(test-pinned in `Tests/CliTests.lean`), via
+
+    lake env lean --run scripts/GenLicenses.lean
+-/
+
+namespace Tl.Cli
+
+{String.intercalate "\n\n" defs}
+
+/-- The full third-party license notice, byte-equal to the repo-root
+    `THIRD-PARTY-LICENSES` file (test-pinned). -/
+def thirdPartyLicenses : String :=
+  {String.intercalate " ++ " names}
+
+end Tl.Cli
+"
+
+def main : IO Unit := do
+  let tc := (← IO.FS.readFile "lean-toolchain").trimAscii.toString
+  let ver := (tc.splitOn ":").getLast!
+  -- the toolchain root of the `lean` actually running this script (its
+  -- executable sits at <toolchain>/bin/lean), so a custom ELAN_HOME or a
+  -- nonstandard toolchain layout resolves the same way `lake env lean` does
+  let tdir ← do
+    match (← IO.appPath).parent.bind (·.parent) with
+    | some p => pure p
+    | none => throw <| IO.userError s!"cannot derive the toolchain root from the lean executable path {← IO.appPath}"
+  let leanLicenses := (← IO.FS.readFile (tdir / "LICENSES")).trimAsciiEnd.toString
+  let pkgs ← readManifest
+  let apache := (← IO.FS.readFile (System.FilePath.mk ".lake" / "packages" / "mathlib" / "LICENSE")).trimAsciiEnd.toString
+  let cliMit := (← IO.FS.readFile (System.FilePath.mk ".lake" / "packages" / "Cli" / "LICENSE")).trimAsciiEnd.toString
+  let text := assemble ver pkgs apache cliMit leanLicenses ++ "\n"
+  IO.FS.writeFile "THIRD-PARTY-LICENSES" text
+  IO.FS.writeFile (System.FilePath.mk "Tl" / "Cli" / "Licenses.lean") (emitLean text)
+  IO.println s!"wrote THIRD-PARTY-LICENSES ({text.length} bytes) and Tl/Cli/Licenses.lean ({pkgs.length} packages, toolchain {ver})"

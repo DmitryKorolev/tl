@@ -262,10 +262,29 @@ checklist, not an unresolved licensing risk.
 
 ### Compliance deliverables
 
-- A `THIRD-PARTY-LICENSES` file and a `tl --licenses` command listing the
-  real link-time set — in practice Lean's bundled `LICENSES` notices ⊕ `tl`'s
+- A `THIRD-PARTY-LICENSES` file and a `tl licenses` / `tl --licenses` command
+  listing the real link-time set — Lean's bundled `LICENSES` notices ⊕ `tl`'s
   own deps: Lean runtime (Apache-2.0), GMP (LGPLv3 + notice + upstream source
-  URL), LLVM (Apache-2.0-with-exceptions), and anything else the linker pulls in.
+  URL), LLVM (Apache-2.0-with-exceptions), libuv (MIT — statically linked into
+  every Lean binary but **omitted from Lean's own `LICENSES` file**, so `tl`'s
+  notice adds the entry itself), the Lake package deps compiled into the binary
+  (mathlib and its cone, all Apache-2.0 except lean4-cli/MIT), and anything
+  else the linker pulls in. **Built**: `scripts/GenLicenses.lean` (run as
+  `lake env lean --run scripts/GenLicenses.lean`) regenerates the repo-root
+  `THIRD-PARTY-LICENSES` and the embedded copy `Tl/Cli/Licenses.lean` in one
+  pass from the live inputs — `lean-toolchain`, `lake-manifest.json`,
+  per-package `LICENSE` files on disk (classified fail-closed), and the
+  toolchain's bundled `LICENSES` file. `Tests/CliTests.lean` pins the embedded
+  copy byte-equal to the file and drift-tests the notice against the current
+  toolchain version and every manifest rev, so a pin bump fails the suite
+  until the notice is regenerated. The same test file gates license
+  *compatibility*: every manifest package's LICENSE must classify to the
+  permissive allowlist (Apache-2.0/MIT) — a dep under a copyleft, unknown, or
+  missing license fails the suite, and widening the allowlist is a deliberate
+  edit to this ADR. The link-set check (`nm`/`otool -L`, or
+  `ldd` on Linux, over the built binary — how the static GMP/libuv set was
+  established) stays a manual step on toolchain bumps: a *new* bundled library
+  is the one drift the generator cannot see.
 - That file travels in every distribution artifact — Release tarball,
   npm package, Homebrew bottle — since compliance attaches to distribution.
 - `tl` published under Apache-2.0.

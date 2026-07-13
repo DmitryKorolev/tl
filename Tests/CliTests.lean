@@ -84,6 +84,74 @@ def cliBasicTests : IO (List Outcome) := do
   -- version
   o := o ++ [← expectData "version payload" ["version"]
     (fun j => jStr j "version" == some "0.1.0" && jNat j "logFormat" == some 1)]
+  -- licenses (ADR-0006): the embedded notice is byte-equal to the repo-root
+  -- THIRD-PARTY-LICENSES file (the source of truth — a drifted regeneration
+  -- fails here), human output IS the notice (human/json parity), the
+  -- --licenses spelling dispatches, and positionals are refused
+  let onDisk ← IO.FS.readFile "THIRD-PARTY-LICENSES"
+  o := o ++
+    [check "embedded thirdPartyLicenses matches THIRD-PARTY-LICENSES on disk"
+       (thirdPartyLicenses == onDisk)
+       s!"embedded {thirdPartyLicenses.length} bytes, file {onDisk.length} bytes — regenerate Tl/Cli/Licenses.lean from the file",
+     check "the notice names the GMP/LGPLv3 obligation and libuv"
+       ((thirdPartyLicenses.splitOn "GNU LESSER GENERAL PUBLIC LICENSE").length > 1
+        && (thirdPartyLicenses.splitOn "libuv").length > 1) ""]
+  -- drift test: the notice must attest the project's CURRENT pins. A
+  -- lean-toolchain or lake-manifest.json bump fails here until the notice is
+  -- regenerated (`lake env lean --run scripts/GenLicenses.lean`)
+  let toolchainVer := ((← IO.FS.readFile "lean-toolchain").trimAscii.toString.splitOn ":").getLast!
+  o := o ++ [check "the notice names the pinned toolchain version"
+    ((thirdPartyLicenses.splitOn toolchainVer).length > 1)
+    s!"lean-toolchain pins {toolchainVer} — regenerate the notice"]
+  o := o ++ [match Json.parse (← IO.FS.readFile "lake-manifest.json") with
+    | .ok m =>
+      let revs := (jArr m "packages").filterMap (fun p => jStr p "rev")
+      let missing := revs.filter (fun r => (thirdPartyLicenses.splitOn r).length ≤ 1)
+      check "the notice carries every lake-manifest.json package rev"
+        (!revs.isEmpty && missing.isEmpty)
+        s!"manifest revs missing from the notice: {missing} — regenerate it"
+    | .error e => { name := "the notice carries every manifest rev", passed := false,
+                    msg := s!"lake-manifest.json did not parse: {e}" }]
+  -- license-compatibility gate: every manifest package's LICENSE file must
+  -- classify to the allowlist below (permissive, Apache-2.0-compatible,
+  -- binary-embeddable with a notice). Adding a package under any other
+  -- license — copyleft, unknown, or missing — fails here; extending the
+  -- allowlist is a deliberate ADR-0006 edit, not a side effect of `lake update`
+  match Json.parse (← IO.FS.readFile "lake-manifest.json") with
+  | .ok m =>
+    let names := (jArr m "packages").filterMap (fun p => jStr p "name")
+    let mut bad : List String := []
+    for n in names do
+      let licPath := System.FilePath.mk ".lake" / "packages" / n / "LICENSE"
+      let text ← try IO.FS.readFile licPath catch _ => pure ""
+      -- allowlist, anchored to the head of the file (a license names itself
+      -- up top; a mere mention further down must not classify the file)
+      let head := String.intercalate "\n" ((text.splitOn "\n").take 40)
+      let isApache := (head.splitOn "Apache License").length > 1
+        && (head.splitOn "Version 2.0").length > 1
+      let isMit := (head.splitOn "MIT License").length > 1
+        || (head.splitOn "Permission is hereby granted, free of charge").length > 1
+      -- belt for dual/mixed grants: the shared all-caps title substring of the
+      -- whole GPL family (GPL, LGPL, AGPL — "GNU [LESSER|AFFERO] GENERAL
+      -- PUBLIC LICENSE") anywhere in the file forces a human decision even if
+      -- the head classified as permissive
+      let gplFamily := (text.splitOn "GENERAL PUBLIC LICENSE").length > 1
+      if !(isApache || isMit) || gplFamily then bad := bad ++ [n]
+    o := o ++ [check "every manifest package license is on the permissive allowlist (Apache-2.0/MIT)"
+      (!names.isEmpty && bad.isEmpty)
+      s!"packages with a missing/copyleft/unclassified LICENSE: {bad} — an incompatible license needs an ADR-0006 decision, not a silent dep add"]
+  | .error e =>
+    o := o ++ [{ name := "manifest license allowlist", passed := false,
+                 msg := s!"lake-manifest.json did not parse: {e}" }]
+  o := o ++ [← expectData "licenses payload carries the notice text" ["licenses"]
+    (fun j => jStr j "text" == some thirdPartyLicenses) (fun _ => "text ≠ embedded notice")]
+  o := o ++ [match ← run' ["licenses"] with
+    | .ok out => check "licenses human output is the notice (final newline deferred to println)"
+        (out.human ++ "\n" == thirdPartyLicenses) ""
+    | .error e => { name := "licenses human output", passed := false, msg := e.message }]
+  o := o ++ [← expectData "--licenses dispatches like licenses" ["--licenses"]
+    (fun j => jStr j "text" == some thirdPartyLicenses) (fun _ => "text ≠ embedded notice")]
+  o := o ++ [← expectErr "licenses refuses positionals" ["licenses", "extra"] .usage]
   -- init: created, file contents, idempotent rerun
   let root ← IO.FS.createTempDir
   let target := (root / ".tl").toString
@@ -501,6 +569,14 @@ def cliBinaryTests : IO (List Outcome) := do
       (out.stdout == "{\"schemaVersion\":1,\"ok\":true,\"data\":{\"logFormat\":1,\"version\":\"0.1.0\"}}\n")
       out.stdout,
      check "version exits 0" (out.exitCode == 0)]
+  -- `tl licenses` stdout is byte-equal to the repo THIRD-PARTY-LICENSES file
+  -- (the human string omits the final newline; println restores it)
+  let lic ← spawn ["licenses"]
+  o := o ++
+    [check "licenses stdout is byte-equal to THIRD-PARTY-LICENSES"
+      (lic.stdout == (← IO.FS.readFile "THIRD-PARTY-LICENSES"))
+      s!"stdout {lic.stdout.length} bytes vs file",
+     check "licenses exits 0" (lic.exitCode == 0)]
   -- usage error honors --json anywhere in argv: envelope on stdout, exit 2
   let bad ← spawn ["frobnicate", "--json"]
   o := o ++

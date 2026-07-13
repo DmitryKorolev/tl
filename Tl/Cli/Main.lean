@@ -139,6 +139,10 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "version"
       MonadExcept.ofExcept (noPositionals a "version")
       return cmdVersion
+    | "licenses" | "--licenses" => do
+      let a ← parse "licenses"
+      MonadExcept.ofExcept (noPositionals a "licenses")
+      return cmdLicenses
     | "init" => do
       let a ← parse "init"
       MonadExcept.ofExcept (noPositionals a "init")

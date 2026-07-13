@@ -210,6 +210,8 @@ def commandSpecs : List CommandSpec :=
       summary := "local health checks (replica / clock / log / graph / stale claims / clock skew / sync posture)",
       flags := [syncFlag] },
     { command := "version", positionals := "", summary := "the product and log-format versions" },
+    { command := "licenses", positionals := "",
+      summary := "third-party license notices and link-time dependency attribution (also --licenses)" },
     { command := "help", positionals := "[<command>]",
       summary := "this grammar — human, or machine-readable with --json" } ]
 

@@ -70,6 +70,7 @@ import Tl.Cli.Sanitize
 import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Grammar
+import Tl.Cli.Licenses
 import Tl.Import.Bulk
 import Tl.Cli.Commands
 import Tl.Cli.Main

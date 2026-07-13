@@ -12,7 +12,7 @@ under-document (a shipped verb/flag absent from the block).
 Robustness by construction: it reads only the single fenced region delimited by
 `<!-- tl:grammar-surface … -->` and compares it against `helpJson` (computed
 from the same `commandSpecs` the parser reads). The narrative tables — which
-intentionally name destination-surface verbs (`edit`, `--licenses`, `ready
+intentionally name destination-surface verbs (`edit`, `ready
 --assignee`) — are outside the region and never read, so they cannot
 false-positive. The comparison is set *equality*, so drift in either direction
 fails. Tested I/O shell (ADR-0004); no Mathlib (ADR-0009).
