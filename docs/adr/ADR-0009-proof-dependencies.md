@@ -37,12 +37,12 @@ Implications of staying off Mathlib:
 
 Escape hatch: adding Mathlib is a deliberate one-line `lakefile.lean`
 change, taken *only* if a proof genuinely needs it (e.g. nontrivial algebra)
-and recorded (a superseding note here). It is not banned — it is not the
+and recorded (the next section). It is not banned — it is not the
 default.
 
-### Superseding note (Mathlib adopted, scoped) — 2026
+### Mathlib adopted under the escape hatch, scoped
 
-Mathlib is now a pinned dependency (`mathlib4 @ v4.30.0`, matching the
+Mathlib is a pinned dependency (`mathlib4 @ v4.30.0`, matching the
 toolchain), taken under the escape hatch above for a genuine need: the
 remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
 correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
@@ -72,6 +72,20 @@ avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
 the Lake config is `lakefile.lean` (the ADR-0019 native shim needs custom
 targets, which are Lean-DSL-only); the pin policy here is unaffected.)
+
+The read path's fast-form modules also sit inside the Mathlib import cone:
+the fast forms ship next to their refinement bridges
+(`Tl/Kernel/RollupFast.lean` → `ReadyFast.lean` → `CyclesFast.lean`), and the
+rollup bridge folds against the saturation argument in
+`Tl/Kernel/RollupSat.lean` — a genuine cardinality/pigeonhole module, squarely
+inside this ADR's recorded scope (a `Reach.lean` dependent). So the shipped
+fast definitions, and through them the CLI build cone, transitively import
+Mathlib. This is a build-structure widening only — Mathlib is used exclusively
+by the bridge proofs, the runtime semantics are pinned by the `*_eq` agreement
+theorems, and the axiom probes stay clean. Recorded here per the "do not widen
+without recording" rule; if build times ever make it bite, the mechanical fix
+is splitting each fast module into a definition file (batteries-only) and a
+proof file (Mathlib zone), at the cost of some duplication of private helpers.
 
 ## Toolchain and test harness (pinned)
 
@@ -116,19 +130,3 @@ targets, which are Lean-DSL-only); the pin policy here is unaffected.)
 - Lean core only, no `batteries`. Rejected: `batteries` provides
   essential `List`/`Array`/`Option` lemmas and structures cheaply, with none
   of Mathlib's weight.
-
-> **Amendment (2026-06-12) — the fast-path modules sit inside the Mathlib
-> import cone.** The performance work ships the read path's fast forms next
-> to their refinement bridges (`Tl/Kernel/RollupFast.lean` →
-> `ReadyFast.lean` → `CyclesFast.lean`), and the rollup bridge folds against
-> the saturation argument in `Tl/Kernel/RollupSat.lean` — a genuine
-> cardinality/pigeonhole module, squarely inside this ADR's recorded scope
-> (a `Reach.lean` dependent). Consequence: the shipped fast definitions, and
-> through them the CLI build cone, now transitively import Mathlib. This is
-> a build-structure widening only — Mathlib is used exclusively by the
-> bridge proofs, the runtime semantics are pinned by the `*_eq` agreement
-> theorems, and the axiom probes stay clean. Recorded here per the "do not
-> widen without recording" rule; if build times ever make it bite, the
-> mechanical fix is splitting each fast module into a definition file
-> (batteries-only) and a proof file (Mathlib zone), at the cost of some
-> duplication of private helpers.

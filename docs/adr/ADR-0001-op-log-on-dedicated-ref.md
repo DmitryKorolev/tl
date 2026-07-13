@@ -216,16 +216,14 @@ transport. Single-machine write concurrency is serialized by a per-working-copy
 mutation lock around the mint-HLC→append critical section, with atomic
 `O_APPEND` as the second line of defence (ADR-0015 §1–2).
 
-> **Amendment (2026-06-16): no push-time re-snapshot.** This section originally
-> said sync re-snapshots its own segment under the mutation lock immediately
-> before each push, to avoid losing ops appended mid-sync. The landed remote leg
-> does not: it pushes the union of the *local ref* and the fetched-remote tip
-> without re-reading the own on-disk segment at push time. Nothing is lost — ops
-> appended to the own segment during a sync are simply not in *this* push; they
-> are already folded by local reads and ride the next sync. A push races only
-> with another *clone's* push (handled by the non-fast-forward re-fetch/retry),
-> never with a local append, so the re-snapshot bought nothing the next-sync
-> convergence does not already provide. Dropped as unnecessary.
+There is **no push-time re-snapshot**: the remote leg pushes the union of the
+*local ref* and the fetched-remote tip without re-reading the own on-disk
+segment at push time. Nothing is lost — ops appended to the own segment during
+a sync are simply not in *this* push; they are already folded by local reads
+and ride the next sync. A push races only with another *clone's* push (handled
+by the non-fast-forward re-fetch/retry), never with a local append, so a
+push-time re-snapshot under the mutation lock would buy nothing the next-sync
+convergence does not already provide.
 
 ### 7. Stealth mode (`tl init --stealth`) — opt-in
 

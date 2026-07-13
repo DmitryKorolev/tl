@@ -95,7 +95,7 @@ same `.run.toBaseIO` best-effort catch `refreshFromRef` uses — swallowing both
 worktree (`isLinkedWorktree`: `--git-dir` ≠ `--git-common-dir`), opt-in
 elsewhere, never overriding an existing value. The write verbs *also* absorb the
 ref *before* `transact` via the same module's `preWriteRefresh` (the
-pre-transact local absorb, ADR-0016 §3 amendment) — auto-sync is the outbound
+pre-transact local absorb, ADR-0016 write-path freshness) — auto-sync is the outbound
 mirror of that inbound refresh. Tested (`Tests/CliTests.lean`): off-by-default
 (sibling blind), on (sibling sees the write with no explicit sync), a publish
 failure disclosed while the write survives, and the no-git no-op.

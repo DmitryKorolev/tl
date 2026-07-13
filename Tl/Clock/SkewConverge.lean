@@ -1,6 +1,6 @@
 /-
 `Tl.Clock.SkewConverge` — the convergence-safety corollary of the HLC skew
-window (ADR-0007 amendment), composing the pure admission lemmas
+window (ADR-0007 skew window), composing the pure admission lemmas
 (`Tl.Clock.Skew`) with the kernel's set-insensitive fold (`fold_eq_of_mem_iff`).
 
 Split from `Tl.Clock.Skew` so the predicate + monotonicity stay kernel-free

@@ -472,7 +472,7 @@ def cliUsageTests : IO (List Outcome) := do
      ← expectErr "bad --limit is usage" ["ready", "--dir", dir, "--limit", "many"] .usage,
      ← expectErr "out-of-range -p is usage" ["create", "x", "--dir", dir, "-p", "9"] .usage,
      ← expectErr "missing flag value is usage" ["ready", "--dir"] .usage,
-     -- the provenance flag is --actor (ADR-0013 amendment); the old --assignee
+     -- the provenance flag is --actor (ADR-0013 actor/assignee split); the old --assignee
      -- spelling is dropped (reserved for the future assignee read filter) and now
      -- rejects as an unknown flag — a deliberate pre-1.0 breaking change.
      ← expectErr "the dropped --assignee provenance flag is now an unknown flag (usage)"
@@ -1057,7 +1057,7 @@ def cliFreeVerbTests : IO (List Outcome) := do
         ((colored.splitOn (escSeq ++ "[32mopen ")).length == 1) colored]
   -- stats counts effective status and splits open into epics vs tasks: a
   -- rolled-up epic (stored open, all children closed) counts as done, not open,
-  -- matching `list` (ADR-0020 §stats amendment).
+  -- matching `list` (ADR-0020 §stats).
   let dir2 ← freshDir
   let p ← mkIssue dir2 "Epic P" []
   let c ← mkIssue dir2 "Child C" ["--parent", "tl-" ++ p]
@@ -1331,7 +1331,7 @@ def cliAutoSyncTests : IO (List Outcome) := do
     | .error e => { name := "non-repo write succeeds", passed := false, msg := e.message })]
   return o
 
-/-- Pre-transact absorb (ADR-0016 §3 amendment): a directed write by id refreshes
+/-- Pre-transact absorb (ADR-0016 write-path freshness): a directed write by id refreshes
     from the shared ref before its guards run, so it finds a task that exists
     only on a sibling's published segment — closing the stale-directed-write gap
     (without it, this `close` by id would fail not-found). -/

@@ -30,7 +30,7 @@ namespace Tl.Store
 open Tl.Format
 open Tl.Clock.Skew (admittedB)
 
-/-- The clock-skew window (ADR-0007 amendment): a foreign op whose HLC physical
+/-- The clock-skew window (ADR-0007 skew window): a foreign op whose HLC physical
     time is more than this far beyond local wall-clock is *deferred* — held back
     from the fold and from the clock-reseed max until local time catches up,
     then it appears (eventually consistent). Computed on UTC epoch milliseconds,

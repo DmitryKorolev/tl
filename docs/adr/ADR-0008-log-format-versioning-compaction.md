@@ -117,10 +117,10 @@ are not record-op values. The enum and its payloads:
 | wire `op` | kernel delta | payload (beyond the envelope) |
 |---|---|---|
 | `create` | create | `id`; optional initial scalars (`title`, `priority`, `description`, `notes`, `slug`, and the lifecycle `status`/`deferUntil` seed) — **not** `assignee`, which is `claim`-only (ADR-0013; a carried `assignee` key is preserved in the unknown bag, never seeded onto the open issue); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
-| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/`notes`/…). Lifecycle status/time fields and `assignee` use the distinguished verbs below so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, the 2026-06-21 ADR-0013 amendment) |
+| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/`notes`/…). Lifecycle status/time fields and `assignee` use the distinguished verbs below so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, ADR-0013) |
 | `claim` | setFields | `id`; sets `status=in_progress`, `assignee` |
 | `close` | setFields | `id`; sets `status` (`done`\|`cancelled`), `closeResolution` (with `--of <id>` the *command* additionally emits a separate `metaSet` record — composites below) |
-| `reopen` | setFields | `id`; sets `status=open`, clears `closeResolution` and `assignee` (the 2026-06-21 ADR-0013 amendment) |
+| `reopen` | setFields | `id`; sets `status=open`, clears `closeResolution` and `assignee` (ADR-0013) |
 | `defer` / `undefer` | setFields | `id`; sets / clears `deferUntil` — an ISO-8601 UTC instant string (e.g. `2026-06-15T09:00:00Z`), or JSON `null` to clear; normalized on write, distinct from the 16-hex `hlc` (ADR-0010) |
 | `metaSet` | metaSet | `id`, `key`, `value` (`null` = clear) — opaque metadata (ADR-0002) |
 | `depAdd` / `relate` | edgeAdd | `from`, `to`, `kind` (`blocks`/`parent`/`related`); add-tag = the envelope triple in its canonical string form (`"<hlc>.<replica>.<nonce>"`, above), an opaque equality token for the OR-Set — distinct from LWW *comparison* of scalar writes, which is HLC-primary `(hlc, replica, nonce)` (ADR-0007). CLI `dep add A B` ⇒ `from=B, to=A` — A blocked-by B (ADR-0003) |
@@ -138,29 +138,32 @@ any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.
 `createdAt` (the ready-ordering key, ADR-0004) is read from the issue's
 `create` op at fold time.
 
-> **Amendment (2026-06-21) — `assignee` is claim-only.** Per the ADR-0013
-> amendment, the `assignee` field is written only by `claim`/`claim --steal`
-> and cleared by `reopen`. The delta rows above change accordingly: neither
-> `create` nor `update` may set `assignee`, and `reopen` adds an `assignee`
-> clear. Two legs, with different version status:
-> - `create`/`update` dropping `assignee` is genuinely **additive** — `tl` never
->   emitted an `assignee` key on a `create`/`update` record (its CLI `--actor`
->   flag is provenance, not a scalar write), so a carried key was always meant
->   for, and is now routed to, the unknown bag; the fold of every real `tl`
->   record is unchanged.
-> - `reopen` clearing `assignee` is **not** additive: it is a changed-field
->   meaning on an existing record kind, so an old binary folds a
->   reopened-not-reclaimed issue keeping its prior assignee while a new binary
->   clears it — a same-`v1`-log fold divergence that, **had any release shipped**,
->   would require a `v` bump. It does not, because the floor binds from 1.0 (§
->   Stability horizon) and **no release/tag has shipped** (product is pre-1.0): the
->   prior fold was never a delivered contract, so changing it is unreleased
->   iteration, not an inter-release break. The one live hazard pre-release — a
->   stale *local* fold cache suffix-folding new-semantics ops onto an
->   old-semantics cached state — is exactly the ADR-0022 cache-version obligation,
->   handled by the `cacheVersion` 2→3 bump. No on-disk bytes or `v` change.
-> The first tagged release must still disclose the materialization change in its
-> notes (the Stability-horizon "never silently" duty).
+**`assignee` is claim-only.** Per ADR-0013, the `assignee` field is written
+only by `claim`/`claim --steal` and cleared by `reopen`; neither `create` nor
+`update` may set it (the delta rows above). The versioning status of this
+shape, relative to an earlier design in which `create`/`update` could carry
+`assignee` and `reopen` did not clear it, has two legs:
+
+- `create`/`update` not setting `assignee` is genuinely **additive** — `tl`
+  never emitted an `assignee` key on a `create`/`update` record (its CLI
+  `--actor` flag is provenance, not a scalar write), so a carried key was
+  always meant for, and is routed to, the unknown bag; the fold of every real
+  `tl` record is unchanged.
+- `reopen` clearing `assignee` is **not** additive: it is a changed-field
+  meaning on an existing record kind, so a binary with the earlier semantics
+  folds a reopened-not-reclaimed issue keeping its prior assignee while the
+  current binary clears it — a same-`v1`-log fold divergence that, **had any
+  release shipped**, would require a `v` bump. It does not, because the floor
+  binds from 1.0 (§ Stability horizon) and **no release/tag has shipped**
+  (product is pre-1.0): the prior fold was never a delivered contract, so
+  changing it is unreleased iteration, not an inter-release break. The one
+  live hazard pre-release — a stale *local* fold cache suffix-folding
+  new-semantics ops onto an old-semantics cached state — is exactly the
+  ADR-0022 cache-version obligation, handled by the `cacheVersion` 2→3 bump.
+  No on-disk bytes or `v` change.
+
+The first tagged release must still disclose the materialization change in its
+notes (the Stability-horizon "never silently" duty).
 
 Stability rules follow from the verb/delta split:
 

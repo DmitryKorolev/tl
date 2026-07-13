@@ -1,5 +1,5 @@
 /-
-`Tl.Sync.AutoSync` — the write-path freshness bracket (ADR-0016 §3 amendment +
+`Tl.Sync.AutoSync` — the write-path freshness bracket (ADR-0016 write-path freshness +
 ADR-0021), composed over the sync legs and exposed to the CLI write verbs.
 
 A write verb brackets `Store.transact` with two best-effort, lock-free steps,
@@ -33,7 +33,7 @@ open Tl.Store
 open Tl.Clock (Replica)
 
 /-- Absorb the shared ref before a write's guards (the pre-transact local
-    absorb, ADR-0016 §3 amendment). Returns the located dirs, the loaded replica
+    absorb, ADR-0016 write-path freshness). Returns the located dirs, the loaded replica
     (reused by `autoSyncLocal`), and a degrade note if the refresh could not run
     (the write proceeds a moment stale, never failing). -/
 def preWriteRefresh (dirOverride : Option String) :

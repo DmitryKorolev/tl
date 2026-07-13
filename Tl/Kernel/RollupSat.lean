@@ -1,6 +1,6 @@
 /-
 `Tl.Kernel.RollupSat` — fuel saturation and the unconditional rollup
-recurrence (ADR-0003 §3 amendment). Spec-side only: nothing here is about
+recurrence (ADR-0003 rollup recursion shape). Spec-side only: nothing here is about
 speed — it characterizes the *fuel form* (`Rollup.lean`), and is what the
 fast implementation's refinement bridge (`RollupFast.lean`) folds against.
 
@@ -309,7 +309,7 @@ theorem closedAt_present_stable (s : State) (M : Nat)
   obtain ⟨f, hfM, hfreeze⟩ := exists_closedSet_freeze s M hN
   exact closedAt_frozen_upto s f (present_eq_of_closedSet_eq s f hfreeze) M hfM
 
-/-- **The recurrence, unconditional (ADR-0003 §3 amendment).** Manual cancel,
+/-- **The recurrence, unconditional (ADR-0003 rollup recursion shape).** Manual cancel,
     else the stored status with no present children, else `Done` iff every
     present child is effectively closed — with no acyclicity hypothesis: the
     fuel is saturated, so one more descent step changes nothing. -/

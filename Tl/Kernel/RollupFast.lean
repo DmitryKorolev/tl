@@ -1,6 +1,6 @@
 /-
 `Tl.Kernel.RollupFast` — the fast rollup and its refinement bridge
-(ADR-0003 §3 amendment).
+(ADR-0003 rollup recursion shape).
 
 Three pieces, named accordingly: the *spec* is the fuel form in
 `Rollup.lean`; the *fast implementation* here is a memoized recursion —
@@ -231,7 +231,7 @@ def effStatusAllH (s : State) : Std.HashMap IssueId Status :=
   s.presentIssues.foldl (fun memo i => (rollupVisit s pe bucket rfl [] memo i).1) ∅
 
 /-- The batched rollup, materialized to the canonical `AMap` once at the end
-    (`amapOfHashMap`). The shipped form for the read path (ADR-0003 §3 amendment);
+    (`amapOfHashMap`). The shipped form for the read path (ADR-0003 rollup recursion shape);
     pointwise equal to `effectiveStatus` (`effStatusAll_find` below). -/
 def effStatusAll (s : State) : AMap IssueId Status :=
   amapOfHashMap s.effStatusAllH

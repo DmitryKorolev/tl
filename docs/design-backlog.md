@@ -15,7 +15,7 @@ discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
 (local leg, read-time refresh, remote fetch/union/push, and the HLC skew window
 — proved convergence-safe), and **auto-sync** (ADR-0021: the best-effort
 post-write local publish, plus the symmetric pre-transact absorb that refreshes
-a write's view before its guards — ADR-0016 §3 amendment), the Stage-2
+a write's view before its guards — ADR-0016 write-path freshness), the Stage-2
 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical` — the
 dependency trees render on `why`/`unblocks`, not a separate `dep tree` verb),
 and bulk `import` (Stage 3) have landed. Still open: `edit`.

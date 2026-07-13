@@ -100,34 +100,28 @@ model; loop `close` per child instead.)
 `effectiveStatus` is total by well-founded recursion on a finite visited-set
 over the `parent` graph (a cycle-trapped epic falls back to not-done, reported).
 
-> **Amendment (2026-06-11, built 2026-06-12) — the rollup recursion shape.**
-> The fuel form (`effStatusAux` with present-issue-count fuel) stays as the
-> *spec*; the shipped read path is the memoized shape (`Tl/Kernel/RollupFast.lean`),
-> per the obligations below — discharged via the characterization route: the
-> recurrence is proved *unconditionally* (`RollupSat.effectiveStatus_recurrence`,
-> fuel saturation by an ascending-chain pigeonhole — no acyclicity hypothesis),
-> the path cutoff is proved *exact* (a re-encountered node is on a live cycle,
-> hence `Open` — `effStatusAux_open_on_liveCycle`), and the refinement bridge
-> (`effStatusWith_eq`) makes the fast form pointwise equal to the spec, so the
-> acyclic-exactness and never-`Done` theorems transfer rather than being
-> re-proved. Once-per-pass is `rollupVisit_find_hit`. The decided shape was: switch to the memoized
-> shape `effectiveStatus (visiting, memo) i`, where `visiting` is the *current
-> recursion path* — it detects a parent cycle at the exact node, and must not
-> be a global visited set, which would mistake shared DAG children for cycles —
-> and `memo` caches completed statuses so each node is evaluated once per
-> query (the unmemoized descent re-evaluates shared descendants per parent on
-> diamond-shaped parent DAGs). Semantics are unchanged: manual `Cancelled`
-> precedence, a cycle-trapped epic still falls back conservatively (never
-> `Done`), dangling children stay inert. Obligations: totality via
-> well-founded recursion on the not-yet-visited measure, and the acyclic
-> exactness theorem plus the never-`Done` cycle guarantee re-proved over the
-> new shape — directly, or through a characterization (recurrence) lemma that
-> quarantines the memo-coherence invariant in one proof; an equivalence bridge
-> to a reference function is admissible proof scaffolding, not a requirement,
-> and no unmemoized version need ship. The once-per-query property (an id,
-> once in `memo`, is never recomputed) is itself a statable theorem and the
-> recommended form of the performance claim; wall-clock of the compiled
-> binary stays tested, never proved.
+**The rollup recursion shape.** The fuel form (`effStatusAux` with
+present-issue-count fuel) is the *spec*; the shipped read path is the memoized
+shape `effectiveStatus (visiting, memo) i` (`Tl/Kernel/RollupFast.lean`), where
+`visiting` is the *current recursion path* — it detects a parent cycle at the
+exact node, and must not be a global visited set, which would mistake shared
+DAG children for cycles — and `memo` caches completed statuses so each node is
+evaluated once per query (an unmemoized descent would re-evaluate shared
+descendants per parent on diamond-shaped parent DAGs). Semantics are identical
+to the spec: manual `Cancelled` precedence, a cycle-trapped epic falls back
+conservatively (never `Done`), dangling children stay inert. The proof
+obligations are discharged via the characterization route: the recurrence is
+proved *unconditionally* (`RollupSat.effectiveStatus_recurrence`, fuel
+saturation by an ascending-chain pigeonhole — no acyclicity hypothesis), the
+path cutoff is proved *exact* (a re-encountered node is on a live cycle, hence
+`Open` — `effStatusAux_open_on_liveCycle`), and the refinement bridge
+(`effStatusWith_eq`) makes the fast form pointwise equal to the spec, so the
+acyclic-exactness and never-`Done` theorems transfer rather than being
+re-proved. The once-per-query property (an id, once in `memo`, is never
+recomputed) is itself a proved theorem (`rollupVisit_find_hit`) — the
+recommended form of the performance claim; wall-clock of the compiled binary
+stays tested, never proved. No unmemoized version ships (a reference function
+is admissible proof scaffolding, not a shipped fallback).
 
 ### 4. Multi-parent is the third reported condition
 

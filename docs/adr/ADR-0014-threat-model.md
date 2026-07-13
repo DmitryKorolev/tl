@@ -1,6 +1,6 @@
 # ADR-0014 — Threat model and trust boundary
 
-- Status: Accepted — the owning ADR amendments have landed: segment-scoped
+- Status: Accepted — the owning ADRs carry the mitigations: segment-scoped
   parse (ADR-0008), trust/provenance and untrusted-content fencing on the read
   commands (ADR-0003/0011),
   filesystem safety (ADR-0015), release integrity (ADR-0006), import bounds
@@ -230,7 +230,7 @@ source.
   is `tl`'s only access control; (b) supply-chain integrity rests on the
   release/signing identity + the Lean TCB; (c) agent-side prompt-injection
   resistance is the consuming harness's job.
-- Owning ADR amendments landed in their owning ADRs:
+- Each mitigation is recorded in its owning ADR:
   ADR-0008 (segment-scoped parse), ADR-0006 (signing/provenance/reproducible
   builds/dep-pinning), ADR-0011 (content-trust fencing and provenance on the
   read commands), ADR-0015 (local concurrency & FS safety:

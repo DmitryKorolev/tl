@@ -628,7 +628,7 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   -- count effective status (rollup-aware): a rolled-up epic counts as done,
   -- exactly as `list`/the glyphs render it — never the raw stored field, which
   -- would report a finished epic as still "open" and disagree with `list`
-  -- (ADR-0020 §stats amendment). `open` is split into epics vs tasks so a
+  -- (ADR-0020 §stats). `open` is split into epics vs tasks so a
   -- stored-open-but-rolled-up epic is never miscounted as workable.
   let openIssues := issues.filter (fun i => v.effStatus i == .Open)
   let openN := openIssues.length

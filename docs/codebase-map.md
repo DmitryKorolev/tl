@@ -67,7 +67,7 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   pass per view) + the refinement bridge — pointwise
                         --   equal to the spec (effStatusWith_eq/isReadyWith_eq),
                         --   so every spec theorem transfers; once-per-pass is
-                        --   rollupVisit_find_hit (ADR-0003 §3 amendment)
+                        --   rollupVisit_find_hit (ADR-0003 rollup recursion shape)
   RollupAcyclic.lean    --   rollup fuel-adequacy on acyclic parent graphs
   Invariant.lean        --   Invariant = valid status enum only; endpoint-existence
                         --   and acyclicity deliberately excluded (tolerated at read)
@@ -239,7 +239,7 @@ Tl/Clock/               -- I/O shell: ordering/identity (tested)
                         --   (admittedB, the exact one the fold branches on) +
                         --   its monotonicity (admitted_mono_now ⇒ deferral is
                         --   eventual) and filter-identity-past-threshold; pure,
-                        --   kernel-free (ADR-0007 amendment)
+                        --   kernel-free (ADR-0007 skew window)
   SkewConverge.lean     --   proved: skew_converges — composes Skew's filter-
                         --   identity with the kernel fold (fold_eq_of_mem_iff)
                         --   ⇒ replicas converge regardless of clock skew

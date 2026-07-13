@@ -243,7 +243,7 @@ structure View where
   loaded : Loaded
   now : Nat
   replica : Option Tl.Clock.Replica
-  /-- The batched rollup map (ADR-0003 §3 amendment), computed once per view:
+  /-- The batched rollup map (ADR-0003 rollup recursion shape), computed once per view:
       every per-row effectiveStatus/readiness read goes through it
       (`effStatusWith_eq` — pointwise the spec, so nothing observable moves). -/
   rollup : AMap IssueId Status

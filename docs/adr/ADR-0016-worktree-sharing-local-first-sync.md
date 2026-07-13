@@ -125,8 +125,8 @@ Concurrent readers racing to refresh are safe: the materialized content is a pur
 function of the ref OID, and atomic rename makes last-writer-wins harmless.
 
 **Built form (read-time refresh).** Implemented as `Tl/Sync/Local.refreshFromRef`,
-run by `loadView` before every read fold and — as of the write-path freshness
-amendment below — by every write verb *before* `transact` takes the mutation
+run by `loadView` before every read fold and — per the write-path freshness
+section below — by every write verb *before* `transact` takes the mutation
 lock (not by `doctor`, which stays a pure diagnostic). The marker is
 `.tl/local/ref-mark`
 (gitignored, no `v` bump). The trigger is one `git rev-parse refs/tl/log`
@@ -155,8 +155,8 @@ The bound is short for local plumbing and longer for the network legs
 bound), read once per repo. The killed-mid-flight remote legs stay safe because
 `refs/tl/log` updates are atomic server-side (§1, ADR-0001 §5).
 
-**Write-path freshness (amendment — was an open decision).** The original built
-form excluded the locked write path, so a directed `claim`/`close`/`update`/`dep`
+**Write-path freshness.** A built form that excluded the locked write path
+would mean a directed `claim`/`close`/`update`/`dep`
 by id from a worktree that had not read recently ran its guards against a stale
 view: it could fail `not-found` for a task that exists only on the shared ref,
 or — worse for coordination — let two worktrees both claim the same item (the

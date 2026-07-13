@@ -178,14 +178,14 @@ CSPRNG, not a code path.
   the clock-reseed max), never silently folded into a wrong order and never used
   to drag the local clock forward. Natural (non-adversarial) overflow is ~8800
   years out; this guards a hostile or broken remote clock (ADR-0014 T2). See the
-  amendment below for the value of the window, the deferral granularity, and the
+  next section for the value of the window, the deferral granularity, and the
   `doctor` surfacing.
 
-#### Amendment (2026-06-11) — skew-window: value, line-granularity deferral, doctor
+#### The skew window: value, line-granularity deferral, doctor
 
-With the local-first leg and read-time refresh ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md))
-now folding *foreign* segments on the ordinary read and write paths, the skew
-bound is pinned to its built form:
+The local-first leg and read-time refresh ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md))
+fold *foreign* segments on the ordinary read and write paths, so the skew
+bound sits on every read. Its pinned form:
 
 - **Window `W = 24 hours`** (`Tl.Store.skewWindowMs`). tl's clocks are
   heterogeneous and uncontrolled (laptops, CI, suspended VMs) and writes are
@@ -215,10 +215,10 @@ bound is pinned to its built form:
   on any replica once that replica's wall-clock passes `hlc − W`, so the result
   is *eventually consistent* — no op is lost and no replica diverges. Clamping
   the timestamp to `now` is rejected: it is a per-replica decision that would
-  make the converged state replica-dependent, breaking the CRDT join. (This
-  refines the earlier "refused at segment granularity" wording: line-granularity
-  deferral preserves an honest-but-skewed replica's *other* ops and self-heals,
-  where a whole-segment refusal would hide all of them until manual repair.)
+  make the converged state replica-dependent, breaking the CRDT join.
+  Whole-segment refusal is rejected too: line-granularity deferral preserves an
+  honest-but-skewed replica's *other* ops and self-heals, where a whole-segment
+  refusal would hide all of them until manual repair.
 
 - **Own segment exempt.** A replica's own ops are authoritative and feed its
   monotonicity floor, so only *foreign* ops are skew-checked. The check needs
@@ -254,8 +254,8 @@ bound is pinned to its built form:
   replica, so per-replica HLC monotonicity is not violated — that remains
   Trusted), and the only effect is that the copy's new writes lose LWW to the
   future-dated orphan until wall-clock catches up (eventual), **without
-  propagating the inflation onward**. Refines this ADR's earlier "reseed above
-  the all-segments max" to "above the within-window max."
+  propagating the inflation onward** — the reseed floors above the
+  *within-window* max, not the all-segments max.
 
 - **Convergence-safety theorem (proved).** That deferral is *eventual* — never
   permanent divergence — is the load-bearing safety claim, and it is **proved**

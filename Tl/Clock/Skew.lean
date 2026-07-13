@@ -1,6 +1,6 @@
 /-
 `Tl.Clock.Skew` — the HLC skew-window admission predicate and its
-convergence-safety theorems (ADR-0007 amendment).
+convergence-safety theorems (ADR-0007 skew window).
 
 The fold (`Tl/Store/Materialize`) *defers* a foreign op whose physical time is
 beyond the window `now + W`. This module proves the **safety** of that deferral

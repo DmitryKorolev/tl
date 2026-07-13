@@ -144,7 +144,7 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
         -- than honoring a future timestamp. The freshly-minted replica id starts
         -- its own monotonic sequence regardless, so this only loses LWW to the
         -- orphan until wall-clock catches up (eventual), never propagating the
-        -- inflation onward (ADR-0007 amendment).
+        -- inflation onward (ADR-0007 skew window).
         pure (unpackHlc (max loaded.maxHlc (now * 2 ^ 16)))
     let ctx : TxContext := { dirs := d, replica, loaded, now }
     let some replicaVal := replica.toNat?

@@ -49,7 +49,7 @@ every op as the envelope `actor` field (ADR-0008) — provenance the kernel
 never reads (not part of the OR-Set/LWW key, so convergence is untouched). It
 mirrors git's per-commit author, backs `provenance.createdBy` and per-op
 authorship (ADR-0003), and is distinct from the `assignee` *field*, which only
-`claim` / `claim --steal` write and `reopen` clears (the 2026-06-21 amendment).
+`claim` / `claim --steal` write and `reopen` clears (§ the actor/assignee split below).
 The kernel never reads the environment.
 
 ### The "superseded by …" signal is shell-only and replica-relative
@@ -63,14 +63,14 @@ tell a replica that *its* actor claimed and lost, because that fact is
 replica-relative, not a property of the merged state. `show` emits
 "superseded by `<assignee>`" whenever the winning `assignee` differs from this
 replica's latest local claim — surfaced as the `claim` block on **every**
-`tl show`, decoupled from any age window (amended 2026-06-16: the block is the
-replica's own provenance, so age never hides it). The *stale-claim* window is a
-separate concern, read by `doctor` and by `claim --steal` (the 2026-06-21
-amendment), with **no default**: it is the `tl.staleAfter`
+`tl show`, decoupled from any age window (the block is the replica's own
+provenance, so age never hides it). The *stale-claim* window is a
+separate concern, read by `doctor` and by `claim --steal` (§ takeover
+below), with **no default**: it is the `tl.staleAfter`
 git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
 `now - claimedAt` against the query's injected `now` (ADR-0010); unset ⇒
-`doctor` reports no stale verdict. `tl list --stale <duration>` (shipped
-2026-06-21) takes the window as a mandatory argument (also no default). It is advisory output,
+`doctor` reports no stale verdict. `tl list --stale <duration>` takes the
+window as a mandatory argument (also no default). It is advisory output,
 never a write-time guard. In `--json` it is structured, not prose: `show`
 carries `claim: { outcome, currentAssignee }` (ADR-0003/0008) so an agent branches
 on the outcome rather than parsing text.
@@ -90,7 +90,7 @@ A `tl config` command and/or a config file is a clean additive extension
 if real need appears (e.g. a persistent default priority or actor) — but it
 is not built speculatively.
 
-## Amendment (2026-06-21) — actor/assignee split, claim-only assignee, takeover
+## The actor/assignee split, claim-only assignee, and takeover
 
 Four freeze-sensitive decisions settle the actor/assignee surface before the
 CLI ossifies:
