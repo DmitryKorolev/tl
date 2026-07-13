@@ -151,6 +151,15 @@ def syncStaleWindowMs : Nat := 60 * 60 * 1000
 def remoteSyncNotice (remote : String) : String :=
   s!"syncing with remote '{remote}'…"
 
+/-- The process-global sink the remote-leg progress notice fires into. The
+    default prints the sanitized notice to stderr (the remote name is
+    attacker-influenceable git-config data, and this bypasses `Main`'s stderr
+    chokepoint). An `IO.Ref` so an in-process embedder — the test harness —
+    can install a silent or recording sink instead of spraying notices onto
+    the developer's terminal. -/
+initialize syncProgressSink : IO.Ref (String → IO Unit) ←
+  IO.mkRef (fun remote => IO.eprintln s!"tl: {sanitizeSingle (remoteSyncNotice remote)}")
+
 /-- A full `tl sync` (local leg, the remote leg in a git repo, then a second
     local leg to absorb the remote's additions), recording the last-sync marker
     so `doctor`/`ready` never contact the remote themselves (ADR-0016). Shared by
@@ -167,12 +176,12 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
   let own ← loadReplica d
   let ownId := own.map (·.id)
   let l ← Tl.Sync.syncLocal d ownId
-  -- announce the remote leg to stderr before the (possibly multi-second) network
-  -- fetch/push. The notice fires only when a remote resolves; stdout JSON stays a
-  -- single atomic object (progress is stderr-only). Sanitized — the remote name is
-  -- attacker-influenceable git-config data, and this bypasses Main's stderr chokepoint.
-  let r ← if l.ran then Tl.Sync.syncRemote d (announce := fun remote =>
-            IO.eprintln s!"tl: {sanitizeSingle (remoteSyncNotice remote)}")
+  -- announce the remote leg before the (possibly multi-second) network
+  -- fetch/push, via the installed `syncProgressSink`. The notice fires only when
+  -- a remote resolves; stdout JSON stays a single atomic object (progress is
+  -- stderr-only in the default sink).
+  let r ← if l.ran then Tl.Sync.syncRemote d (announce := fun remote => do
+            (← syncProgressSink.get) remote)
           else pure { ran := false, remote := "", pushed := false, pulled := false, tip := none }
   -- a second local leg after a remote that ran materializes what the fetch added
   -- (it can pull a new replica). Best-effort — the push already succeeded, so

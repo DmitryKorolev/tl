@@ -1865,8 +1865,20 @@ def cliSyncPostureTests : IO (List Outcome) := do
   | .error e => o := o ++ [{ name := "doctor sync row (remote)", passed := false, msg := e.message }]
   o := o ++ [← expectData "ready: never-synced advisory" ["ready", "--dir", tldir]
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
-  -- (3) after a sync: lastSync recorded, ahead 0, doctor ok, ready clean
+  -- (3) after a sync: lastSync recorded, ahead 0, doctor ok, ready clean.
+  -- A recording sink pins the progress-notice wiring (`syncProgressSink`):
+  -- the sync fires it exactly once with the resolved remote name.
+  let fired ← IO.mkRef ([] : List String)
+  syncProgressSink.set (fun rm => fired.modify (· ++ [rm]))
   let _ ← run' ["sync", "--dir", tldir]
+  o := o ++ [check "sync fires the progress sink once with the resolved remote"
+    ((← fired.get) == ["origin"]) (String.intercalate "," (← fired.get))]
+  -- a local-only sync (no git repo ⇒ no remote resolves) must not fire the sink
+  fired.set []
+  let _ ← run' ["sync", "--dir", dir]
+  o := o ++ [check "a local-only sync does not fire the progress sink"
+    ((← fired.get).isEmpty) (String.intercalate "," (← fired.get))]
+  syncProgressSink.set (fun _ => pure ())  -- restore the suite's silent sink
   match ← run' ["doctor", "--dir", tldir] with
   | .ok out =>
     o := o ++

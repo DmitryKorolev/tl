@@ -24,6 +24,11 @@ import Tests.ImportsTests
 open Tl.Tests
 
 def main : IO UInt32 := do
+  -- the suite drives `performSync` in-process against temp remotes; the default
+  -- sink would spray "syncing with remote 'origin'…" onto the runner's stderr.
+  -- Silence it — the sink's wiring is asserted with a recording sink in
+  -- `cliSyncPostureTests`.
+  Tl.Cli.syncProgressSink.set (fun _ => pure ())
   let sys ← sysTests
   let store ← storeTests
   let cli ← cliTests
