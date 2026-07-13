@@ -270,14 +270,14 @@ theorem compOk_sound {succ preds : IssueId → List IssueId}
       have hr := bfsGo_sound fuel [r] ∅ (hseed _) (hempty _) u hmem
       have hflip : Relation.ReflTransGen (fun x y => StepRel succ y x) r u :=
         Relation.ReflTransGen.mono
-          (fun x y hxy => hpred x y (List.mem_of_mem_filter hxy)) hr
+          (fun x y hxy => hpred x y (List.mem_of_mem_filter hxy)) _ _ hr
       exact reflTransGen_flip hflip
     -- r reaches v: the forward BFS, restriction dropped
     have hrv : Relation.ReflTransGen (StepRel succ) r v := by
       have hmem := Std.HashSet.contains_iff_mem.mp hv'.1
       have hr := bfsGo_sound fuel [r] ∅ (hseed _) (hempty _) v hmem
       exact Relation.ReflTransGen.mono
-        (fun x y hxy => List.mem_of_mem_filter hxy) hr
+        (fun x y hxy => List.mem_of_mem_filter hxy) _ _ hr
     exact hur.trans hrv
 
 theorem compsOk_get {succ preds : IssueId → List IssueId}

@@ -284,7 +284,15 @@ checklist, not an unresolved licensing risk.
   edit to this ADR. The link-set check (`nm`/`otool -L`, or
   `ldd` on Linux, over the built binary — how the static GMP/libuv set was
   established) stays a manual step on toolchain bumps: a *new* bundled library
-  is the one drift the generator cannot see.
+  is the one drift the generator cannot see. Worked example: the v4.32.0
+  toolchain started bundling OpenSSL (`libssl.a`/`libcrypto.a`, on the
+  default `leanc` link line, omitted from Lean's `LICENSES` like libuv) —
+  but the symbol check shows the linker dead-strips every OpenSSL object out
+  of `tl` (the only trace is Lean's three-instruction `lean_openssl_version`
+  shim returning a header constant), so no OpenSSL code ships and no notice
+  is owed. If tl ever starts using Lean's networking, this flips: the check
+  will show real `SSL_`/`EVP_`/`CRYPTO_` symbols and the notice must then
+  add OpenSSL (Apache-2.0 for 3.x) the same way it carries libuv.
 - That file travels in every distribution artifact — Release tarball,
   npm package, Homebrew bottle — since compliance attaches to distribution.
 - `tl` published under Apache-2.0.

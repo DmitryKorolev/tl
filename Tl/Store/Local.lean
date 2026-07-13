@@ -49,7 +49,7 @@ def localOffsetMinutes : IO Int := do
     match ← (do
       let tm ← Std.Time.Timestamp.now
       let rules ← Std.Time.Database.defaultGetLocalZoneRules
-      pure ((Std.Time.ZonedDateTime.ofTimestamp tm rules).offset.second.val / 60)).toBaseIO with
+      pure ((Std.Time.DateTime.ofTimestamp tm rules).offset.second.val / 60)).toBaseIO with
     | .ok m => return m
     | .error _ => return 0
 

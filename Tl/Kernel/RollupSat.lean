@@ -274,7 +274,7 @@ theorem exists_closedSet_freeze (s : State) (M : Nat)
     intro f hf heq
     exact hnone f ⟨hf, heq⟩
   have hssub : ∀ f, f ≤ M → closedSet s f ⊂ closedSet s (f + 1) := fun f hf =>
-    HasSubset.Subset.ssubset_of_ne (closedSet_subset_succ s f) (hne f hf)
+    LE.le.ssubset_of_ne (closedSet_subset_succ s f) (hne f hf)
   have h0 : (closedSet s 0).Nonempty := by
     rcases Finset.eq_empty_or_nonempty (closedSet s 0) with hemp | hne0
     · exact absurd (by rw [hemp, closedSet_one_eq_of_zero_empty s hemp])
