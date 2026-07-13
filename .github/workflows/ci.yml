@@ -69,12 +69,13 @@ jobs:
           fi
 
       # Advisory until the regex and exclusion set are pinned by their own
-      # decision; the exclusions below are the two files that legitimately
-      # embed full example ids today.
+      # decision; the exclusions below are the files that legitimately
+      # embed full example ids today (test fixtures, schema examples, and
+      # the README's captured demo session).
       - name: task-id leakage (advisory)
         continue-on-error: true
         run: |
-          if git grep -nE '(^|[^0-9a-zA-Z-])tl-[0-9a-z]{16}($|[^0-9a-z])' -- . ':(exclude)Tests/CliTests.lean' ':(exclude)docs/adr/ADR-0020-json-data-shapes.md'; then
+          if git grep -nE '(^|[^0-9a-zA-Z-])tl-[0-9a-z]{16}($|[^0-9a-z])' -- . ':(exclude)Tests/CliTests.lean' ':(exclude)docs/adr/ADR-0020-json-data-shapes.md' ':(exclude)README.md'; then
             echo "::warning::possible task-tracker id in tracked sources — artifacts must stand on their own; describe the substance instead (AGENTS.md, 'Artifacts must be human-readable')."
             exit 1
           fi
