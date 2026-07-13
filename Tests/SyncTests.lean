@@ -115,7 +115,7 @@ def syncRefTests : IO (List Outcome) := do
     | .error e => { name := "refTip none before write", passed := false, msg := e.message }]
   -- write two segments, read them back byte-for-byte
   let segs := [seg "0123456789abc" "{\"a\":1}\n{\"b\":2}\n", seg "0123456789abd" "{\"c\":3}\n"]
-  let tip ← runTl (writeRef d segs none)
+  let tip ← runTl (writeRef d segs [] none)
   o := o ++ [match tip with
     | .ok _ => { name := "writeRef creates the ref", passed := true }
     | .error e => { name := "writeRef creates the ref", passed := false, msg := e.message }]
@@ -133,7 +133,7 @@ def syncRefTests : IO (List Outcome) := do
     | .ok (some _) => { name := "refTip is set after write", passed := true }
     | _ => { name := "refTip set after write", passed := false, msg := "expected some" }]
   -- compare-and-set: writing against a stale expected tip is rejected
-  o := o ++ [match ← runTl (writeRef d [seg "0123456789abc" "{\"z\":9}\n"] (some "0000000000000000000000000000000000000000")) with
+  o := o ++ [match ← runTl (writeRef d [seg "0123456789abc" "{\"z\":9}\n"] [] (some "0000000000000000000000000000000000000000")) with
     | .error _ => { name := "writeRef CAS rejects a stale expected tip", passed := true }
     | .ok _ => { name := "writeRef CAS rejects stale tip", passed := false, msg := "unexpectedly succeeded" }]
   -- a second writeRef against the real tip chains a parent (history kept)
@@ -141,7 +141,7 @@ def syncRefTests : IO (List Outcome) := do
   let chainCount ← (do
     match realTip with
     | .ok tipv =>
-      match ← runTl (writeRef d (segs ++ [seg "0123456789abe" "{\"d\":4}\n"]) tipv) with
+      match ← runTl (writeRef d (segs ++ [seg "0123456789abe" "{\"d\":4}\n"]) [] tipv) with
       | .ok _ =>
         let out ← (IO.Process.output
           { cmd := "git", args := #["-C", d.base, "rev-list", "--count", "refs/tl/log"] } : IO _)
@@ -157,7 +157,7 @@ def syncRefTests : IO (List Outcome) := do
   let tipNow ← runTl (refTip d)
   o := o ++ [← do match tipNow with
     | .ok t =>
-      match ← runTl (do let _ ← writeRef d [⟨"0123456789abf", raw⟩] t; readRef d) with
+      match ← runTl (do let _ ← writeRef d [⟨"0123456789abf", raw⟩] [] t; readRef d) with
       | .ok segs => pure (check "a non-UTF-8 segment round-trips byte-for-byte through the ref"
           (match segs.find? (·.replicaId == "0123456789abf") with
            | some s => s.bytes.toList == raw.toList
@@ -215,7 +215,7 @@ def syncLocalTests : IO (List Outcome) := do
   let refNow ← runTl (readRef d)
   o := o ++ [← do match refNow, tip2 with
     | .ok rs, .ok t =>
-      match ← runTl (writeRef d (rs ++ [seg ridB "{\"b\":2}\n"]) t) with
+      match ← runTl (writeRef d (rs ++ [seg ridB "{\"b\":2}\n"]) [] t) with
       | .ok _ => pure { name := "a sibling publishes B into the ref", passed := true }
       | .error e => pure { name := "sibling publishes B", passed := false, msg := e.message }
     | _, _ => pure { name := "sibling publishes B", passed := false, msg := "setup error" }]
@@ -273,7 +273,7 @@ def syncRefreshTests : IO (List Outcome) := do
   let logDir := System.FilePath.mk d.base / ".tl" / "log"
   let ridB := (Tl.Clock.Replica.ofNat 7).id
   let ridC := (Tl.Clock.Replica.ofNat 9).id
-  let tipB ← runTl (do let t ← writeRef d [seg ridB "{\"b\":1}\n"] none; pure t)
+  let tipB ← runTl (do let t ← writeRef d [seg ridB "{\"b\":1}\n"] [] none; pure t)
   -- (B) the ref moved (no mark yet) → materialize the sibling + write the mark
   o := o ++ [match ← runTl (refreshFromRef d none) with
     | .ok r => check "refreshFromRef materializes a sibling when the ref moved"
@@ -296,7 +296,7 @@ def syncRefreshTests : IO (List Outcome) := do
   -- additionally exercises the degrade branch.
   let uid ← (IO.Process.output { cmd := "id", args := #["-u"] } : IO _)
   let isRoot := uid.stdout.trimAscii.toString == "0"
-  let _ ← runTl (do let _ ← writeRef d [seg ridB "{\"b\":1}\n", seg ridC "{\"c\":1}\n"] (← refTip d); pure ())
+  let _ ← runTl (do let _ ← writeRef d [seg ridB "{\"b\":1}\n", seg ridC "{\"c\":1}\n"] [] (← refTip d); pure ())
   let _ ← (IO.Process.output { cmd := "chmod", args := #["0500", logDir.toString] } : IO _)
   o := o ++ [match ← runTl (refreshFromRef d none) with
     | .ok r => check "refreshFromRef never throws when the log dir is read-only (degrades for non-root)"
@@ -347,7 +347,7 @@ def syncRemoteTests : IO (List Outcome) := do
     | .error e => { name := "resolveRemote rejects '-' remote", passed := false, msg := e.message }]
   -- (B) push to a fresh remote: a local ref's segment lands on the bare
   let (d, bare) ← repoWithRemote
-  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] none)
+  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] [] none)
   let noteB ← IO.mkRef ([] : List String)
   o := o ++ [match ← runTl (syncRemote d (announce := fun rm => noteB.modify (· ++ [rm]))) with
     | .ok r => check "syncRemote pushes the local ref to a fresh remote"
@@ -385,7 +385,7 @@ def syncRemoteTests : IO (List Outcome) := do
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "init", "-q"] } : IO _)
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "remote", "add", "origin", bare] } : IO _)
   let d3 : Dirs := { base := work3.toString, tlRel := ".tl" }
-  let tip3 ← runTl (writeRef d3 [seg ridC "{\"c\":3}\n"] none)  -- a local ref not descending from the remote
+  let tip3 ← runTl (writeRef d3 [seg ridC "{\"c\":3}\n"] [] none)  -- a local ref not descending from the remote
   let pushed3 ← match tip3 with
     | .ok t => runTl (pushRefLog d3 "origin" t)
     | .error e => pure (.error e)
@@ -408,7 +408,7 @@ def syncRemoteTests : IO (List Outcome) := do
   let (df, baref) ← repoWithRemote
   IO.FS.writeFile (System.FilePath.mk baref / "hooks" / "pre-receive") "#!/bin/sh\nexit 1\n"
   let _ ← (IO.Process.output { cmd := "chmod", args := #["+x", (System.FilePath.mk baref / "hooks" / "pre-receive").toString] } : IO _)
-  let _ ← runTl (writeRef df [seg ridA "{\"a\":1}\n"] none)
+  let _ ← runTl (writeRef df [seg ridA "{\"a\":1}\n"] [] none)
   o := o ++ [match ← runTl (syncRemote df) with
     | .error e => check "a hook/policy decline surfaces the real error, not a misleading push-rejected"
         (e.code != .pushRejected && (e.message.splitOn "declined").length > 1)
@@ -436,7 +436,7 @@ def syncRemoteTests : IO (List Outcome) := do
   -- throw must follow exactly maxRemoteAttempts (2) push attempts, so a regression
   -- to a budget of 1 would fail this case.
   let (dh, _) ← repoWithRemote
-  let _ ← runTl (writeRef dh [seg ridA "{\"a\":1}\n"] none)  -- local content worth pushing
+  let _ ← runTl (writeRef dh [seg ridA "{\"a\":1}\n"] [] none)  -- local content worth pushing
   let pushCalls ← IO.mkRef 0
   let exhausted ← runTl (syncRemote dh
     (push := fun _ _ _ => do let _ ← (pushCalls.modify (· + 1) : IO Unit); pure false))
@@ -481,23 +481,326 @@ def syncTimeoutTests : IO (List Outcome) := do
   return o
 
 /-- A ref-borne segment with a non-canonical name (crafted/junk tree entry) is
-    dropped by `readRefAt` (the `Replica.valid` filter), so junk
-    never propagates through a union into a permanently-flagged on-disk file. -/
+    excluded from the *segment* view by `readRefEntriesAt` (the `Replica.valid`
+    filter), so junk never propagates through a union into a
+    permanently-flagged on-disk file — but it is returned as a carried-unknown
+    entry (ADR-0008 transport preserve-unknown), ref-only. -/
 def syncRefNameValidationTests : IO (List Outcome) := do
   let d ← gitRepo
   let good := seg "0123456789abc" "{\"a\":1}\n"   -- a canonical 13-char replica id
   let junk := seg "tooshort" "{\"x\":9}\n"         -- not a valid replica id
-  let _ ← runTl (writeRef d [good, junk] none)
-  match ← runTl (readRef d) with
-  | .ok back =>
-    return [check "readRef drops a non-canonical ref-borne segment name"
+  let _ ← runTl (writeRef d [good, junk] [] none)
+  match ← runTl (readRefEntries d) with
+  | .ok (back, foreign) =>
+    return [check "the segment view excludes a non-canonical ref-borne segment name"
       (back.length == 1 && back.head?.map (·.replicaId) == some "0123456789abc")
-      s!"got {back.map (·.replicaId)}"]
+      s!"got {back.map (·.replicaId)}",
+     check "the non-canonical name is instead a carried-unknown entry"
+      (foreign.map (·.name) == ["tooshort.jsonl"])
+      s!"got {foreign.map (·.name)}"]
   | .error e => return [{ name := "readRef junk-name filter", passed := false, msg := e.message }]
+
+/-- Blob-write helper: hash `content` into the repo's object store, returning
+    the oid — the plumbing a test needs to craft a foreign tree entry. -/
+private def hashBlob (d : Dirs) (content : String) : IO String := do
+  let src := System.FilePath.mk d.base / "blob-src.tmp"
+  IO.FS.writeFile src content
+  let o ← IO.Process.output { cmd := "git", args := #["-C", d.base, "hash-object", "-w", src.toString] }
+  IO.FS.removeFile src
+  return o.stdout.trimAscii.toString
+
+/-- The repo's empty tree object (written so `mktree` can reference it). -/
+private def emptyTree (d : Dirs) : IO String := do
+  let o ← IO.Process.output { cmd := "git", args := #["-C", d.base, "mktree"], stdin := .null }
+  return o.stdout.trimAscii.toString
+
+/-- The tree oid a ref commit points at (distinguishes churn commits from
+    byte-identical content). -/
+private def treeOf (d : Dirs) (ref : String) : IO String := do
+  let o ← IO.Process.output { cmd := "git", args := #["-C", d.base, "rev-parse", s!"{ref}^\{tree}"] }
+  return o.stdout.trimAscii.toString
+
+/-- Transport preserve-unknown (ADR-0008): a `refs/tl/log` tree entry the
+    binary does not recognize — a reserved future name like a compaction
+    snapshot, a junk `.jsonl` name, a subtree — survives the local publish
+    leg, the remote fetch/union/push legs, and push/CAS retries verbatim; it
+    is never materialized into `.tl/log/`; same-name conflicts resolve
+    deterministically and side-symmetrically; and equal content still builds
+    an identical tree (no churn). -/
+def syncForeignEntryTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  -- unionForeign (pure): disjoint names, dedup, deterministic symmetric conflict pick
+  let a := fe "alpha" "100644 blob aaaa\talpha"
+  let b := fe "beta" "100644 blob bbbb\tbeta"
+  let b' := fe "beta" "100644 blob cccc\tbeta"
+  o := o ++
+    [checkEq "unionForeign unions disjoint names, name-sorted"
+      ((unionForeign [b] [a]).map (·.name)) ["alpha", "beta"],
+     checkEq "unionForeign dedups an identical entry" (unionForeign [a, b] [b]) [a, b],
+     checkEq "unionForeign picks the greater raw line on a same-name conflict"
+      (unionForeign [b] [b']) [b'],
+     checkEq "unionForeign conflict pick is side-symmetric (opposite merge orders converge)"
+      (unionForeign [b'] [b]) (unionForeign [b] [b'])]
+  -- a repo whose ref carries a foreign entry alongside a real segment
+  let d ← gitRepo
+  let ridA := (Tl.Clock.Replica.ofNat 1).id
+  let snapOid ← hashBlob d "{\"snapshot\":true}\n"
+  let snapRaw := s!"100644 blob {snapOid}\tsnapshot"
+  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] [fe "snapshot" snapRaw] none)
+  o := o ++ [match ← runTl (readRefEntries d) with
+    | .ok (segs, foreign) => check "readRefEntries returns the foreign entry verbatim beside the segment"
+        (segs.map (·.replicaId) == [ridA] && foreign == [fe "snapshot" snapRaw])
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw)}"
+    | .error e => { name := "readRefEntries verbatim", passed := false, msg := e.message }]
+  -- the local publish leg carries it: a new own op republishes; the snapshot
+  -- entry survives with its oid untouched and never lands in .tl/log/
+  let logDir := System.FilePath.mk d.base / ".tl" / "log"
+  IO.FS.createDirAll logDir
+  IO.FS.createDirAll (System.FilePath.mk d.base / ".tl" / "local")
+  IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n{\"a\":2}\n".toUTF8
+  o := o ++ [match ← runTl (syncLocal d (some ridA)) with
+    | .ok r => check "a publish over a foreign-bearing ref republishes own ops" (r.ran && r.published)
+        (toString (repr r))
+    | .error e => { name := "publish over foreign ref", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRefEntries d) with
+    | .ok (segs, foreign) => check "the local leg carries the foreign entry through the publish verbatim"
+        (foreign == [fe "snapshot" snapRaw]
+          && segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n{\"a\":2}\n"))
+        s!"foreign={foreign.map (·.raw)}"
+    | .error e => { name := "local leg carries foreign", passed := false, msg := e.message }]
+  o := o ++ [check "the foreign entry is never materialized into .tl/log/"
+      (!(← (logDir / "snapshot").pathExists)) ""]
+  -- no churn: a converged re-sync moves nothing, and rebuilding the same
+  -- content (chained on the new tip) builds the identical tree
+  let tipA ← runTl (refTip d)
+  o := o ++ [match ← runTl (syncLocal d (some ridA)), tipA with
+    | .ok r, .ok t => check "a converged re-sync over a foreign-bearing ref is a no-op"
+        (r.ran && !r.published && r.tip == t) (toString (repr r))
+    | _, _ => { name := "converged foreign re-sync", passed := false, msg := "unexpected error" }]
+  o := o ++ [← do match ← runTl (readRefEntries d), ← runTl (refTip d) with
+    | .ok (segs, foreign), .ok (some t) =>
+      match ← runTl (writeRef d segs foreign (some t)) with
+      | .ok t2 => do
+        let tr1 ← treeOf d t
+        let tr2 ← treeOf d t2
+        pure (check "rebuilding unchanged segments + foreign builds the identical tree"
+          (tr1 == tr2) s!"{tr1} vs {tr2}")
+      | .error e => pure { name := "identical tree rebuild", passed := false, msg := e.message }
+    | _, _ => pure { name := "identical tree rebuild", passed := false, msg := "setup error" }]
+  -- a subtree entry (a future format could shard a directory) is carried too
+  let subOid ← emptyTree d
+  let subRaw := s!"040000 tree {subOid}\tfuture-dir"
+  let tipT ← runTl (refTip d)
+  o := o ++ [← do match tipT with
+    | .ok t =>
+      match ← runTl (do
+          let (segs, foreign) ← readRefEntries d
+          let _ ← writeRef d segs (unionForeign foreign [fe "future-dir" subRaw]) t
+          readRefEntries d) with
+      | .ok (_, foreign) => pure (check "a tree-typed (subtree) foreign entry is carried verbatim"
+          (foreign.any (· == fe "future-dir" subRaw)) s!"foreign={foreign.map (·.raw)}")
+      | .error e => pure { name := "subtree entry carried", passed := false, msg := e.message }
+    | .error e => pure { name := "subtree entry carried", passed := false, msg := e.message }]
+  -- the collision guard: a segment-*named* non-blob entry is dropped outright
+  -- (neither a segment nor a carried entry), so it can never collide with that
+  -- replica's real segment in a later tree build
+  let ridB := (Tl.Clock.Replica.ofNat 2).id
+  let dTrap ← gitRepo
+  let trapOid ← emptyTree dTrap
+  let _ ← runTl (writeRef dTrap [seg ridA "{\"a\":1}\n"]
+    [fe s!"{ridB}.jsonl" s!"040000 tree {trapOid}\t{ridB}.jsonl"] none)
+  o := o ++ [match ← runTl (readRefEntries dTrap) with
+    | .ok (segs, foreign) => check "a segment-named non-blob entry is dropped (collision guard)"
+        (segs.map (·.replicaId) == [ridA] && foreign.isEmpty)
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw)}"
+    | .error e => { name := "segment-named non-blob dropped", passed := false, msg := e.message }]
+  -- the remote leg: a foreign entry travels push → bare → second clone's pull
+  let (dr, bare) ← repoWithRemote
+  let snapOidR ← hashBlob dr "{\"snapshot\":\"r\"}\n"
+  let snapRawR := s!"100644 blob {snapOidR}\tsnapshot"
+  let _ ← runTl (writeRef dr [seg ridA "{\"a\":1}\n"] [fe "snapshot" snapRawR] none)
+  o := o ++ [match ← runTl (syncRemote dr) with
+    | .ok r => check "the remote leg pushes a foreign-bearing ref" (r.ran && r.pushed) (toString (repr r))
+    | .error e => { name := "remote push with foreign", passed := false, msg := e.message }]
+  let dBare : Dirs := { base := bare, tlRel := ".tl" }
+  o := o ++ [match ← runTl (readRefEntriesAt dBare "refs/tl/log") with
+    | .ok (_, foreign) => check "the pushed remote carries the foreign entry verbatim"
+        (foreign == [fe "snapshot" snapRawR]) s!"foreign={foreign.map (·.raw)}"
+    | .error e => { name := "remote carries foreign", passed := false, msg := e.message }]
+  let work2 ← IO.FS.createTempDir
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", work2.toString, "init", "-q"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", work2.toString, "remote", "add", "origin", bare] }
+  let d2 : Dirs := { base := work2.toString, tlRel := ".tl" }
+  o := o ++ [match ← runTl (do let _ ← syncRemote d2; readRefEntries d2) with
+    | .ok (segs, foreign) => check "a second clone's pull carries the foreign entry into its local ref"
+        (foreign == [fe "snapshot" snapRawR] && segs.map (·.replicaId) == [ridA])
+        s!"foreign={foreign.map (·.raw)}"
+    | .error e => { name := "pull carries foreign", passed := false, msg := e.message }]
+  -- same-name conflict across clones: both sides converge on the greater raw
+  -- line, whichever direction merges first (no ping-pong churn)
+  let ridC := (Tl.Clock.Replica.ofNat 3).id
+  let snapOid2 ← hashBlob d2 "{\"snapshot\":\"local2\"}\n"
+  let snapRaw2 := s!"100644 blob {snapOid2}\tsnapshot"
+  let expected := if decide (snapRawR ≤ snapRaw2) then snapRaw2 else snapRawR
+  let tip2 ← runTl (refTip d2)
+  o := o ++ [← do match tip2 with
+    | .ok t =>
+      match ← runTl (do
+          let (segs, _) ← readRefEntries d2
+          -- clone2 overwrites its snapshot entry (a newer binary would) + adds an op
+          let _ ← writeRef d2 (unionSegments segs [seg ridC "{\"c\":1}\n"]) [fe "snapshot" snapRaw2] t
+          let _ ← syncRemote d2
+          readRefEntriesAt dBare "refs/tl/log") with
+      | .ok (_, foreign) => pure (check "a same-name conflict pushes the deterministic pick to the remote"
+          (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw)} expected={expected}")
+      | .error e => pure { name := "conflict pick pushed", passed := false, msg := e.message }
+    | .error e => pure { name := "conflict pick pushed", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (do let _ ← syncRemote dr; readRefEntries dr) with
+    | .ok (_, foreign) => check "the other clone converges to the same pick on its next sync"
+        (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw)}"
+    | .error e => { name := "conflict convergence", passed := false, msg := e.message }]
+  -- push/CAS retry exhaustion: even when every push attempt loses the race
+  -- (injected), the locally CASed merge commits keep carrying the entry
+  let (dh, _) ← repoWithRemote
+  let snapOidH ← hashBlob dh "{\"snapshot\":\"h\"}\n"
+  let snapRawH := s!"100644 blob {snapOidH}\tsnapshot"
+  let _ ← runTl (writeRef dh [seg ridA "{\"a\":1}\n"] [fe "snapshot" snapRawH] none)
+  let _ ← runTl (syncRemote dh (push := fun _ _ _ => pure false)) -- throws push-rejected
+  o := o ++ [match ← runTl (readRefEntries dh) with
+    | .ok (_, foreign) => check "the foreign entry survives push-retry exhaustion in the local ref"
+        (foreign == [fe "snapshot" snapRawH]) s!"foreign={foreign.map (·.raw)}"
+    | .error e => { name := "foreign survives retry exhaustion", passed := false, msg := e.message }]
+  return o
+
+/-- The lost-CAS retry branches carry foreign entries: a sibling that moves
+    the ref between a leg's read and its compare-and-set (injected via the
+    `beforeCas` seam, firing once) costs exactly one retry, whose re-read must
+    pick up the sibling's segments AND carried-unknown entries — never a
+    clobber of either. -/
+def syncCasRetryForeignTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  -- (A) local leg: the publish loses its CAS to a sibling that also rewrote
+  -- the carried entries; the retry re-reads and preserves both writers' work
+  let d ← gitRepo
+  let ridA := (Tl.Clock.Replica.ofNat 4).id
+  let ridB := (Tl.Clock.Replica.ofNat 5).id
+  let logDir := System.FilePath.mk d.base / ".tl" / "log"
+  IO.FS.createDirAll logDir
+  IO.FS.createDirAll (System.FilePath.mk d.base / ".tl" / "local")
+  let snapOid ← hashBlob d "{\"snapshot\":1}\n"
+  let snap := fe "snapshot" s!"100644 blob {snapOid}\tsnapshot"
+  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] [snap] none)
+  IO.FS.writeBinFile (logDir / s!"{ridA}.jsonl") "{\"a\":1}\n{\"a\":2}\n".toUTF8
+  let extraOid ← hashBlob d "{\"snapshot\":2}\n"
+  let extra := fe "snapshot.next" s!"100644 blob {extraOid}\tsnapshot.next"
+  let attempts ← IO.mkRef 0
+  let beforeCas : TlM Unit := do
+    let n ← (attempts.modifyGet (fun n => (n, n + 1)) : IO Nat)
+    if n == 0 then
+      -- the racing sibling: publishes its segment and a second carried entry
+      let tip ← refTip d
+      let (segs, foreign) ← readRefEntries d
+      let _ ← writeRef d (unionSegments segs [seg ridB "{\"b\":1}\n"])
+        (unionForeign foreign [extra]) tip
+  o := o ++ [match ← runTl (syncLocal d (some ridA) beforeCas) with
+    | .ok r => check "the local leg publishes through a lost CAS (sibling moved the ref)"
+        (r.ran && r.published && r.absorbed == [ridB]) (toString (repr r))
+    | .error e => { name := "local leg CAS retry", passed := false, msg := e.message }]
+  o := o ++ [check "the lost local CAS cost exactly one retry (two attempts)"
+      ((← attempts.get) == 2) s!"attempts={← attempts.get}"]
+  o := o ++ [match ← runTl (readRefEntries d) with
+    | .ok (segs, foreign) => check "the retry's re-read carries both writers' segments and foreign entries"
+        (foreign == [snap, extra]
+          && segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n{\"a\":2}\n")
+          && segs.any (fun s => s.replicaId == ridB && segStr s == "{\"b\":1}\n"))
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name)}"
+    | .error e => { name := "local CAS retry carries foreign", passed := false, msg := e.message }]
+  -- (B) remote leg: the merge CAS loses to a concurrent local publisher; the
+  -- retry's merge commit reaches the remote with both writers' entries
+  let (dr, bare) ← repoWithRemote
+  let ridC := (Tl.Clock.Replica.ofNat 6).id
+  let snapROid ← hashBlob dr "{\"snapshot\":\"r1\"}\n"
+  let snapR := fe "snapshot" s!"100644 blob {snapROid}\tsnapshot"
+  let _ ← runTl (writeRef dr [seg ridA "{\"a\":1}\n"] [snapR] none)
+  let sib2Oid ← hashBlob dr "{\"snapshot\":\"r2\"}\n"
+  let sib2 := fe "snapshot.aux" s!"100644 blob {sib2Oid}\tsnapshot.aux"
+  let rAttempts ← IO.mkRef 0
+  let beforeCasR : TlM Unit := do
+    let n ← (rAttempts.modifyGet (fun n => (n, n + 1)) : IO Nat)
+    if n == 0 then
+      let tip ← refTip dr
+      let (segs, foreign) ← readRefEntries dr
+      let _ ← writeRef dr (unionSegments segs [seg ridC "{\"c\":1}\n"])
+        (unionForeign foreign [sib2]) tip
+  o := o ++ [match ← runTl (syncRemote dr (beforeCas := beforeCasR)) with
+    | .ok r => check "the remote leg pushes through a lost local CAS"
+        (r.ran && r.pushed) (toString (repr r))
+    | .error e => { name := "remote leg CAS retry", passed := false, msg := e.message }]
+  o := o ++ [check "the lost merge CAS cost exactly one retry (two attempts)"
+      ((← rAttempts.get) == 2) s!"attempts={← rAttempts.get}"]
+  let dBare : Dirs := { base := bare, tlRel := ".tl" }
+  o := o ++ [match ← runTl (readRefEntriesAt dBare "refs/tl/log") with
+    | .ok (segs, foreign) => check "the pushed retry merge carries both writers' segments and foreign entries"
+        (foreign == [snapR, sib2]
+          && segs.any (·.replicaId == ridA) && segs.any (·.replicaId == ridC))
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name)}"
+    | .error e => { name := "remote CAS retry carries foreign", passed := false, msg := e.message }]
+  return o
+
+/-- A foreign-only difference is a deliberate no-op (ADR-0008): equal
+    segments with differing carried-unknown entries build no commit, push
+    nothing, pull nothing, and delete nothing on either side — a stable
+    divergence that only the next segment-driven merge reconciles. -/
+def syncForeignNoOpTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  let ridA := (Tl.Clock.Replica.ofNat 7).id
+  let ridB := (Tl.Clock.Replica.ofNat 8).id
+  let (d, bare) ← repoWithRemote
+  let dBare : Dirs := { base := bare, tlRel := ".tl" }
+  let aOid ← hashBlob d "{\"snapshot\":\"a\"}\n"
+  let fA := fe "snapshot" s!"100644 blob {aOid}\tsnapshot"
+  let _ ← runTl (writeRef d [seg ridA "{\"a\":1}\n"] [fA] none)
+  let _ ← runTl (syncRemote d)   -- the bare now mirrors this tree
+  -- a foreign writer replaces the snapshot on the remote only (same segments)
+  let bOid ← hashBlob dBare "{\"snapshot\":\"b\"}\n"
+  let fB := fe "snapshot" s!"100644 blob {bOid}\tsnapshot"
+  let _ ← runTl (do
+    let tip ← refTip dBare
+    let (segs, _) ← readRefEntriesAt dBare "refs/tl/log"
+    writeRef dBare segs [fB] tip)
+  let tipBefore ← runTl (refTip d)
+  o := o ++ [match ← runTl (syncRemote d), tipBefore with
+    | .ok r, .ok t => check "a foreign-only remote difference is a full no-op (no pull, no push, no commit)"
+        (r.ran && !r.pushed && !r.pulled && r.tip == t) (toString (repr r))
+    | _, _ => { name := "foreign-only no-op", passed := false, msg := "unexpected error" }]
+  o := o ++ [match ← runTl (readRefEntries d), ← runTl (readRefEntriesAt dBare "refs/tl/log") with
+    | .ok (_, lf), .ok (_, rf) => check "the no-op deletes neither side's entry (a stable divergence)"
+        (lf == [fA] && rf == [fB]) s!"local={lf.map (·.raw)} remote={rf.map (·.raw)}"
+    | _, _ => { name := "no-op preserves both sides", passed := false, msg := "unexpected error" }]
+  -- the next segment-driven merge reconciles the divergence to the one pick
+  let expected := if decide (fA.raw ≤ fB.raw) then fB else fA
+  let _ ← runTl (do
+    let tip ← refTip d
+    let (segs, foreign) ← readRefEntries d
+    writeRef d (unionSegments segs [seg ridB "{\"b\":1}\n"]) foreign tip)
+  o := o ++ [match ← runTl (syncRemote d) with
+    | .ok r => check "a subsequent segment-driven sync builds and pushes the merge" (r.ran && r.pushed)
+        (toString (repr r))
+    | .error e => { name := "segment-driven merge", passed := false, msg := e.message }]
+  o := o ++ [match ← runTl (readRefEntries d), ← runTl (readRefEntriesAt dBare "refs/tl/log") with
+    | .ok (_, lf), .ok (_, rf) => check "the segment-driven merge reconciles both sides to the deterministic pick"
+        (lf == [expected] && rf == [expected])
+        s!"local={lf.map (·.raw)} remote={rf.map (·.raw)} expected={expected.raw}"
+    | _, _ => { name := "merge reconciles divergence", passed := false, msg := "unexpected error" }]
+  return o
 
 def syncTests : IO (List Outcome) := do
   return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
     ++ (← syncRefreshTests) ++ (← syncRemoteTests) ++ (← syncTimeoutTests)
-    ++ (← syncRefNameValidationTests)
+    ++ (← syncRefNameValidationTests) ++ (← syncForeignEntryTests)
+    ++ (← syncCasRetryForeignTests) ++ (← syncForeignNoOpTests)
 
 end Tl.Tests

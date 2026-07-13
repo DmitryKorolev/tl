@@ -61,8 +61,8 @@ segment blobs *are* the `.tl/log/` contents, no prefix. The tree may also
 carry reserved non-replica-named entries (the compaction snapshot,
 ADR-0008), under the pinned transport rule: a sync carries any tree entry it
 does not recognize into the next commit verbatim, never materializing it
-locally — transport-level preserve-unknown. (Pinned, not yet built: today's
-transport still drops such entries; the fix ships pre-release, ADR-0008.)
+locally — transport-level preserve-unknown (built in `Tl/Sync/Ref`;
+semantics pinned in ADR-0008).
 Commits are **parent-chained** (each
 push's commit parents the prior tip), so a non-fast-forward push is
 detectable (§5) and the ref carries history. The author/committer is a

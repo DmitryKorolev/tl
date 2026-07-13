@@ -1447,7 +1447,7 @@ def cliRefreshRefusalTests : IO (List Outcome) := do
   -- a sibling publishes a corrupt segment into the shared ref
   let badRid := (Tl.Clock.Replica.ofNat 13).id
   let dB : Tl.Store.Dirs := { base := root.toString, tlRel := ".tl" }
-  let _ ← (Tl.Sync.writeRef dB [⟨badRid, "this is not json\n".toUTF8⟩] none).run
+  let _ ← (Tl.Sync.writeRef dB [⟨badRid, "this is not json\n".toUTF8⟩] [] none).run
   -- B reads: refresh materializes the corrupt sibling, and the read discloses
   -- the foreign refusal and succeeds (exit 0) rather than failing the command
   let listed ← run' ["list", "--dir", bDir, "--json"]

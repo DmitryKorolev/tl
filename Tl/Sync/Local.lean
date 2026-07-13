@@ -12,7 +12,10 @@ It does two things against the shared ref, both idempotent:
   1. Publish — union this replica's own segment into the ref and compare-and-set
      `update-ref`. The union is canonicalized (`Merge`), so a sync with nothing
      new is a byte-for-byte no-op detected up front (no churn commit). A lost
-     CAS race (a sibling moved the ref first) re-reads and retries.
+     CAS race (a sibling moved the ref first) re-reads and retries. Tree
+     entries the transport does not recognize are re-emitted verbatim into
+     the published commit (ADR-0008 transport preserve-unknown) — never
+     dropped, never a publish trigger by themselves.
   2. Absorb — materialize the *other* replicas' segments from the ref into
      `.tl/log/` by the atomic temp-file + rename writeback (ADR-0015 §3),
      **never** the own segment (it stays the authoritative append-only file).
@@ -144,8 +147,12 @@ private def markPub (d : Dirs) (ownReplica : Option String) (localSegs : List Se
     contention is brief, so the cap only guards a pathological live-lock. -/
 private def maxAttempts : Nat := 8
 
+/-- `beforeCas` runs immediately before each publish's compare-and-set; it is
+    a parameter only so a test can deterministically *lose* the CAS (moving
+    the ref like a racing sibling between the read and the `update-ref`) and
+    pin the retry's re-read. Production callers omit it. -/
 private def reconcile (d : Dirs) (ownReplica : Option String)
-    (localSegs : List SegmentData) : Nat → TlM LocalOutcome
+    (localSegs : List SegmentData) (beforeCas : TlM Unit) : Nat → TlM LocalOutcome
   | 0 => throw (.mk' .internal
       "sync: refs/tl/log kept moving under concurrent writers — retry `tl sync`")
   | fuel + 1 => do
@@ -163,14 +170,17 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
       if let some (mTip, mLen, mHash) ← loadSyncPub d then
         if tip == some mTip && ownBytes.size == mLen && ByteArray.hash ownBytes == mHash then
           return { ran := true, published := false, absorbed := [], tip }
-    let refSegs ← readRef d
+    let (refSegs, refForeign) ← readRefEntries d
     let merged := unionSegments refSegs localSegs
     -- publish only our own ops, and only when they change the ref (a worktree
-    -- with no own writes never re-sorts a sibling's segment into a churn commit)
+    -- with no own writes never re-sorts a sibling's segment into a churn
+    -- commit; a carried-unknown entry rides every commit built but never
+    -- prompts one — ADR-0008 transport preserve-unknown)
     let publish := ownReplica.isSome && !segsEquiv merged refSegs
     if publish then
-      match ← writeRefCas d merged tip with
-      | none => reconcile d ownReplica localSegs fuel  -- lost the CAS race: retry
+      beforeCas
+      match ← writeRefCas d merged refForeign tip with
+      | none => reconcile d ownReplica localSegs beforeCas fuel  -- lost the CAS race: retry
       | some newTip =>
         let absorbed ← absorbForeign d ownReplica localSegs merged
         markTip d (some newTip)
@@ -188,12 +198,15 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
 
 /-- The local leg: reconcile against `refs/tl/log` (publish own, absorb
     siblings). A no-op `ran := false` outside a git repo — there is no shared
-    ref to reconcile against, and the remote leg reports `no-upstream`. -/
-def syncLocal (d : Dirs) (ownReplica : Option String) : TlM LocalOutcome := do
+    ref to reconcile against, and the remote leg reports `no-upstream`.
+    `beforeCas` is the test-only CAS-race seam (see `reconcile`); production
+    callers omit it. -/
+def syncLocal (d : Dirs) (ownReplica : Option String)
+    (beforeCas : TlM Unit := pure ()) : TlM LocalOutcome := do
   if !(← inGitRepo d) then
     return { ran := false, published := false, absorbed := [], tip := none }
   let (localSegs, _) ← readSegments d
-  reconcile d ownReplica localSegs maxAttempts
+  reconcile d ownReplica localSegs beforeCas maxAttempts
 
 /-! ## Read-time refresh (ADR-0016 §3) -/
 

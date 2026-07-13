@@ -66,20 +66,26 @@ private def maxRemoteAttempts : Nat := 2
     to exhaustion deterministically — reaching the fuel-0 `push-rejected` arm — by
     returning the non-fast-forward signal on every attempt, instead of a flaky
     concurrent-writer race (the design always builds a fast-forward merge, so a
-    single real rejection always recovers). -/
+    single real rejection always recovers). `beforeCas` is the same kind of
+    seam for the *local* CAS: it runs immediately before each attempt's
+    `writeRefMergeCas`, only so a test can deterministically lose that CAS
+    (a sibling moving the local ref) and pin the retry's re-read. -/
 private def reconcileRemote (d : Dirs) (remote : String)
-    (push : Dirs → String → String → TlM Bool) (pulledAcc : Bool) :
+    (push : Dirs → String → String → TlM Bool) (beforeCas : TlM Unit) (pulledAcc : Bool) :
     Nat → TlM RemoteOutcome
   | 0 => throw (.mk' .pushRejected
       s!"the remote '{remote}' refs/tl/log moved during the push and it was rejected after a retry — run `tl sync` again")
   | fuel + 1 => do
-    let (remoteTip, remoteSegs) ← fetchRemoteLog d remote
+    let (remoteTip, remoteSegs, remoteForeign) ← fetchRemoteLog d remote
     let localTip ← refTip d
-    let localSegs ← readRef d
+    let (localSegs, localForeign) ← readRefEntries d
     let merged := unionSegments localSegs remoteSegs
     let pulled := pulledAcc || !segsEquiv merged localSegs       -- remote had content we lacked
     -- push only when we have content the remote lacks (never an empty-log churn
-    -- commit to a fresh remote when there is nothing to share)
+    -- commit to a fresh remote when there is nothing to share). Like the local
+    -- leg, carried-unknown entries ride every commit built — the name-keyed
+    -- side-symmetric union below — but a foreign-only difference triggers no
+    -- pull/push of its own (ADR-0008 transport preserve-unknown)
     let needPush := !merged.isEmpty && (remoteTip.isNone || !segsEquiv merged remoteSegs)
     if !pulled && !needPush then
       return { ran := true, remote, pushed := false, pulled := false, tip := localTip }
@@ -87,14 +93,15 @@ private def reconcileRemote (d : Dirs) (remote : String)
     -- local ref to it (so a future sync sees the union and the pushed ref and
     -- local ref agree), retrying if a concurrent local writer moved it
     let parents := ([localTip, remoteTip].filterMap id).eraseDups
-    match ← writeRefMergeCas d merged parents localTip with
-    | none => reconcileRemote d remote push pulled fuel  -- local ref moved under us: retry
+    beforeCas
+    match ← writeRefMergeCas d merged (unionForeign localForeign remoteForeign) parents localTip with
+    | none => reconcileRemote d remote push beforeCas pulled fuel  -- local ref moved under us: retry
     | some commit =>
       if needPush then
         if ← push d remote commit then
           return { ran := true, remote, pushed := true, pulled, tip := some commit }
         else
-          reconcileRemote d remote push pulled fuel  -- non-fast-forward: re-fetch and retry
+          reconcileRemote d remote push beforeCas pulled fuel  -- non-fast-forward: re-fetch and retry
       else
         return { ran := true, remote, pushed := false, pulled := true, tip := some commit }
 
@@ -110,14 +117,15 @@ private def reconcileRemote (d : Dirs) (remote : String)
 
     `push` is the push primitive, defaulting to the real `pushRefLog`; it is a
     parameter only so a test can force the non-fast-forward retry budget to
-    exhaustion (the `push-rejected` throw). Production callers omit it. -/
+    exhaustion (the `push-rejected` throw). `beforeCas` is the local-CAS race
+    seam (see `reconcileRemote`). Production callers omit both. -/
 def syncRemote (d : Dirs) (announce : String → IO Unit := fun _ => pure ())
-    (push : Dirs → String → String → TlM Bool := pushRefLog) :
-    TlM RemoteOutcome := do
+    (push : Dirs → String → String → TlM Bool := pushRefLog)
+    (beforeCas : TlM Unit := pure ()) : TlM RemoteOutcome := do
   match ← resolveRemote d with
   | none => return { ran := false, remote := "", pushed := false, pulled := false, tip := none }
   | some remote =>
     announce remote
-    reconcileRemote d remote push false maxRemoteAttempts
+    reconcileRemote d remote push beforeCas false maxRemoteAttempts
 
 end Tl.Sync

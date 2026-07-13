@@ -422,12 +422,22 @@ The pinned destructive design (implementation deferred):
   filter and the store's junk defense are unchanged, so a crafted tree entry
   still cannot become a local file). A *reserved* entry a new-format binary
   does recognize — the snapshot below — is line-unioned rather than carried
-  one-sided. (Today's transport drops non-replica-named tree entries on
-  every sync; fixing that is freeze-sensitive and ships pre-release as its
-  own change — an old binary that strips the snapshot entry on every sync
-  would otherwise fight the compactor.) This amends ADR-0001's "the tree
-  *is* the `.tl/log/` contents": the tree is the per-replica segment blobs
-  *plus* reserved and unknown non-replica entries.
+  one-sided. Built in `Tl/Sync/Ref` (both sync legs; freeze-sensitive, so it
+  ships pre-release — an old binary that strips the snapshot entry on every
+  sync would otherwise fight the compactor), with three semantics pinned by
+  the implementation: an unknown-entry difference alone never prompts a
+  commit, publish, or push — carried entries ride whichever commits segment
+  changes cause, so a foreign-only divergence between two refs is a stable
+  no-op state, not churn; a same-name conflict between two trees (the
+  remote-leg union) keeps the lexicographically greater `ls-tree` line, an
+  arbitrary but deterministic and side-symmetric pick — so the *next
+  segment-driven merge* (not the divergence itself, which triggers nothing)
+  reconciles both sides to one line instead of ping-ponging the ref into
+  churn commits; and a segment-*named* entry that is not a blob is dropped
+  outright — carrying it could collide with that replica's real segment
+  entry in a later tree build. This amends
+  ADR-0001's "the tree *is* the `.tl/log/` contents": the tree is the
+  per-replica segment blobs *plus* reserved and unknown non-replica entries.
 - **Placement: the snapshot is a reserved non-replica-named tree entry** in
   `refs/tl/log`, line-unioned like any segment (two concurrent compactors'
   records both survive the union), and never enumerated as an on-disk segment

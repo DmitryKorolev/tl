@@ -6,7 +6,9 @@ worktree, remote fetch/push) build on this and the line-union (`Merge`).
 `tl` never touches the user's index, branch, or HEAD — only this ref, via
 `hash-object` / `mktree` / `commit-tree` / `update-ref`. In-ref encoding
 (decided here, ADR-0001): the ref commit's tree holds one blob per replica
-named `<replica-id>.jsonl` at the root (the tree *is* the `log/` contents);
+named `<replica-id>.jsonl` at the root, plus any carried-unknown entries
+(the tree is the `log/` contents *plus* reserved and unknown non-replica
+entries — the ADR-0008 transport preserve-unknown rule);
 commits are parent-chained (so a non-fast-forward push is detectable);
 the author/committer is a fixed neutral `tl <tl@localhost>` set via
 `GIT_*` env, so a sync leaks no per-user git identity into ref metadata
@@ -167,51 +169,117 @@ def refTip (d : Dirs) : TlM (Option String) := do
   let o ← (git d ["rev-parse", "--verify", "--quiet", "refs/tl/log"] : IO _)
   if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
 
-/-- The segments stored at `ref` (empty when the ref is unset). Reads the
-    commit's tree: one `<replica-id>.jsonl` blob per replica. -/
-def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) := do
+/-- A `refs/tl/log` tree entry the transport does not recognize as a replica
+    segment — any name that is not a canonical `<replica-id>.jsonl`. Carried
+    verbatim (the exact `ls-tree` line, blob bytes untouched by oid) into
+    every commit this transport builds, per the ADR-0008 transport
+    preserve-unknown rule, and never materialized into `.tl/log/`: this is
+    what lets a future format place a reserved entry (e.g. a compaction
+    snapshot) in the ref without old binaries stripping it on every sync. -/
+structure ForeignEntry where
+  /-- The entry's tree name — the `ls-tree` line's tab-suffix, possibly
+      C-quoted; the cross-tree union key. -/
+  name : String
+  /-- The verbatim `ls-tree` line, re-fed to `mktree` unchanged. -/
+  raw : String
+deriving Repr, Inhabited, BEq, DecidableEq
+
+/-- A linear walk of two name-sorted entry lists (fuel is `|a| + |b|`; the
+    zero arm is dead). Within a git tree names are unique, so each side is
+    duplicate-free after its sort. -/
+private def unionForeignGo : Nat → List ForeignEntry → List ForeignEntry → List ForeignEntry
+  | _, [], ys => ys
+  | _, xs, [] => xs
+  | 0, xs, ys => xs ++ ys
+  | fuel + 1, x :: xs, y :: ys =>
+    if x.name == y.name then
+      (if decide (x.raw ≤ y.raw) then y else x) :: unionForeignGo fuel xs ys
+    else if decide (x.name ≤ y.name) then x :: unionForeignGo fuel xs (y :: ys)
+    else y :: unionForeignGo fuel (x :: xs) ys
+
+/-- Union two carried-unknown entry sets by name. A name on both sides with
+    differing lines keeps the lexicographically greater raw line — an
+    arbitrary but deterministic, *side-symmetric* pick: two replicas merging
+    in opposite directions build the same tree, so concurrent carriers
+    converge instead of ping-ponging the ref into churn commits. (A
+    *reserved* entry a binary actually recognizes — the ADR-0008 snapshot —
+    is line-unioned by that binary and never reaches this rule.) Output is
+    name-sorted. -/
+def unionForeign (a b : List ForeignEntry) : List ForeignEntry :=
+  let le := fun (x y : ForeignEntry) => decide (x.name ≤ y.name)
+  unionForeignGo (a.length + b.length) (a.mergeSort le) (b.mergeSort le)
+
+/-- The segments plus carried-unknown entries stored at `ref` (both empty when
+    the ref is unset). Reads the commit's tree: a canonical
+    `<replica-id>.jsonl` blob is a segment; every other entry — a reserved
+    future name, a junk/crafted name, a non-blob — is returned as a
+    `ForeignEntry` for the writers to carry through verbatim (ADR-0008), never
+    materialized into `.tl/log/` (locally produced segment names are always
+    valid, and `enumerateSegments`' on-disk junk check is unchanged, so a
+    crafted tree entry still cannot become or flag a local file). One
+    exception: a segment-*named* entry that is not a blob is dropped outright —
+    carrying it could collide with that replica's real segment entry in a
+    later tree build. -/
+def readRefEntriesAt (d : Dirs) (ref : String) :
+    TlM (List SegmentData × List ForeignEntry) := do
   let o ← (git d ["rev-parse", "--verify", "--quiet", ref] : IO _)
-  if o.exitCode != 0 then return []
+  if o.exitCode != 0 then return ([], [])
   let listing ← run d "ls-tree" ["ls-tree", ref]
   let entries := listing.splitOn "\n" |>.filter (· ≠ "")
-  entries.filterMapM fun line => do
-    -- "<mode> <type> <oid>\t<name>"
+  let mut segs : Array SegmentData := #[]
+  let mut foreign : Array ForeignEntry := #[]
+  for line in entries do
+    -- "<mode> <type> <oid>\t<name>" — the name is everything after the first
+    -- tab (a C-quoted name carries any further tab as a `\t` escape, but the
+    -- verbatim carry must survive even a raw one)
     match line.splitOn "\t" with
-    | [info, name] =>
-      if name.endsWith ".jsonl" then
-        let rid := (name.dropEnd 6).toString
-        -- drop a non-canonical ref-borne name before it is materialized: locally
-        -- produced names are always valid, so this filters only junk/crafted tree
-        -- entries (mirroring `enumerateSegments`' on-disk check), stopping them
-        -- propagating through unions into a permanently-flagged on-disk file.
-        if !(Tl.Clock.Replica.mk rid).valid then return none
+    | [] => pure ()
+    | [_] => pure ()  -- ls-tree always emits a tab; an untabbed line is not carryable
+    | info :: rest =>
+      let name := String.intercalate "\t" rest
+      let rid := (name.dropEnd 6).toString
+      if name.endsWith ".jsonl" && (Tl.Clock.Replica.mk rid).valid then
         match info.splitOn " " with
         | [_, "blob", oid] =>
           -- the blob is the raw segment bytes (may be non-UTF-8) — read them
           -- byte-faithfully, never through a String stdout
           let bytes ← runBytes d "cat-file" ["cat-file", "blob", oid]
-          return some { replicaId := rid, bytes }
-        | _ => return none
-      else return none
-    | _ => return none
+          segs := segs.push { replicaId := rid, bytes }
+        | _ => pure ()  -- segment-named non-blob: the collision guard above
+      else
+        foreign := foreign.push { name, raw := line }
+  return (segs.toList, foreign.toList)
+
+/-- The segments stored at `ref` — the segment-only view of
+    `readRefEntriesAt`, for read-only callers that never rebuild the tree. -/
+def readRefAt (d : Dirs) (ref : String) : TlM (List SegmentData) :=
+  return (← readRefEntriesAt d ref).1
+
+/-- The segments plus carried-unknown entries in the local `refs/tl/log`. -/
+def readRefEntries (d : Dirs) : TlM (List SegmentData × List ForeignEntry) :=
+  readRefEntriesAt d "refs/tl/log"
 
 /-- The segments stored in the local `refs/tl/log`. -/
 def readRef (d : Dirs) : TlM (List SegmentData) := readRefAt d "refs/tl/log"
 
-/-- Build a `refs/tl/log` commit (blob per segment, one tree, a commit under
-    the neutral identity with `parents`) without moving any ref — the caller
-    does the `update-ref` / `push`. Multiple parents let the remote leg make
-    the merge commit descend from both the local and the fetched-remote tip, so
-    the push fast-forwards (ADR-0001 §5). Returns the commit oid. -/
-private def buildCommit (d : Dirs) (segs : List SegmentData) (parents : List String) :
-    TlM String := do
+/-- Build a `refs/tl/log` commit (blob per segment plus the carried-unknown
+    entries verbatim, one tree, a commit under the neutral identity with
+    `parents`) without moving any ref — the caller does the `update-ref` /
+    `push`. Multiple parents let the remote leg make the merge commit descend
+    from both the local and the fetched-remote tip, so the push fast-forwards
+    (ADR-0001 §5). `mktree` normalizes entry order, so equal content builds
+    an identical tree regardless of input order (the no-churn property).
+    Returns the commit oid. -/
+private def buildCommit (d : Dirs) (segs : List SegmentData) (foreign : List ForeignEntry)
+    (parents : List String) : TlM String := do
   -- a blob per segment (raw bytes via stdin — never String.fromUTF8!, which
   -- panics on a non-UTF-8 segment line; the oid out is plain ASCII hex)
   let entries ← segs.mapM fun s => do
     let oidRaw ← runBytes d "hash-object" ["hash-object", "-w", "--stdin"] s.bytes
     let oid := ((String.fromUTF8? oidRaw).getD "").trimAscii.toString
     pure s!"100644 blob {oid}\t{s.replicaId}.jsonl"
-  let tree ← run d "mktree" ["mktree"] (stdin := String.intercalate "\n" entries)
+  let tree ← run d "mktree" ["mktree"]
+    (stdin := String.intercalate "\n" (entries ++ foreign.map (·.raw)))
   let commitArgs := ["commit-tree", tree, "-m", "tl log"]
     ++ parents.flatMap (fun p => ["-p", p])
   run d "commit-tree" commitArgs (env := fixedIdentity)
@@ -222,12 +290,14 @@ private def casArgs (commit : String) (expectedTip : Option String) : List Strin
   ["update-ref", "refs/tl/log", commit]
     ++ (match expectedTip with | some p => [p] | none => [""])
 
-/-- Write `segs` as the new `refs/tl/log` tip with a compare-and-set against
-    `expectedTip` (the value `readRef` was based on), so a concurrent writer is
-    not clobbered. Throws on a CAS rejection (a stale tip) like any git
-    failure. Returns the new commit oid. -/
-def writeRef (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) : TlM String := do
-  let commit ← buildCommit d segs expectedTip.toList
+/-- Write `segs` plus the carried-unknown `foreign` entries as the new
+    `refs/tl/log` tip with a compare-and-set against `expectedTip` (the value
+    the segments and entries were read at), so a concurrent writer is not
+    clobbered. Throws on a CAS rejection (a stale tip) like any git failure.
+    Returns the new commit oid. -/
+def writeRef (d : Dirs) (segs : List SegmentData) (foreign : List ForeignEntry)
+    (expectedTip : Option String) : TlM String := do
+  let commit ← buildCommit d segs foreign expectedTip.toList
   let _ ← run d "update-ref" (casArgs commit expectedTip)
   return commit
 
@@ -237,9 +307,9 @@ def writeRef (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) 
     the tip after a failed `update-ref`: a tip that no longer equals
     `expectedTip` was a concurrent move; an unchanged tip means the failure
     was something else (permissions, a corrupt object store). -/
-def writeRefCas (d : Dirs) (segs : List SegmentData) (expectedTip : Option String) :
-    TlM (Option String) := do
-  let commit ← buildCommit d segs expectedTip.toList
+def writeRefCas (d : Dirs) (segs : List SegmentData) (foreign : List ForeignEntry)
+    (expectedTip : Option String) : TlM (Option String) := do
+  let commit ← buildCommit d segs foreign expectedTip.toList
   let o ← (git d (casArgs commit expectedTip) : IO _)
   if o.exitCode == 0 then return some commit
   -- a timeout (exit 124) is a hung git, not a CAS race — surface it as the
@@ -310,27 +380,31 @@ def currentBranch (d : Dirs) : TlM (Option String) := do
 def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
   return (← gitConfig d s!"remote.{remote}.url").isSome
 
-/-- Fetch the remote's `refs/tl/log` and return its tip + segments — `(none, [])`
-    when the remote has no `refs/tl/log` yet (a fresh remote). A genuine
-    transport failure (unreachable / auth) throws. The fetched tip is read from
-    the per-worktree `FETCH_HEAD` (no shared scratch ref, so concurrent remote
-    legs in sibling worktrees of one repo don't collide). -/
-def fetchRemoteLog (d : Dirs) (remote : String) : TlM (Option String × List SegmentData) := do
+/-- Fetch the remote's `refs/tl/log` and return its tip + segments + carried-
+    unknown entries — `(none, [], [])` when the remote has no `refs/tl/log`
+    yet (a fresh remote). A genuine transport failure (unreachable / auth)
+    throws. The fetched tip is read from the per-worktree `FETCH_HEAD` (no
+    shared scratch ref, so concurrent remote legs in sibling worktrees of one
+    repo don't collide). -/
+def fetchRemoteLog (d : Dirs) (remote : String) :
+    TlM (Option String × List SegmentData × List ForeignEntry) := do
   -- ls-remote first: empty ⇒ the remote has no tl log (nothing to fetch)
   let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"] (remote := true)
-  if ls.trimAscii.isEmpty then return (none, [])
+  if ls.trimAscii.isEmpty then return (none, [], [])
   let _ ← run d "fetch" ["fetch", remote, "refs/tl/log"] (remote := true)  -- records FETCH_HEAD
   let o ← (git d ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"] : IO _)
-  if o.exitCode != 0 then return (none, [])
-  return (some o.stdout.trimAscii.toString, ← readRefAt d "FETCH_HEAD")
+  if o.exitCode != 0 then return (none, [], [])
+  let (segs, foreign) ← readRefEntriesAt d "FETCH_HEAD"
+  return (some o.stdout.trimAscii.toString, segs, foreign)
 
-/-- Build the merge commit (tree = `segs`, parents = `parents`) and compare-and-set
-    the local `refs/tl/log` to it against `expectedLocalTip`. Returns the oid, or
-    `none` if a concurrent local writer moved the ref (the caller retries — like
+/-- Build the merge commit (tree = `segs` plus the carried-unknown `foreign`
+    entries, parents = `parents`) and compare-and-set the local `refs/tl/log`
+    to it against `expectedLocalTip`. Returns the oid, or `none` if a
+    concurrent local writer moved the ref (the caller retries — like
     `writeRefCas`, distinguished from a real failure by re-reading the tip). -/
-def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (parents : List String)
-    (expectedLocalTip : Option String) : TlM (Option String) := do
-  let commit ← buildCommit d segs parents
+def writeRefMergeCas (d : Dirs) (segs : List SegmentData) (foreign : List ForeignEntry)
+    (parents : List String) (expectedLocalTip : Option String) : TlM (Option String) := do
+  let commit ← buildCommit d segs foreign parents
   let o ← (git d (casArgs commit expectedLocalTip) : IO _)
   if o.exitCode == 0 then return some commit
   else if o.exitCode == 124 then throw (gitErr "update-ref" o)  -- timeout, not a race
