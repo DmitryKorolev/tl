@@ -92,6 +92,20 @@ def scrubbedGitVars : List String :=
 def gitEnvScrub : Array (String × Option String) :=
   (scrubbedGitVars.map (fun v => (v, (none : Option String)))).toArray
 
+/-- The subset of `scrubbedGitVars` that reroutes the *repository, worktree,
+    object store, index, or namespace* — the vars for which "plain `git` in
+    this shell binds a different repository than `tl` does" is literally true.
+    `doctor`'s `gitRouting` row surfaces these when inherited. The config-file
+    vars (`GIT_CONFIG*`, `XDG_CONFIG_HOME`) are deliberately excluded: they
+    relocate *configuration*, not the repository, inheriting one (especially
+    `XDG_CONFIG_HOME`) is common and benign, and "unset it to align" is wrong,
+    even harmful, advice for them. They are still scrubbed — only the *nag* is
+    scoped to the vars whose inheritance genuinely means a split repository. -/
+def repoRoutingVars : List String :=
+  ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+   "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE"]
+
 /-- Local git plumbing is sub-second on tl's tiny ref; this short wall-clock
     bound catches a *hung* local git (a stale index/ref lock, a credential helper
     waiting on input) without false-timing a legitimately slow op. -/
@@ -398,27 +412,40 @@ def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
 /-- `git config <scope> --get <key>` (`scope` is `--global`/`--local`/…), or
     `none` when unset at that scope or the scope is unavailable (e.g. `--local`
     outside a repo). Reads one scope in isolation — the primitive `doctor` uses
-    to tell a repo-local (trusted) setting from one a global `~/.gitconfig`
-    supplies (the HOME residual, ADR-0012/ADR-0014 T7). `--global` here reads
+    to tell a repo-controlled setting from one a global `~/.gitconfig` supplies
+    (the HOME residual, ADR-0012/ADR-0014 T7). `--global` here reads
     `$HOME/.gitconfig` — `XDG_CONFIG_HOME` is scrubbed, so the global scope is
     exactly the residual channel. -/
 def gitConfigScoped (d : Dirs) (scope key : String) : TlM (Option String) := do
   let o ← (git d ["config", scope, "--get", key] : IO _)
   if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
 
-/-- Is `key`'s effective value supplied by the *global* scope and not
-    overridden repo-locally — i.e. sourced from `~/.gitconfig` rather than this
-    repository? git precedence is local > global, so global-set and local-unset
-    means the global value is what git uses. This is how `doctor` distinguishes
-    a push-destination key the user set in their repo from one an inherited or
+/-- Every value of `key` at `scope`, in config order — `[]` when unset there or
+    the scope is unavailable. Reading a scope directly (not `--get` then
+    `--show-origin`) attributes each value to its scope without ambiguity, and
+    `--get-all` keeps *all* values: `remote.<n>.pushurl` is multi-valued and
+    git pushes to every one, so a global decoy pushurl added alongside a local
+    one is a real extra push target a last-value read would miss. -/
+def gitConfigScopedAll (d : Dirs) (scope key : String) : TlM (List String) := do
+  let o ← (git d ["config", scope, "--get-all", key] : IO _)
+  if o.exitCode != 0 then return []
+  return (o.stdout.splitOn "\n").filterMap (fun l =>
+    let t := l.trimAscii.toString; if t.isEmpty then none else some t)
+
+/-- Is single-valued `key` (a remote selector or a URL, where git takes the
+    last scope to set it) supplied by the *global* scope and not overridden by
+    a *repository* scope — local or linked-worktree config? git precedence is
+    worktree > local > global, so global-set with both repo scopes unset means
+    the global value is what git uses. This is how `doctor` distinguishes a
+    push-destination key the user set in their repo from one an inherited or
     hostile `HOME` injected (ADR-0012 Consequences / ADR-0014 T7). Worktree
-    config (rare, and itself repo-scoped) is not consulted; a worktree override
-    of a global key would show here as global-sourced — a conservative
-    over-disclosure, never a miss. -/
+    scope is consulted (`config.worktree`, a linked worktree's own config) so a
+    worktree override is correctly treated as repo-controlled, never flagged. -/
 def configFromGlobal (d : Dirs) (key : String) : TlM Bool := do
-  let g ← gitConfigScoped d "--global" key
-  let l ← gitConfigScoped d "--local" key
-  return g.isSome && l.isNone
+  let g ← gitConfigScopedAll d "--global" key
+  let l ← gitConfigScopedAll d "--local" key
+  let w ← gitConfigScopedAll d "--worktree" key
+  return !g.isEmpty && l.isEmpty && w.isEmpty
 
 /-- The git runtime floor (ADR-0006): `tl` shells out to git plumbing for the
     `refs/tl/log` transport and discovery, and requires git ≥ 2.17. -/

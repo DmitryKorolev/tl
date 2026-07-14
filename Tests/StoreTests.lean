@@ -116,79 +116,63 @@ def storeDiscoveryTests : IO (List Outcome) := do
         (fun d => check "worktree private gitdir does not bound the walk"
           (d.base == realRoot.toString) s!"base={d.base} expected={realRoot}")]
   IO.Process.setCurrentDir prev
-  -- a committed fixture that merely *looks* bare-shaped (HEAD is an ordinary
-  -- file, not a symref/hash) is not a boundary: the walk ascends past it and
-  -- binds the enclosing project — git's own setup check validates HEAD
-  -- content the same way
-  let fixture := root / "fixtures" / "scrubbed.git"
-  IO.FS.createDirAll (fixture / "objects")
-  IO.FS.createDirAll (fixture / "refs")
-  IO.FS.writeFile (fixture / "HEAD") "scrubbed placeholder\n"
-  IO.Process.setCurrentDir fixture
-  outcomes := outcomes ++
-    [← expectOk "a fake-HEAD bare-shaped fixture does not bound the walk" (discover none)
-        (fun d => check "a fake-HEAD bare-shaped fixture does not bound the walk"
-          (d.base == realRoot.toString) s!"base={d.base}")]
+  -- structural bare-gitdir detection: objects/ dir + refs/ + a HEAD entry of
+  -- ANY form bounds the walk. The check is deliberately at-least-as-inclusive
+  -- as git, so tl never climbs out of a directory git treats as a gitdir —
+  -- every HEAD shape git accepts (and then some) bounds here. Build one gitdir
+  -- per HEAD variant git considers valid but a content-matching check missed,
+  -- cd in, and assert discovery stops (no-project) rather than binding the
+  -- enclosing project.
+  let mkBare (name : String) (writeHead : System.FilePath → IO Unit) : IO System.FilePath := do
+    let g := root / "bares" / name
+    IO.FS.createDirAll (g / "objects")
+    IO.FS.createDirAll (g / "refs")
+    writeHead g
+    pure g
+  let variants : List (String × (System.FilePath → IO Unit)) :=
+    [("symref-spaced", fun g => IO.FS.writeFile (g / "HEAD") "ref: refs/heads/main\n"),
+     ("symref-nospace", fun g => IO.FS.writeFile (g / "HEAD") "ref:refs/heads/main\n"),
+     ("symref-tab", fun g => IO.FS.writeFile (g / "HEAD") "ref:\trefs/heads/main\n"),
+     ("hash-lower", fun g => IO.FS.writeFile (g / "HEAD") (String.ofList (List.replicate 40 'a') ++ "\n")),
+     ("hash-upper", fun g => IO.FS.writeFile (g / "HEAD") (String.ofList (List.replicate 40 'A') ++ "\n")),
+     ("hash-trailing", fun g => IO.FS.writeFile (g / "HEAD") (String.ofList (List.replicate 40 'a') ++ " extra junk\n")),
+     ("head-oversized", fun g => IO.FS.writeFile (g / "HEAD") (String.ofList (List.replicate 5000 'a') ++ "\n")),
+     ("symlink-dangling", fun g => symlink "refs/heads/gone" (g / "HEAD").toString)]
+  for (name, wr) in variants do
+    let g ← mkBare name wr
+    IO.Process.setCurrentDir g
+    outcomes := outcomes ++
+      [← expectCode s!"bare gitdir ({name}) bounds the walk" .noProject (discover none),
+       check s!"isGitDirLayout matches ({name})" (← isGitDirLayout g)]
   IO.Process.setCurrentDir prev
-  -- an UPPERCASE detached HEAD is a valid gitdir to git (its hex parse is
-  -- case-insensitive), so it must bound the walk too: rejecting it would be
-  -- stricter than git and let discovery climb out of a real bare repo and
-  -- bind the enclosing project
-  let upper := root / "srv" / "upper.git"
-  IO.FS.createDirAll (upper / "objects")
-  IO.FS.createDirAll (upper / "refs")
-  IO.FS.writeFile (upper / "HEAD") (String.ofList (List.replicate 40 'A') ++ "\n")
-  IO.Process.setCurrentDir upper
+  -- refs as an executable regular FILE (git checks access(refs, X_OK), which a
+  -- dir OR an executable file satisfies) still bounds — requiring refs/ to be a
+  -- directory would be stricter than git
+  let refsFile := root / "bares" / "refs-as-file"
+  IO.FS.createDirAll (refsFile / "objects")
+  IO.FS.writeFile (refsFile / "refs") ""
+  IO.FS.writeFile (refsFile / "HEAD") "ref: refs/heads/main\n"
   outcomes := outcomes ++
-    [← expectCode "an uppercase detached HEAD still bounds the walk" .noProject
-        (discover none)]
-  IO.Process.setCurrentDir prev
-  -- isGitDirLayout pins, one per conjunct: bare (symref HEAD) yes; detached
-  -- 40-hex HEAD yes (either case); fake HEAD content no; HEAD-as-directory
-  -- no; refs/ missing no; worktree-private (objects/ missing) no; plain dir no
-  let detached := root / "detached.git"
-  IO.FS.createDirAll (detached / "objects")
-  IO.FS.createDirAll (detached / "refs")
-  IO.FS.writeFile (detached / "HEAD") (String.ofList (List.replicate 40 'a') ++ "\n")
-  let headDir := root / "headdir.git"
-  IO.FS.createDirAll (headDir / "objects")
-  IO.FS.createDirAll (headDir / "refs")
-  IO.FS.createDirAll (headDir / "HEAD")
-  let noRefs := root / "norefs.git"
-  IO.FS.createDirAll (noRefs / "objects")
-  IO.FS.writeFile (noRefs / "HEAD") "ref: refs/heads/main\n"
+    [check "isGitDirLayout matches when refs is a regular file" (← isGitDirLayout refsFile)]
+  -- a usable but UNLISTABLE gitdir (mode 0711 — traversable, not readable):
+  -- git operates in it, and the no-follow shim probe still finds HEAD where a
+  -- readDir listing would get EACCES and falsely report "no HEAD"
+  let locked := root / "bares" / "locked.git"
+  IO.FS.createDirAll (locked / "objects")
+  IO.FS.createDirAll (locked / "refs")
+  IO.FS.writeFile (locked / "HEAD") "ref: refs/heads/main\n"
+  let _ ← IO.Process.output { cmd := "chmod", args := #["0711", locked.toString] }
   outcomes := outcomes ++
-    [check "isGitDirLayout: bare layout (symref HEAD) matches" (← isGitDirLayout bare),
-     check "isGitDirLayout: detached-hash HEAD matches" (← isGitDirLayout detached),
-     check "isGitDirLayout: uppercase detached HEAD matches (git's hex is case-insensitive)"
-       (← isGitDirLayout upper),
-     check "isGitDirLayout: ordinary-file HEAD content does not match"
-       (!(← isGitDirLayout fixture)),
-     check "isGitDirLayout: a directory named HEAD does not match"
-       (!(← isGitDirLayout headDir)),
-     check "isGitDirLayout: missing refs/ does not match" (!(← isGitDirLayout noRefs)),
-     check "isGitDirLayout: worktree private gitdir does not match"
+    [check "isGitDirLayout matches an unlistable 0711 gitdir" (← isGitDirLayout locked)]
+  -- non-matches: HEAD absent, objects/ absent (worktree-private gitdir), plain
+  let noHead := root / "bares" / "no-head"
+  IO.FS.createDirAll (noHead / "objects"); IO.FS.createDirAll (noHead / "refs")
+  outcomes := outcomes ++
+    [check "isGitDirLayout: no HEAD entry does not match" (!(← isGitDirLayout noHead)),
+     check "isGitDirLayout: worktree private gitdir (no objects/) does not match"
        (!(← isGitDirLayout wtPriv)),
      check "isGitDirLayout: an ordinary directory does not match"
        (!(← isGitDirLayout (root / "src")))]
-  -- isHeadContent pins: symref, 40/64-hex in either case (git parses hex
-  -- case-insensitively); not prose, empty, short hex, or non-hex letters
-  outcomes := outcomes ++
-    [check "isHeadContent: symref" (isHeadContent "ref: refs/heads/main\n"),
-     check "isHeadContent: 40-hex lowercase" (isHeadContent (String.ofList (List.replicate 40 '0'))),
-     check "isHeadContent: 40-hex uppercase" (isHeadContent (String.ofList (List.replicate 40 'A'))),
-     check "isHeadContent: 40-hex mixed case"
-       (isHeadContent (String.ofList (List.replicate 20 'a' ++ List.replicate 20 'F'))),
-     check "isHeadContent: 64-hex lowercase" (isHeadContent (String.ofList (List.replicate 64 'f'))),
-     check "isHeadContent: 64-hex uppercase" (isHeadContent (String.ofList (List.replicate 64 'F'))),
-     check "isHeadContent: prose is not" (!isHeadContent "scrubbed placeholder\n"),
-     check "isHeadContent: empty is not" (!isHeadContent ""),
-     check "isHeadContent: short hex is not"
-       (!isHeadContent (String.ofList (List.replicate 39 'a'))),
-     check "isHeadContent: non-hex letters are not"
-       (!isHeadContent (String.ofList (List.replicate 40 'g'))),
-     check "isHeadContent: uppercase non-hex letters are not"
-       (!isHeadContent (String.ofList (List.replicate 40 'G')))]
   -- override: valid state dir is found without discovery
   outcomes := outcomes ++
     [← expectOk "override binds the state dir" (discover (some (root / ".tl").toString))

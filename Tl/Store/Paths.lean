@@ -174,49 +174,51 @@ def Dirs.ofStatePath (path : String) : Dirs :=
 def hasGitBoundary (dir : FilePath) : IO Bool := do
   (dir / ".git").pathExists
 
-/-- Does `s` look like valid gitdir `HEAD` content — a symref
-    (`ref: <path>`) or a detached 40/64-hex object id? Mirrors the content
-    validation git's own setup check performs before classifying a gitdir,
-    so a random committed file named `HEAD` cannot fake the layout.
-
-    The hex test is **case-insensitive**, because git's own hex parse is: an
-    uppercase detached `HEAD` is a valid gitdir to git. Rejecting it here
-    would be *stricter* than git — the dangerous direction, since a real bare
-    repo would then fail to bound the walk and discovery could climb out of it
-    and bind an unrelated enclosing `.tl/`. Erring the other way (accepting a
-    little more than git) at worst stops a walk early, which cannot bind the
-    wrong repository. -/
-def isHeadContent (s : String) : Bool :=
-  let t := s.trimAscii.toString
-  let isHex := fun (c : Char) =>
-    c.isDigit || ('a' ≤ c && c ≤ 'f') || ('A' ≤ c && c ≤ 'F')
-  t.startsWith "ref: " || ((t.length == 40 || t.length == 64) && t.toList.all isHex)
+/-- Does `dir` hold an entry named `name` — a regular file, a symlink (even a
+    dangling one), anything but absent? Probed with the no-follow shim
+    (`openNoFollow … flagDirectory`), never `readDir`: a usable but
+    unlistable gitdir (mode `0711` — git can traverse it, `readDir` gets
+    `EACCES`) must not read as "no HEAD" and let discovery climb out.
+    `flagDirectory` also keeps the probe from blocking on a FIFO/device-shaped
+    entry. The classification is one-sided toward "present" (a boundary
+    over-stop is safe; a false absence is the cross-repository climb-out):
+    `ENOENT` alone means absent; success (a `HEAD` directory), `ENOTDIR` (a
+    regular file), `ELOOP` (a symlink, dangling included), and every other
+    error (`EACCES`, `ENOTOWNED`, …) all mean present. -/
+private def hasEntry (dir : FilePath) (name : String) : IO Bool := do
+  match ← (Sys.withFd dir.toString name Sys.flagDirectory (fun _ => pure ())).toBaseIO with
+  | .ok _ => return true
+  | .error e => return Sys.errnoOf e != some "ENOENT"
 
 /-- Is `dir` itself a git repository directory — a bare repository, or the
-    inside of a `.git` dir? The check mirrors git's own setup classification:
-    `objects/` and `refs/` directories plus a `HEAD` file whose *content* is
-    a symref or a detached hash (`isHeadContent`) — content matters, or a
-    committed fixture directory holding an ordinary file named `HEAD` would
-    falsely bound the walk inside a normal working tree. Such a directory
-    has no `.git` entry, so without this check a walk from inside a bare
-    repo would ascend past it and could bind an unrelated enclosing `.tl/` —
-    the cross-repository binding ADR-0012 forbids. (A linked worktree's
-    private gitdir has `HEAD` but no `objects/`, so it does not match; its
-    boundary is the `.git` file at the worktree root.) -/
+    inside of a `.git` dir? Recognized *structurally* — `objects/` is a
+    directory, `refs/` is present, and a `HEAD` entry exists — deliberately
+    **not** by re-validating `HEAD`'s content the way git's setup check does.
+    Matching git's byte-level `HEAD` rules in hand-written code proved to be a
+    reliable source of *under*-detection (uppercase hex, a symlink `HEAD`
+    dangling after `pack-refs --prune` or on an unborn branch, `ref:` without a
+    space, a hash with trailing text, an oversized `HEAD`, `refs` as an
+    executable file) — and every miss is a real bare repo that git operates in
+    while `tl` climbs *out* of it and binds, and writes to, an unrelated
+    enclosing `.tl/` (the exact cross-repository hazard ADR-0012 forbids, in
+    both the read and write directions). The structural test is at least as
+    inclusive as git on each component, so `tl` never climbs out of a directory
+    git treats as a gitdir. Its only cost is the safe direction: a committed
+    fixture directory that happens to have `objects/`, `refs/`, and a `HEAD`
+    also bounds the walk — a `no-project`, never a wrong bind; `--dir` is the
+    override. (A linked worktree's private gitdir has `HEAD` but no `objects/`
+    directory, so it does not match; its boundary is the `.git` file at the
+    worktree root.)
+
+    Each component is checked at-least-as-inclusively as git: `objects/` a
+    directory; `refs/` merely *present* (git accepts an executable file there,
+    not only a directory); `HEAD` present in any form via the no-follow shim
+    (see `hasEntry` — works on an unlistable `0711` gitdir where `readDir`
+    would not). -/
 def isGitDirLayout (dir : FilePath) : IO Bool := do
-  let head := dir / "HEAD"
-  if !(← head.pathExists) || (← head.isDir)
-      || !(← (dir / "objects").isDir) || !(← (dir / "refs").isDir) then
-    return false
-  -- unreadable or implausibly large HEAD ⇒ not classified as a gitdir (fail
-  -- open to the ascent: a wrong non-boundary is a searched level, a wrong
-  -- boundary is a dead stop). The size bound keeps the walk from reading an
-  -- arbitrarily large committed file on every level.
-  match ← (do
-      if (← head.metadata).byteSize > 4096 then pure ""
-      else IO.FS.readFile head).toBaseIO with
-  | .ok s => return !s.isEmpty && isHeadContent s
-  | .error _ => return false
+  return (← (dir / "objects").isDir)
+    && (← (dir / "refs").pathExists)
+    && (← hasEntry dir "HEAD")
 
 private def hasTl (dir : FilePath) : IO Bool := do
   let p := dir / ".tl"

@@ -913,8 +913,11 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
          && (s16b.stdout.splitOn "insteadOf").length > 1) s16b.stdout]
   -- pushInsteadOf redirects the PUSH only, and the fetch-URL resolver misses
   -- it — the push target resolver (`remote get-url --push`) must catch it, or
-  -- a push silently goes to the decoy with no disclosure
-  git aBare ["update-ref", "-d", "refs/tl/log"]
+  -- a push silently goes to the decoy with no disclosure. Reset BOTH bares
+  -- first (the insteadOf row above already pushed to hDecoy) so `hasTlRef
+  -- hDecoy` genuinely reflects THIS push, not a stale one.
+  git hDecoy ["update-ref", "-d", "refs/tl/log"]
+  git hReal ["update-ref", "-d", "refs/tl/log"]
   let pushHome := tmp / "push-home"
   IO.FS.createDirAll pushHome
   IO.FS.writeFile (pushHome / ".gitconfig")
@@ -977,6 +980,53 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   o := o ++
     [check "a repo-local tl.remote is not flagged as external"
        (s17b.exitCode == 0 && (s17b.stdout.splitOn "\"externalPushConfig\":[]").length > 1) s17b.stdout]
+  -- (18) a multi-valued pushurl: git pushes to EVERY configured pushurl, so a
+  --      global decoy pushurl added ALONGSIDE a legit local one is a real extra
+  --      push target — a last-value origin check would miss it (local wins the
+  --      single read), so the get-all check must flag the global value even
+  --      though a local pushurl exists.
+  let mv := tmp / "multi"
+  let mvReal := tmp / "mv-real.git"
+  let mvDecoy := tmp / "mv-decoy.git"
+  IO.FS.createDirAll mv
+  git tmp ["init", "-q", mv.toString]
+  git tmp ["init", "--bare", "-q", mvReal.toString]
+  git tmp ["init", "--bare", "-q", mvDecoy.toString]
+  git mv ["remote", "add", "origin", mvReal.toString]
+  git mv ["config", "remote.origin.pushurl", mvReal.toString]  -- a legit local pushurl
+  let _ ← spawn ["init"] [] (some mv)
+  let mvHome := tmp / "mv-home"
+  IO.FS.createDirAll mvHome
+  IO.FS.writeFile (mvHome / ".gitconfig")
+    ("[remote \"origin\"]\n\tpushurl = " ++ mvDecoy.toString ++ "\n")
+  let s18 ← spawn ["doctor", "--json"] [("HOME", some mvHome.toString)] (some mv)
+  o := o ++
+    [check "a global pushurl added beside a local one is flagged (multi-valued)"
+       (s18.exitCode == 0 && (s18.stdout.splitOn "\"externalPushConfig\"").length > 1
+         && (s18.stdout.splitOn mvDecoy.toString).length > 1) s18.stdout]
+  -- (19) the branch.<current>.remote selector injected from global (tl.remote
+  --      unset) redirects the remote choice — the selector chain must check it
+  let br := tmp / "branchsel"
+  let brDecoy := tmp / "br-decoy.git"
+  IO.FS.createDirAll br
+  git tmp ["init", "-q", br.toString]
+  git tmp ["init", "--bare", "-q", brDecoy.toString]
+  git br ["remote", "add", "origin", (tmp / "br-real.git").toString]
+  -- a commit so there is a current branch to key branch.<b>.remote on
+  IO.FS.writeFile (br / "f") "x\n"
+  git br ["add", "f"]
+  git br ["-c", "commit.gpgsign=false", "-c", "user.email=ci@x.test", "-c", "user.name=ci",
+          "commit", "-q", "--no-verify", "-m", "seed"]
+  let curBranch := ((← IO.Process.output { cmd := "git", args := #["-C", br.toString, "symbolic-ref", "--short", "HEAD"] }).stdout).trimAscii
+  let _ ← spawn ["init"] [] (some br)
+  let brHome := tmp / "br-home"
+  IO.FS.createDirAll brHome
+  IO.FS.writeFile (brHome / ".gitconfig")
+    (s!"[branch \"{curBranch}\"]\n\tremote = decoy\n[remote \"decoy\"]\n\turl = " ++ brDecoy.toString ++ "\n")
+  let s19 ← spawn ["doctor", "--json"] [("HOME", some brHome.toString)] (some br)
+  o := o ++
+    [check "an injected branch.<current>.remote selector is flagged"
+       (s19.exitCode == 0 && (s19.stdout.splitOn s!"branch.{curBranch}.remote").length > 1) s19.stdout]
   return o
 
 /-- Spawned-binary hostile-environment matrix. Fixture git calls throw, so a
