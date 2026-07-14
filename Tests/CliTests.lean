@@ -2206,6 +2206,66 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
     (fun j => match jStr j "staleness" with | some s => (s.splitOn "never synced").length > 1 | none => false)]
   return o
 
+/-- The doctor `gitRouting` split-brain row (ADR-0012 / ADR-0014 T7): the
+    pure-core branches (ok / inherited-vars warn / toplevel-mismatch warn /
+    both / non-repo ok — none fails health), and the end-to-end row against
+    real repos in both the aligned and the `--dir`-into-a-subdir shapes. The
+    inherited-variable condition itself needs a process boundary and lives
+    with the spawned-binary rows (`cliGitEnvTests`). -/
+def cliDoctorRoutingTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- pure-core branches
+  let okRow := gitRoutingRow [] "/repo" (some "/repo")
+  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo")
+  let misRow := gitRoutingRow [] "/repo/sub" (some "/repo")
+  let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo")
+  let noRepoRow := gitRoutingRow [] "/somewhere" none
+  let status := fun (r : Json × Bool) => (jStr r.1 "status").getD "?"
+  let msg := fun (r : Json × Bool) => (jStr r.1 "message").getD ""
+  let nullAt := fun (j : Json) (k : String) =>
+    match jGet j k with | some .null => true | _ => false
+  o := o ++
+    [check "gitRouting: aligned repo is ok" (status okRow == "ok") (msg okRow),
+     check "gitRouting: inherited vars warn and name themselves"
+       (status varsRow == "warn" && (msg varsRow |>.splitOn "GIT_CONFIG_COUNT").length > 1
+         && (msg varsRow |>.splitOn "tl ignores it").length > 1) (msg varsRow),
+     check "gitRouting: toplevel mismatch warns and teaches placement"
+       (status misRow == "warn" && (msg misRow |>.splitOn "toplevel").length > 1) (msg misRow),
+     check "gitRouting: both conditions compose into one message"
+       (status bothRow == "warn" && (msg bothRow |>.splitOn "tl ignores it").length > 1
+         && (msg bothRow |>.splitOn "toplevel").length > 1) (msg bothRow),
+     check "gitRouting: outside a repo is ok (null toplevel)"
+       (status noRepoRow == "ok" && nullAt noRepoRow.1 "repoToplevel") "",
+     check "gitRouting: no branch fails health"
+       (!okRow.2 && !varsRow.2 && !misRow.2 && !bothRow.2 && !noRepoRow.2) ""]
+  -- end-to-end: aligned (init at a repo toplevel) → ok with the real toplevel
+  let findCheck (data : Json) (nm : String) : Option Json :=
+    (jArr data "checks").find? (fun c => jStr c "name" == some nm)
+  let root ← IO.FS.createTempDir
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] } : IO _)
+  let dir := (root / ".tl").toString
+  let _ ← run' ["init", "--dir", dir]
+  let realRoot ← IO.FS.realPath root
+  o := o ++ [← expectData "doctor gitRouting: aligned repo reports ok"
+    ["doctor", "--json", "--dir", dir]
+    (fun j => (findCheck j "gitRouting").any (fun c =>
+      jStr c "status" == some "ok" && jStr c "repoToplevel" == some realRoot.toString))]
+  -- end-to-end: state dir in a repo subdir → warn (split placement disclosed)
+  IO.FS.createDirAll (root / "sub")
+  let subDir := (root / "sub" / ".tl").toString
+  let _ ← run' ["init", "--dir", subDir]
+  o := o ++ [← expectData "doctor gitRouting: subdir state warns on the toplevel mismatch"
+    ["doctor", "--json", "--dir", subDir]
+    (fun j => (findCheck j "gitRouting").any (fun c =>
+      jStr c "status" == some "warn" && jBool j "healthy" == some true))]
+  -- end-to-end: non-git state → ok, null toplevel
+  let plain ← freshDir
+  o := o ++ [← expectData "doctor gitRouting: non-git state is ok with null toplevel"
+    ["doctor", "--json", "--dir", plain]
+    (fun j => (findCheck j "gitRouting").any (fun c =>
+      jStr c "status" == some "ok" && nullAt c "repoToplevel"))]
+  return o
+
 /-- `doctor`'s staleClaims check is driven entirely by the `tl.staleAfter` git
     config (a compact duration) — there is no hardcoded default. Unset ⇒ the row
     is omitted; a set window flags in-progress claims older than it; an
@@ -3750,7 +3810,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)

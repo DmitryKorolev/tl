@@ -421,6 +421,15 @@ def isLinkedWorktree (d : Dirs) : TlM Bool := do
   if gd.exitCode != 0 || gcd.exitCode != 0 then return false
   return gd.stdout.trimAscii.toString != gcd.stdout.trimAscii.toString
 
+/-- The working-tree toplevel of the repository `d` binds to
+    (`rev-parse --show-toplevel`), `none` outside any repo or where no
+    working tree exists. Under the environment scrub this is git's own
+    classification of the filesystem-discovered location — doctor compares
+    it against the state root to report a split-brain placement. -/
+def gitToplevel (d : Dirs) : TlM (Option String) := do
+  let o ← (git d ["rev-parse", "--show-toplevel"] : IO _)
+  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
+
 /-- The current branch (`none` on a detached HEAD). -/
 def currentBranch (d : Dirs) : TlM (Option String) := do
   let o ← (git d ["symbolic-ref", "--short", "-q", "HEAD"] : IO _)

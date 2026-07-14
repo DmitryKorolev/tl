@@ -1750,6 +1750,32 @@ def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
       ++ (if ok then [] else
           [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
 
+/-- The doctor `git-routing` row (pure core, branch-testable): the split-brain
+    report comparing filesystem discovery with git's classification.
+    `routingVars` are the scrubbed (ADR-0012) variables found inherited;
+    `stateRoot` / `toplevel` arrive canonicalized (realpath) by the caller.
+    Both conditions warn and teach — neither fails health, because tl's own
+    subprocesses scrub the routing environment: the variables would redirect
+    *other* tools in this shell, and a state directory under a repository it
+    is not the toplevel of still shares through that repository's ref. -/
+def gitRoutingRow (routingVars : List String) (stateRoot : String)
+    (toplevel : Option String) : Json × Bool :=
+  let mismatch := toplevel.elim false (· != stateRoot)
+  let msgs :=
+    (if routingVars.isEmpty then [] else
+      [s!"inherited git routing environment ({String.intercalate ", " routingVars}) — tl ignores it (ADR-0012) and operates on the repository found by filesystem discovery, but plain `git` in this shell binds elsewhere; unset the variable(s) to align them"])
+    ++ (if mismatch then
+      [s!"the state directory is not at the repository toplevel ({toplevel.getD ""}) — sharing binds that repository's refs/tl/log; pass --dir deliberately or move .tl to the toplevel"]
+    else [])
+  (Json.mkObj <|
+    [("name", Json.str "gitRouting"),
+     ("status", Json.str (if msgs.isEmpty then "ok" else "warn")),
+     ("routingVars", Json.arr (routingVars.map Json.str).toArray),
+     ("stateRoot", Json.str stateRoot),
+     ("repoToplevel", toplevel.elim Json.null Json.str)]
+    ++ (if msgs.isEmpty then [] else
+        [("message", Json.str (String.intercalate "; " msgs))]), false)
+
 def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let d ← discover dirOverride
   -- --sync reconciles first; best-effort (doctor never fails — ADR-0008): keep
@@ -1950,7 +1976,26 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let gitVer ← (try liftSys (fun e => .mk' .internal s!"{e}") Tl.Sync.gitVersion
                 catch _ => pure none)
   let gitVerRow := gitVersionRow gitVer
-  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow, gitVerRow]
+  -- split-brain report (ADR-0012/ADR-0014 T7): inherited routing variables and
+  -- the filesystem-discovery vs git-classification comparison, canonicalized
+  -- so a symlinked temp/state path doesn't read as a false mismatch. Like the
+  -- sibling shell-touching rows, any read error folds into a warn row.
+  let routingRow ← try
+      let present ← liftSys (fun e => .mk' .internal s!"{e}")
+        (Tl.Sync.scrubbedGitVars.filterM (fun v => return (← IO.getEnv v).isSome))
+      let canon := fun (p : String) => do
+        match ← (IO.FS.realPath p).toBaseIO with
+        | .ok r => pure r.toString
+        | .error _ => pure p
+      let stateRoot ← liftSys (fun e => .mk' .internal s!"{e}")
+        (canon (if d.base.isEmpty then "." else d.base))
+      let top ← Tl.Sync.gitToplevel d
+      let top ← liftSys (fun e => .mk' .internal s!"{e}") (top.mapM canon)
+      pure (gitRoutingRow present stateRoot top)
+    catch e =>
+      pure (Json.mkObj [("name", Json.str "gitRouting"), ("status", Json.str "warn"),
+                        ("message", Json.str s!"could not check git routing: {e.message}")], false)
+  let rows := [replicaRow, clockRow] ++ logOk ++ [graphRow] ++ staleRows ++ [skewRow, syncRow, refMarkRow, routingRow, gitVerRow]
   let healthy := rows.all (fun (_, failed) => !failed)
   let data := Json.mkObj
     [("healthy", Json.bool healthy),
