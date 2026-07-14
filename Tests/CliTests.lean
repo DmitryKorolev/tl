@@ -627,6 +627,213 @@ def cliBinaryTests : IO (List Outcome) := do
       logged.stdout]
   return o
 
+/-- The ADR-0012 environment scrub, end to end against the compiled binary:
+    for each routing / config-injection class an inherited hostile variable
+    must neither redirect any git subprocess off the filesystem-discovered
+    repository nor break tl (a bogus value is simply ignored). The victim
+    repositories double as canaries — after every row they must still have
+    no `refs/tl/log`. `syncEnvScrubTests` holds the control row proving git
+    *does* honor this routing when unscrubbed. Also covers the onboarding
+    shapes: a non-git state under a routing env stays repo-less, `git init`
+    around existing state then syncs, un-stealthing lands in the discovered
+    repo, and a ceiling stops init placement. -/
+def cliGitEnvTests : IO (List Outcome) := do
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  unless ← exe.pathExists do
+    return [{ name := "binary present", passed := false,
+              msg := "run `lake build` first: .lake/build/bin/tl missing" }]
+  let mut o : List Outcome := []
+  -- every spawn unsets TL_DIR (cwd discovery is under test) and pins a
+  -- neutral actor so no git identity leaks into the throwaway logs
+  let spawn (args : List String) (env : List (String × Option String) := [])
+      (cwd : Option System.FilePath := none) : IO IO.Process.Output :=
+    IO.Process.output { cmd := exe.toString, args := args.toArray,
+                        env := ([("TL_DIR", none), ("TL_ACTOR", some "tester")] ++ env).toArray,
+                        cwd }
+  let gitOut (dir : System.FilePath) (args : List String) : IO IO.Process.Output :=
+    IO.Process.output { cmd := "git", args := (["-C", dir.toString] ++ args).toArray }
+  let git (dir : System.FilePath) (args : List String) : IO Unit := do
+    let _ ← gitOut dir args
+  let hasTlRef (dir : System.FilePath) : IO Bool := do
+    pure ((← gitOut dir ["rev-parse", "--verify", "--quiet", "refs/tl/log"]).exitCode == 0)
+  let tmp ← IO.FS.createTempDir
+  -- the working repo A (one seed commit so worktrees can attach) and victim B
+  let a := tmp / "a"
+  let b := tmp / "b"
+  IO.FS.createDirAll a
+  IO.FS.createDirAll b
+  git tmp ["init", "-q", a.toString]
+  git tmp ["init", "-q", b.toString]
+  IO.FS.writeFile (a / "f.txt") "seed\n"
+  git a ["add", "f.txt"]
+  git a ["-c", "user.email=ci@example.test", "-c", "user.name=ci", "commit", "-qm", "seed"]
+  let _ ← spawn ["init"] [] (some a)
+  let _ ← spawn ["create", "probe task"] [] (some a)
+  let bGitDir := (b / ".git").toString
+  -- (1) repository routing: GIT_DIR must not publish A's data into B
+  let s1 ← spawn ["sync", "--json"] [("GIT_DIR", some bGitDir)] (some a)
+  o := o ++
+    [check "sync under GIT_DIR succeeds against the discovered repo" (s1.exitCode == 0) s1.stdout,
+     check "sync under GIT_DIR wrote refs/tl/log in A" (← hasTlRef a),
+     check "sync under GIT_DIR left victim B untouched" (!(← hasTlRef b))]
+  -- (2) hook-style inherited environment (git exports GIT_DIR/GIT_WORK_TREE/
+  --     GIT_INDEX_FILE into hooks): same invariant
+  let s2 ← spawn ["sync", "--json"]
+    [("GIT_DIR", some bGitDir), ("GIT_WORK_TREE", some b.toString),
+     ("GIT_INDEX_FILE", some (b / ".git" / "index").toString)] (some a)
+  o := o ++
+    [check "sync under a hook-style env succeeds" (s2.exitCode == 0) s2.stdout,
+     check "hook-style env left victim B untouched" (!(← hasTlRef b))]
+  -- (3) a bogus routing value is scrubbed, not tripped over — unscrubbed,
+  --     every git call would fail "not a git repository"
+  let s3 ← spawn ["list", "--json"] [("GIT_DIR", some "/nonexistent/nowhere")] (some a)
+  o := o ++ [check "a bogus GIT_DIR is ignored (list works)" (s3.exitCode == 0) s3.stdout]
+  -- (4) object-store routing: new objects written under a hostile
+  --     GIT_OBJECT_DIRECTORY must land in A (readable there with a clean env)
+  let _ ← spawn ["create", "second probe"] [] (some a)
+  let s4 ← spawn ["sync", "--json"]
+    [("GIT_OBJECT_DIRECTORY", some (b / ".git" / "objects").toString)] (some a)
+  let readBack ← gitOut a ["ls-tree", "refs/tl/log"]
+  o := o ++
+    [check "sync under GIT_OBJECT_DIRECTORY succeeds" (s4.exitCode == 0) s4.stdout,
+     check "ref objects are readable in A with a clean env"
+       (readBack.exitCode == 0 && readBack.stdout != "") readBack.stderr]
+  -- (5) namespace routing: the ref must be the real refs/tl/log, not a
+  --     namespaced shadow
+  let s5 ← spawn ["sync", "--json"] [("GIT_NAMESPACE", some "hostile")] (some a)
+  let shadow ← gitOut a ["rev-parse", "--verify", "--quiet", "refs/namespaces/hostile/refs/tl/log"]
+  o := o ++
+    [check "sync under GIT_NAMESPACE succeeds" (s5.exitCode == 0) s5.stdout,
+     check "no namespaced shadow ref was created" (shadow.exitCode != 0) shadow.stdout,
+     check "the real refs/tl/log is still there" (← hasTlRef a)]
+  -- remote-leg rows: origin = bare A-remote; bare B-remote is the decoy
+  let aBare := tmp / "a-remote.git"
+  let bBare := tmp / "b-remote.git"
+  git tmp ["init", "--bare", "-q", aBare.toString]
+  git tmp ["init", "--bare", "-q", bBare.toString]
+  git a ["remote", "add", "origin", aBare.toString]
+  -- (6) env config injection: rewriting remote.origin.url must not take
+  let s6 ← spawn ["sync", "--json"]
+    [("GIT_CONFIG_COUNT", some "1"),
+     ("GIT_CONFIG_KEY_0", some "remote.origin.url"),
+     ("GIT_CONFIG_VALUE_0", some bBare.toString)] (some a)
+  o := o ++
+    [check "sync under GIT_CONFIG_COUNT injection succeeds" (s6.exitCode == 0) s6.stdout,
+     check "the push landed on the real origin" (← hasTlRef aBare),
+     check "the injected decoy remote got nothing" (!(← hasTlRef bBare))]
+  -- (7) config-file redirection: a GIT_CONFIG_GLOBAL with url.insteadOf
+  --     rewriting origin toward the decoy must not take
+  git aBare ["update-ref", "-d", "refs/tl/log"]
+  let crafted := tmp / "crafted-global.gitconfig"
+  IO.FS.writeFile crafted
+    ("[url \"" ++ bBare.toString ++ "\"]\n\tinsteadOf = " ++ aBare.toString ++ "\n")
+  let s7 ← spawn ["sync", "--json"] [("GIT_CONFIG_GLOBAL", some crafted.toString)] (some a)
+  o := o ++
+    [check "sync under a crafted GIT_CONFIG_GLOBAL succeeds" (s7.exitCode == 0) s7.stdout,
+     check "the insteadOf rewrite did not take (origin repopulated)" (← hasTlRef aBare),
+     check "the insteadOf decoy got nothing" (!(← hasTlRef bBare))]
+  -- (8) the git -c internal channel: a garbage GIT_CONFIG_PARAMETERS would
+  --     fail every git call if it reached one
+  let s8 ← spawn ["sync", "--json"] [("GIT_CONFIG_PARAMETERS", some "complete garbage")] (some a)
+  o := o ++ [check "garbage GIT_CONFIG_PARAMETERS is ignored" (s8.exitCode == 0) s8.stdout]
+  -- (9) the legacy GIT_CONFIG file redirect targets exactly the `git config`
+  --     builtin — the shape of every tl config read (tl.remote here would
+  --     become a phantom remote and the push would stop reaching origin)
+  git aBare ["update-ref", "-d", "refs/tl/log"]
+  let craftedTl := tmp / "crafted-tl.gitconfig"
+  IO.FS.writeFile craftedTl "[tl]\n\tremote = phantom\n"
+  let s9 ← spawn ["sync", "--json"] [("GIT_CONFIG", some craftedTl.toString)] (some a)
+  o := o ++
+    [check "sync under a crafted GIT_CONFIG succeeds" (s9.exitCode == 0) s9.stdout,
+     check "the phantom tl.remote did not take (origin repopulated)" (← hasTlRef aBare)]
+  -- (10) linked worktree with a bogus GIT_COMMON_DIR: the shared-ref transport
+  --      must keep working off the real common dir
+  let w := tmp / "w"
+  git a ["worktree", "add", "-q", w.toString]
+  let _ ← spawn ["init"] [] (some w)
+  let _ ← spawn ["create", "worktree probe"] [] (some w)
+  let s10 ← spawn ["sync", "--json"] [("GIT_COMMON_DIR", some "/nonexistent/common")] (some w)
+  let wReplica := (← IO.FS.readFile (w / ".tl" / "local" / "replica")).trimAscii.toString
+  let shared ← gitOut a ["ls-tree", "refs/tl/log"]
+  o := o ++
+    [check "worktree sync under a bogus GIT_COMMON_DIR succeeds" (s10.exitCode == 0) s10.stdout,
+     check "the worktree's segment reached the shared ref"
+       ((shared.stdout.splitOn (wReplica ++ ".jsonl")).length > 1) shared.stdout]
+  -- (11) onboarding: non-git state under GIT_DIR stays repo-less (no
+  --      adoption of the env-routed repo as a sharing target) …
+  let plain := tmp / "plain"
+  IO.FS.createDirAll plain
+  let _ ← spawn ["init"] [] (some plain)
+  let _ ← spawn ["create", "plain probe"] [] (some plain)
+  let s11 ← spawn ["sync", "--json"] [("GIT_DIR", some bGitDir)] (some plain)
+  o := o ++
+    [check "non-git state under GIT_DIR syncs as repo-less (remote null)"
+       (s11.exitCode == 0 && (s11.stdout.splitOn "\"remote\":null").length > 1) s11.stdout,
+     check "non-git state under GIT_DIR left victim B untouched" (!(← hasTlRef b))]
+  -- … and `git init` around the same state later just starts sharing
+  -- (ADR-0001 §4: no migration)
+  git tmp ["init", "-q", plain.toString]
+  let plainBare := tmp / "plain-remote.git"
+  git tmp ["init", "--bare", "-q", plainBare.toString]
+  git plain ["remote", "add", "origin", plainBare.toString]
+  let s11b ← spawn ["sync", "--json"] [] (some plain)
+  o := o ++
+    [check "git init around existing state then sync pushes" (s11b.exitCode == 0) s11b.stdout,
+     check "the late-added remote received the log" (← hasTlRef plainBare)]
+  -- (12) un-stealthing under a routing env: the refspec-free snapshot must
+  --      land in the filesystem-discovered repo (ADR-0001 §7)
+  let st := tmp / "st"
+  IO.FS.createDirAll st
+  git tmp ["init", "-q", st.toString]
+  let _ ← spawn ["init", "--stealth"] [] (some st)
+  let _ ← spawn ["create", "stealth probe"] [] (some st)
+  let s12 ← spawn ["sync", "--json"] [("GIT_DIR", some bGitDir)] (some st)
+  o := o ++ [check "stealth sync fails closed (stealth-mode) even under GIT_DIR"
+    (s12.exitCode == 12) s12.stdout]
+  IO.FS.removeFile (st / ".tl" / "local" / "stealth")
+  let s12b ← spawn ["sync", "--json"] [("GIT_DIR", some bGitDir)] (some st)
+  o := o ++
+    [check "un-stealthed sync under GIT_DIR succeeds" (s12b.exitCode == 0) s12b.stdout,
+     check "the un-stealth snapshot landed in the discovered repo" (← hasTlRef st),
+     check "the un-stealth snapshot did not leak into victim B" (!(← hasTlRef b))]
+  -- (13) a ceiling stops init placement: state lands at the cwd, not the
+  --      repo toplevel above the ceiling
+  let proj := tmp / "proj"
+  IO.FS.createDirAll (proj / "sub")
+  git tmp ["init", "-q", proj.toString]
+  let realProj ← IO.FS.realPath proj
+  let s13 ← spawn ["init", "--json"]
+    [("GIT_CEILING_DIRECTORIES", some realProj.toString)] (some (proj / "sub"))
+  o := o ++
+    [check "a ceiling stops init placement (exit 0)" (s13.exitCode == 0) s13.stdout,
+     check "init placed state at the cwd below the ceiling"
+       ((← (proj / "sub" / ".tl").isDir) && !(← (proj / ".tl").pathExists)),
+     check "init disclosed the ceiling stop"
+       ((s13.stdout.splitOn "GIT_CEILING_DIRECTORIES").length > 1) s13.stdout]
+  -- (14) doctor discloses the inherited routing env without failing health
+  let s14 ← spawn ["doctor", "--json"] [("GIT_DIR", some bGitDir)] (some a)
+  o := o ++ [check "doctor under GIT_DIR: healthy, gitRouting warns, names the var"
+    (s14.exitCode == 0 && (s14.stdout.splitOn "\"healthy\":true").length > 1
+      && (s14.stdout.splitOn "\"gitRouting\"").length > 1
+      && (s14.stdout.splitOn "GIT_DIR").length > 1) s14.stdout]
+  -- (15) the actor fallback reads the discovered repo's user.email, not the
+  --      env-routed repo's (ADR-0013 chain, unset TL_ACTOR)
+  let x := tmp / "x"
+  let y := tmp / "y"
+  IO.FS.createDirAll x
+  IO.FS.createDirAll y
+  git tmp ["init", "-q", x.toString]
+  git tmp ["init", "-q", y.toString]
+  git x ["config", "user.email", "discovered@example.test"]
+  git y ["config", "user.email", "routed@example.test"]
+  let _ ← spawn ["init"] [] (some x)
+  let _ ← spawn ["create", "actor probe"] [("TL_ACTOR", none), ("GIT_DIR", some (y / ".git").toString)] (some x)
+  let logged ← spawn ["log", "--json"] [] (some x)
+  o := o ++ [check "the actor fallback ignores GIT_DIR (reads the discovered repo)"
+    ((logged.stdout.splitOn "discovered@example.test").length > 1
+      && (logged.stdout.splitOn "routed@example.test").length == 1) logged.stdout]
+  return o
+
 /-- A canonical line for a crafted segment. The stamp's replica is the
     segment stem's decoded value — the decode-side owner check (segments are
     per-replica authored, ADR-0001) refuses anything else. -/
@@ -3817,6 +4024,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
     ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
-    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests) ++ (← cliGitEnvTests)
 
 end Tl.Tests
