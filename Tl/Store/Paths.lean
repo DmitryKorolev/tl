@@ -165,14 +165,28 @@ def Dirs.ofStatePath (path : String) : Dirs :=
 def hasGitBoundary (dir : FilePath) : IO Bool := do
   (dir / ".git").pathExists
 
+/-- Is `dir` itself a git repository directory — a bare repository, or the
+    inside of a `.git` dir? The signature is the one git's own setup check
+    uses: a `HEAD` file plus `objects/` and `refs/` directories. Such a
+    directory has no `.git` entry, so without this check a walk from inside
+    a bare repo would ascend past it and could bind an unrelated enclosing
+    `.tl/` — the cross-repository binding ADR-0012 forbids. (A linked
+    worktree's private gitdir has `HEAD` but no `objects/`, so it does not
+    match; its boundary is the `.git` file at the worktree root.) -/
+def isGitDirLayout (dir : FilePath) : IO Bool := do
+  let head := dir / "HEAD"
+  pure ((← head.pathExists) && !(← head.isDir)
+    && (← (dir / "objects").isDir) && (← (dir / "refs").isDir))
+
 private def hasTl (dir : FilePath) : IO Bool := do
   let p := dir / ".tl"
   pure ((← p.pathExists) && (← p.isDir))
 
 /-- ADR-0012 discovery. `override` is `--dir` (wins) or `TL_DIR`; otherwise
     walk up from `cwd` to the nearest `.tl/`, stopping at the repo boundary
-    and at any `GIT_CEILING_DIRECTORIES` entry (a listed directory is not
-    searched). The result is validated (`validate`). -/
+    (a `.git` entry, or a bare-gitdir layout), and at any
+    `GIT_CEILING_DIRECTORIES` entry (a listed directory is not searched).
+    The result is validated (`validate`). -/
 def discover (override : Option String := none) : TlM Dirs := do
   match override with
   | some path => validate (Dirs.ofStatePath path)
@@ -209,6 +223,11 @@ def discover (override : Option String := none) : TlM Dirs := do
           else if ← liftSys (fun e => .mk' .internal s!"{e}") (hasGitBoundary dir) then
             -- the repo root is searched, never ascended past (ADR-0012)
             throw (noProject s!"in this repository (searched up to its root {dir})")
+          else if ← liftSys (fun e => .mk' .internal s!"{e}") (isGitDirLayout dir) then
+            -- a bare repo (or a .git interior) bounds the walk the same way a
+            -- worktree root does: ascending past it could bind an unrelated
+            -- enclosing .tl/ (ADR-0012)
+            throw (noProject s!"here ({dir} is a git repository directory — bare repositories hold no tl state; run tl in a working tree, or pass --dir at an explicit state directory)")
           else
             match dir.parent with
             | some parent =>

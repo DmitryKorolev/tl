@@ -85,6 +85,44 @@ def storeDiscoveryTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectCode "gitfile boundary stops the walk" .noProject (discover none)]
   IO.Process.setCurrentDir prev
+  -- a bare gitdir bounds the walk: from inside a bare repo nested under a
+  -- project, discovery must not ascend past it and bind the enclosing .tl
+  let bare := root / "srv" / "mirror.git"
+  IO.FS.createDirAll (bare / "objects")
+  IO.FS.createDirAll (bare / "refs")
+  IO.FS.createDirAll (bare / "hooks")
+  IO.FS.writeFile (bare / "HEAD") "ref: refs/heads/main\n"
+  IO.Process.setCurrentDir (bare / "hooks")
+  outcomes := outcomes ++
+    [← expectCode "bare-gitdir boundary stops the walk" .noProject (discover none)]
+  -- the boundary teaches: the message names the bare layout, not a bare "no project"
+  outcomes := outcomes ++ [← (do
+    match ← runTl (discover none) with
+    | .error e => pure (check "bare boundary error message teaches"
+        ((e.message.splitOn "git repository directory").length > 1) e.message)
+    | .ok _ => pure { name := "bare boundary error message teaches", passed := false,
+                      msg := "unexpectedly bound a project" })]
+  -- a linked worktree's private gitdir (HEAD but no objects/) is NOT a bare
+  -- boundary — the walk ascends normally and finds the project .tl
+  let wtPriv := root / "wt" / "worktrees" / "feature"
+  IO.FS.createDirAll wtPriv
+  IO.FS.writeFile (wtPriv / "HEAD") "ref: refs/heads/feature\n"
+  IO.Process.setCurrentDir wtPriv
+  -- compare canonically: createTempDir may hand back a symlinked path
+  -- (macOS /var → /private/var) while the walk sees the canonical cwd
+  let realRoot ← IO.FS.realPath root
+  outcomes := outcomes ++
+    [← expectOk "worktree private gitdir does not bound the walk" (discover none)
+        (fun d => check "worktree private gitdir does not bound the walk"
+          (d.base == realRoot.toString) s!"base={d.base} expected={realRoot}")]
+  IO.Process.setCurrentDir prev
+  -- isGitDirLayout unit pins: bare yes; worktree-private no; plain dir no
+  outcomes := outcomes ++
+    [check "isGitDirLayout: bare layout matches" (← isGitDirLayout bare),
+     check "isGitDirLayout: worktree private gitdir does not match"
+       (!(← isGitDirLayout wtPriv)),
+     check "isGitDirLayout: an ordinary directory does not match"
+       (!(← isGitDirLayout (root / "src")))]
   -- override: valid state dir is found without discovery
   outcomes := outcomes ++
     [← expectOk "override binds the state dir" (discover (some (root / ".tl").toString))
