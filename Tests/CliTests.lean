@@ -637,11 +637,7 @@ def cliBinaryTests : IO (List Outcome) := do
     shapes: a non-git state under a routing env stays repo-less, `git init`
     around existing state then syncs, un-stealthing lands in the discovered
     repo, and a ceiling stops init placement. -/
-def cliGitEnvTests : IO (List Outcome) := do
-  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
-  unless ← exe.pathExists do
-    return [{ name := "binary present", passed := false,
-              msg := "run `lake build` first: .lake/build/bin/tl missing" }]
+private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- every spawn unsets TL_DIR (cwd discovery is under test) and pins a
   -- neutral actor so no git identity leaks into the throwaway logs
@@ -652,8 +648,16 @@ def cliGitEnvTests : IO (List Outcome) := do
                         cwd }
   let gitOut (dir : System.FilePath) (args : List String) : IO IO.Process.Output :=
     IO.Process.output { cmd := "git", args := (["-C", dir.toString] ++ args).toArray }
+  -- fixture git calls THROW on failure: silently discarding them let a
+  -- developer's global config (a `commit.gpgsign` with no usable key, a
+  -- `core.hooksPath`) fail the seed commit, which cascaded into a worktree
+  -- that was never created and a crash reading its replica — far from the
+  -- cause. The caller turns a throw into one clear failing row.
   let git (dir : System.FilePath) (args : List String) : IO Unit := do
-    let _ ← gitOut dir args
+    let out ← gitOut dir args
+    unless out.exitCode == 0 do
+      throw (IO.userError
+        s!"fixture `git {String.intercalate " " args}` in {dir} exited {out.exitCode}: {out.stderr.trimAscii}")
   let hasTlRef (dir : System.FilePath) : IO Bool := do
     pure ((← gitOut dir ["rev-parse", "--verify", "--quiet", "refs/tl/log"]).exitCode == 0)
   let tmp ← IO.FS.createTempDir
@@ -666,7 +670,10 @@ def cliGitEnvTests : IO (List Outcome) := do
   git tmp ["init", "-q", b.toString]
   IO.FS.writeFile (a / "f.txt") "seed\n"
   git a ["add", "f.txt"]
-  git a ["-c", "user.email=ci@example.test", "-c", "user.name=ci", "commit", "-qm", "seed"]
+  -- the fixture commit is hermetic: signing off and hooks skipped, so the
+  -- suite does not depend on the developer's global git configuration
+  git a ["-c", "commit.gpgsign=false", "-c", "user.email=ci@example.test",
+         "-c", "user.name=ci", "commit", "-q", "--no-verify", "-m", "seed"]
   let _ ← spawn ["init"] [] (some a)
   let _ ← spawn ["create", "probe task"] [] (some a)
   let bGitDir := (b / ".git").toString
@@ -739,6 +746,20 @@ def cliGitEnvTests : IO (List Outcome) := do
     [check "sync under a crafted GIT_CONFIG_GLOBAL succeeds" (s7.exitCode == 0) s7.stdout,
      check "the insteadOf rewrite did not take (origin repopulated)" (← hasTlRef aBare),
      check "the insteadOf decoy got nothing" (!(← hasTlRef bBare))]
+  -- (7b) the same insteadOf redirect by its other spelling: XDG_CONFIG_HOME
+  --      relocates the *global config file itself* (<XDG>/git/config), so
+  --      scrubbing GIT_CONFIG_GLOBAL without it closes nothing — unscrubbed,
+  --      `tl sync` reports ok/pushed/origin while the ref lands in the decoy
+  git aBare ["update-ref", "-d", "refs/tl/log"]
+  let xdg := tmp / "xdg"
+  IO.FS.createDirAll (xdg / "git")
+  IO.FS.writeFile (xdg / "git" / "config")
+    ("[url \"" ++ bBare.toString ++ "\"]\n\tinsteadOf = " ++ aBare.toString ++ "\n")
+  let s7b ← spawn ["sync", "--json"] [("XDG_CONFIG_HOME", some xdg.toString)] (some a)
+  o := o ++
+    [check "sync under a crafted XDG_CONFIG_HOME succeeds" (s7b.exitCode == 0) s7b.stdout,
+     check "the XDG insteadOf rewrite did not take (origin repopulated)" (← hasTlRef aBare),
+     check "the XDG insteadOf decoy got nothing" (!(← hasTlRef bBare))]
   -- (8) the git -c internal channel: a garbage GIT_CONFIG_PARAMETERS would
   --     fail every git call if it reached one
   let s8 ← spawn ["sync", "--json"] [("GIT_CONFIG_PARAMETERS", some "complete garbage")] (some a)
@@ -857,7 +878,60 @@ def cliGitEnvTests : IO (List Outcome) := do
   o := o ++ [check "the actor fallback ignores GIT_DIR (reads the discovered repo)"
     ((logged.stdout.splitOn "discovered@example.test").length > 1
       && (logged.stdout.splitOn "routed@example.test").length == 1) logged.stdout]
+  -- (16) the CARRIED RESIDUAL, pinned honestly (ADR-0012 Consequences /
+  --      ADR-0014 T7): HOME cannot be scrubbed — it locates ~/.gitconfig,
+  --      ~/.git-credentials and ~/.ssh, so unsetting it would break every
+  --      authenticated remote. A HOME pointed at a directory the user does
+  --      not control therefore CAN still inject a url.*.insteadOf rewrite and
+  --      redirect the push, with no control of PATH or the git binary. tl does
+  --      not prevent that. It discloses it: doctor reports the rewrite. Both
+  --      halves are pinned here — if a future change closes the redirect, the
+  --      first row fails and this comment (and the ADRs) must be revisited.
+  let h := tmp / "h"
+  let hReal := tmp / "h-real.git"
+  let hDecoy := tmp / "h-decoy.git"
+  IO.FS.createDirAll h
+  git tmp ["init", "-q", h.toString]
+  git tmp ["init", "--bare", "-q", hReal.toString]
+  git tmp ["init", "--bare", "-q", hDecoy.toString]
+  git h ["remote", "add", "origin", hReal.toString]
+  let _ ← spawn ["init"] [] (some h)
+  let _ ← spawn ["create", "residual probe"] [] (some h)
+  let fakeHome := tmp / "fake-home"
+  IO.FS.createDirAll fakeHome
+  IO.FS.writeFile (fakeHome / ".gitconfig")
+    ("[url \"" ++ hDecoy.toString ++ "\"]\n\tinsteadOf = " ++ hReal.toString ++ "\n")
+  let s16 ← spawn ["sync", "--json"] [("HOME", some fakeHome.toString)] (some h)
+  o := o ++
+    [check "residual: a hostile HOME still redirects the push (tl does not prevent it)"
+       (s16.exitCode == 0 && (← hasTlRef hDecoy) && !(← hasTlRef hReal)) s16.stdout]
+  let s16b ← spawn ["doctor", "--json"] [("HOME", some fakeHome.toString)] (some h)
+  o := o ++
+    [check "residual: doctor discloses the insteadOf rewrite (warn, still healthy)"
+       (s16b.exitCode == 0 && (s16b.stdout.splitOn "\"healthy\":true").length > 1
+         && (s16b.stdout.splitOn "\"remoteRewrite\"").length > 1
+         && (s16b.stdout.splitOn "insteadOf").length > 1) s16b.stdout]
+  -- and with an ordinary HOME the same repo reports no rewrite
+  let s16c ← spawn ["doctor", "--json"] [] (some h)
+  o := o ++
+    [check "no rewrite in an ordinary environment: remoteRewrite is null"
+       (s16c.exitCode == 0 && (s16c.stdout.splitOn "\"remoteRewrite\":null").length > 1) s16c.stdout]
   return o
+
+/-- Spawned-binary hostile-environment matrix. Fixture git calls throw, so a
+    setup failure (a global `commit.gpgsign` with no usable key, a
+    `core.hooksPath`) surfaces as one clear row instead of crashing the suite
+    far from its cause. -/
+def cliGitEnvTests : IO (List Outcome) := do
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  unless ← exe.pathExists do
+    return [{ name := "binary present", passed := false,
+              msg := "run `lake build` first: .lake/build/bin/tl missing" }]
+  match ← (gitEnvMatrixRows exe).toBaseIO with
+  | .ok rows => return rows
+  | .error e =>
+    return [{ name := "git-env hostile-environment matrix", passed := false,
+              msg := s!"fixture setup failed: {e}" }]
 
 /-- A canonical line for a crafted segment. The stamp's replica is the
     segment stem's decoded value — the decode-side owner check (segments are
@@ -2362,6 +2436,11 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
   let hook := (bare / "hooks" / "pre-receive").toString
   IO.FS.writeFile hook "#!/bin/sh\nexit 1\n"
   let _ ← IO.Process.output { cmd := "chmod", args := #["+x", hook] }
+  -- pin the receiving repo's hooks dir in its own config: a developer's global
+  -- `core.hooksPath` would otherwise send receive-pack elsewhere, the decline
+  -- would never fire, and the rejection this row exists to test would not happen
+  let hooksDir := (bare / "hooks").toString
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "config", "core.hooksPath", hooksDir] }
   let root ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "init", "-q"] }
   let dir := (root / ".tl").toString
@@ -2447,11 +2526,14 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
 def cliDoctorRoutingTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- pure-core branches
-  let okRow := gitRoutingRow [] "/repo" (some "/repo")
-  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo")
-  let misRow := gitRoutingRow [] "/repo/sub" (some "/repo")
-  let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo")
-  let noRepoRow := gitRoutingRow [] "/somewhere" none
+  let rw : RemoteRewrite :=
+    { remote := "origin", configured := "/real.git", effective := "/decoy.git" }
+  let okRow := gitRoutingRow [] "/repo" (some "/repo") none
+  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo") none
+  let misRow := gitRoutingRow [] "/repo/sub" (some "/repo") none
+  let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo") none
+  let noRepoRow := gitRoutingRow [] "/somewhere" none none
+  let rwRow := gitRoutingRow [] "/repo" (some "/repo") (some rw)
   let status := fun (r : Json × Bool) => (jStr r.1 "status").getD "?"
   let msg := fun (r : Json × Bool) => (jStr r.1 "message").getD ""
   let nullAt := fun (j : Json) (k : String) =>
@@ -2468,8 +2550,16 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
          && (msg bothRow |>.splitOn "toplevel").length > 1) (msg bothRow),
      check "gitRouting: outside a repo is ok (null toplevel)"
        (status noRepoRow == "ok" && nullAt noRepoRow.1 "repoToplevel") "",
+     -- the carried residual (ADR-0012 / ADR-0014 T7): an insteadOf rewrite
+     -- really does redirect the push, so the row must name both URLs
+     check "gitRouting: an insteadOf remote rewrite warns and names both URLs"
+       (status rwRow == "warn" && (msg rwRow |>.splitOn "/real.git").length > 1
+         && (msg rwRow |>.splitOn "/decoy.git").length > 1
+         && (msg rwRow |>.splitOn "insteadOf").length > 1) (msg rwRow),
+     check "gitRouting: no rewrite reports remoteRewrite null"
+       (nullAt okRow.1 "remoteRewrite") "",
      check "gitRouting: no branch fails health"
-       (!okRow.2 && !varsRow.2 && !misRow.2 && !bothRow.2 && !noRepoRow.2) ""]
+       (!okRow.2 && !varsRow.2 && !misRow.2 && !bothRow.2 && !noRepoRow.2 && !rwRow.2) ""]
   -- end-to-end: aligned (init at a repo toplevel) → ok with the real toplevel
   let findCheck (data : Json) (nm : String) : Option Json :=
     (jArr data "checks").find? (fun c => jStr c "name" == some nm)
@@ -3215,6 +3305,23 @@ def cliStealthTests : IO (List Outcome) := do
   o := o ++ [check "the .tl/README.md primer teaches the un-stealth conversion"
     ((primer.splitOn "local/stealth").length > 1
       && (primer.splitOn "unchanged").length > 1) primer]
+  -- the taught paths are the REAL ones: under a custom --dir the marker and
+  -- primer do not live under `.tl`, and an error naming `.tl/...` would send
+  -- the user to a path that does not exist
+  let customRoot ← IO.FS.createTempDir
+  let customDir := (customRoot / "custom-state").toString
+  let _ ← run' ["init", "--stealth", "--dir", customDir]
+  o := o ++ [← expectErr "a custom --dir stealth repo is still stealth-mode"
+    ["sync", "--dir", customDir] .stealthMode
+    (fun e => (e.message.splitOn (customDir ++ "/local/stealth")).length > 1
+      && (e.message.splitOn (customDir ++ "/README.md")).length > 1
+      && (e.message.splitOn "`.tl/local/stealth`").length == 1)]
+  o := o ++ [(match ← run' ["init", "--stealth", "--dir", customDir] with
+    | .ok out => check "the custom --dir init note names the real marker path"
+        (out.notes.any (fun n => (n.splitOn (customDir ++ "/local/stealth")).length > 1)
+          && !out.notes.any (fun n => (n.splitOn "`.tl/local/stealth`").length > 1))
+        (String.intercalate " | " out.notes)
+    | .error e => { name := "custom --dir init note", passed := false, msg := e.message })]
   -- (4) the mode is fixed at creation: re-init --stealth is idempotent, a plain
   -- re-init does not un-stealth
   o := o ++

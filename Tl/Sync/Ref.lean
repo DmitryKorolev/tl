@@ -37,11 +37,11 @@ private def fixedIdentity : List (String × Option String) :=
 
 /-- Environment variables scrubbed from every subprocess `tl` spawns
     (ADR-0012 "Sanitized git subprocess environment"). Once discovery selects
-    repository A, no inherited routing state may point a git call at another
+    repository A, no variable *in this set* can point a git call at another
     repository, worktree, object store, index, namespace, or remote
     configuration — a shell, IDE, git hook (git itself exports `GIT_DIR` into
     hooks), or automation wrapper can otherwise make `tl sync` publish A's
-    task data into repository B or absorb B's into A. Three groups:
+    task data into repository B or absorb B's into A. Four groups:
 
     - repository/worktree/object-store/index/namespace routing: `GIT_DIR`,
       `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
@@ -54,22 +54,36 @@ private def fixedIdentity : List (String × Option String) :=
       `GIT_CONFIG_COUNT` (its removal makes git ignore the unbounded
       `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` families, which git consults
       only under a valid count), `GIT_CONFIG_PARAMETERS` (the `git -c`
-      internal channel), `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`.
+      internal channel), `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`;
+    - config *relocation*: `XDG_CONFIG_HOME`, whose `git/config` is a global
+      config file — an inherited one carrying a `url.*.insteadOf` rewrite
+      silently redirects a push to another repository, which is the
+      `GIT_CONFIG_GLOBAL` injection by another spelling, so scrubbing one
+      without the other closes nothing. Unsetting it falls back to
+      `$HOME/.config`, so `~/.gitconfig`, `~/.git-credentials`, and `~/.ssh`
+      (all `HOME`-relative, not XDG-relative) keep working.
 
-    Deliberately preserved: credential/transport vars (`GIT_SSH*`,
-    `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`, `SSH_AUTH_SOCK`, proxies), the
-    user-config location as a whole (`HOME`, `XDG_CONFIG_HOME` — relocating
-    the user is not rerouting the repository, and credentials live there),
-    which-git-runs (`PATH`, `GIT_EXEC_PATH` — the git binary is already
-    trusted byte-transport, ADR-0006), and discovery *restriction*
-    (`GIT_CEILING_DIRECTORIES` — it can stop a walk, never redirect one, and
-    `tl`'s own discovery honors it, ADR-0012). -/
+    **The set is bounded by cost, and the guarantee is bounded with it.** A
+    variable is scrubbed when unsetting it restores git's default,
+    credential-preserving behavior. `HOME` fails that test — it locates
+    `~/.gitconfig`, `~/.git-credentials`, and `~/.ssh`, so unsetting it breaks
+    every authenticated remote — and it is therefore preserved *despite*
+    being able to redirect: a `HOME` an IDE, task runner, or CI image points
+    at a directory the user does not control can carry a `url.*.insteadOf` in
+    its `.gitconfig` and reroute a push exactly like the scrubbed variables
+    above. That is a **carried residual**, not a covered case (ADR-0012
+    Consequences / ADR-0014 T7); it needs no control of `PATH` or of the git
+    binary. `tl` does not prevent it — it discloses it: `doctor`'s
+    `gitRouting` row reports when a remote's effective URL (after `insteadOf`
+    rewriting, `effectiveRemoteUrl`) differs from its configured URL.
+    Also preserved and non-redirecting: `GIT_CEILING_DIRECTORIES` (it can stop
+    a walk, never redirect one, and `tl`'s own walks honor it). -/
 def scrubbedGitVars : List String :=
   ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE",
    "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-   "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"]
+   "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"]
 
 /-- The scrub as spawn-env entries (`none` = unset the inherited variable),
     prepended to every spawn's `env`; entries apply left-to-right, so a
@@ -438,6 +452,23 @@ def currentBranch (d : Dirs) : TlM (Option String) := do
 /-- Does the named remote exist (has a configured URL)? -/
 def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
   return (← gitConfig d s!"remote.{remote}.url").isSome
+
+/-- The URL git will *actually* use for `remote`, after applying any
+    `url.<base>.insteadOf` rewrite. `ls-remote --get-url` expands the URL and
+    exits without contacting the remote, so this stays a local read (`doctor`
+    calls it on the no-network path). `none` when git fails or the remote is
+    unknown — git echoes an unknown name straight back, which is not a URL.
+
+    Compared against the *configured* `remote.<n>.url`, this is how `doctor`
+    discloses the ADR-0012 `HOME` residual: a rewrite living in a global
+    config `tl` cannot scrub still redirects a push, and the difference
+    between the two URLs is exactly that redirect, visible without a
+    network round-trip. -/
+def effectiveRemoteUrl (d : Dirs) (remote : String) : TlM (Option String) := do
+  let o ← (git d ["ls-remote", "--get-url", remote] : IO _)
+  if o.exitCode != 0 then return none
+  let url := o.stdout.trimAscii.toString
+  return (if url.isEmpty || url == remote then none else some url)
 
 /-- Fetch the remote's `refs/tl/log` and return its tip + segments + carried-
     unknown entries — `(none, [], [])` when the remote has no `refs/tl/log`

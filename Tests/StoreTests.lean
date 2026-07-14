@@ -130,9 +130,22 @@ def storeDiscoveryTests : IO (List Outcome) := do
         (fun d => check "a fake-HEAD bare-shaped fixture does not bound the walk"
           (d.base == realRoot.toString) s!"base={d.base}")]
   IO.Process.setCurrentDir prev
+  -- an UPPERCASE detached HEAD is a valid gitdir to git (its hex parse is
+  -- case-insensitive), so it must bound the walk too: rejecting it would be
+  -- stricter than git and let discovery climb out of a real bare repo and
+  -- bind the enclosing project
+  let upper := root / "srv" / "upper.git"
+  IO.FS.createDirAll (upper / "objects")
+  IO.FS.createDirAll (upper / "refs")
+  IO.FS.writeFile (upper / "HEAD") (String.ofList (List.replicate 40 'A') ++ "\n")
+  IO.Process.setCurrentDir upper
+  outcomes := outcomes ++
+    [← expectCode "an uppercase detached HEAD still bounds the walk" .noProject
+        (discover none)]
+  IO.Process.setCurrentDir prev
   -- isGitDirLayout pins, one per conjunct: bare (symref HEAD) yes; detached
-  -- 40-hex HEAD yes; fake HEAD content no; HEAD-as-directory no; refs/
-  -- missing no; worktree-private (objects/ missing) no; plain dir no
+  -- 40-hex HEAD yes (either case); fake HEAD content no; HEAD-as-directory
+  -- no; refs/ missing no; worktree-private (objects/ missing) no; plain dir no
   let detached := root / "detached.git"
   IO.FS.createDirAll (detached / "objects")
   IO.FS.createDirAll (detached / "refs")
@@ -147,6 +160,8 @@ def storeDiscoveryTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [check "isGitDirLayout: bare layout (symref HEAD) matches" (← isGitDirLayout bare),
      check "isGitDirLayout: detached-hash HEAD matches" (← isGitDirLayout detached),
+     check "isGitDirLayout: uppercase detached HEAD matches (git's hex is case-insensitive)"
+       (← isGitDirLayout upper),
      check "isGitDirLayout: ordinary-file HEAD content does not match"
        (!(← isGitDirLayout fixture)),
      check "isGitDirLayout: a directory named HEAD does not match"
@@ -156,15 +171,24 @@ def storeDiscoveryTests : IO (List Outcome) := do
        (!(← isGitDirLayout wtPriv)),
      check "isGitDirLayout: an ordinary directory does not match"
        (!(← isGitDirLayout (root / "src")))]
-  -- isHeadContent pins: symref, 40/64-hex; not prose, empty, or short hex
+  -- isHeadContent pins: symref, 40/64-hex in either case (git parses hex
+  -- case-insensitively); not prose, empty, short hex, or non-hex letters
   outcomes := outcomes ++
     [check "isHeadContent: symref" (isHeadContent "ref: refs/heads/main\n"),
-     check "isHeadContent: 40-hex" (isHeadContent (String.ofList (List.replicate 40 '0'))),
-     check "isHeadContent: 64-hex" (isHeadContent (String.ofList (List.replicate 64 'f'))),
+     check "isHeadContent: 40-hex lowercase" (isHeadContent (String.ofList (List.replicate 40 '0'))),
+     check "isHeadContent: 40-hex uppercase" (isHeadContent (String.ofList (List.replicate 40 'A'))),
+     check "isHeadContent: 40-hex mixed case"
+       (isHeadContent (String.ofList (List.replicate 20 'a' ++ List.replicate 20 'F'))),
+     check "isHeadContent: 64-hex lowercase" (isHeadContent (String.ofList (List.replicate 64 'f'))),
+     check "isHeadContent: 64-hex uppercase" (isHeadContent (String.ofList (List.replicate 64 'F'))),
      check "isHeadContent: prose is not" (!isHeadContent "scrubbed placeholder\n"),
      check "isHeadContent: empty is not" (!isHeadContent ""),
      check "isHeadContent: short hex is not"
-       (!isHeadContent (String.ofList (List.replicate 39 'a')))]
+       (!isHeadContent (String.ofList (List.replicate 39 'a'))),
+     check "isHeadContent: non-hex letters are not"
+       (!isHeadContent (String.ofList (List.replicate 40 'g'))),
+     check "isHeadContent: uppercase non-hex letters are not"
+       (!isHeadContent (String.ofList (List.replicate 40 'G')))]
   -- override: valid state dir is found without discovery
   outcomes := outcomes ++
     [← expectOk "override binds the state dir" (discover (some (root / ".tl").toString))

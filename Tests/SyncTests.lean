@@ -408,6 +408,11 @@ def syncRemoteTests : IO (List Outcome) := do
   let (df, baref) ← repoWithRemote
   IO.FS.writeFile (System.FilePath.mk baref / "hooks" / "pre-receive") "#!/bin/sh\nexit 1\n"
   let _ ← (IO.Process.output { cmd := "chmod", args := #["+x", (System.FilePath.mk baref / "hooks" / "pre-receive").toString] } : IO _)
+  -- pin the receiving repo's hooks dir in its own (local) config: a developer's
+  -- global `core.hooksPath` would otherwise point receive-pack elsewhere, the
+  -- decline would never fire, and this row would silently test nothing
+  let hooksDir := (System.FilePath.mk baref / "hooks").toString
+  let _ ← (IO.Process.output { cmd := "git", args := #["-C", baref, "config", "core.hooksPath", hooksDir] } : IO _)
   let _ ← runTl (writeRef df [seg ridA "{\"a\":1}\n"] [] none)
   o := o ++ [match ← runTl (syncRemote df) with
     | .error e => check "a hook/policy decline surfaces the real error, not a misleading push-rejected"
@@ -493,7 +498,7 @@ def syncEnvScrubTests : IO (List Outcome) := do
      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
      "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE",
      "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-     "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"]
+     "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"]
   let mut o : List Outcome :=
     [checkEq "scrubbedGitVars pins the documented routing/config-injection set"
        scrubbedGitVars pinned,

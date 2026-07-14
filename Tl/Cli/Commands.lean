@@ -173,7 +173,7 @@ def performSync (d : Dirs) : TlM (Tl.Sync.LocalOutcome × Tl.Sync.RemoteOutcome 
   if ← isStealth d then
     return ({ ran := false, published := false, absorbed := [], tip := none },
             { ran := false, remote := "", pushed := false, pulled := false, tip := none },
-            ["sync skipped: stealth repo — local-only, never shared (remove `.tl/local/stealth` to un-stealth)"])
+            [s!"sync skipped: stealth repo — local-only, never shared (remove `{d.stealthDisplayPath}` to un-stealth)"])
   let own ← loadReplica d
   let ownId := own.map (·.id)
   let l ← Tl.Sync.syncLocal d ownId
@@ -1750,16 +1750,28 @@ def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
       ++ (if ok then [] else
           [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
 
+/-- A remote whose *effective* URL (what git resolves it to, after any
+    `url.<base>.insteadOf` rewrite) differs from its *configured* URL — the
+    visible face of the ADR-0012 `HOME` residual: a rewrite in a git config
+    `tl` cannot scrub without breaking credentials still redirects the push. -/
+structure RemoteRewrite where
+  remote : String
+  configured : String
+  effective : String
+
 /-- The doctor `gitRouting` row (pure core, branch-testable): the split-brain
     report comparing filesystem discovery with git's classification.
     `routingVars` are the scrubbed (ADR-0012) variables found inherited;
-    `stateRoot` / `toplevel` arrive canonicalized (realpath) by the caller.
-    Both conditions warn and teach — neither fails health, because tl's own
-    subprocesses scrub the routing environment: the variables would redirect
-    *other* tools in this shell, and a state directory under a repository it
-    is not the toplevel of still shares through that repository's ref. -/
+    `stateRoot` / `toplevel` arrive canonicalized (realpath) by the caller;
+    `rewrite` is set when the resolved remote's effective URL differs from its
+    configured one. All three conditions warn and teach — none fails health.
+    The first two are informational (tl's own subprocesses scrub the routing
+    environment, so those variables redirect *other* tools in this shell, and a
+    state directory below its repository's toplevel still shares through that
+    repository's ref); the third is the carried residual — the push really does
+    go to the rewritten URL, and this disclosure is the whole mitigation. -/
 def gitRoutingRow (routingVars : List String) (stateRoot : String)
-    (toplevel : Option String) : Json × Bool :=
+    (toplevel : Option String) (rewrite : Option RemoteRewrite) : Json × Bool :=
   let mismatch := toplevel.elim false (· != stateRoot)
   let msgs :=
     (if routingVars.isEmpty then [] else
@@ -1767,12 +1779,21 @@ def gitRoutingRow (routingVars : List String) (stateRoot : String)
     ++ (if mismatch then
       [s!"the state directory is not at the repository toplevel ({toplevel.getD ""}) — sharing binds that repository's refs/tl/log; pass --dir deliberately or move .tl to the toplevel"]
     else [])
+    ++ (match rewrite with
+        | some r =>
+          [s!"remote '{r.remote}' is configured as {r.configured} but git resolves it to {r.effective} through a url.*.insteadOf rewrite — `tl sync` pushes to the resolved URL; if you did not configure that rewrite it comes from a git config tl cannot scrub (a relocated HOME), and your task log is going to the wrong repository"]
+        | none => [])
   (Json.mkObj <|
     [("name", Json.str "gitRouting"),
      ("status", Json.str (if msgs.isEmpty then "ok" else "warn")),
      ("routingVars", Json.arr (routingVars.map Json.str).toArray),
      ("stateRoot", Json.str stateRoot),
-     ("repoToplevel", toplevel.elim Json.null Json.str)]
+     ("repoToplevel", toplevel.elim Json.null Json.str),
+     ("remoteRewrite", match rewrite with
+        | some r => Json.mkObj [("remote", Json.str r.remote),
+                                ("configured", Json.str r.configured),
+                                ("effective", Json.str r.effective)]
+        | none => Json.null)]
     ++ (if msgs.isEmpty then [] else
         [("message", Json.str (String.intercalate "; " msgs))]), false)
 
@@ -1991,7 +2012,22 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
         (canon (if d.base.isEmpty then "." else d.base))
       let top ← Tl.Sync.gitToplevel d
       let top ← liftSys (fun e => .mk' .internal s!"{e}") (top.mapM canon)
-      pure (gitRoutingRow present stateRoot top)
+      -- the carried residual, made visible: a url.*.insteadOf rewrite living
+      -- in a config tl cannot scrub (a relocated HOME) silently redirects the
+      -- push. `ls-remote --get-url` resolves it without touching the network,
+      -- so this stays on doctor's local-only path (ADR-0011 §2).
+      let rewrite ← (do
+        match ← Tl.Sync.resolveRemote d with
+        | none => pure none
+        | some remote =>
+          let configured ← Tl.Sync.gitConfig d s!"remote.{remote}.url"
+          let effective ← Tl.Sync.effectiveRemoteUrl d remote
+          match configured, effective with
+          | some c, some e =>
+            pure (if c != e then some ({ remote, configured := c, effective := e }
+                                        : RemoteRewrite) else none)
+          | _, _ => pure none)
+      pure (gitRoutingRow present stateRoot top rewrite)
     catch e =>
       pure (Json.mkObj [("name", Json.str "gitRouting"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check git routing: {e.message}")], false)
@@ -2016,7 +2052,7 @@ def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   -- repo never leaks and the user learns how to un-stealth (the `code` is stable).
   if ← isStealth d then
     throw { code := .stealthMode
-            message := "this is a stealth repo (`tl init --stealth`): task state is local-only and never shared, so `tl sync` is disabled — to start sharing, remove the stealth marker `.tl/local/stealth` and run `tl sync` again; the conversion migrates nothing (ids and history are unchanged — see `.tl/README.md`)"
+            message := s!"this is a stealth repo (`tl init --stealth`): task state is local-only and never shared, so `tl sync` is disabled — to start sharing, remove the stealth marker `{d.stealthDisplayPath}` and run `tl sync` again; the conversion migrates nothing (ids and history are unchanged — see `{d.readmeDisplayPath}`)"
             context := [] }
   let (l, r, pnotes) ← performSync d
   let localLeg : Json :=
@@ -2130,7 +2166,7 @@ def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
   let stealthy ← isStealth dirs
   let stealthNote : List String :=
     if stealthy then
-      ["stealth: task state is local-only and never shared — `tl sync` is disabled and auto-sync stays off; to start sharing later, remove `.tl/local/stealth` and run `tl sync`"]
+      [s!"stealth: task state is local-only and never shared — `tl sync` is disabled and auto-sync stays off; to start sharing later, remove `{dirs.stealthDisplayPath}` and run `tl sync`"]
     else if stealth then
       ["--stealth ignored: already initialized and not stealth — the sharing mode is fixed at creation"]
     else []

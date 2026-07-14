@@ -81,6 +81,15 @@ def relLog (d : Dirs) : String := d.tlRel ++ "/log"
 def relSegment (d : Dirs) (replicaId : String) : String :=
   d.tlRel ++ "/log/" ++ replicaId ++ ".jsonl"
 
+/-- The stealth marker's path *as the user must type it* — the real location,
+    not the default-layout guess: under `--dir /custom/state` the marker is
+    `/custom/state/local/stealth`, and an error that said `.tl/local/stealth`
+    would teach a path that does not exist (ADR-0001 §7 / ADR-0012). -/
+def stealthDisplayPath (d : Dirs) : String := d.tlPath ++ "/local/stealth"
+
+/-- The generated primer's path, likewise resolved rather than assumed. -/
+def readmeDisplayPath (d : Dirs) : String := d.tlPath ++ "/README.md"
+
 /-- The log directory as an ordinary path (for `createDirAll`/`readDir`;
     every *open* under it still goes through the no-follow walk). -/
 def logPath (d : Dirs) : FilePath := FilePath.mk (d.tlPath) / "log"
@@ -168,11 +177,20 @@ def hasGitBoundary (dir : FilePath) : IO Bool := do
 /-- Does `s` look like valid gitdir `HEAD` content — a symref
     (`ref: <path>`) or a detached 40/64-hex object id? Mirrors the content
     validation git's own setup check performs before classifying a gitdir,
-    so a random committed file named `HEAD` cannot fake the layout. -/
+    so a random committed file named `HEAD` cannot fake the layout.
+
+    The hex test is **case-insensitive**, because git's own hex parse is: an
+    uppercase detached `HEAD` is a valid gitdir to git. Rejecting it here
+    would be *stricter* than git — the dangerous direction, since a real bare
+    repo would then fail to bound the walk and discovery could climb out of it
+    and bind an unrelated enclosing `.tl/`. Erring the other way (accepting a
+    little more than git) at worst stops a walk early, which cannot bind the
+    wrong repository. -/
 def isHeadContent (s : String) : Bool :=
   let t := s.trimAscii.toString
-  t.startsWith "ref: " ||
-    ((t.length == 40 || t.length == 64) && t.toList.all (fun c => c.isDigit || ('a' ≤ c && c ≤ 'f')))
+  let isHex := fun (c : Char) =>
+    c.isDigit || ('a' ≤ c && c ≤ 'f') || ('A' ≤ c && c ≤ 'F')
+  t.startsWith "ref: " || ((t.length == 40 || t.length == 64) && t.toList.all isHex)
 
 /-- Is `dir` itself a git repository directory — a bare repository, or the
     inside of a `.git` dir? The check mirrors git's own setup classification:
