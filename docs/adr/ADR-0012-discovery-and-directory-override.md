@@ -64,6 +64,77 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   above. Linked worktrees *share*
   state through the common `.git`'s `refs/tl/log` plus local-first sync — no remote
   needed on one machine ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md)).
+- Bare repositories. A directory that is itself a git repository directory —
+  a bare repo, or the inside of a `.git` dir, recognized by git's own gitdir
+  signature (a `HEAD` file plus `objects/` and `refs/` directories) — bounds
+  the walk exactly like a worktree root: ascending past it could bind an
+  unrelated enclosing `.tl/`. There is no working tree there to hold state, so
+  `tl init` (and `import`'s implicit init) refuses it with a teaching `usage`
+  error; a bare repository still serves as a sync *remote* (ADR-0001 §5), and
+  `--dir` remains the explicit, never-refused escape hatch. Init's placement
+  walk honors the same canonicalized `GIT_CEILING_DIRECTORIES` list as
+  discovery; a ceiling that hides the enclosing repo makes init place at the
+  cwd, with a note saying the ceiling stopped the repository search. (A linked
+  worktree's private gitdir has no `objects/`, so it does not match the
+  signature; its boundary stays the `.git` file at the worktree root.)
+
+### Sanitized git subprocess environment
+
+Discovery is *filesystem* discovery: the walk above selects the repository,
+and every git subprocess is addressed at it explicitly (`git -C <root>`).
+git, however, honors ambient routing variables that would override that
+addressing — an inherited `GIT_DIR` from a shell, IDE, or automation wrapper
+(git itself exports `GIT_DIR` into hooks) would silently point every
+subprocess at a *different* repository, making `tl sync` publish one repo's
+task data into another, absorb the other way, or report misleading health.
+That is the same wrong-repo failure the discovery boundary exists to prevent,
+so the subprocess boundary enforces it too:
+
+**Invariant.** Once discovery (or `--dir`/`TL_DIR`) selects a repository, no
+inherited environment may redirect any `tl`-spawned git process to another
+repository, worktree, object database, index, namespace, or remote
+configuration.
+
+**Mechanism.** Every subprocess spawn goes through one runner
+(`runBounded`, `Tl/Sync/Ref.lean`), which unsets the scrub set
+(`scrubbedGitVars` — the code is the normative list, pinned by tests) on
+every spawn, timeout-configuration reads and the actor `user.email` fallback
+included:
+
+- repository/worktree/object-store/index/namespace routing: `GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_INDEX_FILE`, `GIT_NAMESPACE`;
+- object-graph / fetch-state routing: `GIT_GRAFT_FILE`, `GIT_SHALLOW_FILE`,
+  `GIT_REPLACE_REF_BASE`;
+- per-invocation config injection (can rewrite `remote.<n>.url`,
+  `url.*.insteadOf`, or `tl.*` keys): `GIT_CONFIG` (the `git config`
+  builtin's file redirect — every `tl` config read is that builtin),
+  `GIT_CONFIG_COUNT` (unsetting it makes git ignore the unbounded
+  `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` families, which git consults only
+  under a valid count — the one family a name-list cannot enumerate),
+  `GIT_CONFIG_PARAMETERS` (the `git -c` internal channel),
+  `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`.
+
+**Deliberately preserved** (each cannot violate the invariant):
+credential/transport variables (`GIT_SSH*`, `GIT_ASKPASS`,
+`GIT_TERMINAL_PROMPT`, `SSH_AUTH_SOCK`, proxy settings); the user-config
+location as a whole (`HOME`, `XDG_CONFIG_HOME` — relocating the user's own
+config is not rerouting the repository, and credential helpers live there);
+which-git-runs (`PATH`, `GIT_EXEC_PATH` — the git binary is already trusted
+byte-transport, ADR-0006/ADR-0014); and discovery *restriction*
+(`GIT_CEILING_DIRECTORIES` — it can stop a walk, never redirect one; `tl`'s
+own walks honor it, and `tl` addresses git at a directory whose gitdir is
+immediately present, so a ceiling cannot unbind a selected repo).
+Per-call additions (the fixed ref-commit identity, ADR-0001) compose after
+the scrub.
+
+`tl doctor` reports the split-brain this prevents rather than hiding it: a
+`gitRouting` check lists any inherited scrub-set variables (present but
+ignored — plain `git` in the same shell binds elsewhere) and compares
+filesystem discovery with git's own classification of the state root,
+warning when the state directory is not at the toplevel of the repository it
+shares through. Both are warnings that teach; neither fails health, because
+`tl`'s own subprocesses are already isolated.
 
 ## Consequences
 
@@ -73,6 +144,12 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   state — a temp dir, no repo, no walk-up — composing with `--stealth`.
 - No-`.tl` is a hard error, not an auto-init, so commands never fabricate
   state in the wrong place; `import` is the single, explicit exception.
+- The selected repository is immune to the caller's git environment: hooks,
+  IDE terminals, and wrapper scripts can run `tl` without their routing
+  leaking into it, and a hostile or accidental `GIT_CONFIG_*` injection
+  cannot rewrite where `tl` pushes. The cost is that a deliberate
+  `GIT_DIR`-driven workflow (a detached-gitdir setup) is not honored —
+  `--dir`/`TL_DIR` are `tl`'s explicit spellings for "state lives elsewhere."
 
 ## Alternatives considered
 
@@ -83,3 +160,12 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   the repo-boundary stop is the fix.
 - A global (home-dir) registry of projects. Rejected: state belongs with the
   repo it describes and travels with git; no machine-global registry needed.
+- Honoring `GIT_DIR`/`GIT_WORK_TREE` the way git itself does. Rejected: `tl`
+  selects state by filesystem discovery, so honoring the routing environment
+  on top creates two sources of truth that can silently disagree — reads from
+  one repository, publishes into another. The detached-gitdir use case those
+  variables serve is covered by the explicit `--dir`/`TL_DIR` override.
+- Spawning git with a fully cleared environment (`inheritEnv := false`).
+  Rejected: it would strip credentials, SSH agents, proxies, and `PATH`
+  itself — breaking every authenticated remote — to close a hole the
+  targeted scrub closes precisely.

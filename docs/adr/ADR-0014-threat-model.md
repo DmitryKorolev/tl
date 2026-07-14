@@ -4,7 +4,8 @@
   parse (ADR-0008), trust/provenance and untrusted-content fencing on the read
   commands (ADR-0003/0011),
   filesystem safety (ADR-0015), release integrity (ADR-0006), import bounds
-  (ADR-0005), and actor-PII documentation (ADR-0013). Remaining implementation
+  (ADR-0005), actor-PII documentation (ADR-0013), and the sanitized git
+  subprocess environment (ADR-0012). Remaining implementation
   details are tracked as stage-gated backlog, not contradictions in this ADR.
 - Date: 2026-06-05
 
@@ -222,6 +223,36 @@ size — are not yet enforced; that residual is open, tracked work. Injection co
 defenses. Document that import adopts opaque content from a possibly-untrusted
 source.
 
+### T7. Cross-repository routing via inherited git environment
+
+`tl` selects its repository by filesystem discovery, then shells out to git —
+and git honors ambient routing variables (`GIT_DIR`, `GIT_WORK_TREE`,
+object-store/index/namespace overrides) and per-invocation config injection
+(`GIT_CONFIG_*`, which can rewrite `remote.<n>.url` or `url.*.insteadOf`).
+An environment inherited from a shell, IDE, git hook (git exports `GIT_DIR`
+into hooks), or automation wrapper could therefore point every subprocess at
+a repository other than the one discovery selected: `tl sync` publishes
+repository A's task data into repository B (disclosure into B's readership,
+corruption of B's ref), absorbs B's data into A, reads the wrong health, or
+records the wrong repo's `user.email` as the actor. No push access to
+either ref is needed — this is a weakness below the boundary, triggered as
+easily by accident (a dotfiles `GIT_DIR` shell, an IDE task runner) as by a
+crafted environment.
+
+Stance: mitigate — DONE (ADR-0012, "Sanitized git subprocess environment").
+Every subprocess spawn goes through one runner that unsets the
+routing/config-injection set (the normative list lives in ADR-0012 and the
+code it points at); credential, transport, and user-config-location
+variables stay inherited, so authenticated remotes keep working. Discovery
+itself stops at bare-gitdir boundaries and `init` refuses a bare repository,
+so the filesystem walk cannot mis-bind either. `tl doctor` reports the
+residual visibly (a `gitRouting` warn when routing variables are present —
+they still redirect *other* tools in the same shell — or when the state
+directory is not at its repository's toplevel). Residual: an attacker or
+wrapper that controls `PATH`/`GIT_EXEC_PATH` substitutes the git binary
+itself; that is the existing trusted-byte-transport assumption (ADR-0006,
+overview.md Trusted), not a new capability.
+
 ## Consequences
 
 - The trust boundary is now explicit and pointed to from overview.md
@@ -235,8 +266,9 @@ source.
   builds/dep-pinning), ADR-0011 (content-trust fencing and provenance on the
   read commands), ADR-0015 (local concurrency & FS safety:
   atomic+locked writeback, `O_NOFOLLOW`), ADR-0005 (import bounds +
-  provenance), and ADR-0013 (actor-PII accepted/documented without changing the
-  resolution order).
+  provenance), ADR-0013 (actor-PII accepted/documented without changing the
+  resolution order), and ADR-0012 (sanitized git subprocess environment +
+  bare-gitdir discovery boundary).
 - Out of scope for v1 (recorded, not chosen): per-op cryptographic
   signatures, encryption at rest, and any auth layer — these belong to
   git/transport and the deployment, not `tl`.

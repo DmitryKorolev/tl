@@ -267,7 +267,10 @@ SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, repli
 git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,
-ADR-0001);
+ADR-0001; the trusted binary is the one `PATH`/`GIT_EXEC_PATH` resolve —
+inherited repository-routing and config-injection variables are scrubbed
+from every spawn, so ambient environment cannot repoint the transport at
+another repository, ADR-0012/ADR-0014 T7);
 fold-cache checksum adequacy (ADR-0022): cache validity concludes "the live
 segment still carries the cached prefix byte-for-byte" from core's
 non-crypto `ByteArray.hash`, and the cache file's own checksum line guards

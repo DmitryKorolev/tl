@@ -99,7 +99,11 @@ Linked worktrees of a repo share `refs/tl/log` because git keeps it in
 and the index. Each worktree keeps its own gitignored `.tl/` (own replica-id,
 clock, segment — ADR-0012/0007); only the ref is shared, and it is the
 transport. No `.tl/` contents are shared on disk, so per-replica ownership is
-preserved.
+preserved. The common dir this relies on is the one git derives from the
+worktree's own `.git` file — an inherited `GIT_COMMON_DIR` (or any other
+routing variable) is scrubbed from every git subprocess (ADR-0012,
+"Sanitized git subprocess environment"), so ambient environment cannot
+repoint the shared ref.
 
 ### 3. Read-time refresh (b-min with a ref-OID trigger)
 

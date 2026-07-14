@@ -169,7 +169,9 @@ Tl/Hash/                -- pure hashing for identity minting (tested)
 
 Tl/Store/               -- I/O shell: local persistence (tested)
   Paths.lean            --   the .tl/ layout + ADR-0012 discovery (walk-up bounded
-                        --   by the .git dir-or-file boundary + ceiling dirs;
+                        --   by the .git dir-or-file boundary, a bare-gitdir
+                        --   layout (isGitDirLayout), + ceiling dirs (ceilingDirs,
+                        --   shared with init/import placement);
                         --   --dir/TL_DIR override; T4 validation → unsafe-path);
                         --   Dirs = (base, rel): the base follows symlinks, the
                         --   .tl components never do (ADR-0015 §6); TlM =
@@ -251,7 +253,10 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   update-ref (writeRefCas distinguishes a lost CAS
                         --   race from a real error); blob content is read/written
                         --   as raw bytes (gitBytes), never a lossy String round-
-                        --   trip (ADR-0001 §2 in-ref encoding)
+                        --   trip (ADR-0001 §2 in-ref encoding); every spawn goes
+                        --   through runBounded, which scrubs the inherited
+                        --   routing/config-injection env (scrubbedGitVars,
+                        --   ADR-0012 sanitized-subprocess policy)
   Merge.lean            --   per-segment complete-line set union, canonical
                         --   (sorted/deduped) — the CRDT join (built, ADR-0001 §5)
   Local.lean            --   the local-first worktree leg + read-time refresh
@@ -265,7 +270,8 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   write's guards (pre-transact absorb, ADR-0016 §3)
   Ref.lean              --   git ref/config plumbing: refTip/readRef/writeRef
                         --   (CAS), gitConfig/gitConfigSet, isLinkedWorktree
-                        --   (--git-dir ≠ --git-common-dir → auto-sync default-on)
+                        --   (--git-dir ≠ --git-common-dir → auto-sync default-on),
+                        --   gitToplevel (doctor's split-brain comparison)
   Remote.lean           --   the remote fetch / union / push leg (built, ADR-0001
                         --   §5): resolveRemote (tl.remote > branch-upstream >
                         --   origin; detached-HEAD → origin); syncRemote unions
