@@ -92,10 +92,21 @@ task data into another, absorb the other way, or report misleading health.
 That is the same wrong-repo failure the discovery boundary exists to prevent,
 so the subprocess boundary enforces it too:
 
-**Invariant.** Once discovery (or `--dir`/`TL_DIR`) selects a repository, no
-inherited environment may redirect any `tl`-spawned git process to another
-repository, worktree, object database, index, namespace, or remote
-configuration.
+**Invariant (scoped — read the scope, it is load-bearing).** Once discovery
+(or `--dir`/`TL_DIR`) selects a repository, no variable *in the scrub set
+below* can redirect a `tl`-spawned git process to another repository,
+worktree, object database, index, namespace, or remote configuration.
+
+The invariant is deliberately **not** the absolute "no inherited environment
+may redirect `tl`". That stronger claim is false and cannot be made true: git
+resolves credentials, transports, and its own configuration through
+variables (`HOME` above all) that `tl` cannot unset without breaking every
+authenticated remote. The honest statement is the scoped one, plus the
+carried residual recorded in Consequences below. An earlier draft of this
+ADR asserted the absolute form while preserving `XDG_CONFIG_HOME`; a crafted
+`$XDG_CONFIG_HOME/git/config` then redirected a `tl sync` push to another
+repository while the command reported success — the exact failure the
+invariant claimed to exclude.
 
 **Mechanism.** Every subprocess spawn goes through one runner
 (`runBounded`, `Tl/Sync/Ref.lean`), which unsets the scrub set
@@ -115,31 +126,40 @@ included:
   `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` families, which git consults only
   under a valid count — the one family a name-list cannot enumerate),
   `GIT_CONFIG_PARAMETERS` (the `git -c` internal channel),
-  `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`.
+  `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`;
+- config *relocation*: `XDG_CONFIG_HOME`, whose `git/config` is one of git's
+  global config files. Scrubbing `GIT_CONFIG_GLOBAL` but not this one closes
+  nothing — the same `url.*.insteadOf` redirect arrives by the other
+  spelling. Unsetting it falls back to `$HOME/.config`, so `~/.gitconfig`,
+  `~/.git-credentials`, and `~/.ssh` (all `HOME`-relative) keep working.
 
-**Deliberately preserved** (each cannot violate the invariant):
-credential/transport variables (`GIT_SSH*`, `GIT_ASKPASS`,
-`GIT_TERMINAL_PROMPT`, `SSH_AUTH_SOCK`, proxy settings); the user-config
-location as a whole (`HOME`, `XDG_CONFIG_HOME` — relocating the user's own
-config is not rerouting the repository, and credential helpers live there);
-which-git-runs (`PATH`, `GIT_EXEC_PATH` — the git binary is already trusted
-byte-transport, ADR-0006/ADR-0014); and discovery *restriction*
-(`GIT_CEILING_DIRECTORIES` — it can stop a walk, never redirect one; `tl`'s
-own walks honor it, applying it like git to proper ancestors only. With
-state at the repo toplevel the gitdir is immediately present and a ceiling
-is inert; with a subdir state root — the `--dir` shape — an ancestor
-ceiling can make git classify the location as repo-less, a fail-stop to
-`no-upstream`/degraded behavior, never a redirect).
+**The scrub set is bounded by cost, and the guarantee is bounded with it.** A
+variable is scrubbed when unsetting it restores git's default,
+credential-preserving behavior. It is preserved when unsetting it would strip
+the invoking user's own credentials or transport: `HOME`, credential and
+transport variables (`GIT_SSH*`, `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`,
+`SSH_AUTH_SOCK`, proxies), and which-git-runs (`PATH`, `GIT_EXEC_PATH` — the
+git binary is already trusted byte-transport, ADR-0006/ADR-0014). Preserved
+does **not** mean harmless: see the `HOME` residual in Consequences.
+`GIT_CEILING_DIRECTORIES` is preserved *and* non-redirecting — it can stop a
+walk, never redirect one, and `tl`'s own walks honor it, applying it like git
+to proper ancestors only (with state at the repo toplevel the gitdir is
+immediately present and a ceiling is inert; with a subdir state root — the
+`--dir` shape — an ancestor ceiling can make git classify the location as
+repo-less, a fail-stop to `no-upstream`/degraded behavior, never a redirect).
 Per-call additions (the fixed ref-commit identity, ADR-0001) compose after
 the scrub, and may deliberately re-set a scrubbed variable.
 
-`tl doctor` reports the split-brain this prevents rather than hiding it: a
-`gitRouting` check lists any inherited scrub-set variables (present but
-ignored — plain `git` in the same shell binds elsewhere) and compares
-filesystem discovery with git's own classification of the state root,
-warning when the state directory is not at the toplevel of the repository it
-shares through. Both are warnings that teach; neither fails health, because
-`tl`'s own subprocesses are already isolated.
+`tl doctor` reports what this policy does not prevent, rather than hiding it.
+The `gitRouting` check (a) lists any inherited scrub-set variables — present
+but ignored by `tl`, though plain `git` in the same shell binds elsewhere;
+(b) compares filesystem discovery with git's own classification, warning when
+the state directory is not at the toplevel of the repository it shares
+through; and (c) compares each remote's *configured* URL with its *effective*
+URL (`ls-remote --get-url`, which applies `url.*.insteadOf` without
+contacting the remote), warning when a rewrite is in force — the visible face
+of the `HOME` residual, and the difference between a silent misdirected push
+and a reported one. All three warn and teach; none fails health.
 
 ## Consequences
 
@@ -149,20 +169,40 @@ shares through. Both are warnings that teach; neither fails health, because
   state — a temp dir, no repo, no walk-up — composing with `--stealth`.
 - No-`.tl` is a hard error, not an auto-init, so commands never fabricate
   state in the wrong place; `import` is the single, explicit exception.
-- The selected repository is immune to the caller's git environment: hooks,
-  IDE terminals, and wrapper scripts can run `tl` without their routing
-  leaking into it, and a hostile or accidental `GIT_CONFIG_*` injection
-  cannot rewrite where `tl` pushes. The cost is that a deliberate
-  `GIT_DIR`-driven workflow (a detached-gitdir setup) is not honored —
-  `--dir`/`TL_DIR` are `tl`'s explicit spellings for "state lives elsewhere."
-- A second recorded cost: a global/system config *relocated* via
-  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` is invisible to `tl`'s git
-  subprocesses — including a `credential.helper` or token-bearing
+- The selected repository is immune to the *scrubbed* part of the caller's git
+  environment: hooks, IDE terminals, and wrapper scripts can run `tl` without
+  their `GIT_DIR`-style routing leaking into it, and a `GIT_CONFIG_*` /
+  `XDG_CONFIG_HOME` injection cannot rewrite where `tl` pushes. The cost is
+  that a deliberate `GIT_DIR`-driven workflow (a detached-gitdir setup) is not
+  honored — `--dir`/`TL_DIR` are `tl`'s explicit spellings for "state lives
+  elsewhere."
+
+- **Carried residual: `HOME` can still redirect a push.** `tl` preserves
+  `HOME` because it locates `~/.gitconfig`, `~/.git-credentials`, and
+  `~/.ssh`; unsetting it would break every authenticated remote. A `HOME`
+  pointed at a directory the user does not control — by an IDE, a task
+  runner, a CI image, or an attacker — can carry
+  `url.<decoy>.insteadOf = <origin>` in its `.gitconfig`, and `tl sync` will
+  push the task log to the decoy. This needs **no** control of `PATH` and no
+  substitution of the git binary; it is not the already-lost tier, and it is
+  not claimed to be. `tl` does not prevent it. Two things bound it: `tl
+  doctor`'s `gitRouting` row reports when a remote's effective URL differs
+  from its configured URL (so the redirect is disclosed rather than silent),
+  and the same mechanism means the log is *misplaced*, never lost — the local
+  segments are intact and a later sync under a clean environment publishes
+  them correctly. Closing it fully would mean scrubbing `HOME` (breaking
+  authenticated remotes) or reimplementing git's config resolution inside
+  `tl`; neither is warranted. Mirrored in `docs/overview.md` (Trusted) and
+  ADR-0014 T7.
+
+- A second recorded cost, the flip side of the same scrub: a config *relocated*
+  via `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`XDG_CONFIG_HOME` is invisible to
+  `tl`'s git subprocesses — including a `credential.helper` or token-bearing
   `url.*.insteadOf` that lives only there — so `tl sync` can fail or prompt
   against an authenticated remote where plain `git push` in the same shell
-  succeeds. The variables cannot be preserved (they are exactly the
-  config-injection redirect the invariant forbids); the supported spellings
-  are the default locations (`HOME`/`XDG_CONFIG_HOME`, which stay honored)
+  succeeds. Those variables cannot be preserved: they are exactly the
+  config-injection redirect the scrub exists to stop. The supported spellings
+  are the default locations (`$HOME/.gitconfig`, `$HOME/.config/git/config`)
   or repo-local config. `tl doctor`'s `gitRouting` row names the inherited
   variable when this shape is present.
 
@@ -184,3 +224,15 @@ shares through. Both are warnings that teach; neither fails health, because
   Rejected: it would strip credentials, SSH agents, proxies, and `PATH`
   itself — breaking every authenticated remote — to close a hole the
   targeted scrub closes precisely.
+- Scrubbing `HOME` too (closing the residual above). Rejected: `HOME` is where
+  git finds `~/.gitconfig`, `~/.git-credentials`, and `~/.ssh`, so unsetting it
+  breaks authenticated push/fetch for ordinary users — a certain, universal
+  cost paid against a conditional, environment-specific redirect. Disclosure
+  (`doctor`'s `gitRouting` rewrite check) is the proportionate answer; if a
+  deployment needs the stronger guarantee, it can run `tl` under a `HOME` it
+  controls.
+- Resolving the remote URL ourselves and pushing the literal URL to bypass
+  `insteadOf`. Rejected: git applies `url.*.insteadOf` to command-line URLs
+  too, so this does not bypass the rewrite; neutralizing it would mean
+  injecting config on every call (the very channel the scrub removes) and
+  enumerating an unbounded key family.

@@ -267,10 +267,20 @@ SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, repli
 git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,
-ADR-0001; the trusted binary is the one `PATH`/`GIT_EXEC_PATH` resolve —
-inherited repository-routing and config-injection variables are scrubbed
-from every spawn, so ambient environment cannot repoint the transport at
-another repository, ADR-0012/ADR-0014 T7);
+ADR-0001; inherited repository-routing, config-injection, and
+config-relocation variables — `GIT_DIR`, the `GIT_CONFIG_*` family,
+`XDG_CONFIG_HOME` — are scrubbed from every spawn, so they cannot repoint the
+transport at another repository, ADR-0012/ADR-0014 T7. **Two variables are
+trusted and can still repoint it:** `PATH`/`GIT_EXEC_PATH` choose the git
+binary itself, and `HOME` — which `tl` cannot unset without breaking
+`~/.gitconfig`, `~/.git-credentials`, and `~/.ssh` — can carry a
+`url.*.insteadOf` rewrite that sends a push to another repository. Neither
+requires the other: a `HOME`-only override suffices, so this is a carried
+assumption, not a corollary of the trusted-binary one. It is disclosed rather
+than prevented — `tl doctor`'s `gitRouting` check reports when a remote's
+effective URL differs from its configured URL — and it misplaces the log
+without losing it: the local segments survive and a later clean sync publishes
+them);
 fold-cache checksum adequacy (ADR-0022): cache validity concludes "the live
 segment still carries the cached prefix byte-for-byte" from core's
 non-crypto `ByteArray.hash`, and the cache file's own checksum line guards

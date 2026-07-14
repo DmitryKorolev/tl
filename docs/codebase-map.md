@@ -271,7 +271,8 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
   Ref.lean              --   git ref/config plumbing: refTip/readRef/writeRef
                         --   (CAS), gitConfig/gitConfigSet, isLinkedWorktree
                         --   (--git-dir ≠ --git-common-dir → auto-sync default-on),
-                        --   gitToplevel (doctor's split-brain comparison)
+                        --   gitToplevel + effectiveRemoteUrl (doctor's
+                        --   split-brain + insteadOf-rewrite disclosure)
   Remote.lean           --   the remote fetch / union / push leg (built, ADR-0001
                         --   §5): resolveRemote (tl.remote > branch-upstream >
                         --   origin; detached-HEAD → origin); syncRemote unions

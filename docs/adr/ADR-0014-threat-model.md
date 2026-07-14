@@ -239,23 +239,40 @@ either ref is needed — this is a weakness below the boundary, triggered as
 easily by accident (a dotfiles `GIT_DIR` shell, an IDE task runner) as by a
 crafted environment.
 
-Stance: mitigate — DONE (ADR-0012, "Sanitized git subprocess environment").
-Every subprocess spawn goes through one runner that unsets the
-routing/config-injection set (the normative list lives in ADR-0012 and the
-code it points at); credential and transport variables and the
-default-location user config (`HOME`/`XDG_CONFIG_HOME`) stay inherited, so
-authenticated remotes keep working — with one recorded cost: a config file
-*relocated* via `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` is part of the
-scrubbed injection surface, so credentials configured only there are not
-seen (ADR-0012 Consequences). Discovery
-itself stops at bare-gitdir boundaries and `init` refuses a bare repository,
-so the filesystem walk cannot mis-bind either. `tl doctor` reports the
-residual visibly (a `gitRouting` warn when routing variables are present —
-they still redirect *other* tools in the same shell — or when the state
-directory is not at its repository's toplevel). Residual: an attacker or
-wrapper that controls `PATH`/`GIT_EXEC_PATH` substitutes the git binary
-itself; that is the existing trusted-byte-transport assumption (ADR-0006,
-overview.md Trusted), not a new capability.
+Stance: mitigate — partially done (ADR-0012, "Sanitized git subprocess
+environment"). Every subprocess spawn goes through one runner that unsets the
+routing / config-injection / config-relocation set (the normative list lives
+in ADR-0012 and the code it points at). It includes `XDG_CONFIG_HOME`, whose
+`git/config` is one of git's global config files: scrubbing `GIT_CONFIG_GLOBAL`
+without it left the same `url.*.insteadOf` redirect open under another
+spelling, and a crafted one silently pushed a task log to a decoy repository
+while `tl sync` reported success. Credential and transport variables stay
+inherited, so authenticated remotes keep working. Discovery itself stops at
+bare-gitdir boundaries — recognized the way git does, `HEAD` content and hex
+case included — and `init` refuses a bare repository, so the filesystem walk
+cannot mis-bind either.
+
+**Residual, carried and disclosed — `HOME`.** `tl` cannot scrub `HOME`: git
+finds `~/.gitconfig`, `~/.git-credentials`, and `~/.ssh` through it, so
+unsetting it breaks every authenticated remote. A `HOME` pointed at a
+directory the user does not control — by an IDE, a task runner, a CI image, or
+an attacker — can therefore carry `url.<decoy>.insteadOf = <origin>` and
+redirect `tl sync`'s push to another repository: the same disclosure and
+corruption outcome as the scrubbed variables, reached with **no** control of
+`PATH` and no substituted git binary. It is not the already-lost tier and is
+not claimed to be. `tl` does not prevent it; it discloses it — `doctor`'s
+`gitRouting` row compares each remote's configured URL with its effective URL
+(`ls-remote --get-url` applies `insteadOf` without contacting the remote) and
+warns when they differ. The consequence is a *misplaced* log, not a lost one:
+the local segments are intact, and a later sync under a clean environment
+publishes them correctly.
+
+Separately, and as before: whoever controls `PATH`/`GIT_EXEC_PATH` substitutes
+the git binary outright — the existing trusted-byte-transport assumption
+(ADR-0006, overview.md Trusted), not a new capability. `doctor` additionally
+warns when scrubbed routing variables are merely *present* (they still
+redirect other tools in the same shell) or when the state directory is not at
+its repository's toplevel. Both residuals are mirrored in overview.md.
 
 ## Consequences
 
