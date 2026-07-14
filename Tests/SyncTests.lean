@@ -480,6 +480,48 @@ def syncTimeoutTests : IO (List Outcome) := do
      check "unset config falls back to the built-in defaults" (lo2 == 5000 && re2 == 30000) s!"lo2={lo2} re2={re2}"]
   return o
 
+/-- The ADR-0012 subprocess environment scrub: the pinned variable set, the
+    `none`-unsets shape, the caller-env composition order `fixedIdentity`
+    relies on, and a control row demonstrating the rerouting behavior git
+    exhibits when the scrub is absent (the vulnerability being closed). The
+    inherited-environment behavior itself needs a process boundary, so those
+    rows live with the spawned-binary tests (`cliGitEnvTests`). -/
+def syncEnvScrubTests : IO (List Outcome) := do
+  let pinned :=
+    ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+     "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE",
+     "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+     "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"]
+  let mut o : List Outcome :=
+    [checkEq "scrubbedGitVars pins the documented routing/config-injection set"
+       scrubbedGitVars pinned,
+     check "gitEnvScrub unsets every scrubbed variable"
+       (gitEnvScrub.toList == scrubbedGitVars.map (fun v => (v, (none : Option String))))
+       s!"gitEnvScrub={gitEnvScrub.toList.map (·.1)}"]
+  -- caller entries apply after the scrub (left-to-right), so a per-call
+  -- override like the fixed ref-commit identity still lands
+  let (c1, out1, _) ← runBounded
+    { cmd := "sh", args := #["-c", "printf %s \"${GIT_AUTHOR_NAME:-unset}\""],
+      env := #[("GIT_AUTHOR_NAME", some "tl")] } .empty 5000
+  let echoed := (String.fromUTF8? out1).getD ""
+  o := o ++ [check "caller env entries survive the scrub (left-to-right order)"
+    (c1 == 0 && echoed == "tl") s!"c1={c1} out={echoed}"]
+  -- control: absent the scrub, GIT_DIR reroutes git away from the -C repo —
+  -- the exact cross-repository hole the scrub closes; if git ever stops
+  -- honoring GIT_DIR like this, the scrub (and its ADR text) can shrink
+  let a ← gitRepo
+  let b ← gitRepo
+  let (c2, out2, _) ← runBounded
+    { cmd := "sh",
+      args := #["-c", s!"GIT_DIR=\"{b.base}/.git\" git -C \"{a.base}\" rev-parse --absolute-git-dir"] }
+    .empty 5000
+  let routed := (String.fromUTF8? out2).getD "" |>.trimAscii.toString
+  let bReal ← IO.FS.realPath (b.base ++ "/.git")
+  o := o ++ [check "control: an unscrubbed GIT_DIR reroutes git off the -C repository"
+    (c2 == 0 && routed == bReal.toString) s!"routed={routed} expected={bReal}"]
+  return o
+
 /-- A ref-borne segment with a non-canonical name (crafted/junk tree entry) is
     excluded from the *segment* view by `readRefEntriesAt` (the `Replica.valid`
     filter), so junk never propagates through a union into a
@@ -800,6 +842,7 @@ def syncForeignNoOpTests : IO (List Outcome) := do
 def syncTests : IO (List Outcome) := do
   return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
     ++ (← syncRefreshTests) ++ (← syncRemoteTests) ++ (← syncTimeoutTests)
+    ++ (← syncEnvScrubTests)
     ++ (← syncRefNameValidationTests) ++ (← syncForeignEntryTests)
     ++ (← syncCasRetryForeignTests) ++ (← syncForeignNoOpTests)
 

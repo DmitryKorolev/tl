@@ -14,9 +14,13 @@ the author/committer is a fixed neutral `tl <tl@localhost>` set via
 `GIT_*` env, so a sync leaks no per-user git identity into ref metadata
 (the actor already rides each op's envelope as provenance, ADR-0013).
 
-git is shelled out (a runtime prerequisite, ADR-0006), never linked. Tested
-I/O shell; no Mathlib. The full `tl sync` orchestration (local writeback +
-the legs) is a separate command atop these primitives.
+git is shelled out (a runtime prerequisite, ADR-0006), never linked, and
+every spawn scrubs inherited repository-routing / config-injection
+environment (`scrubbedGitVars`, ADR-0012) so an ambient `GIT_DIR`-style
+override can never point a subprocess at a different repository than the
+one discovery selected. Tested I/O shell; no Mathlib. The full `tl sync`
+orchestration (local writeback + the legs) is a separate command atop
+these primitives.
 -/
 import Tl.Store.Segment
 
@@ -30,6 +34,48 @@ private def repoOf (d : Dirs) : String := if d.base.isEmpty then "." else d.base
 private def fixedIdentity : List (String × Option String) :=
   [("GIT_AUTHOR_NAME", some "tl"), ("GIT_AUTHOR_EMAIL", some "tl@localhost"),
    ("GIT_COMMITTER_NAME", some "tl"), ("GIT_COMMITTER_EMAIL", some "tl@localhost")]
+
+/-- Environment variables scrubbed from every subprocess `tl` spawns
+    (ADR-0012 "Sanitized git subprocess environment"). Once discovery selects
+    repository A, no inherited routing state may point a git call at another
+    repository, worktree, object store, index, namespace, or remote
+    configuration — a shell, IDE, git hook (git itself exports `GIT_DIR` into
+    hooks), or automation wrapper can otherwise make `tl sync` publish A's
+    task data into repository B or absorb B's into A. Three groups:
+
+    - repository/worktree/object-store/index/namespace routing: `GIT_DIR`,
+      `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+      `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_INDEX_FILE`, `GIT_NAMESPACE`;
+    - object-graph / fetch-state routing: `GIT_GRAFT_FILE`,
+      `GIT_SHALLOW_FILE`, `GIT_REPLACE_REF_BASE`;
+    - per-invocation config injection, which can rewrite `remote.<n>.url`,
+      `url.*.insteadOf`, or `tl.*` keys: `GIT_CONFIG` (the `git config`
+      builtin's file redirect — every `tl` config read is that builtin),
+      `GIT_CONFIG_COUNT` (its removal makes git ignore the unbounded
+      `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` families, which git consults
+      only under a valid count), `GIT_CONFIG_PARAMETERS` (the `git -c`
+      internal channel), `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`.
+
+    Deliberately preserved: credential/transport vars (`GIT_SSH*`,
+    `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`, `SSH_AUTH_SOCK`, proxies), the
+    user-config location as a whole (`HOME`, `XDG_CONFIG_HOME` — relocating
+    the user is not rerouting the repository, and credentials live there),
+    which-git-runs (`PATH`, `GIT_EXEC_PATH` — the git binary is already
+    trusted byte-transport, ADR-0006), and discovery *restriction*
+    (`GIT_CEILING_DIRECTORIES` — it can stop a walk, never redirect one, and
+    `tl`'s own discovery honors it, ADR-0012). -/
+def scrubbedGitVars : List String :=
+  ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+   "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE",
+   "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+   "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"]
+
+/-- The scrub as spawn-env entries (`none` = unset the inherited variable),
+    prepended to every spawn's `env`; entries apply left-to-right, so a
+    caller's own entries (e.g. the fixed ref-commit identity) still land. -/
+def gitEnvScrub : Array (String × Option String) :=
+  (scrubbedGitVars.map (fun v => (v, (none : Option String)))).toArray
 
 /-- Local git plumbing is sub-second on tl's tiny ref; this short wall-clock
     bound catches a *hung* local git (a stale index/ref lock, a credential helper
@@ -52,7 +98,11 @@ private def remoteGitTimeoutMs : Nat := 30000
     busy-spin. Tested via `sleep`/`true`, no hung git needed. -/
 def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat) :
     IO (UInt32 × ByteArray × String) := do
-  let spawned ← IO.Process.spawn { cfg with stdin := .piped, stdout := .piped, stderr := .piped }
+  -- every subprocess goes through here, so this is the one place the
+  -- ADR-0012 environment scrub is applied — a git call that bypassed it
+  -- would re-open the cross-repository routing hole
+  let spawned ← IO.Process.spawn { cfg with env := gitEnvScrub ++ cfg.env,
+                                            stdin := .piped, stdout := .piped, stderr := .piped }
   let (stdinH, child) ← spawned.takeStdin
   -- drain stdout/stderr and write stdin on concurrent tasks before the wait. A child
   -- that interleaves a large stdout with reading a large stdin would otherwise deadlock
