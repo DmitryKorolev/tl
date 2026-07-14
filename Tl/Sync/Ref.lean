@@ -395,6 +395,31 @@ def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
   let o ← (git d ["config", key, value] : IO _)
   return o.exitCode == 0
 
+/-- `git config <scope> --get <key>` (`scope` is `--global`/`--local`/…), or
+    `none` when unset at that scope or the scope is unavailable (e.g. `--local`
+    outside a repo). Reads one scope in isolation — the primitive `doctor` uses
+    to tell a repo-local (trusted) setting from one a global `~/.gitconfig`
+    supplies (the HOME residual, ADR-0012/ADR-0014 T7). `--global` here reads
+    `$HOME/.gitconfig` — `XDG_CONFIG_HOME` is scrubbed, so the global scope is
+    exactly the residual channel. -/
+def gitConfigScoped (d : Dirs) (scope key : String) : TlM (Option String) := do
+  let o ← (git d ["config", scope, "--get", key] : IO _)
+  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
+
+/-- Is `key`'s effective value supplied by the *global* scope and not
+    overridden repo-locally — i.e. sourced from `~/.gitconfig` rather than this
+    repository? git precedence is local > global, so global-set and local-unset
+    means the global value is what git uses. This is how `doctor` distinguishes
+    a push-destination key the user set in their repo from one an inherited or
+    hostile `HOME` injected (ADR-0012 Consequences / ADR-0014 T7). Worktree
+    config (rare, and itself repo-scoped) is not consulted; a worktree override
+    of a global key would show here as global-sourced — a conservative
+    over-disclosure, never a miss. -/
+def configFromGlobal (d : Dirs) (key : String) : TlM Bool := do
+  let g ← gitConfigScoped d "--global" key
+  let l ← gitConfigScoped d "--local" key
+  return g.isSome && l.isNone
+
 /-- The git runtime floor (ADR-0006): `tl` shells out to git plumbing for the
     `refs/tl/log` transport and discovery, and requires git ≥ 2.17. -/
 def gitFloor : Nat × Nat := (2, 17)

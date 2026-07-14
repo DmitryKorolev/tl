@@ -155,13 +155,19 @@ The `gitRouting` check (a) lists any inherited scrub-set variables — present
 but ignored by `tl`, though plain `git` in the same shell binds elsewhere;
 (b) compares filesystem discovery with git's own classification, warning when
 the state directory is not at the toplevel of the repository it shares
-through; and (c) compares each remote's raw push target (`remote.<n>.pushurl`,
+through; (c) compares each remote's raw push target (`remote.<n>.pushurl`,
 else `.url` — so a deliberately configured distinct push URL is not flagged)
 with the URL git will actually push to (`remote get-url --push`, which applies
 both `url.*.insteadOf` and the push-only `url.*.pushInsteadOf` without
-contacting the remote), warning when a rewrite is in force — the visible face
-of the `HOME` residual, and the difference between a silent misdirected push
-and a reported one. All three warn and teach; none fails health.
+contacting the remote), reporting when a rewrite is in force; and (d) reports
+each push-*destination* key — `tl.remote`, and the resolved remote's `url` /
+`pushurl` — whose effective value is supplied by the global scope
+(`~/.gitconfig`) rather than repo-local config, catching the case where the
+remote *selection or its URL* is injected wholesale with no rewrite at all (a
+rewrite-only check reports `ok` while the push follows the injected remote).
+(c) and (d) are the two faces of the `HOME` residual — the difference between
+a silent misdirected push and a reported one. All warn and teach; none fails
+health.
 
 ## Consequences
 

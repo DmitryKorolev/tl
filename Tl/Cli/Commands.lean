@@ -1750,28 +1750,42 @@ def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
       ++ (if ok then [] else
           [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
 
-/-- A remote whose *effective* URL (what git resolves it to, after any
-    `url.<base>.insteadOf` rewrite) differs from its *configured* URL — the
-    visible face of the ADR-0012 `HOME` residual: a rewrite in a git config
-    `tl` cannot scrub without breaking credentials still redirects the push. -/
+/-- A remote whose *effective* push URL (after `url.*.insteadOf` /
+    `pushInsteadOf`) differs from its configured push target — one visible face
+    of the ADR-0012 `HOME` residual: a URL rewrite in a git config `tl` cannot
+    scrub without breaking credentials still redirects the push. -/
 structure RemoteRewrite where
   remote : String
   configured : String
   effective : String
 
+/-- A push-destination config key whose effective value is supplied by the
+    global scope (`~/.gitconfig`) rather than repo-local config — the *other*
+    face of the `HOME` residual: not a URL rewrite but the remote *selection*
+    or its URL injected wholesale (`tl.remote`, `remote.<n>.url`,
+    `remote.<n>.pushurl`). A hostile `HOME` redirects the push through these
+    with no rewrite at all, so a rewrite-only check reports `ok` while the log
+    goes elsewhere. `value` is the effective (global) value. -/
+structure ExternalPushConfig where
+  key : String
+  value : String
+
 /-- The doctor `gitRouting` row (pure core, branch-testable): the split-brain
     report comparing filesystem discovery with git's classification.
     `routingVars` are the scrubbed (ADR-0012) variables found inherited;
     `stateRoot` / `toplevel` arrive canonicalized (realpath) by the caller;
-    `rewrite` is set when the resolved remote's effective URL differs from its
-    configured one. All three conditions warn and teach — none fails health.
-    The first two are informational (tl's own subprocesses scrub the routing
-    environment, so those variables redirect *other* tools in this shell, and a
-    state directory below its repository's toplevel still shares through that
-    repository's ref); the third is the carried residual — the push really does
-    go to the rewritten URL, and this disclosure is the whole mitigation. -/
+    `rewrite` is set when the resolved remote's effective push URL differs from
+    its configured target; `external` lists push-destination keys sourced from
+    the global scope. Every condition warns and teaches — none fails health.
+    Routing-vars and the toplevel mismatch are informational (tl's own
+    subprocesses scrub the routing environment, and a state directory below its
+    repository's toplevel still shares through that repository's ref); the
+    rewrite and the external-config list are the two faces of the carried
+    residual — the push really does go elsewhere, and disclosure is the whole
+    mitigation. -/
 def gitRoutingRow (routingVars : List String) (stateRoot : String)
-    (toplevel : Option String) (rewrite : Option RemoteRewrite) : Json × Bool :=
+    (toplevel : Option String) (rewrite : Option RemoteRewrite)
+    (external : List ExternalPushConfig) : Json × Bool :=
   let mismatch := toplevel.elim false (· != stateRoot)
   let msgs :=
     (if routingVars.isEmpty then [] else
@@ -1783,6 +1797,8 @@ def gitRoutingRow (routingVars : List String) (stateRoot : String)
         | some r =>
           [s!"remote '{r.remote}' is configured as {r.configured} but git resolves it to {r.effective} through a url.*.insteadOf rewrite — `tl sync` pushes to the resolved URL; if you did not configure that rewrite it comes from a git config tl cannot scrub (a relocated HOME), and your task log is going to the wrong repository"]
         | none => [])
+    ++ (if external.isEmpty then [] else
+        [s!"your push destination is set by global git config (~/.gitconfig), not this repository: {String.intercalate ", " (external.map (fun e => s!"{e.key}={e.value}"))} — `tl sync` follows it; if you did not configure this, an inherited or hostile HOME is redirecting your task log (tl cannot scrub HOME without breaking credentials — set these keys in the repo, or run under a HOME you control)"])
   (Json.mkObj <|
     [("name", Json.str "gitRouting"),
      ("status", Json.str (if msgs.isEmpty then "ok" else "warn")),
@@ -1793,7 +1809,9 @@ def gitRoutingRow (routingVars : List String) (stateRoot : String)
         | some r => Json.mkObj [("remote", Json.str r.remote),
                                 ("configured", Json.str r.configured),
                                 ("effective", Json.str r.effective)]
-        | none => Json.null)]
+        | none => Json.null),
+     ("externalPushConfig", Json.arr (external.map (fun e =>
+        Json.mkObj [("key", Json.str e.key), ("value", Json.str e.value)])).toArray)]
     ++ (if msgs.isEmpty then [] else
         [("message", Json.str (String.intercalate "; " msgs))]), false)
 
@@ -2021,20 +2039,30 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
       -- `remote.<n>.pushurl` (else `.url`), read without rewrites — so a
       -- legitimately configured distinct push URL is not a false positive;
       -- only an insteadOf-style rewrite moves the resolved URL off it.
-      let rewrite ← (do
+      -- also disclose the other face of the residual: the remote *selection*
+      -- or its URL injected wholesale from ~/.gitconfig (tl.remote /
+      -- remote.<n>.url / .pushurl), which redirects the push with no URL
+      -- rewrite at all — a rewrite-only check would report ok.
+      let (rewrite, external) ← (do
         match ← Tl.Sync.resolveRemote d with
-        | none => pure none
+        | none => pure (none, [])
         | some remote =>
           let pushCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.pushurl"
           let fetchCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.url"
           let configured := pushCfg.orElse (fun _ => fetchCfg)
           let effective ← Tl.Sync.effectiveRemoteUrl d remote
-          match configured, effective with
-          | some c, some e =>
-            pure (if c != e then some ({ remote, configured := c, effective := e }
-                                        : RemoteRewrite) else none)
-          | _, _ => pure none)
-      pure (gitRoutingRow present stateRoot top rewrite)
+          let rewrite := match configured, effective with
+            | some c, some e => if c != e then some ({ remote, configured := c, effective := e } : RemoteRewrite) else none
+            | _, _ => none
+          -- each push-determining key sourced from the global scope
+          let candidates := ["tl.remote", s!"remote.{remote}.url", s!"remote.{remote}.pushurl"]
+          let mut ext : List ExternalPushConfig := []
+          for key in candidates do
+            if ← Tl.Sync.configFromGlobal d key then
+              let v := (← Tl.Sync.gitConfigScoped d "--global" key).getD ""
+              ext := ext ++ [({ key, value := v } : ExternalPushConfig)]
+          pure (rewrite, ext))
+      pure (gitRoutingRow present stateRoot top rewrite external)
     catch e =>
       pure (Json.mkObj [("name", Json.str "gitRouting"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check git routing: {e.message}")], false)

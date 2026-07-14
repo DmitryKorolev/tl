@@ -944,6 +944,39 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   o := o ++
     [check "a deliberate pushurl is not reported as a rewrite"
        (s16u.exitCode == 0 && (s16u.stdout.splitOn "\"remoteRewrite\":null").length > 1) s16u.stdout]
+  -- (17) the direct-injection residual: tl.remote + remote.<n>.url supplied
+  --      entirely by a hostile ~/.gitconfig, NO url rewrite. The push follows
+  --      the injected remote to the decoy; a rewrite-only check reports ok, so
+  --      the scope-origin check must catch it.
+  let g := tmp / "grepo"
+  let gReal := tmp / "g-real.git"
+  let gDecoy := tmp / "g-decoy.git"
+  IO.FS.createDirAll g
+  git tmp ["init", "-q", g.toString]
+  git tmp ["init", "--bare", "-q", gReal.toString]
+  git tmp ["init", "--bare", "-q", gDecoy.toString]
+  git g ["remote", "add", "origin", gReal.toString]
+  let _ ← spawn ["init"] [] (some g)
+  let _ ← spawn ["create", "inject probe"] [] (some g)
+  let gHome := tmp / "g-home"
+  IO.FS.createDirAll gHome
+  IO.FS.writeFile (gHome / ".gitconfig")
+    ("[tl]\n\tremote = evil\n[remote \"evil\"]\n\turl = " ++ gDecoy.toString ++ "\n")
+  let s17 ← spawn ["sync", "--json"] [("HOME", some gHome.toString)] (some g)
+  let s17d ← spawn ["doctor", "--json"] [("HOME", some gHome.toString)] (some g)
+  o := o ++
+    [check "residual: injected tl.remote redirects the push to the decoy"
+       (s17.exitCode == 0 && (← hasTlRef gDecoy) && !(← hasTlRef gReal)) s17.stdout,
+     check "residual: doctor discloses injected tl.remote (scope-origin check)"
+       (s17d.exitCode == 0 && (s17d.stdout.splitOn "\"externalPushConfig\"").length > 1
+         && (s17d.stdout.splitOn "tl.remote").length > 1
+         && (s17d.stdout.splitOn "~/.gitconfig").length > 1) s17d.stdout]
+  -- and a deliberate REPO-LOCAL tl.remote is not flagged (local overrides global)
+  git g ["config", "tl.remote", "origin"]
+  let s17b ← spawn ["doctor", "--json"] [] (some g)
+  o := o ++
+    [check "a repo-local tl.remote is not flagged as external"
+       (s17b.exitCode == 0 && (s17b.stdout.splitOn "\"externalPushConfig\":[]").length > 1) s17b.stdout]
   return o
 
 /-- Spawned-binary hostile-environment matrix. Fixture git calls throw, so a
@@ -2556,12 +2589,15 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
   -- pure-core branches
   let rw : RemoteRewrite :=
     { remote := "origin", configured := "/real.git", effective := "/decoy.git" }
-  let okRow := gitRoutingRow [] "/repo" (some "/repo") none
-  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo") none
-  let misRow := gitRoutingRow [] "/repo/sub" (some "/repo") none
-  let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo") none
-  let noRepoRow := gitRoutingRow [] "/somewhere" none none
-  let rwRow := gitRoutingRow [] "/repo" (some "/repo") (some rw)
+  let ext : List ExternalPushConfig :=
+    [{ key := "tl.remote", value := "evil" }, { key := "remote.evil.url", value := "/decoy.git" }]
+  let okRow := gitRoutingRow [] "/repo" (some "/repo") none []
+  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo") none []
+  let misRow := gitRoutingRow [] "/repo/sub" (some "/repo") none []
+  let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo") none []
+  let noRepoRow := gitRoutingRow [] "/somewhere" none none []
+  let rwRow := gitRoutingRow [] "/repo" (some "/repo") (some rw) []
+  let extRow := gitRoutingRow [] "/repo" (some "/repo") none ext
   let status := fun (r : Json × Bool) => (jStr r.1 "status").getD "?"
   let msg := fun (r : Json × Bool) => (jStr r.1 "message").getD ""
   let nullAt := fun (j : Json) (k : String) =>
@@ -2586,8 +2622,15 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
          && (msg rwRow |>.splitOn "insteadOf").length > 1) (msg rwRow),
      check "gitRouting: no rewrite reports remoteRewrite null"
        (nullAt okRow.1 "remoteRewrite") "",
+     -- the direct-injection face: push-destination keys sourced from global
+     check "gitRouting: global-sourced push config warns and names the keys"
+       (status extRow == "warn" && (msg extRow |>.splitOn "tl.remote=evil").length > 1
+         && (msg extRow |>.splitOn "~/.gitconfig").length > 1) (msg extRow),
+     check "gitRouting: no external config reports an empty externalPushConfig"
+       ((jArr okRow.1 "externalPushConfig").isEmpty) "",
      check "gitRouting: no branch fails health"
-       (!okRow.2 && !varsRow.2 && !misRow.2 && !bothRow.2 && !noRepoRow.2 && !rwRow.2) ""]
+       (!okRow.2 && !varsRow.2 && !misRow.2 && !bothRow.2 && !noRepoRow.2
+         && !rwRow.2 && !extRow.2) ""]
   -- end-to-end: aligned (init at a repo toplevel) → ok with the real toplevel
   let findCheck (data : Json) (nm : String) : Option Json :=
     (jArr data "checks").find? (fun c => jStr c "name" == some nm)
