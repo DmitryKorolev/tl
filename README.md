@@ -159,7 +159,22 @@ field settled deterministically (last writer wins).
 
 Worktrees of one repo share the local ref automatically — a read absorbs a
 sibling's published ops without an explicit sync; syncing with a remote is
-an explicit `tl sync`. The ref transport is
+an explicit `tl sync`.
+
+Two quieter modes cover projects that are not sharing yet. State
+initialized outside any git repository (`tl init` before `git init`) is
+simply local-only: once the directory becomes a git repository with a
+remote, the next `tl sync` starts sharing it — same log, same ids, no
+conversion. Stealth mode (`tl init --stealth`) is the deliberate version of
+the same posture: task state with zero repo-visible trace, for a repo you
+can't or won't share into; `tl sync` there fails with a `stealth-mode`
+error rather than silently doing nothing. To start sharing later, delete
+the marker file `.tl/local/stealth` and run `tl sync` — the conversion
+migrates nothing (log format, ids, and history are unchanged), and an
+optional `tl init` re-run afterwards prints the sharing suggestions stealth
+had suppressed (the discovery pointer, the auto-sync default).
+
+The ref transport is
 [ADR-0001](docs/adr/ADR-0001-op-log-on-dedicated-ref.md), the CRDT
 construction (OR-Sets plus last-writer-wins registers) is
 [ADR-0002](docs/adr/ADR-0002-minimal-crdt.md), the log format is

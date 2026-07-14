@@ -3203,8 +3203,18 @@ def cliStealthTests : IO (List Outcome) := do
   let sid ← mkIssue dir "stealth work"
   o := o ++ [← expectData "a stealth repo still creates and lists issues" ["ready", "--dir", dir]
     (fun j => (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ sid)))]
-  -- (3) tl sync is refused with the stable stealth-mode code, not a silent no-op
-  o := o ++ [← expectErr "tl sync in a stealth repo is stealth-mode" ["sync", "--dir", dir] .stealthMode]
+  -- (3) tl sync is refused with the stable stealth-mode code, not a silent
+  -- no-op — and the message teaches the whole conversion: the marker path,
+  -- that nothing migrates, and where the local guide lives
+  o := o ++ [← expectErr "tl sync in a stealth repo is stealth-mode" ["sync", "--dir", dir] .stealthMode
+    (fun e => (e.message.splitOn ".tl/local/stealth").length > 1
+      && (e.message.splitOn "migrates nothing").length > 1
+      && (e.message.splitOn ".tl/README.md").length > 1)]
+  -- the generated primer carries the un-stealth guide the error points at
+  let primer ← IO.FS.readFile (root / ".tl" / "README.md")
+  o := o ++ [check "the .tl/README.md primer teaches the un-stealth conversion"
+    ((primer.splitOn "local/stealth").length > 1
+      && (primer.splitOn "unchanged").length > 1) primer]
   -- (4) the mode is fixed at creation: re-init --stealth is idempotent, a plain
   -- re-init does not un-stealth
   o := o ++

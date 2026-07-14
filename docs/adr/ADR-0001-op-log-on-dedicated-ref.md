@@ -248,12 +248,22 @@ repo-visible trace: a single local replica that is never shared. Concretely,
   point is to leave none.
 
 `tl sync` in a stealth repo fails with the `stealth-mode` error (ADR-0008)
-explaining how to un-stealth, rather than silently no-op'ing. Un-stealthing
-needs no data migration: configure the `+refs/tl/log:refs/tl/log` refspec,
-snapshot the local `.tl/log/*` segments into `refs/tl/log`, and `tl sync` — same
-format, same ids, no conversion. Use stealth for a repo you can't or won't share
-into (one you don't own, a personal overlay, an isolated test run — pair with
-`--dir`, ADR-0012).
+teaching how to un-stealth, rather than silently no-op'ing. Stealth is
+exactly one marker file, `.tl/local/stealth`, so un-stealthing is removing
+that marker and running `tl sync`: the ordinary local leg snapshots the
+existing `.tl/log/*` segments into `refs/tl/log` (there is no persistent
+refspec to configure — §4) and the remote leg pushes when a remote is
+configured — same format, same ids, no data migration. An optional `tl init`
+re-run afterwards prints the sharing offers stealth had suppressed (the
+discovery-pointer suggestion, the auto-sync default). The user-facing guide
+is the README's sharing-modes passage and the generated `.tl/README.md`
+primer, which the `stealth-mode` error points at. A dedicated `tl unstealth`
+verb is deliberately excluded: the conversion is one explicit marker removal
+plus the ordinary `tl sync`, both taught where the user hits them, and a
+rare one-time conversion does not justify new write surface — revisit only
+on field evidence that the two-step fails users. Use stealth for a repo you
+can't or won't share into (one you don't own, a personal overlay, an
+isolated test run — pair with `--dir`, ADR-0012).
 
 ## Consequences
 

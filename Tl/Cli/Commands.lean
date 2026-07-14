@@ -2016,7 +2016,7 @@ def cmdSync (dirOverride : Option String) : TlM CmdOut := do
   -- repo never leaks and the user learns how to un-stealth (the `code` is stable).
   if ← isStealth d then
     throw { code := .stealthMode
-            message := "this is a stealth repo (`tl init --stealth`): task state is local-only and never shared, so `tl sync` is disabled — to start sharing, remove the stealth marker `.tl/local/stealth` and run `tl sync` again"
+            message := "this is a stealth repo (`tl init --stealth`): task state is local-only and never shared, so `tl sync` is disabled — to start sharing, remove the stealth marker `.tl/local/stealth` and run `tl sync` again; the conversion migrates nothing (ids and history are unchanged — see `.tl/README.md`)"
             context := [] }
   let (l, r, pnotes) ← performSync d
   let localLeg : Json :=
@@ -2067,8 +2067,14 @@ def readmePrimer : String :=
   "  tl claim <id>            take a ready item\n" ++
   "  tl close <id> --as done  finish it\n" ++
   "  tl why <id>              why something is blocked\n" ++
+  "  tl sync                  share: publish + absorb via the refs/tl/log git ref\n" ++
   "  tl doctor                project health\n" ++
-  "  tl help                  all commands (tl help --json for the grammar)\n"
+  "  tl help                  all commands (tl help --json for the grammar)\n\n" ++
+  "Sharing modes: state initialized outside a git repository stays local-only\n" ++
+  "and starts sharing on the first `tl sync` after the directory becomes a git\n" ++
+  "repo with a remote. A stealth project (marker file `local/stealth` in this\n" ++
+  "directory) never shares; to convert it, delete that marker and run `tl sync`\n" ++
+  "— nothing migrates: log format, ids, and history are unchanged.\n"
 
 /-- Where `init`/`import` place state (ADR-0001 §4, ADR-0012): the `--dir`/`TL_DIR`
     override wins; else the enclosing repo's toplevel; outside any repo, the cwd
