@@ -165,18 +165,40 @@ def Dirs.ofStatePath (path : String) : Dirs :=
 def hasGitBoundary (dir : FilePath) : IO Bool := do
   (dir / ".git").pathExists
 
+/-- Does `s` look like valid gitdir `HEAD` content — a symref
+    (`ref: <path>`) or a detached 40/64-hex object id? Mirrors the content
+    validation git's own setup check performs before classifying a gitdir,
+    so a random committed file named `HEAD` cannot fake the layout. -/
+def isHeadContent (s : String) : Bool :=
+  let t := s.trimAscii.toString
+  t.startsWith "ref: " ||
+    ((t.length == 40 || t.length == 64) && t.toList.all (fun c => c.isDigit || ('a' ≤ c && c ≤ 'f')))
+
 /-- Is `dir` itself a git repository directory — a bare repository, or the
-    inside of a `.git` dir? The signature is the one git's own setup check
-    uses: a `HEAD` file plus `objects/` and `refs/` directories. Such a
-    directory has no `.git` entry, so without this check a walk from inside
-    a bare repo would ascend past it and could bind an unrelated enclosing
-    `.tl/` — the cross-repository binding ADR-0012 forbids. (A linked
-    worktree's private gitdir has `HEAD` but no `objects/`, so it does not
-    match; its boundary is the `.git` file at the worktree root.) -/
+    inside of a `.git` dir? The check mirrors git's own setup classification:
+    `objects/` and `refs/` directories plus a `HEAD` file whose *content* is
+    a symref or a detached hash (`isHeadContent`) — content matters, or a
+    committed fixture directory holding an ordinary file named `HEAD` would
+    falsely bound the walk inside a normal working tree. Such a directory
+    has no `.git` entry, so without this check a walk from inside a bare
+    repo would ascend past it and could bind an unrelated enclosing `.tl/` —
+    the cross-repository binding ADR-0012 forbids. (A linked worktree's
+    private gitdir has `HEAD` but no `objects/`, so it does not match; its
+    boundary is the `.git` file at the worktree root.) -/
 def isGitDirLayout (dir : FilePath) : IO Bool := do
   let head := dir / "HEAD"
-  pure ((← head.pathExists) && !(← head.isDir)
-    && (← (dir / "objects").isDir) && (← (dir / "refs").isDir))
+  if !(← head.pathExists) || (← head.isDir)
+      || !(← (dir / "objects").isDir) || !(← (dir / "refs").isDir) then
+    return false
+  -- unreadable or implausibly large HEAD ⇒ not classified as a gitdir (fail
+  -- open to the ascent: a wrong non-boundary is a searched level, a wrong
+  -- boundary is a dead stop). The size bound keeps the walk from reading an
+  -- arbitrarily large committed file on every level.
+  match ← (do
+      if (← head.metadata).byteSize > 4096 then pure ""
+      else IO.FS.readFile head).toBaseIO with
+  | .ok s => return !s.isEmpty && isHeadContent s
+  | .error _ => return false
 
 private def hasTl (dir : FilePath) : IO Bool := do
   let p := dir / ".tl"
@@ -187,7 +209,8 @@ private def hasTl (dir : FilePath) : IO Bool := do
     dirs (`IO.currentDir` is already canonical, and `.parent` keeps it so);
     an entry that does not resolve falls back to its trailing-slash-trimmed
     text. Shared by `discover` and init/import placement — every filesystem
-    walk honors the same ceilings (ADR-0012). -/
+    walk honors the same ceilings, and like git applies them to *proper
+    ancestors* only: the starting directory is always examined (ADR-0012). -/
 def ceilingDirs : TlM (List String) := do
   let ceilings ← liftSys (fun e => .mk' .internal s!"environment read failed: {e}")
     (IO.getEnv "GIT_CEILING_DIRECTORIES")
@@ -202,7 +225,8 @@ def ceilingDirs : TlM (List String) := do
 /-- ADR-0012 discovery. `override` is `--dir` (wins) or `TL_DIR`; otherwise
     walk up from `cwd` to the nearest `.tl/`, stopping at the repo boundary
     (a `.git` entry, or a bare-gitdir layout), and at any
-    `GIT_CEILING_DIRECTORIES` entry (a listed directory is not searched).
+    `GIT_CEILING_DIRECTORIES` entry among the *proper ancestors* (the
+    starting directory is always examined, as in git).
     The result is validated (`validate`). -/
 def discover (override : Option String := none) : TlM Dirs := do
   match override with
@@ -216,11 +240,13 @@ def discover (override : Option String := none) : TlM Dirs := do
       let cwd ← liftSys (fun e => .mk' .internal s!"cannot read the working directory: {e}")
         IO.currentDir
       let ceilingList ← ceilingDirs
-      let rec walk (dir : FilePath) (fuel : Nat) : TlM Dirs := do
+      let rec walk (dir : FilePath) (fuel : Nat) (atStart : Bool) : TlM Dirs := do
         match fuel with
         | 0 => throw (noProject "here (search depth exhausted)")
         | fuel + 1 =>
-          if ceilingList.contains dir.toString then
+          -- ceilings bound the *ascent* (git semantics): the starting
+          -- directory is always examined, a listed ancestor is not entered
+          if !atStart && ceilingList.contains dir.toString then
             throw (noProject s!"here (GIT_CEILING_DIRECTORIES stops the search at {dir})")
           if ← liftSys (fun e => .mk' .internal s!"{e}") (hasTl dir) then
             validate { base := dir.toString, tlRel := ".tl" }
@@ -236,8 +262,8 @@ def discover (override : Option String := none) : TlM Dirs := do
             match dir.parent with
             | some parent =>
               if parent == dir then throw (noProject "here")
-              else walk parent fuel
+              else walk parent fuel false
             | none => throw (noProject "here")
-      walk cwd 256
+      walk cwd 256 true
 
 end Tl.Store

@@ -685,9 +685,12 @@ def cliGitEnvTests : IO (List Outcome) := do
     [check "sync under a hook-style env succeeds" (s2.exitCode == 0) s2.stdout,
      check "hook-style env left victim B untouched" (!(← hasTlRef b))]
   -- (3) a bogus routing value is scrubbed, not tripped over — unscrubbed,
-  --     every git call would fail "not a git repository"
-  let s3 ← spawn ["list", "--json"] [("GIT_DIR", some "/nonexistent/nowhere")] (some a)
-  o := o ++ [check "a bogus GIT_DIR is ignored (list works)" (s3.exitCode == 0) s3.stdout]
+  --     rev-parse fails, tl classifies A as no-repo, and the local leg does
+  --     not run (`list` would merely degrade, so `sync`'s leg report is the
+  --     discriminating observation)
+  let s3 ← spawn ["sync", "--json"] [("GIT_DIR", some "/nonexistent/nowhere")] (some a)
+  o := o ++ [check "a bogus GIT_DIR is ignored (the local leg still runs)"
+    (s3.exitCode == 0 && (s3.stdout.splitOn "\"ran\":true").length > 1) s3.stdout]
   -- (4) object-store routing: new objects written under a hostile
   --     GIT_OBJECT_DIRECTORY must land in A (readable there with a clean env)
   let _ ← spawn ["create", "second probe"] [] (some a)
@@ -698,21 +701,25 @@ def cliGitEnvTests : IO (List Outcome) := do
     [check "sync under GIT_OBJECT_DIRECTORY succeeds" (s4.exitCode == 0) s4.stdout,
      check "ref objects are readable in A with a clean env"
        (readBack.exitCode == 0 && readBack.stdout != "") readBack.stderr]
-  -- (5) namespace routing: the ref must be the real refs/tl/log, not a
-  --     namespaced shadow
-  let s5 ← spawn ["sync", "--json"] [("GIT_NAMESPACE", some "hostile")] (some a)
-  let shadow ← gitOut a ["rev-parse", "--verify", "--quiet", "refs/namespaces/hostile/refs/tl/log"]
-  o := o ++
-    [check "sync under GIT_NAMESPACE succeeds" (s5.exitCode == 0) s5.stdout,
-     check "no namespaced shadow ref was created" (shadow.exitCode != 0) shadow.stdout,
-     check "the real refs/tl/log is still there" (← hasTlRef a)]
   -- remote-leg rows: origin = bare A-remote; bare B-remote is the decoy
   let aBare := tmp / "a-remote.git"
   let bBare := tmp / "b-remote.git"
   git tmp ["init", "--bare", "-q", aBare.toString]
   git tmp ["init", "--bare", "-q", bBare.toString]
   git a ["remote", "add", "origin", aBare.toString]
+  -- (5) namespace routing: GIT_NAMESPACE takes effect in the *receive* end
+  --     of a push (local plumbing ignores it), so the canary is the bare
+  --     remote — the ref must arrive as the real refs/tl/log, not under
+  --     refs/namespaces/hostile/
+  let s5 ← spawn ["sync", "--json"] [("GIT_NAMESPACE", some "hostile")] (some a)
+  let shadow ← gitOut aBare ["rev-parse", "--verify", "--quiet", "refs/namespaces/hostile/refs/tl/log"]
+  o := o ++
+    [check "sync under GIT_NAMESPACE succeeds" (s5.exitCode == 0) s5.stdout,
+     check "no namespaced shadow ref reached the remote" (shadow.exitCode != 0) shadow.stdout,
+     check "the real refs/tl/log reached the remote" (← hasTlRef aBare)]
   -- (6) env config injection: rewriting remote.origin.url must not take
+  --     (origin's ref deleted first, so its reappearance is the canary)
+  git aBare ["update-ref", "-d", "refs/tl/log"]
   let s6 ← spawn ["sync", "--json"]
     [("GIT_CONFIG_COUNT", some "1"),
      ("GIT_CONFIG_KEY_0", some "remote.origin.url"),
@@ -810,6 +817,24 @@ def cliGitEnvTests : IO (List Outcome) := do
        ((← (proj / "sub" / ".tl").isDir) && !(← (proj / ".tl").pathExists)),
      check "init disclosed the ceiling stop"
        ((s13.stdout.splitOn "GIT_CEILING_DIRECTORIES").length > 1) s13.stdout]
+  -- (13b) ceilings bound the ascent only (git semantics): the starting
+  --       directory is always examined — a cwd that is itself listed still
+  --       binds its own .tl (discovery) and still finds its own .git (init)
+  let ownProj := tmp / "own"
+  IO.FS.createDirAll ownProj
+  git tmp ["init", "-q", ownProj.toString]
+  let realOwn ← IO.FS.realPath ownProj
+  let s13b ← spawn ["init", "--json"]
+    [("GIT_CEILING_DIRECTORIES", some realOwn.toString)] (some ownProj)
+  o := o ++
+    [check "a ceiling at the cwd itself does not hide the cwd's repo"
+       (s13b.exitCode == 0 && (← (ownProj / ".tl").isDir)
+         && (s13b.stdout.splitOn "GIT_CEILING_DIRECTORIES").length == 1) s13b.stdout]
+  let s13c ← spawn ["list", "--json"]
+    [("GIT_CEILING_DIRECTORIES", some realOwn.toString)] (some ownProj)
+  o := o ++
+    [check "a ceiling at the cwd itself does not hide the cwd's .tl"
+       (s13c.exitCode == 0) s13c.stdout]
   -- (14) doctor discloses the inherited routing env without failing health
   let s14 ← spawn ["doctor", "--json"] [("GIT_DIR", some bGitDir)] (some a)
   o := o ++ [check "doctor under GIT_DIR: healthy, gitRouting warns, names the var"
@@ -4006,6 +4031,19 @@ def cliInitBoundaryTests : IO (List Outcome) := do
             && ((jStr j "root").getD "").endsWith "proj/.tl")]
       o := o ++ [check "init created .tl at the toplevel, not the subdir"
         ((← (repo / ".tl").isDir) && !(← (repo / "src" / ".tl").pathExists))]
+      -- fuel exhaustion (a >256-deep nest): the placement walk gives up and
+      -- falls to the repo-less cwd arm with the local-only note — it does
+      -- not throw, and it does not reach the (too-distant) toplevel
+      let deep := (List.range 260).foldl (fun p _ => p / "d") repo
+      IO.FS.createDirAll deep
+      IO.Process.setCurrentDir deep
+      o := o ++ [(match ← run' ["init"] with
+        | .ok out => check "a depth-exhausted placement walk falls to the cwd arm"
+            (((jStr out.data "root").getD "").endsWith "d/.tl"
+              && out.notes.any (fun n => (n.splitOn "local-only").length > 1))
+            (String.intercalate "|" out.notes)
+        | .error e => { name := "a depth-exhausted placement walk falls to the cwd arm",
+                        passed := false, msg := e.message })]
     return o
   finally
     IO.Process.setCurrentDir prev

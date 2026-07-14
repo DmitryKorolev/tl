@@ -242,8 +242,12 @@ crafted environment.
 Stance: mitigate — DONE (ADR-0012, "Sanitized git subprocess environment").
 Every subprocess spawn goes through one runner that unsets the
 routing/config-injection set (the normative list lives in ADR-0012 and the
-code it points at); credential, transport, and user-config-location
-variables stay inherited, so authenticated remotes keep working. Discovery
+code it points at); credential and transport variables and the
+default-location user config (`HOME`/`XDG_CONFIG_HOME`) stay inherited, so
+authenticated remotes keep working — with one recorded cost: a config file
+*relocated* via `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` is part of the
+scrubbed injection surface, so credentials configured only there are not
+seen (ADR-0012 Consequences). Discovery
 itself stops at bare-gitdir boundaries and `init` refuses a bare repository,
 so the filesystem walk cannot mis-bind either. `tl doctor` reports the
 residual visibly (a `gitRouting` warn when routing variables are present —

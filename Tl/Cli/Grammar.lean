@@ -207,7 +207,7 @@ def commandSpecs : List CommandSpec :=
     { command := "sync", positionals := "",
       summary := "reconcile via refs/tl/log: publish + absorb siblings, then fetch/union/push to a configured remote" },
     { command := "doctor", positionals := "",
-      summary := "local health checks (replica / clock / log / graph / stale claims / clock skew / sync posture)",
+      summary := "local health checks (replica / clock / log / graph / stale claims / clock skew / sync posture / ref mark / git routing / git version)",
       flags := [syncFlag] },
     { command := "version", positionals := "", summary := "the product and log-format versions" },
     { command := "licenses", positionals := "",

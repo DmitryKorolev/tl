@@ -481,11 +481,12 @@ def syncTimeoutTests : IO (List Outcome) := do
   return o
 
 /-- The ADR-0012 subprocess environment scrub: the pinned variable set, the
-    `none`-unsets shape, the caller-env composition order `fixedIdentity`
-    relies on, and a control row demonstrating the rerouting behavior git
-    exhibits when the scrub is absent (the vulnerability being closed). The
-    inherited-environment behavior itself needs a process boundary, so those
-    rows live with the spawned-binary tests (`cliGitEnvTests`). -/
+    `none`-unsets shape, the scrub-first/caller-after composition order (a
+    caller may deliberately re-set a scrubbed variable), and a control row
+    demonstrating the rerouting behavior git exhibits when the scrub is
+    absent (the vulnerability being closed). The inherited-environment
+    behavior itself needs a process boundary, so those rows live with the
+    spawned-binary tests (`cliGitEnvTests`). -/
 def syncEnvScrubTests : IO (List Outcome) := do
   let pinned :=
     ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
@@ -499,14 +500,15 @@ def syncEnvScrubTests : IO (List Outcome) := do
      check "gitEnvScrub unsets every scrubbed variable"
        (gitEnvScrub.toList == scrubbedGitVars.map (fun v => (v, (none : Option String))))
        s!"gitEnvScrub={gitEnvScrub.toList.map (·.1)}"]
-  -- caller entries apply after the scrub (left-to-right), so a per-call
-  -- override like the fixed ref-commit identity still lands
+  -- entries apply left-to-right with the scrub prepended, so a caller can
+  -- deliberately re-set even a *scrubbed* variable — the discriminating pin
+  -- for the composition order (a scrub-last order would clobber this entry)
   let (c1, out1, _) ← runBounded
-    { cmd := "sh", args := #["-c", "printf %s \"${GIT_AUTHOR_NAME:-unset}\""],
-      env := #[("GIT_AUTHOR_NAME", some "tl")] } .empty 5000
+    { cmd := "sh", args := #["-c", "printf %s \"${GIT_DIR:-CLEAN}\""],
+      env := #[("GIT_DIR", some "/deliberate")] } .empty 5000
   let echoed := (String.fromUTF8? out1).getD ""
-  o := o ++ [check "caller env entries survive the scrub (left-to-right order)"
-    (c1 == 0 && echoed == "tl") s!"c1={c1} out={echoed}"]
+  o := o ++ [check "caller env entries land after the scrub (left-to-right order)"
+    (c1 == 0 && echoed == "/deliberate") s!"c1={c1} out={echoed}"]
   -- control: absent the scrub, GIT_DIR reroutes git away from the -C repo —
   -- the exact cross-repository hole the scrub closes; if git ever stops
   -- honoring GIT_DIR like this, the scrub (and its ADR text) can shrink

@@ -65,8 +65,10 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   state through the common `.git`'s `refs/tl/log` plus local-first sync — no remote
   needed on one machine ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md)).
 - Bare repositories. A directory that is itself a git repository directory —
-  a bare repo, or the inside of a `.git` dir, recognized by git's own gitdir
-  signature (a `HEAD` file plus `objects/` and `refs/` directories) — bounds
+  a bare repo, or the inside of a `.git` dir, recognized the way git's own
+  setup check does (`objects/` and `refs/` directories plus a `HEAD` file
+  whose *content* is a symref or detached hash, so a committed fixture
+  directory holding an ordinary file named `HEAD` does not qualify) — bounds
   the walk exactly like a worktree root: ascending past it could bind an
   unrelated enclosing `.tl/`. There is no working tree there to hold state, so
   `tl init` (and `import`'s implicit init) refuses it with a teaching `usage`
@@ -123,10 +125,13 @@ config is not rerouting the repository, and credential helpers live there);
 which-git-runs (`PATH`, `GIT_EXEC_PATH` — the git binary is already trusted
 byte-transport, ADR-0006/ADR-0014); and discovery *restriction*
 (`GIT_CEILING_DIRECTORIES` — it can stop a walk, never redirect one; `tl`'s
-own walks honor it, and `tl` addresses git at a directory whose gitdir is
-immediately present, so a ceiling cannot unbind a selected repo).
+own walks honor it, applying it like git to proper ancestors only. With
+state at the repo toplevel the gitdir is immediately present and a ceiling
+is inert; with a subdir state root — the `--dir` shape — an ancestor
+ceiling can make git classify the location as repo-less, a fail-stop to
+`no-upstream`/degraded behavior, never a redirect).
 Per-call additions (the fixed ref-commit identity, ADR-0001) compose after
-the scrub.
+the scrub, and may deliberately re-set a scrubbed variable.
 
 `tl doctor` reports the split-brain this prevents rather than hiding it: a
 `gitRouting` check lists any inherited scrub-set variables (present but
@@ -150,6 +155,16 @@ shares through. Both are warnings that teach; neither fails health, because
   cannot rewrite where `tl` pushes. The cost is that a deliberate
   `GIT_DIR`-driven workflow (a detached-gitdir setup) is not honored —
   `--dir`/`TL_DIR` are `tl`'s explicit spellings for "state lives elsewhere."
+- A second recorded cost: a global/system config *relocated* via
+  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` is invisible to `tl`'s git
+  subprocesses — including a `credential.helper` or token-bearing
+  `url.*.insteadOf` that lives only there — so `tl sync` can fail or prompt
+  against an authenticated remote where plain `git push` in the same shell
+  succeeds. The variables cannot be preserved (they are exactly the
+  config-injection redirect the invariant forbids); the supported spellings
+  are the default locations (`HOME`/`XDG_CONFIG_HOME`, which stay honored)
+  or repo-local config. `tl doctor`'s `gitRouting` row names the inherited
+  variable when this shape is present.
 
 ## Alternatives considered
 

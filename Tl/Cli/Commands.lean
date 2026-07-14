@@ -1750,7 +1750,7 @@ def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
       ++ (if ok then [] else
           [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
 
-/-- The doctor `git-routing` row (pure core, branch-testable): the split-brain
+/-- The doctor `gitRouting` row (pure core, branch-testable): the split-brain
     report comparing filesystem discovery with git's classification.
     `routingVars` are the scrubbed (ADR-0012) variables found inherited;
     `stateRoot` / `toplevel` arrive canonicalized (realpath) by the caller.
@@ -2088,13 +2088,15 @@ def initTarget (dirOverride : Option String) : TlM (System.FilePath × List Stri
     let cwd ← liftSys (fun e => .mk' .internal s!"{e}") IO.currentDir
     let ceilingList ← ceilingDirs
     -- `.ok` = repo toplevel found; `.error note` = no repo (the note explains
-    -- why when a ceiling stopped the search early)
-    let rec findRoot (dir : System.FilePath) (fuel : Nat) :
+    -- why when a ceiling stopped the search early). Like discovery, ceilings
+    -- bound the ascent only — the starting directory is always examined
+    -- (git semantics, ADR-0012).
+    let rec findRoot (dir : System.FilePath) (fuel : Nat) (atStart : Bool) :
         TlM (Except (List String) System.FilePath) := do
       match fuel with
       | 0 => return .error []
       | fuel + 1 =>
-        if ceilingList.contains dir.toString then
+        if !atStart && ceilingList.contains dir.toString then
           return .error [s!"GIT_CEILING_DIRECTORIES stopped the repository search at {dir}"]
         if ← liftSys (fun e => .mk' .internal s!"{e}") (hasGitBoundary dir) then
           return .ok dir
@@ -2103,9 +2105,9 @@ def initTarget (dirOverride : Option String) : TlM (System.FilePath × List Stri
             s!"cannot initialize tl in a git repository directory ({dir}): a bare repository has no working tree for .tl state — run `tl init` in a worktree or clone of it, or pass --dir to place state at an explicit directory; a bare repository still works as a sync remote")
         else
           match dir.parent with
-          | some p => if p == dir then return .error [] else findRoot p fuel
+          | some p => if p == dir then return .error [] else findRoot p fuel false
           | none => return .error []
-    match ← findRoot cwd 256 with
+    match ← findRoot cwd 256 true with
     | .ok root => pure (root / ".tl", [])
     | .error ceilingNote => pure (cwd / ".tl", ceilingNote ++
         ["not inside a git repository — state stays local-only until used under a git repo with a remote"])

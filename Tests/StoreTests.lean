@@ -116,13 +116,55 @@ def storeDiscoveryTests : IO (List Outcome) := do
         (fun d => check "worktree private gitdir does not bound the walk"
           (d.base == realRoot.toString) s!"base={d.base} expected={realRoot}")]
   IO.Process.setCurrentDir prev
-  -- isGitDirLayout unit pins: bare yes; worktree-private no; plain dir no
+  -- a committed fixture that merely *looks* bare-shaped (HEAD is an ordinary
+  -- file, not a symref/hash) is not a boundary: the walk ascends past it and
+  -- binds the enclosing project — git's own setup check validates HEAD
+  -- content the same way
+  let fixture := root / "fixtures" / "scrubbed.git"
+  IO.FS.createDirAll (fixture / "objects")
+  IO.FS.createDirAll (fixture / "refs")
+  IO.FS.writeFile (fixture / "HEAD") "scrubbed placeholder\n"
+  IO.Process.setCurrentDir fixture
   outcomes := outcomes ++
-    [check "isGitDirLayout: bare layout matches" (← isGitDirLayout bare),
+    [← expectOk "a fake-HEAD bare-shaped fixture does not bound the walk" (discover none)
+        (fun d => check "a fake-HEAD bare-shaped fixture does not bound the walk"
+          (d.base == realRoot.toString) s!"base={d.base}")]
+  IO.Process.setCurrentDir prev
+  -- isGitDirLayout pins, one per conjunct: bare (symref HEAD) yes; detached
+  -- 40-hex HEAD yes; fake HEAD content no; HEAD-as-directory no; refs/
+  -- missing no; worktree-private (objects/ missing) no; plain dir no
+  let detached := root / "detached.git"
+  IO.FS.createDirAll (detached / "objects")
+  IO.FS.createDirAll (detached / "refs")
+  IO.FS.writeFile (detached / "HEAD") (String.ofList (List.replicate 40 'a') ++ "\n")
+  let headDir := root / "headdir.git"
+  IO.FS.createDirAll (headDir / "objects")
+  IO.FS.createDirAll (headDir / "refs")
+  IO.FS.createDirAll (headDir / "HEAD")
+  let noRefs := root / "norefs.git"
+  IO.FS.createDirAll (noRefs / "objects")
+  IO.FS.writeFile (noRefs / "HEAD") "ref: refs/heads/main\n"
+  outcomes := outcomes ++
+    [check "isGitDirLayout: bare layout (symref HEAD) matches" (← isGitDirLayout bare),
+     check "isGitDirLayout: detached-hash HEAD matches" (← isGitDirLayout detached),
+     check "isGitDirLayout: ordinary-file HEAD content does not match"
+       (!(← isGitDirLayout fixture)),
+     check "isGitDirLayout: a directory named HEAD does not match"
+       (!(← isGitDirLayout headDir)),
+     check "isGitDirLayout: missing refs/ does not match" (!(← isGitDirLayout noRefs)),
      check "isGitDirLayout: worktree private gitdir does not match"
        (!(← isGitDirLayout wtPriv)),
      check "isGitDirLayout: an ordinary directory does not match"
        (!(← isGitDirLayout (root / "src")))]
+  -- isHeadContent pins: symref, 40/64-hex; not prose, empty, or short hex
+  outcomes := outcomes ++
+    [check "isHeadContent: symref" (isHeadContent "ref: refs/heads/main\n"),
+     check "isHeadContent: 40-hex" (isHeadContent (String.ofList (List.replicate 40 '0'))),
+     check "isHeadContent: 64-hex" (isHeadContent (String.ofList (List.replicate 64 'f'))),
+     check "isHeadContent: prose is not" (!isHeadContent "scrubbed placeholder\n"),
+     check "isHeadContent: empty is not" (!isHeadContent ""),
+     check "isHeadContent: short hex is not"
+       (!isHeadContent (String.ofList (List.replicate 39 'a')))]
   -- override: valid state dir is found without discovery
   outcomes := outcomes ++
     [← expectOk "override binds the state dir" (discover (some (root / ".tl").toString))
