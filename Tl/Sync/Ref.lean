@@ -74,8 +74,9 @@ private def fixedIdentity : List (String × Option String) :=
     above. That is a **carried residual**, not a covered case (ADR-0012
     Consequences / ADR-0014 T7); it needs no control of `PATH` or of the git
     binary. `tl` does not prevent it — it discloses it: `doctor`'s
-    `gitRouting` row reports when a remote's effective URL (after `insteadOf`
-    rewriting, `effectiveRemoteUrl`) differs from its configured URL.
+    `gitRouting` row reports when a remote's effective push URL (after
+    `insteadOf`/`pushInsteadOf` rewriting, `effectiveRemoteUrl`) differs from
+    its configured push target.
     Also preserved and non-redirecting: `GIT_CEILING_DIRECTORIES` (it can stop
     a walk, never redirect one, and `tl`'s own walks honor it). -/
 def scrubbedGitVars : List String :=
@@ -453,19 +454,21 @@ def currentBranch (d : Dirs) : TlM (Option String) := do
 def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
   return (← gitConfig d s!"remote.{remote}.url").isSome
 
-/-- The URL git will *actually* use for `remote`, after applying any
-    `url.<base>.insteadOf` rewrite. `ls-remote --get-url` expands the URL and
+/-- The URL git will *actually push to* for `remote`, after applying any
+    `url.<base>.insteadOf` *and* `url.<base>.pushInsteadOf` rewrite —
+    `remote get-url --push` is exactly the resolution `git push` performs, and
+    `pushInsteadOf` (which `ls-remote --get-url` does not honor, it being a
+    fetch-URL resolver) can redirect a push on its own. It expands the URL and
     exits without contacting the remote, so this stays a local read (`doctor`
     calls it on the no-network path). `none` when git fails or the remote is
-    unknown — git echoes an unknown name straight back, which is not a URL.
+    unknown.
 
     Compared against the *configured* `remote.<n>.url`, this is how `doctor`
-    discloses the ADR-0012 `HOME` residual: a rewrite living in a global
-    config `tl` cannot scrub still redirects a push, and the difference
-    between the two URLs is exactly that redirect, visible without a
-    network round-trip. -/
+    discloses the ADR-0012 `HOME` residual: a rewrite living in a git config
+    `tl` cannot scrub still redirects a push, and the difference between the
+    two URLs is exactly that redirect, visible without a network round-trip. -/
 def effectiveRemoteUrl (d : Dirs) (remote : String) : TlM (Option String) := do
-  let o ← (git d ["ls-remote", "--get-url", remote] : IO _)
+  let o ← (git d ["remote", "get-url", "--push", remote] : IO _)
   if o.exitCode != 0 then return none
   let url := o.stdout.trimAscii.toString
   return (if url.isEmpty || url == remote then none else some url)

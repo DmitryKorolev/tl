@@ -911,11 +911,39 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
        (s16b.exitCode == 0 && (s16b.stdout.splitOn "\"healthy\":true").length > 1
          && (s16b.stdout.splitOn "\"remoteRewrite\"").length > 1
          && (s16b.stdout.splitOn "insteadOf").length > 1) s16b.stdout]
+  -- pushInsteadOf redirects the PUSH only, and the fetch-URL resolver misses
+  -- it — the push target resolver (`remote get-url --push`) must catch it, or
+  -- a push silently goes to the decoy with no disclosure
+  git aBare ["update-ref", "-d", "refs/tl/log"]
+  let pushHome := tmp / "push-home"
+  IO.FS.createDirAll pushHome
+  IO.FS.writeFile (pushHome / ".gitconfig")
+    ("[url \"" ++ hDecoy.toString ++ "\"]\n\tpushInsteadOf = " ++ hReal.toString ++ "\n")
+  let s16p ← spawn ["sync", "--json"] [("HOME", some pushHome.toString)] (some h)
+  let s16pd ← spawn ["doctor", "--json"] [("HOME", some pushHome.toString)] (some h)
+  o := o ++
+    [check "residual: a pushInsteadOf rewrite redirects the push"
+       (s16p.exitCode == 0 && (← hasTlRef hDecoy) && !(← hasTlRef hReal)) s16p.stdout,
+     check "residual: doctor discloses a pushInsteadOf rewrite (push-URL resolver)"
+       (s16pd.exitCode == 0 && (s16pd.stdout.splitOn "\"remoteRewrite\"").length > 1
+         && (s16pd.stdout.splitOn hDecoy.toString).length > 1) s16pd.stdout]
   -- and with an ordinary HOME the same repo reports no rewrite
   let s16c ← spawn ["doctor", "--json"] [] (some h)
   o := o ++
     [check "no rewrite in an ordinary environment: remoteRewrite is null"
        (s16c.exitCode == 0 && (s16c.stdout.splitOn "\"remoteRewrite\":null").length > 1) s16c.stdout]
+  -- a DELIBERATE distinct push URL (remote.origin.pushurl) is not a rewrite —
+  -- the baseline is that raw push target, so doctor must not false-positive
+  let pu := tmp / "pushurl"
+  IO.FS.createDirAll pu
+  git tmp ["init", "-q", pu.toString]
+  git pu ["remote", "add", "origin", "https://fetch.example.test/x.git"]
+  git pu ["remote", "set-url", "--push", "origin", "ssh://push.example.test/x.git"]
+  let _ ← spawn ["init"] [] (some pu)
+  let s16u ← spawn ["doctor", "--json"] [] (some pu)
+  o := o ++
+    [check "a deliberate pushurl is not reported as a rewrite"
+       (s16u.exitCode == 0 && (s16u.stdout.splitOn "\"remoteRewrite\":null").length > 1) s16u.stdout]
   return o
 
 /-- Spawned-binary hostile-environment matrix. Fixture git calls throw, so a

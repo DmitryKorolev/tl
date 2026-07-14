@@ -2012,15 +2012,22 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
         (canon (if d.base.isEmpty then "." else d.base))
       let top ← Tl.Sync.gitToplevel d
       let top ← liftSys (fun e => .mk' .internal s!"{e}") (top.mapM canon)
-      -- the carried residual, made visible: a url.*.insteadOf rewrite living
-      -- in a config tl cannot scrub (a relocated HOME) silently redirects the
-      -- push. `ls-remote --get-url` resolves it without touching the network,
-      -- so this stays on doctor's local-only path (ADR-0011 §2).
+      -- the carried residual, made visible: a url.*.insteadOf /
+      -- url.*.pushInsteadOf rewrite living in a config tl cannot scrub (a
+      -- relocated HOME) silently redirects the push. `remote get-url --push`
+      -- resolves the actual push target (applying both rewrite forms) without
+      -- touching the network, so this stays on doctor's local-only path
+      -- (ADR-0011 §2). The baseline is the *raw* push target — a deliberate
+      -- `remote.<n>.pushurl` (else `.url`), read without rewrites — so a
+      -- legitimately configured distinct push URL is not a false positive;
+      -- only an insteadOf-style rewrite moves the resolved URL off it.
       let rewrite ← (do
         match ← Tl.Sync.resolveRemote d with
         | none => pure none
         | some remote =>
-          let configured ← Tl.Sync.gitConfig d s!"remote.{remote}.url"
+          let pushCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.pushurl"
+          let fetchCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.url"
+          let configured := pushCfg.orElse (fun _ => fetchCfg)
           let effective ← Tl.Sync.effectiveRemoteUrl d remote
           match configured, effective with
           | some c, some e =>

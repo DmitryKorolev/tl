@@ -261,9 +261,9 @@ redirect `tl sync`'s push to another repository: the same disclosure and
 corruption outcome as the scrubbed variables, reached with **no** control of
 `PATH` and no substituted git binary. It is not the already-lost tier and is
 not claimed to be. `tl` does not prevent it; it discloses it — `doctor`'s
-`gitRouting` row compares each remote's configured URL with its effective URL
-(`ls-remote --get-url` applies `insteadOf` without contacting the remote) and
-warns when they differ. The consequence is a *misplaced* log, not a lost one:
+`gitRouting` row compares each remote's raw push target with the URL git will
+push to (`remote get-url --push` applies both `insteadOf` and the push-only
+`pushInsteadOf` without contacting the remote) and warns when they differ. The consequence is a *misplaced* log, not a lost one:
 the local segments are intact, and a later sync under a clean environment
 publishes them correctly.
 
