@@ -3689,6 +3689,60 @@ def cliShapePinTests : IO (List Outcome) := do
       && (jArr j "disclosures").isEmpty)]
   return o
 
+/-- Init/import placement boundaries (ADR-0012): a bare repository — any
+    gitdir layout — refuses with a teaching usage error, from its root, from
+    inside it, and through `import`'s implicit init; a normal repo subdir
+    still places at the toplevel; `--dir` into anywhere is never refused.
+    The `GIT_CEILING_DIRECTORIES` placement stop needs a process boundary
+    and lives with the spawned-binary rows (`cliGitEnvTests`). -/
+def cliInitBoundaryTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let prev ← IO.currentDir
+  let tmp ← IO.FS.createTempDir
+  let bare := tmp / "mirror.git"
+  let mk ← IO.Process.output { cmd := "git", args := #["init", "--bare", "-q", bare.toString] }
+  if mk.exitCode != 0 then
+    return [{ name := "git init --bare available", passed := false, msg := mk.stderr }]
+  try
+    IO.Process.setCurrentDir bare
+    o := o ++ [← expectErr "init refuses a bare repository" ["init"] .usage]
+    o := o ++ [← (do
+      match ← run' ["init"] with
+      | .error e => pure (check "the bare-init refusal teaches worktree / --dir / remote"
+          ((e.message.splitOn "worktree").length > 1 && (e.message.splitOn "--dir").length > 1
+            && (e.message.splitOn "sync remote").length > 1) e.message)
+      | .ok _ => pure { name := "the bare-init refusal teaches worktree / --dir / remote",
+                        passed := false, msg := "init unexpectedly succeeded" })]
+    IO.Process.setCurrentDir (bare / "hooks")
+    o := o ++ [← expectErr "init refuses from inside a bare repository" ["init"] .usage]
+    -- import's implicit init shares the placement walk and the refusal
+    let src := tmp / "seed.jsonl"
+    IO.FS.writeFile src "{\"id\":\"EXT-1\",\"title\":\"Seeded\",\"status\":\"open\"}\n"
+    IO.Process.setCurrentDir bare
+    o := o ++ [← expectErr "import's implicit init refuses a bare repository"
+        ["import", src.toString] .usage]
+    -- --dir stays the deliberate escape hatch: an explicit target inside the
+    -- bare directory is honored, never walked or refused
+    o := o ++ [← expectData "init --dir into a bare directory is honored"
+        ["init", "--dir", (bare / ".tl").toString]
+        (fun j => jBool j "created" == some true)]
+    -- a normal repo subdir still places at the toplevel
+    let repo := tmp / "proj"
+    IO.FS.createDirAll (repo / "src")
+    let mk2 ← IO.Process.output { cmd := "git", args := #["init", "-q", repo.toString] }
+    if mk2.exitCode != 0 then
+      o := o ++ [{ name := "git init available", passed := false, msg := mk2.stderr }]
+    else
+      IO.Process.setCurrentDir (repo / "src")
+      o := o ++ [← expectData "init from a subdir places .tl at the repo toplevel" ["init"]
+          (fun j => (jStr j "root").isSome
+            && ((jStr j "root").getD "").endsWith "proj/.tl")]
+      o := o ++ [check "init created .tl at the toplevel, not the subdir"
+        ((← (repo / ".tl").isDir) && !(← (repo / "src" / ".tl").pathExists))]
+    return o
+  finally
+    IO.Process.setCurrentDir prev
+
 def cliTests : IO (List Outcome) := do
   return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
@@ -3703,6 +3757,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
     ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
-    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests)
 
 end Tl.Tests

@@ -2027,7 +2027,12 @@ def readmePrimer : String :=
 
 /-- Where `init`/`import` place state (ADR-0001 §4, ADR-0012): the `--dir`/`TL_DIR`
     override wins; else the enclosing repo's toplevel; outside any repo, the cwd
-    (with a local-only note). Shared by `cmdInit` and `cmdImport`'s implicit init. -/
+    (with a local-only note). The placement walk honors the same boundaries as
+    discovery: a `GIT_CEILING_DIRECTORIES` entry stops the search (repo-less
+    placement, with a note), and a bare-gitdir layout refuses with a teaching
+    usage error — a bare repository has no working tree to hold `.tl` state
+    (`--dir` remains the deliberate escape hatch: an explicit target is never
+    walked or refused). Shared by `cmdInit` and `cmdImport`'s implicit init. -/
 def initTarget (dirOverride : Option String) : TlM (System.FilePath × List String) := do
   let override : Option String ← match dirOverride with
     | some p => pure (some p)
@@ -2036,19 +2041,28 @@ def initTarget (dirOverride : Option String) : TlM (System.FilePath × List Stri
   | some p => pure (System.FilePath.mk p, [])
   | none =>
     let cwd ← liftSys (fun e => .mk' .internal s!"{e}") IO.currentDir
-    let rec findRoot (dir : System.FilePath) (fuel : Nat) : TlM (Option System.FilePath) := do
+    let ceilingList ← ceilingDirs
+    -- `.ok` = repo toplevel found; `.error note` = no repo (the note explains
+    -- why when a ceiling stopped the search early)
+    let rec findRoot (dir : System.FilePath) (fuel : Nat) :
+        TlM (Except (List String) System.FilePath) := do
       match fuel with
-      | 0 => return none
+      | 0 => return .error []
       | fuel + 1 =>
+        if ceilingList.contains dir.toString then
+          return .error [s!"GIT_CEILING_DIRECTORIES stopped the repository search at {dir}"]
         if ← liftSys (fun e => .mk' .internal s!"{e}") (hasGitBoundary dir) then
-          return some dir
+          return .ok dir
+        else if ← liftSys (fun e => .mk' .internal s!"{e}") (isGitDirLayout dir) then
+          throw (.mk' .usage
+            s!"cannot initialize tl in a git repository directory ({dir}): a bare repository has no working tree for .tl state — run `tl init` in a worktree or clone of it, or pass --dir to place state at an explicit directory; a bare repository still works as a sync remote")
         else
           match dir.parent with
-          | some p => if p == dir then return none else findRoot p fuel
-          | none => return none
+          | some p => if p == dir then return .error [] else findRoot p fuel
+          | none => return .error []
     match ← findRoot cwd 256 with
-    | some root => pure (root / ".tl", [])
-    | none => pure (cwd / ".tl",
+    | .ok root => pure (root / ".tl", [])
+    | .error ceilingNote => pure (cwd / ".tl", ceilingNote ++
         ["not inside a git repository — state stays local-only until used under a git repo with a remote"])
 
 def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do

@@ -182,6 +182,23 @@ private def hasTl (dir : FilePath) : IO Bool := do
   let p := dir / ".tl"
   pure ((← p.pathExists) && (← p.isDir))
 
+/-- The `GIT_CEILING_DIRECTORIES` entries, canonicalized like git does
+    (realpath), so a logical/symlinked entry still matches the canonical walk
+    dirs (`IO.currentDir` is already canonical, and `.parent` keeps it so);
+    an entry that does not resolve falls back to its trailing-slash-trimmed
+    text. Shared by `discover` and init/import placement — every filesystem
+    walk honors the same ceilings (ADR-0012). -/
+def ceilingDirs : TlM (List String) := do
+  let ceilings ← liftSys (fun e => .mk' .internal s!"environment read failed: {e}")
+    (IO.getEnv "GIT_CEILING_DIRECTORIES")
+  let raw := (ceilings.getD "").splitOn ":" |>.filter (· ≠ "")
+  raw.mapM fun (c : String) => do
+    match ← (IO.FS.realPath (FilePath.mk c)).toBaseIO with
+    | .ok p => pure p.toString
+    | .error _ =>
+      pure (let t := String.ofList (c.toList.reverse.dropWhile (· == '/') |>.reverse)
+            if t.isEmpty then c else t)
+
 /-- ADR-0012 discovery. `override` is `--dir` (wins) or `TL_DIR`; otherwise
     walk up from `cwd` to the nearest `.tl/`, stopping at the repo boundary
     (a `.git` entry, or a bare-gitdir layout), and at any
@@ -198,20 +215,7 @@ def discover (override : Option String := none) : TlM Dirs := do
     | none =>
       let cwd ← liftSys (fun e => .mk' .internal s!"cannot read the working directory: {e}")
         IO.currentDir
-      let ceilings ← liftSys (fun e => .mk' .internal s!"environment read failed: {e}")
-        (IO.getEnv "GIT_CEILING_DIRECTORIES")
-      -- canonicalize each ceiling entry like git does (realpath), so a
-      -- logical/symlinked entry still matches the canonical walk dirs
-      -- (`IO.currentDir` is already canonical, and `.parent` keeps it so);
-      -- an entry that does not resolve falls back to its trailing-slash-
-      -- trimmed text.
-      let rawCeilings := (ceilings.getD "").splitOn ":" |>.filter (· ≠ "")
-      let ceilingList ← rawCeilings.mapM fun (c : String) => do
-        match ← (IO.FS.realPath (FilePath.mk c)).toBaseIO with
-        | .ok p => pure p.toString
-        | .error _ =>
-          pure (let t := String.ofList (c.toList.reverse.dropWhile (· == '/') |>.reverse)
-                if t.isEmpty then c else t)
+      let ceilingList ← ceilingDirs
       let rec walk (dir : FilePath) (fuel : Nat) : TlM Dirs := do
         match fuel with
         | 0 => throw (noProject "here (search depth exhausted)")
