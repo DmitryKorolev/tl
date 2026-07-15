@@ -305,6 +305,16 @@ def syncRefreshTests : IO (List Outcome) := do
   let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", logDir.toString] } : IO _)
   return o
 
+/-- Set `protocol.file.allow=always` in a repo's *local* config so its `tl`
+    sync over a local-path remote works regardless of the developer's global
+    `protocol.file.allow` (a `never` there would otherwise fail every
+    file-transport fixture — a hermeticity gap, not a tl bug: tl correctly
+    respects the user's protocol policy in production). Local overrides global. -/
+private def allowFileProto (dir : String) : IO Unit := do
+  let _ ← IO.Process.output
+    { cmd := "git", args := #["-C", dir, "config", "protocol.file.allow", "always"] }
+  pure ()
+
 /-- A working repo with `origin` pointing at a fresh bare remote. -/
 private def repoWithRemote : IO (Dirs × String) := do
   let bare ← IO.FS.createTempDir
@@ -312,6 +322,7 @@ private def repoWithRemote : IO (Dirs × String) := do
   let work ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", work.toString, "init", "-q"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", work.toString, "remote", "add", "origin", bare.toString] }
+  allowFileProto work.toString
   return ({ base := work.toString, tlRel := ".tl" }, bare.toString)
 
 private def replicaIds (segs : List SegmentData) : List String :=
@@ -364,6 +375,7 @@ def syncRemoteTests : IO (List Outcome) := do
   let work2 ← IO.FS.createTempDir
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work2.toString, "init", "-q"] } : IO _)
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work2.toString, "remote", "add", "origin", bare] } : IO _)
+  allowFileProto work2.toString
   let d2 : Dirs := { base := work2.toString, tlRel := ".tl" }
   o := o ++ [match ← runTl (syncRemote d2) with
     | .ok r => check "a second clone pulls the remote's content"
@@ -384,6 +396,7 @@ def syncRemoteTests : IO (List Outcome) := do
   let work3 ← IO.FS.createTempDir
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "init", "-q"] } : IO _)
   let _ ← (IO.Process.output { cmd := "git", args := #["-C", work3.toString, "remote", "add", "origin", bare] } : IO _)
+  allowFileProto work3.toString
   let d3 : Dirs := { base := work3.toString, tlRel := ".tl" }
   let tip3 ← runTl (writeRef d3 [seg ridC "{\"c\":3}\n"] [] none)  -- a local ref not descending from the remote
   let pushed3 ← match tip3 with
@@ -680,6 +693,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   let work2 ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", work2.toString, "init", "-q"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", work2.toString, "remote", "add", "origin", bare] }
+  allowFileProto work2.toString
   let d2 : Dirs := { base := work2.toString, tlRel := ".tl" }
   o := o ++ [match ← runTl (do let _ ← syncRemote d2; readRefEntries d2) with
     | .ok (segs, foreign) => check "a second clone's pull carries the foreign entry into its local ref"

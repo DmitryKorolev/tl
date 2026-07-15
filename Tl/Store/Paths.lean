@@ -110,15 +110,15 @@ def mapSysError (rel : String) (e : IO.Error) : Tl.Error :=
   match Sys.errnoOf e with
   | some "ELOOP" =>
     { code := .unsafePath
-      message := s!"refusing {rel}: a path component is a symlink — remove the link (or move the project) and retry; tl never follows links under .tl"
+      message := s!"refusing {rel}: a path component is a symlink — remove the link (or move the project) and retry; tl never follows links inside the state directory"
       context := [("path", .str rel), ("reason", .str "symlink")] }
   | some "ENOTDIR" =>
     { code := .unsafePath
-      message := s!"refusing {rel}: a path component is not a real directory (a symlink is not followed under .tl) — repair the .tl layout and retry"
+      message := s!"refusing {rel}: a path component is not a real directory (a symlink is not followed inside the state directory) — repair its layout and retry"
       context := [("path", .str rel), ("reason", .str "symlink")] }
   | some "ENOTOWNED" =>
     { code := .unsafePath
-      message := s!"refusing {rel}: a path component is not owned by you — chown the .tl tree (or point --dir at your own state)"
+      message := s!"refusing {rel}: a path component is not owned by you — chown the state directory (or point --dir at your own state)"
       context := [("path", .str rel), ("reason", .str "ownership")] }
   | _ => .mk' .internal s!"unexpected I/O failure on {rel}: {e}"
 

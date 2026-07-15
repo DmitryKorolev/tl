@@ -208,11 +208,16 @@ health.
   `tl`'s git subprocesses — including a `credential.helper` or token-bearing
   `url.*.insteadOf` that lives only there — so `tl sync` can fail or prompt
   against an authenticated remote where plain `git push` in the same shell
-  succeeds. Those variables cannot be preserved: they are exactly the
-  config-injection redirect the scrub exists to stop. The supported spellings
-  are the default locations (`$HOME/.gitconfig`, `$HOME/.config/git/config`)
-  or repo-local config. `tl doctor`'s `gitRouting` row names the inherited
-  variable when this shape is present.
+  succeeds. The same invisibility applies to the actor fallback: a `user.email`
+  that lives only in an `XDG_CONFIG_HOME`-relocated config is not read, so the
+  actor provenance chain (`--actor` → `TL_ACTOR` → git `user.email` →
+  `<user>@<host>`, ADR-0013) falls through to `<user>@<host>` — a label change,
+  not a data-integrity issue, and `TL_ACTOR` or `--actor` is the explicit fix.
+  Those variables cannot be preserved: they are exactly the config-injection
+  redirect the scrub exists to stop. The supported spellings are the default
+  locations (`$HOME/.gitconfig`, `$HOME/.config/git/config`) or repo-local
+  config. `tl doctor`'s `gitRouting` row names the inherited variable when the
+  push-redirect shape is present.
 
 ## Alternatives considered
 

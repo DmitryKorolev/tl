@@ -714,6 +714,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   git tmp ["init", "--bare", "-q", aBare.toString]
   git tmp ["init", "--bare", "-q", bBare.toString]
   git a ["remote", "add", "origin", aBare.toString]
+  git a ["config", "protocol.file.allow", "always"]
   -- (5) namespace routing: GIT_NAMESPACE takes effect in the *receive* end
   --     of a push (local plumbing ignores it), so the canary is the bare
   --     remote — the ref must arrive as the real refs/tl/log, not under
@@ -804,6 +805,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   let plainBare := tmp / "plain-remote.git"
   git tmp ["init", "--bare", "-q", plainBare.toString]
   git plain ["remote", "add", "origin", plainBare.toString]
+  git plain ["config", "protocol.file.allow", "always"]
   let s11b ← spawn ["sync", "--json"] [] (some plain)
   o := o ++
     [check "git init around existing state then sync pushes" (s11b.exitCode == 0) s11b.stdout,
@@ -895,6 +897,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   git tmp ["init", "--bare", "-q", hReal.toString]
   git tmp ["init", "--bare", "-q", hDecoy.toString]
   git h ["remote", "add", "origin", hReal.toString]
+  git h ["config", "protocol.file.allow", "always"]
   let _ ← spawn ["init"] [] (some h)
   let _ ← spawn ["create", "residual probe"] [] (some h)
   let fakeHome := tmp / "fake-home"
@@ -941,6 +944,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   IO.FS.createDirAll pu
   git tmp ["init", "-q", pu.toString]
   git pu ["remote", "add", "origin", "https://fetch.example.test/x.git"]
+  git pu ["config", "protocol.file.allow", "always"]
   git pu ["remote", "set-url", "--push", "origin", "ssh://push.example.test/x.git"]
   let _ ← spawn ["init"] [] (some pu)
   let s16u ← spawn ["doctor", "--json"] [] (some pu)
@@ -959,6 +963,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   git tmp ["init", "--bare", "-q", gReal.toString]
   git tmp ["init", "--bare", "-q", gDecoy.toString]
   git g ["remote", "add", "origin", gReal.toString]
+  git g ["config", "protocol.file.allow", "always"]
   let _ ← spawn ["init"] [] (some g)
   let _ ← spawn ["create", "inject probe"] [] (some g)
   let gHome := tmp / "g-home"
@@ -993,6 +998,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   git tmp ["init", "--bare", "-q", mvReal.toString]
   git tmp ["init", "--bare", "-q", mvDecoy.toString]
   git mv ["remote", "add", "origin", mvReal.toString]
+  git mv ["config", "protocol.file.allow", "always"]
   git mv ["config", "remote.origin.pushurl", mvReal.toString]  -- a legit local pushurl
   let _ ← spawn ["init"] [] (some mv)
   let mvHome := tmp / "mv-home"
@@ -1012,6 +1018,7 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   git tmp ["init", "-q", br.toString]
   git tmp ["init", "--bare", "-q", brDecoy.toString]
   git br ["remote", "add", "origin", (tmp / "br-real.git").toString]
+  git br ["config", "protocol.file.allow", "always"]
   -- a commit so there is a current branch to key branch.<b>.remote on
   IO.FS.writeFile (br / "f") "x\n"
   git br ["add", "f"]
@@ -2347,6 +2354,7 @@ def cliSyncPostureTests : IO (List Outcome) := do
   let bare ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "protocol.file.allow", "always"] }
   let _ ← run' ["create", "Remote task", "--dir", tldir, "--actor", "t"]
   match ← run' ["doctor", "--dir", tldir] with
   | .ok out =>
@@ -2425,13 +2433,14 @@ def cliClaimSyncTests : IO (List Outcome) := do
   let bare ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", bare.toString, "init", "-q", "--bare"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "protocol.file.allow", "always"] }
   let a ← mkIssue tldir "Claimable"
   match ← run' ["claim", "tl-" ++ a, "--dir", tldir, "--sync", "--actor", "ann"] with
   | .ok out =>
     o := o ++ [check "claim --sync wins the take"
                  ((jGet out.data "claim").bind (jStr · "outcome") == some "won") out.data.compress]
   | .error e => o := o ++ [{ name := "claim --sync", passed := false, msg := e.message }]
-  let ls ← IO.Process.output { cmd := "git", args := #["ls-remote", bare.toString, "refs/tl/log"] }
+  let ls ← IO.Process.output { cmd := "git", args := #["-c", "protocol.file.allow=always", "ls-remote", bare.toString, "refs/tl/log"] }
   o := o ++ [check "claim --sync published to the remote" (!ls.stdout.trimAscii.isEmpty) ls.stdout]
   -- --verify with no remote: succeeds and warns it degraded to local
   let dir ← freshDir
@@ -2469,6 +2478,7 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
   let tlA := rootA ++ "/.tl"
   let _ ← run' ["init", "--dir", tlA]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA, "config", "protocol.file.allow", "always"] }
   let _ ← mkIssue tlA "From clone A"
   let _ ← run' ["sync", "--dir", tlA]
   -- clone B: a sync pulls A's replica from the remote
@@ -2476,6 +2486,7 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
   let tlB := rootB ++ "/.tl"
   let _ ← run' ["init", "--dir", tlB]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB, "config", "protocol.file.allow", "always"] }
   let mut absorbedRep := ""
   match ← run' ["sync", "--dir", tlB] with
   | .ok out =>
@@ -2508,6 +2519,7 @@ def cliSyncDegradeTests : IO (List Outcome) := do
   let _ ← run' ["init", "--dir", dir]
   -- a configured remote whose URL is not a git repo ⇒ fetch/push error (not a hang)
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", "/no/such/tl/remote"] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "protocol.file.allow", "always"] }
   let _ ← mkIssue dir "Workable"
   match ← run' ["ready", "--dir", dir, "--sync"] with
   | .ok out => o := o ++
@@ -2557,6 +2569,7 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
   let dir := (root / ".tl").toString
   let _ ← run' ["init", "--dir", dir]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root.toString, "config", "protocol.file.allow", "always"] }
   let _ ← mkIssue dir "Recover me"
   match ← run' ["sync", "--dir", dir] with
   | .error _ =>
@@ -2567,7 +2580,7 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
   IO.FS.removeFile hook
   match ← run' ["sync", "--dir", dir] with
   | .ok _ =>
-    let ls ← IO.Process.output { cmd := "git", args := #["ls-remote", bare.toString, "refs/tl/log"] }
+    let ls ← IO.Process.output { cmd := "git", args := #["-c", "protocol.file.allow=always", "ls-remote", bare.toString, "refs/tl/log"] }
     o := o ++ [check "the next sync recovers and converges the remote" (!ls.stdout.trimAscii.isEmpty) ls.stdout]
   | .error e => o := o ++ [{ name := "sync recovery", passed := false, msg := e.message }]
   -- G-adjacent: a remote timeout surfaces as a clear error, not a misclassified
@@ -2577,6 +2590,7 @@ def cliSyncRecoveryTests : IO (List Outcome) := do
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "init", "-q"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "config", "tl.gitRemoteTimeoutMs", "1"] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", root2.toString, "config", "protocol.file.allow", "always"] }
   let dir2 := (root2 / ".tl").toString
   let _ ← run' ["init", "--dir", dir2]
   let _ ← mkIssue dir2 "timeout target"
@@ -2601,6 +2615,7 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
   let dirA := (rootA / ".tl").toString
   let _ ← run' ["init", "--dir", dirA]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA.toString, "config", "protocol.file.allow", "always"] }
   let _ ← run' ["sync", "--dir", dirA]
   let _ ← mkIssue dirA "First task after an empty sync"
   match ← run' ["doctor", "--dir", dirA] with
@@ -2620,6 +2635,7 @@ def cliSyncFalseCleanTests : IO (List Outcome) := do
   let _ ← mkIssue dirB "Task before any remote"
   let _ ← run' ["sync", "--dir", dirB]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB.toString, "remote", "add", "origin", bare.toString] }
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", rootB.toString, "config", "protocol.file.allow", "always"] }
   match ← run' ["doctor", "--dir", dirB] with
   | .ok out => o := o ++ [check "local-only sync then add-remote: the row is not falsely ok"
       ((syncRow out).bind (jStr · "status") == some "warn") out.data.compress]
@@ -2701,6 +2717,14 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
     ["doctor", "--json", "--dir", subDir]
     (fun j => (findCheck j "gitRouting").any (fun c =>
       jStr c "status" == some "warn" && jBool j "healthy" == some true))]
+  -- the mismatch message names the actual state directory, not a hard-coded
+  -- `.tl` (custom-named --dir): "move .tl to the toplevel" would misdirect
+  o := o ++ [← expectData "doctor gitRouting: mismatch message names the real state dir, not `.tl`"
+    ["doctor", "--json", "--dir", subDir]
+    (fun j => (findCheck j "gitRouting").any (fun c =>
+      match jStr c "message" with
+      | some m => (m.splitOn "state directory").length > 1 && (m.splitOn "move .tl").length == 1
+      | none => false))]
   -- end-to-end: non-git state → ok, null toplevel
   let plain ← freshDir
   o := o ++ [← expectData "doctor gitRouting: non-git state is ok with null toplevel"

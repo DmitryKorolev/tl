@@ -232,7 +232,7 @@ def markStealth (d : Dirs) : TlM Unit :=
     value from the segments). -/
 def saturatedClock (detail : String) : Tl.Error :=
   { code := .corruptClock
-    message := s!"the clock's 48-bit physical range is exhausted ({detail}) — removing {".tl/local/clock"} will not help; check the system clock, or find and repair the segment carrying a near-max HLC (a broken or hostile writer put it there)"
+    message := s!"the clock's 48-bit physical range is exhausted ({detail}) — removing the clock file (local/clock in the state directory) will not help; check the system clock, or find and repair the segment carrying a near-max HLC (a broken or hostile writer put it there)"
     context := [("reason", .str "saturated")] }
 
 end Tl.Store

@@ -1791,7 +1791,7 @@ def gitRoutingRow (routingVars : List String) (stateRoot : String)
     (if routingVars.isEmpty then [] else
       [s!"inherited git routing environment ({String.intercalate ", " routingVars}) — tl ignores it (ADR-0012) and operates on the repository found by filesystem discovery, but plain `git` in this shell binds elsewhere; unset the variable(s) to align them"])
     ++ (if mismatch then
-      [s!"the state directory is not at the repository toplevel ({toplevel.getD ""}) — sharing binds that repository's refs/tl/log; pass --dir deliberately or move .tl to the toplevel"]
+      [s!"the state directory ({stateRoot}) is not at the repository toplevel ({toplevel.getD ""}) — sharing binds that repository's refs/tl/log; this is expected under an explicit --dir, otherwise move the state directory to the toplevel"]
     else [])
     ++ (match rewrite with
         | some r =>
