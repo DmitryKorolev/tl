@@ -65,12 +65,21 @@ root, hard-errors rather than binding an unrelated ancestor `.tl/`.
   state through the common `.git`'s `refs/tl/log` plus local-first sync — no remote
   needed on one machine ([ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md)).
 - Bare repositories. A directory that is itself a git repository directory —
-  a bare repo, or the inside of a `.git` dir, recognized the way git's own
-  setup check does (`objects/` and `refs/` directories plus a `HEAD` file
-  whose *content* is a symref or detached hash, so a committed fixture
-  directory holding an ordinary file named `HEAD` does not qualify) — bounds
-  the walk exactly like a worktree root: ascending past it could bind an
-  unrelated enclosing `.tl/`. There is no working tree there to hold state, so
+  a bare repo, or the inside of a `.git` dir — bounds the walk exactly like a
+  worktree root: ascending past it could bind an unrelated enclosing `.tl/`.
+  It is recognized *structurally* — an `objects/` directory, a `refs/` entry,
+  and a `HEAD` entry of any form (probed no-follow) — deliberately **not** by
+  re-validating `HEAD`'s content the way git's setup check does. Matching
+  git's byte-level `HEAD` rules in hand-written code proved a reliable source
+  of *under*-detection (uppercase-hex HEAD, a symlink HEAD dangling after
+  `pack-refs --prune` or on an unborn branch, `ref:` without a space, a hash
+  with trailing text, an oversized HEAD, `refs` as an executable file — each a
+  real bare repo git operates in while `tl` climbs *out* and binds, and writes
+  to, the enclosing project). The structural test is at least as inclusive as
+  git on every component, so `tl` never climbs out of a directory git treats as
+  a gitdir; its only cost is the safe direction — a committed fixture with that
+  structure also bounds the walk (a `no-project`, never a wrong bind; `--dir`
+  overrides). There is no working tree there to hold state, so
   `tl init` (and `import`'s implicit init) refuses it with a teaching `usage`
   error; a bare repository still serves as a sync *remote* (ADR-0001 §5), and
   `--dir` remains the explicit, never-refused escape hatch. Init's placement
@@ -151,15 +160,21 @@ Per-call additions (the fixed ref-commit identity, ADR-0001) compose after
 the scrub, and may deliberately re-set a scrubbed variable.
 
 `tl doctor` reports what this policy does not prevent, rather than hiding it.
-The `gitRouting` check (a) lists any inherited scrub-set variables — present
-but ignored by `tl`, though plain `git` in the same shell binds elsewhere;
-(b) compares filesystem discovery with git's own classification, warning when
-the state directory is not at the toplevel of the repository it shares
-through; (c) compares each remote's raw push target (`remote.<n>.pushurl`,
-else `.url` — so a deliberately configured distinct push URL is not flagged)
-with the URL git will actually push to (`remote get-url --push`, which applies
-both `url.*.insteadOf` and the push-only `url.*.pushInsteadOf` without
-contacting the remote), reporting when a rewrite is in force; and (d) reports
+The `gitRouting` check (a) lists any inherited *repository-rerouting* variables
+(`GIT_DIR` and the rest of the routing/object-store/namespace set —
+`repoRoutingVars`, the subset for which "plain `git` in this shell binds a
+different repository" is literally true; the config-file variables
+`GIT_CONFIG_*`/`XDG_CONFIG_HOME` are scrubbed but *not* surfaced here, since
+inheriting one — `XDG_CONFIG_HOME` especially — is common and benign and "unset
+it" is wrong advice); (b) compares filesystem discovery with git's own
+classification, warning when the state directory is not at the toplevel of the
+repository it shares through; (c) compares each of a remote's raw push targets
+(all `remote.<n>.pushurl` values, else `.url` — so a deliberately configured
+distinct push URL is not flagged) against the URLs git will actually push to
+(`remote get-url --push --all`, applying both `url.*.insteadOf` and the
+push-only `url.*.pushInsteadOf` without contacting the remote — `--all` because
+git pushes to every push URL, so a rewrite of a non-first one must still be
+seen), reporting when a rewrite is in force; and (d) reports
 each push-*destination* key — `tl.remote`, and the resolved remote's `url` /
 `pushurl` — whose effective value is supplied by the global scope
 (`~/.gitconfig`) rather than repo-local config, catching the case where the

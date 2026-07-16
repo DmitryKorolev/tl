@@ -864,6 +864,14 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
     (s14.exitCode == 0 && (s14.stdout.splitOn "\"healthy\":true").length > 1
       && (s14.stdout.splitOn "\"gitRouting\"").length > 1
       && (s14.stdout.splitOn "GIT_DIR").length > 1) s14.stdout]
+  -- (14b) an inherited *config-relocation* var (GIT_CONFIG_COUNT) is scrubbed
+  --       but must NOT surface in routingVars: production filters to
+  --       repoRoutingVars, and a benign inherited config var is not a
+  --       split-repository condition
+  let s14c ← spawn ["doctor", "--json"] [("GIT_CONFIG_COUNT", some "0")] (some a)
+  o := o ++ [check "doctor: an inherited config var is not surfaced in routingVars"
+    (s14c.exitCode == 0 && (s14c.stdout.splitOn "\"routingVars\":[]").length > 1
+      && (s14c.stdout.splitOn "GIT_CONFIG_COUNT").length == 1) s14c.stdout]
   -- (15) the actor fallback reads the discovered repo's user.email, not the
   --      env-routed repo's (ADR-0013 chain, unset TL_ACTOR)
   let x := tmp / "x"
@@ -1010,6 +1018,38 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
     [check "a global pushurl added beside a local one is flagged (multi-valued)"
        (s18.exitCode == 0 && (s18.stdout.splitOn "\"externalPushConfig\"").length > 1
          && (s18.stdout.splitOn mvDecoy.toString).length > 1) s18.stdout]
+  -- (18b) a rewrite of a NON-FIRST local pushurl: git pushes to every one, so
+  --       a HOME insteadOf that only moves the middle target is invisible to a
+  --       single-URL resolver — the all-URLs comparison must catch it, and it
+  --       must NOT false-positive when multiple local pushurls are legit.
+  let mid := tmp / "midrewrite"
+  let midReal := tmp / "mid-real.git"
+  let midOther := tmp / "mid-other.git"
+  let midDecoy := tmp / "mid-decoy.git"
+  IO.FS.createDirAll mid
+  git tmp ["init", "-q", mid.toString]
+  git tmp ["init", "--bare", "-q", midReal.toString]
+  git tmp ["init", "--bare", "-q", midOther.toString]
+  git tmp ["init", "--bare", "-q", midDecoy.toString]
+  git mid ["remote", "add", "origin", midReal.toString]
+  git mid ["config", "--add", "remote.origin.pushurl", midReal.toString]
+  git mid ["config", "--add", "remote.origin.pushurl", midOther.toString]  -- the middle, to be rewritten
+  git mid ["config", "--add", "remote.origin.pushurl", midReal.toString]
+  let _ ← spawn ["init"] [] (some mid)
+  -- first, an ordinary env: multiple legit local pushurls must not warn
+  let s18c ← spawn ["doctor", "--json"] [] (some mid)
+  o := o ++
+    [check "multiple legit local pushurls do not false-positive as a rewrite"
+       (s18c.exitCode == 0 && (s18c.stdout.splitOn "\"remoteRewrite\":null").length > 1) s18c.stdout]
+  let midHome := tmp / "mid-home"
+  IO.FS.createDirAll midHome
+  IO.FS.writeFile (midHome / ".gitconfig")
+    ("[url \"" ++ midDecoy.toString ++ "\"]\n\tinsteadOf = " ++ midOther.toString ++ "\n")
+  let s18d ← spawn ["doctor", "--json"] [("HOME", some midHome.toString)] (some mid)
+  o := o ++
+    [check "a rewrite of a non-first pushurl is disclosed (all-URLs comparison)"
+       (s18d.exitCode == 0 && (s18d.stdout.splitOn "\"remoteRewrite\"").length > 1
+         && (s18d.stdout.splitOn midDecoy.toString).length > 1) s18d.stdout]
   -- (19) the branch.<current>.remote selector injected from global (tl.remote
   --      unset) redirects the remote choice — the selector chain must check it
   let br := tmp / "branchsel"
@@ -2658,7 +2698,10 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
   let ext : List ExternalPushConfig :=
     [{ key := "tl.remote", value := "evil" }, { key := "remote.evil.url", value := "/decoy.git" }]
   let okRow := gitRoutingRow [] "/repo" (some "/repo") none []
-  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_CONFIG_COUNT"] "/repo" (some "/repo") none []
+  -- use only repo-rerouting vars, as production does (cmdDoctor filters to
+  -- repoRoutingVars) — passing a config-relocation var here would test a state
+  -- production cannot construct and mask the routingVars/repoRoutingVars split
+  let varsRow := gitRoutingRow ["GIT_DIR", "GIT_WORK_TREE"] "/repo" (some "/repo") none []
   let misRow := gitRoutingRow [] "/repo/sub" (some "/repo") none []
   let bothRow := gitRoutingRow ["GIT_DIR"] "/repo/sub" (some "/repo") none []
   let noRepoRow := gitRoutingRow [] "/somewhere" none none []
@@ -2670,8 +2713,8 @@ def cliDoctorRoutingTests : IO (List Outcome) := do
     match jGet j k with | some .null => true | _ => false
   o := o ++
     [check "gitRouting: aligned repo is ok" (status okRow == "ok") (msg okRow),
-     check "gitRouting: inherited vars warn and name themselves"
-       (status varsRow == "warn" && (msg varsRow |>.splitOn "GIT_CONFIG_COUNT").length > 1
+     check "gitRouting: inherited repo-routing vars warn and name themselves"
+       (status varsRow == "warn" && (msg varsRow |>.splitOn "GIT_WORK_TREE").length > 1
          && (msg varsRow |>.splitOn "tl ignores it").length > 1) (msg varsRow),
      check "gitRouting: toplevel mismatch warns and teaches placement"
        (status misRow == "warn" && (msg misRow |>.splitOn "toplevel").length > 1) (msg misRow),

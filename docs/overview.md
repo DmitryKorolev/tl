@@ -273,12 +273,15 @@ config-relocation variables — `GIT_DIR`, the `GIT_CONFIG_*` family,
 transport at another repository, ADR-0012/ADR-0014 T7. **Two variables are
 trusted and can still repoint it:** `PATH`/`GIT_EXEC_PATH` choose the git
 binary itself, and `HOME` — which `tl` cannot unset without breaking
-`~/.gitconfig`, `~/.git-credentials`, and `~/.ssh` — can carry a
-`url.*.insteadOf` rewrite that sends a push to another repository. Neither
-requires the other: a `HOME`-only override suffices, so this is a carried
-assumption, not a corollary of the trusted-binary one. It is disclosed rather
-than prevented — `tl doctor`'s `gitRouting` check reports when a remote's
-effective URL differs from its configured URL — and it misplaces the log
+`~/.gitconfig`, `~/.git-credentials`, and `~/.ssh` — can send a push to another
+repository two ways: a `url.*.insteadOf`/`pushInsteadOf` rewrite, or wholesale
+injection of the remote configuration itself (`tl.remote`,
+`branch.<b>.remote`, `remote.<n>.url`/`pushurl`). Neither requires the other: a
+`HOME`-only override suffices, so this is a carried assumption, not a corollary
+of the trusted-binary one. It is disclosed rather than prevented — `tl
+doctor`'s `gitRouting` check reports both a push-URL rewrite (raw target vs
+`remote get-url --push --all`) and any push-destination key sourced from the
+global scope (`externalPushConfig`) — and it misplaces the log
 without losing it: the local segments survive and a later clean sync publishes
 them);
 fold-cache checksum adequacy (ADR-0022): cache validity concludes "the live

@@ -74,9 +74,10 @@ private def fixedIdentity : List (String × Option String) :=
     above. That is a **carried residual**, not a covered case (ADR-0012
     Consequences / ADR-0014 T7); it needs no control of `PATH` or of the git
     binary. `tl` does not prevent it — it discloses it: `doctor`'s
-    `gitRouting` row reports when a remote's effective push URL (after
-    `insteadOf`/`pushInsteadOf` rewriting, `effectiveRemoteUrl`) differs from
-    its configured push target.
+    `gitRouting` row reports when any of a remote's effective push URLs (after
+    `insteadOf`/`pushInsteadOf` rewriting, `effectivePushUrls`) differs from
+    its configured push target, and when a push-destination key is sourced from
+    the global scope (`configFromGlobal`).
     Also preserved and non-redirecting: `GIT_CEILING_DIRECTORIES` (it can stop
     a walk, never redirect one, and `tl`'s own walks honor it). -/
 def scrubbedGitVars : List String :=
@@ -409,23 +410,17 @@ def gitConfigSet (d : Dirs) (key value : String) : TlM Bool := do
   let o ← (git d ["config", key, value] : IO _)
   return o.exitCode == 0
 
-/-- `git config <scope> --get <key>` (`scope` is `--global`/`--local`/…), or
-    `none` when unset at that scope or the scope is unavailable (e.g. `--local`
-    outside a repo). Reads one scope in isolation — the primitive `doctor` uses
-    to tell a repo-controlled setting from one a global `~/.gitconfig` supplies
-    (the HOME residual, ADR-0012/ADR-0014 T7). `--global` here reads
-    `$HOME/.gitconfig` — `XDG_CONFIG_HOME` is scrubbed, so the global scope is
-    exactly the residual channel. -/
-def gitConfigScoped (d : Dirs) (scope key : String) : TlM (Option String) := do
-  let o ← (git d ["config", scope, "--get", key] : IO _)
-  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
-
-/-- Every value of `key` at `scope`, in config order — `[]` when unset there or
-    the scope is unavailable. Reading a scope directly (not `--get` then
-    `--show-origin`) attributes each value to its scope without ambiguity, and
-    `--get-all` keeps *all* values: `remote.<n>.pushurl` is multi-valued and
-    git pushes to every one, so a global decoy pushurl added alongside a local
-    one is a real extra push target a last-value read would miss. -/
+/-- Every value of `key` at `scope` (`--global`/`--local`/`--worktree`), in
+    config order — `[]` when unset there or the scope is unavailable (e.g.
+    `--local` outside a repo). Reading a scope directly (not `--get` then
+    `--show-origin`) attributes each value to its scope without ambiguity — the
+    primitive `doctor` uses to tell a repo-controlled setting from one a global
+    `~/.gitconfig` supplies (the HOME residual, ADR-0012/ADR-0014 T7).
+    `--global` reads `$HOME/.gitconfig` — `XDG_CONFIG_HOME` is scrubbed, so the
+    global scope is exactly the residual channel. `--get-all` keeps *all*
+    values: `remote.<n>.pushurl` is multi-valued and git pushes to every one,
+    so a global decoy pushurl added alongside a local one is a real extra push
+    target a last-value read would miss. -/
 def gitConfigScopedAll (d : Dirs) (scope key : String) : TlM (List String) := do
   let o ← (git d ["config", scope, "--get-all", key] : IO _)
   if o.exitCode != 0 then return []
@@ -506,24 +501,36 @@ def currentBranch (d : Dirs) : TlM (Option String) := do
 def remoteExists (d : Dirs) (remote : String) : TlM Bool :=
   return (← gitConfig d s!"remote.{remote}.url").isSome
 
-/-- The URL git will *actually push to* for `remote`, after applying any
-    `url.<base>.insteadOf` *and* `url.<base>.pushInsteadOf` rewrite —
-    `remote get-url --push` is exactly the resolution `git push` performs, and
-    `pushInsteadOf` (which `ls-remote --get-url` does not honor, it being a
-    fetch-URL resolver) can redirect a push on its own. It expands the URL and
-    exits without contacting the remote, so this stays a local read (`doctor`
-    calls it on the no-network path). `none` when git fails or the remote is
-    unknown.
+/-- Every merged value of `key` across all scopes, in config order (no scope
+    flag ⇒ the effective merged view git itself uses). `[]` when unset. -/
+def gitConfigAll (d : Dirs) (key : String) : TlM (List String) := do
+  let o ← (git d ["config", "--get-all", key] : IO _)
+  if o.exitCode != 0 then return []
+  return (o.stdout.splitOn "\n").filterMap (fun l =>
+    let t := l.trimAscii.toString; if t.isEmpty then none else some t)
 
-    Compared against the *configured* `remote.<n>.url`, this is how `doctor`
+/-- The URLs git will *actually push to* for `remote`, after applying every
+    `url.<base>.insteadOf` / `url.<base>.pushInsteadOf` rewrite —
+    `remote get-url --push --all` is exactly what `git push` resolves. The
+    `--all` is load-bearing: `remote.<n>.pushurl` is multi-valued and git
+    pushes to *every* value, so a rewrite (or an injection) that only moves a
+    non-first push URL is invisible to a single-URL `get-url --push`. It
+    expands the URLs and exits without contacting the remote, so this stays a
+    local read (`doctor` calls it on the no-network path). `[]` when git fails
+    or the remote is unknown.
+
+    Compared element-wise against the *raw* configured push targets
+    (`gitConfigAll remote.<n>.pushurl`, else `.url`), this is how `doctor`
     discloses the ADR-0012 `HOME` residual: a rewrite living in a git config
-    `tl` cannot scrub still redirects a push, and the difference between the
-    two URLs is exactly that redirect, visible without a network round-trip. -/
-def effectiveRemoteUrl (d : Dirs) (remote : String) : TlM (Option String) := do
-  let o ← (git d ["remote", "get-url", "--push", remote] : IO _)
-  if o.exitCode != 0 then return none
-  let url := o.stdout.trimAscii.toString
-  return (if url.isEmpty || url == remote then none else some url)
+    `tl` cannot scrub still redirects a push, and a raw target that resolves to
+    a different URL is exactly that redirect, visible without a network
+    round-trip. -/
+def effectivePushUrls (d : Dirs) (remote : String) : TlM (List String) := do
+  let o ← (git d ["remote", "get-url", "--push", "--all", remote] : IO _)
+  if o.exitCode != 0 then return []
+  return (o.stdout.splitOn "\n").filterMap (fun l =>
+    let t := l.trimAscii.toString
+    if t.isEmpty || t == remote then none else some t)
 
 /-- Fetch the remote's `refs/tl/log` and return its tip + segments + carried-
     unknown entries — `(none, [], [])` when the remote has no `refs/tl/log`

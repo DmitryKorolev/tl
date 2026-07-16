@@ -2050,39 +2050,39 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
         match ← Tl.Sync.resolveRemote d with
         | none => pure (none, [])
         | some remote =>
-          let pushCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.pushurl"
-          let fetchCfg ← Tl.Sync.gitConfig d s!"remote.{remote}.url"
-          let configured := pushCfg.orElse (fun _ => fetchCfg)
-          let effective ← Tl.Sync.effectiveRemoteUrl d remote
-          let rewrite := match configured, effective with
-            | some c, some e => if c != e then some ({ remote, configured := c, effective := e } : RemoteRewrite) else none
-            | _, _ => none
-          -- mirror resolveRemote's actual chain, checking only the key that
-          -- won: the selector (tl.remote, else branch.<current>.remote — a
-          -- literal "origin" default has no config to inject), then the
-          -- selected remote's push targets (every pushurl value — git pushes
-          -- to all of them, so a global one added beside a local one is an
-          -- extra target; else the url when no pushurl is set).
-          let mut ext : List ExternalPushConfig := []
-          let addIfGlobal := fun (key : String) (ext : List ExternalPushConfig) => do
+          -- rewrite: compare EVERY raw push target against what git resolves
+          -- it to (both lists in config order; git pushes to every pushurl, so
+          -- a rewrite of a non-first push URL is invisible to a single-URL
+          -- read). The first raw target that resolves to a different URL is the
+          -- disclosed redirect.
+          let allPushurl ← Tl.Sync.gitConfigAll d s!"remote.{remote}.pushurl"
+          let hasPushurl := !allPushurl.isEmpty
+          let rawPush ← if hasPushurl then pure allPushurl
+                        else Tl.Sync.gitConfigAll d s!"remote.{remote}.url"
+          let effPush ← Tl.Sync.effectivePushUrls d remote
+          let rewrite := (rawPush.zip effPush).find? (fun p => p.1 != p.2)
+            |>.map (fun p => ({ remote, configured := p.1, effective := p.2 } : RemoteRewrite))
+          -- external: push-destination keys sourced from the global scope,
+          -- mirroring resolveRemote's chain — the winning selector (tl.remote,
+          -- else branch.<current>.remote; a literal "origin" has no config to
+          -- inject), then the selected remote's push targets (every global
+          -- pushurl value is an extra push target regardless of a local one;
+          -- else the url when no pushurl is set). Built from small pre-sized
+          -- lists (no repeated `++ [x]`).
+          let globalOf := fun (key : String) => do
             if ← Tl.Sync.configFromGlobal d key then
-              let v := (← Tl.Sync.gitConfigScopedAll d "--global" key).head?.getD ""
-              pure (ext ++ [({ key, value := v } : ExternalPushConfig)])
-            else pure ext
-          -- the winning selector
-          if (← Tl.Sync.gitConfig d "tl.remote").isSome then
-            ext ← addIfGlobal "tl.remote" ext
-          else match ← Tl.Sync.currentBranch d with
-            | some b => ext ← addIfGlobal s!"branch.{b}.remote" ext
-            | none => pure ()
-          -- push targets: every global pushurl value is a real extra push
-          -- target regardless of a local one (multi-valued, git pushes to all)
-          for v in ← Tl.Sync.gitConfigScopedAll d "--global" s!"remote.{remote}.pushurl" do
-            ext := ext ++ [({ key := s!"remote.{remote}.pushurl", value := v } : ExternalPushConfig)]
-          -- with no pushurl at all, the url is the push target
-          if pushCfg.isNone then
-            ext ← addIfGlobal s!"remote.{remote}.url" ext
-          pure (rewrite, ext))
+              pure [({ key, value := (← Tl.Sync.gitConfigScopedAll d "--global" key).head?.getD "" }
+                      : ExternalPushConfig)]
+            else pure ([] : List ExternalPushConfig)
+          let selectorExt ← (do
+            if (← Tl.Sync.gitConfig d "tl.remote").isSome then globalOf "tl.remote"
+            else match ← Tl.Sync.currentBranch d with
+              | some b => globalOf s!"branch.{b}.remote"
+              | none => pure [])
+          let pushurlExt := (← Tl.Sync.gitConfigScopedAll d "--global" s!"remote.{remote}.pushurl").map
+            (fun v => ({ key := s!"remote.{remote}.pushurl", value := v } : ExternalPushConfig))
+          let urlExt ← if hasPushurl then pure [] else globalOf s!"remote.{remote}.url"
+          pure (rewrite, selectorExt ++ pushurlExt ++ urlExt))
       pure (gitRoutingRow present stateRoot top rewrite external)
     catch e =>
       pure (Json.mkObj [("name", Json.str "gitRouting"), ("status", Json.str "warn"),
