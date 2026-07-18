@@ -600,24 +600,31 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
     ++ parentCycles.map (entry "parent")
     ++ readiness.map (entry "readiness")
   -- the repair verb differs by kind: blocks edges are retracted with
-  -- `dep remove`, parent edges with `parent remove`/`parent set`. A witness's
-  -- label does not determine the kinds involved (a readiness witness is
-  -- pure-blocks or mixed, `precCycles`), so probe which edge kinds actually
-  -- occur between members of a reported witness — one short-circuit pass per
-  -- kind over the hoisted present edges — and name only the verbs for kinds
-  -- that occur. Every prec-wait step is a direct present blocks or parent
-  -- edge inside its SCC (`liveBlockersSucc`/`liveChildrenSucc`), so a
-  -- nonempty witness always probes at least one kind.
+  -- `dep remove`, parent edges with `parent remove`/`parent set`. A witness
+  -- contributes the kinds of its *own* cycle relation, not of every present
+  -- edge whose endpoints happen to sit inside it — an incidental edge of the
+  -- other kind between two members is not part of the reported cycle, and
+  -- removing it cannot break that cycle. Structural witnesses carry their
+  -- kind by construction (their label); a readiness witness (pure-blocks or
+  -- mixed, `precCycles`) contributes a kind only where a *live* ≺-step of
+  -- that kind connects two of its members (`liveBlockersSucc` /
+  -- `liveChildrenSucc`, probed through the view's hoisted rollup) — every
+  -- ≺-step is one of the two kinds and a cyclic ≺-SCC steps inside itself,
+  -- so a readiness witness always contributes a kind. The probe runs only
+  -- when a readiness row exists; structural-only reports pay nothing.
   let human :=
     if rows.isEmpty then "no cycles"
     else
-      let witnesses := blocksCycles ++ parentCycles ++ readiness
-      let inWitness (f t : IssueId) : Bool :=
-        witnesses.any (fun w => w.contains f && w.contains t)
-      let occurs (k : EdgeKind) : Bool :=
-        v.edges.any (fun (f, t, ek) => decide (ek = k) && inWitness f t)
+      let readinessStep (succ : IssueId → List IssueId) : Bool :=
+        readiness.any (fun w => w.any (fun i => (succ i).any (fun j => w.contains j)))
+      let occursBlocks := !blocksCycles.isEmpty
+        || readinessStep (fun i => State.liveSuccE v.rollup v.edges s i)
+      let occursParent := !parentCycles.isEmpty
+        || readinessStep (fun i =>
+            (State.kidsOfEdges v.pedges i).filter
+              (fun c => !State.effClosedWith v.rollup s c))
       let hint :=
-        match occurs EdgeKind.Blocks, occurs EdgeKind.Parent with
+        match occursBlocks, occursParent with
         | true, false => "break each with `tl dep remove`"
         | false, true => "break each with `tl parent remove` (or move a member with `tl parent set`)"
         | _, _ => "break blocks edges with `tl dep remove` and parent edges with `tl parent remove` (or `tl parent set`)"

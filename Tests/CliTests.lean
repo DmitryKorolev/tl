@@ -402,6 +402,22 @@ def cliDepTests : IO (List Outcome) := do
         ((out.human.splitOn "tl dep remove").length > 1
           && (out.human.splitOn "tl parent").length == 1) out.human)
     | .error e => pure { name := "dep cycles hint (blocks)", passed := false, msg := e.message })]
+  -- an incidental parent edge between the two blocks-cycle members is not
+  -- part of any reported cycle (removing it cannot break one): the report
+  -- stays a single blocks row and the hint must not name the parent verbs
+  let _ ← run' ["parent", "set", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
+  o := o ++
+    [← expectData "an incidental parent edge adds no cycle row"
+      ["dep", "cycles", "--dir", dir]
+      (fun j => jNat j "count" == some 1
+        && (jArr j "cycles").all (fun c => jStr c "kind" == some "blocks")),
+     ← (match ← run' ["dep", "cycles", "--dir", dir] with
+       | .ok out => pure (check
+           "dep cycles hint ignores an incidental parent edge in a blocks witness"
+           ((out.human.splitOn "tl dep remove").length > 1
+             && (out.human.splitOn "tl parent").length == 1) out.human)
+       | .error e => pure { name := "dep cycles hint (incidental parent)",
+                            passed := false, msg := e.message })]
   -- parent-kind witness: a 2-cycle in the parent graph (`parent set` refuses
   -- only the direct self-parent; longer cycles are reported, not rejected)
   let pdir ← freshDir
