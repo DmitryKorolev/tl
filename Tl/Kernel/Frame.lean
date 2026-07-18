@@ -101,7 +101,7 @@ theorem labelAdd_status (s : State) (id : IssueId) (l : Label) (st : Stamp) (j :
 theorem labelRemove_status (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt.FinSet Stamp)
     (j : IssueId) :
     ((apply s (Op.labelRemove id l obs)).issueData j).status = (s.issueData j).status :=
-  status_mergeSingleton s.data id (Op.labelRemoveData obs) rfl j
+  status_mergeSingleton s.data id (Op.labelRemoveData l obs) rfl j
 
 /-! ## The frame lemma for `effectiveStatus`
 
@@ -261,11 +261,11 @@ theorem ready_labelRemove (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt.
   ready_congr (s1 := apply s (Op.labelRemove id l obs)) (s2 := s)
     (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
     (fun j => congrArg (fun r => r.value.getD Status.Open)
-      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData l obs) rfl j))
     (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
-      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData l obs) rfl j))
     (fun j => congrArg (fun r => r.value.getD none)
-      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData obs) rfl j))
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData l obs) rfl j))
     now
 
 /-! ## View-based congruences (for ops that change `edges` but not the filtered views)
@@ -365,12 +365,11 @@ edges to `Blocks`/`Parent`, so the added `Related` element is dropped — the vi
 hence `effectiveStatus`/`ready`, are fixed; issues and every register are fixed too
 (empty issue/data delta). So a `relate` is invisible to the verified core.
 
-The `unrelate` (`edgeRemove`) counterpart tombstones the observed tags *globally* (the
-delta ignores the edge kind), so it is frame-preserving only when those tags spare
-every present `Blocks`/`Parent` edge — which for a well-formed unrelate follows from
-add-tag/stamp uniqueness (overview Trusted, tier-3), not from the kernel. It is hence
-correctly a carried assumption, not a theorem; `ready_edgeRemove_of_undisturbed` below
-states the exact in-kernel boundary. -/
+The `unrelate` (`edgeRemove`) counterpart is proved the same way below
+(`effectiveStatus_unrelate` / `ready_unrelate`): its delta tombstones the observed
+tags *at the removed edge's own key* — the kind is part of the element key — so only
+that `Related` element's presence can change, and the `Blocks`/`Parent` filters drop
+it. Unconditional: no stamp-uniqueness side condition, for any observed payload. -/
 
 private theorem decide_related_false (k : EdgeKind) (hk : EdgeKind.Related ≠ k)
     {q : Prop} [Decidable q] : decide (EdgeKind.Related = k ∧ q) = false :=
@@ -431,16 +430,16 @@ theorem ready_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (now : Instant) 
     (fun j => congrArg IssueData.priorityOf (issueData_relate s i0 j0 st j))
     (fun j => congrArg IssueData.deferUntilOf (issueData_relate s i0 j0 st j)) now
 
-/-! ## The `edgeRemove` (`unrelate` / `dep remove`) boundary
+/-! ## The frame lemma for `unrelate` (a `related` `edgeRemove`, ADR-0003)
 
-An `edgeRemove` has empty issue/data deltas (issues and registers are fixed) but
-tombstones the observed tags *globally*: it can only *lose* present edges, never gain
-them, and the delta does not see the edge's kind. So whether it preserves the verified
-core is *exactly* whether it leaves the `Blocks`/`Parent` views fixed. We state that
-honest boundary: given the view-preservation hypotheses, `effectiveStatus`/`ready` are
-fixed. Discharging those hypotheses for a *related* removal (obs = that edge's own
-tags) rests on add-tag/stamp uniqueness (overview Trusted, tier-3); a *blocks* removal
-is *meant* to break them (that is `dep remove`). -/
+An `edgeRemove` has empty issue/data deltas (issues and registers are fixed) and
+tombstones the observed tags *at the removed edge's own element key* — `Edge`
+includes the kind, so a `related` removal's tombstones live under a `Related` key
+and can only change *that* element's presence. Every `Blocks`/`Parent` view filter
+rejects a `Related` element, so the views — and hence `effectiveStatus`/`ready` —
+are fixed **unconditionally**: for any observed payload, malformed or adversarial
+included, with no stamp-uniqueness side condition. (A `Blocks`/`Parent` removal is
+*meant* to change the views — that is `dep remove` doing its job.) -/
 
 theorem issues_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) :
     (apply s (Op.edgeRemove e obs)).issues = s.issues :=
@@ -452,23 +451,56 @@ theorem issueData_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) (j : Is
   rw [show (apply s (Op.edgeRemove e obs)).data = s.data from
     AMap.merge_empty_right IssueData.merge s.data]
 
-/-- An `edgeRemove` that leaves `childrenOf` fixed leaves `effectiveStatus` fixed. -/
-theorem effectiveStatus_edgeRemove_of_undisturbed (s : State) (e : Edge) (obs : FinSet Stamp)
-    (i : IssueId) (hchild : ∀ j, (apply s (Op.edgeRemove e obs)).childrenOf j = s.childrenOf j) :
-    (apply s (Op.edgeRemove e obs)).effectiveStatus i = s.effectiveStatus i :=
-  effectiveStatus_congr_view (issues_edgeRemove s e obs) hchild
-    (fun j => congrArg IssueData.statusOf (issueData_edgeRemove s e obs j)) i
+/-- Any `edgeRemove` leaves the edge set's present list fixed under any filter that
+    rejects the removed element (lifts the OR-Set tombstone workhorse). -/
+theorem presentEdges_edgeRemove_filter (s : State) (e : Edge) (obs : FinSet Stamp)
+    {P : Edge → Bool} (hP : P e = false) :
+    ((apply s (Op.edgeRemove e obs)).presentEdges).filter P = (s.presentEdges).filter P :=
+  OrSet.presentElements_mergeTombstonesAt_filter s.edges e obs hP
 
-/-- An `edgeRemove` that leaves all three `Blocks`/`Parent` views fixed leaves `ready`
-    fixed — the precise in-kernel boundary for `unrelate` / `dep remove`. -/
-theorem ready_edgeRemove_of_undisturbed (s : State) (e : Edge) (obs : FinSet Stamp) (now : Instant)
-    (hchild : ∀ j, (apply s (Op.edgeRemove e obs)).childrenOf j = s.childrenOf j)
-    (hblock : ∀ j, (apply s (Op.edgeRemove e obs)).blockersOf j = s.blockersOf j)
-    (hdep : ∀ j, (apply s (Op.edgeRemove e obs)).dependentsOf j = s.dependentsOf j) :
-    (apply s (Op.edgeRemove e obs)).ready now = s.ready now :=
-  ready_congr_view (issues_edgeRemove s e obs) hchild hblock hdep
-    (fun j => congrArg IssueData.statusOf (issueData_edgeRemove s e obs j))
-    (fun j => congrArg IssueData.priorityOf (issueData_edgeRemove s e obs j))
-    (fun j => congrArg IssueData.deferUntilOf (issueData_edgeRemove s e obs j)) now
+theorem childrenOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).childrenOf i = s.childrenOf i := by
+  unfold State.childrenOf
+  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
+    (P := fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+    (decide_related_false EdgeKind.Parent (fun h => EdgeKind.noConfusion h))]
+
+theorem blockersOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).blockersOf i = s.blockersOf i := by
+  unfold State.blockersOf
+  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
+    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
+    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+
+theorem dependentsOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).dependentsOf i = s.dependentsOf i := by
+  unfold State.dependentsOf
+  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
+    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
+    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+
+/-- **Frame lemma, `unrelate` case (ADR-0003).** A `related` edge removal changes
+    neither `effectiveStatus` … -/
+theorem effectiveStatus_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp)
+    (i : IssueId) :
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).effectiveStatus i
+      = s.effectiveStatus i :=
+  effectiveStatus_congr_view (issues_edgeRemove s (i0, j0, EdgeKind.Related) obs)
+    (childrenOf_unrelate s i0 j0 obs)
+    (fun j => congrArg IssueData.statusOf
+      (issueData_edgeRemove s (i0, j0, EdgeKind.Related) obs j)) i
+
+/-- … **nor `ready`** — unconditionally, for any observed payload. Together with
+    `ready_relate` this closes the frame lemma for every side-channel write, with
+    no carried stamp-uniqueness discharge. -/
+theorem ready_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (now : Instant) :
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).ready now = s.ready now :=
+  ready_congr_view (issues_edgeRemove s (i0, j0, EdgeKind.Related) obs)
+    (childrenOf_unrelate s i0 j0 obs) (blockersOf_unrelate s i0 j0 obs)
+    (dependentsOf_unrelate s i0 j0 obs)
+    (fun j => congrArg IssueData.statusOf (issueData_edgeRemove s (i0, j0, EdgeKind.Related) obs j))
+    (fun j => congrArg IssueData.priorityOf (issueData_edgeRemove s (i0, j0, EdgeKind.Related) obs j))
+    (fun j => congrArg IssueData.deferUntilOf (issueData_edgeRemove s (i0, j0, EdgeKind.Related) obs j))
+    now
 
 end Tl.Kernel

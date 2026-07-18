@@ -10,8 +10,9 @@ transfers to the shipped cold path with no re-proof.
 
 The lift is componentwise: `State.merge`/`OrSet.merge` are componentwise joins,
 so the left-folded merge of the deltas equals the per-component batched join,
-each combiner a semilattice (`IssueData.merge`, `FinSet.union`, the trivial
-`Unit` join). Pure; no I/O. No Mathlib (ADR-0009).
+each combiner a semilattice (`IssueData.merge`, `FinSet.union` — both OR-Set
+legs are per-element tag maps joined by union). Pure; no I/O. No Mathlib
+(ADR-0009).
 -/
 import Tl.Kernel.Theorems
 import Tl.Crdt.MapFold
@@ -36,16 +37,16 @@ theorem foldl_merge_adds : (os : List (OrSet α)) → (acc : OrSet α) →
 
 theorem foldl_merge_removed : (os : List (OrSet α)) → (acc : OrSet α) →
     (os.foldl merge acc).removed
-      = (os.map (fun o => o.removed)).foldl FinSet.union acc.removed
+      = (os.map (fun o => o.removed)).foldl (AMap.merge FinSet.union) acc.removed
   | [], _ => rfl
   | o :: os, acc => by
     simp only [List.foldl_cons, List.map_cons]
     exact foldl_merge_removed os (merge acc o)
 
-/-- The batched OR-Set join: combine all add-maps and all tombstone sets at once. -/
+/-- The batched OR-Set join: combine all add-maps and all tombstone maps at once. -/
 def joinFast (os : List (OrSet α)) : OrSet α :=
   ⟨AMap.joinFast FinSet.union (os.map (fun o => o.adds)),
-   AMap.joinFast (fun _ _ => ()) (os.map (fun o => o.removed))⟩
+   AMap.joinFast FinSet.union (os.map (fun o => o.removed))⟩
 
 theorem joinFast_eq (os : List (OrSet α)) : joinFast os = os.foldl merge OrSet.empty := by
   apply OrSet.ext
@@ -53,10 +54,10 @@ theorem joinFast_eq (os : List (OrSet α)) : joinFast os = os.foldl merge OrSet.
     rw [AMap.joinFast_eq (fun a b => FinSet.union_comm a b)
         (fun a b c => FinSet.union_assoc a b c), foldl_merge_adds os OrSet.empty]
     rfl
-  · show AMap.joinFast (fun _ _ => ()) (os.map (fun o => o.removed))
+  · show AMap.joinFast FinSet.union (os.map (fun o => o.removed))
         = (os.foldl merge OrSet.empty).removed
-    rw [AMap.joinFast_eq (f := fun _ _ => ()) (fun _ _ => rfl) (fun _ _ _ => rfl),
-      foldl_merge_removed os OrSet.empty]
+    rw [AMap.joinFast_eq (fun a b => FinSet.union_comm a b)
+        (fun a b c => FinSet.union_assoc a b c), foldl_merge_removed os OrSet.empty]
     rfl
 
 end OrSet

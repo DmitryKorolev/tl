@@ -142,12 +142,12 @@ private def decFinSet (j : Json) : Option (FinSet Stamp) :=
   | _ => none
 
 private def encOrSet {α : Type} [TotalOrd α] (encEl : α → Json) (s : OrSet α) : Json :=
-  Json.mkObj [("a", encAMap encEl encFinSet s.adds), ("r", encFinSet s.removed)]
+  Json.mkObj [("a", encAMap encEl encFinSet s.adds), ("r", encAMap encEl encFinSet s.removed)]
 
 private def decOrSet {α : Type} [TotalOrd α] (decEl : Json → Option α) (j : Json) :
     Option (OrSet α) := do
   let adds ← decAMap decEl decFinSet (← (j.getObjVal? "a").toOption)
-  let removed ← decFinSet (← (j.getObjVal? "r").toOption)
+  let removed ← decAMap decEl decFinSet (← (j.getObjVal? "r").toOption)
   some ⟨adds, removed⟩
 
 private def encReg {V : Type} (encV : V → Json) : Reg V → Json

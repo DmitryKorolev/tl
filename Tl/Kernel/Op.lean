@@ -39,7 +39,8 @@ def writeIf {V : Type _} (st : Stamp) : Option V → Reg V
 
 /-- The seven kernel deltas (ADR-0004). The `Stamp` is the op's `(hlc, replica,
     nonce)` (ADR-0007); on add-ops it is the OR-Set add-tag and the LWW write
-    stamp; `observed` on remove-ops is the tombstoned add-tag set. -/
+    stamp; `observed` on remove-ops is the tombstoned add-tag set, scoped in the
+    delta to the element the op carries (the edge / the label). -/
 inductive Op where
   | create (id : IssueId) (st : Stamp) (writes : ScalarWrites)
   | setFields (id : IssueId) (st : Stamp) (writes : ScalarWrites)
@@ -84,9 +85,10 @@ def metaData (st : Stamp) (key : String) (val : Option String) : IssueData :=
 def labelData (st : Stamp) (label : Label) : IssueData :=
   { IssueData.empty with labels := OrSet.singletonAdd label st }
 
-/-- The data delta of a `labelRemove` (tombstone the observed tags). -/
-def labelRemoveData (obs : FinSet Stamp) : IssueData :=
-  { IssueData.empty with labels := OrSet.tombstones obs }
+/-- The data delta of a `labelRemove` (tombstone the observed tags at the
+    removed label — element-scoped, so it cannot touch any other label). -/
+def labelRemoveData (label : Label) (obs : FinSet Stamp) : IssueData :=
+  { IssueData.empty with labels := OrSet.tombstonesAt label obs }
 
 /-- The op's contribution as a standalone state; `apply` joins it in. -/
 def delta : Op → State
@@ -94,9 +96,10 @@ def delta : Op → State
   | setFields id st w => ⟨OrSet.empty, AMap.singleton id (scalarData st w), OrSet.empty⟩
   | metaSet id st key val => ⟨OrSet.empty, AMap.singleton id (metaData st key val), OrSet.empty⟩
   | edgeAdd e st => ⟨OrSet.empty, AMap.empty, OrSet.singletonAdd e st⟩
-  | edgeRemove _ obs => ⟨OrSet.empty, AMap.empty, OrSet.tombstones obs⟩
+  | edgeRemove e obs => ⟨OrSet.empty, AMap.empty, OrSet.tombstonesAt e obs⟩
   | labelAdd id label st => ⟨OrSet.empty, AMap.singleton id (labelData st label), OrSet.empty⟩
-  | labelRemove id _ obs => ⟨OrSet.empty, AMap.singleton id (labelRemoveData obs), OrSet.empty⟩
+  | labelRemove id label obs =>
+    ⟨OrSet.empty, AMap.singleton id (labelRemoveData label obs), OrSet.empty⟩
 
 end Op
 
