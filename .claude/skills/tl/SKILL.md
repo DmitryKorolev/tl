@@ -164,6 +164,12 @@ Two agents on different clones can each claim the same item until a sync
 reconciles them; LWW picks a winner and the loser's `tl show` reports the claim
 was superseded.
 
+On `tl show` (only there — the `claim` echo stays binary), `claim.outcome` has
+a third value: `ended` means your claim ran its course via your own later
+`close`/`reopen` — history, not contention; no action needed. `superseded`
+still means another writer took the item (do not proceed); `won` means your
+claim currently holds — including after your own re-claim from another clone.
+
 ## Not yet available
 
 There is no `tl edit` yet. The

@@ -317,12 +317,21 @@ tool the `--json` output is one too (every consumer parses it). It is
 governed by the same discipline as the log format:
 
 - Every `--json` response carries a `schemaVersion` integer in its
-  envelope. The initial baseline is `schemaVersion: 1`.
+  envelope. The ledger:
+  - `1` — the initial baseline.
+  - `2` — `show`'s `claim.outcome` grew a third value, `ended` (a claim
+    ended by the claimant's own later `close`/`reopen`), and re-mapped the
+    adjacent states: a self-closed claim formerly read `won` (under the
+    assignee-only derivation) and a same-actor cross-replica re-claim
+    formerly read `superseded` — breaking for a consumer matching the old
+    two-value enum. The `claim` verb's own echo stays binary won/superseded
+    (ADR-0013). A 0.x break under the §stability-horizon rule — bumped and
+    disclosed, never silent.
 - Within a major schema version, changes are additive only — new fields,
   never renamed/removed/re-typed ones — so a consumer reading known fields is
   never broken by an upgrade.
 - A breaking change bumps `schemaVersion`; the change and its version are
-  documented.
+  documented in the ledger above.
 - This makes the JSON a deliberate, versioned contract rather than whatever
   the serializer happens to emit.
 

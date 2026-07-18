@@ -252,11 +252,19 @@ canonical shape:
   (stamp, actor)`, the kernel `ClaimWon` — else `"superseded"` (including
   the partial survival where only the assignee write held). `show`'s block
   carries the same two values plus a third, `"ended"`: the claim no longer
-  holds and the winning status write is this *replica's own later* close or
-  reopen — the claim ended by its own successor write, history rather than a
-  lost race. `show`'s `"won"` also covers a later claim by the same actor
+  holds, nobody took the assignee (its winning entry is still the claimant's
+  value, or a clear the claimant wrote — a reopen), and the winning status
+  write's envelope `actor` is the *claimant* — the claim ended by the
+  claimant's own close or reopen, history rather than a lost race (so an
+  interleaved foreign claim buried under the claimant's own later close stays
+  `"superseded"`, and another actor's close on a shared replica does too —
+  the envelope actor, provenance not authentication, is the discriminant;
+  ADR-0013). `show`'s `"won"` also covers a later claim by the same actor
   that currently holds both registers at one stamp (a re-claim after reopen,
-  from any replica). `currentAssignee` reports the converged winning
+  from any replica). The human `show` renders the same verdict as a
+  `claim: <outcome>` provenance entry (surface parity). The `"ended"` growth
+  and re-mapping shipped as `schemaVersion: 2` (ADR-0008 §ledger).
+  `currentAssignee` reports the converged winning
   `assignee` value, whoever that is — on a partial survival it can name you
   even though the outcome reads `superseded`. An existing target that is not
   in `ready s now` is refused before writing as the `not-claimable` error

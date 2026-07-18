@@ -70,12 +70,21 @@ which the human line explains (the surviving assignee, the resulting status,
 and what to do next — the truthful status/assignee ride the JSON payload)
 rather than emitting a bare "superseded". `show`'s claim block adds two
 refinements: it reads `won` whenever the *actor's current* claim holds —
-`claimWonB` at the winning assignee stamp, at or after the surfaced claim —
-so the same actor's re-claim after a reopen (from any replica) is not
-misreported as a loss; and it reads `ended` (not `superseded`) when the claim
-no longer holds but the winning status write is this replica's *own later*
-close or reopen — the claim ended by its own successor write, history rather
-than a lost race. Which claim is "this replica's latest" stays an I/O-shell
+`claimWonB` at the winning assignee stamp — so the same actor's re-claim
+after a reopen (from any replica) is not misreported as a loss; and it reads
+`ended` (not `superseded`) when the claim no longer holds but nobody took the
+assignee (its winning entry is still the claimant's value, or a clear the
+claimant wrote — a reopen) *and* the winning status write's envelope `actor`
+is the claimant — the claim ended by the claimant's own close or reopen,
+history rather than a lost race. The actor test is envelope provenance, not
+authentication (ADR-0014): fine for a display classifier, never a guard; an
+origin op absent from the loaded set classifies conservatively as
+`superseded`. Two consequences pin the honesty of `ended`: an interleaved
+foreign claim buried under the claimant's own later close stays `superseded`
+(the assignee winner is not the claimant — the lost race is never masked),
+and on a shared replica another actor's close of your claim is `superseded`,
+not your history (the envelope actor distinguishes actors sharing one
+replica). Which claim is "this replica's latest" stays an I/O-shell
 concern: the converged state alone cannot tell a replica that *its* actor
 claimed and lost, because that fact is replica-relative, not a property of
 the merged state. The block appears on **every** `tl show`, decoupled from
@@ -89,7 +98,11 @@ git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
 window as a mandatory argument (also no default). It is advisory output,
 never a write-time guard. In `--json` it is structured, not prose: `show`
 carries `claim: { outcome: won|superseded|ended, currentAssignee }`
-(ADR-0003/0008) so an agent branches on the outcome rather than parsing text.
+(ADR-0003/0008) so an agent branches on the outcome rather than parsing
+text; the human `show` renders the same verdict as a `claim: <outcome>`
+provenance entry (surface parity). Growing the enum and re-mapping the
+adjacent states was a 0.x JSON break, shipped as `schemaVersion: 2`
+(ADR-0008 §ledger).
 
 ### Config-free for now
 
