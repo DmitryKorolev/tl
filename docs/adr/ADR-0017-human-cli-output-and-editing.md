@@ -164,8 +164,11 @@ tuning to implementation.)
 
 ### 8. Editing long text via `$EDITOR`
 
-Flags are fine for short fields, but multi-line `description` / `notes` are
-painful as `--description "…"`. So:
+Flags are fine for short fields, but a multi-line `description` is
+painful as `--description "…"`. So (the notes journal is not an editable
+document — a journal entry is composed once and submitted with
+`note add … -` reading stdin, ADR-0027; the editor surface is for the
+mutable `title`/`description` only):
 
 - `tl create` opens `$EDITOR` only when explicitly requested — `tl create`
   with *no title* (interactive compose), or `tl create … --edit`. Given a title,
@@ -186,8 +189,9 @@ painful as `--description "…"`. So:
   `readToEnd`, and a non-blocking peek cannot distinguish that from a slow
   legitimate writer. Trade-off, accepted: bare `echo body | tl create "t"`
   does not feed the body — add `-` (`echo body | tl create "t" -`).
-- `tl edit <id>` opens the issue's editable fields (title, description, notes) in
-  `$EDITOR` and applies the diff on save.
+- `tl edit <id>` opens the issue's editable fields (title, description) in
+  `$EDITOR` and applies the diff on save. Notes are not editable — an entry is
+  immutable; append a new one with `note add` (ADR-0027).
 - Resolution order `$VISUAL` → `$EDITOR` → a sensible fallback; aborting the
   editor (no change / non-zero exit) cancels the operation. Always overridable by
   passing the field as a flag, so automation never blocks on an editor.

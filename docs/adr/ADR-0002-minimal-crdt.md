@@ -57,15 +57,20 @@ reuses the same join law:
    convergent add and remove.
 
 2. LWW-register (last-writer-wins) for every *scalar field* of an
-   issue — status, title, priority, assignee, description, notes, and the
+   issue — status, title, priority, assignee, description, and the
    like. Each write carries the op's `(HLC-timestamp, replica-id, nonce)`;
    the register keeps the write that is greatest in the total order on
-   that triple.
+   that triple. (`notes` is *not* a scalar register: it is the append-only
+   journal of ADR-0027 — a tag-keyed OR-Set of immutable entries — because
+   the concurrent-append workload a whole-field register silently loses is
+   its primary use.)
 
-   `labels` (categorical tags) are an OR-Set per (1) and drive no theorem.
+   `labels` (categorical tags) are an OR-Set per (1) and drive no theorem;
+   so is the notes journal (ADR-0027), whose entries and per-entry removal
+   ride the same OR-Set construction.
 
    Optional fields are `Option`, with an explicit clear. Every nullable
-   scalar register (`assignee`, `slug`, `description`, `notes`, `deferUntil`,
+   scalar register (`assignee`, `slug`, `description`, `deferUntil`,
    `closeResolution`) holds an `Option`. A clear (`undefer`, `reopen`
    dropping `closeResolution`, clearing `assignee`) is a *timestamped LWW write
    of `none`* — a tombstone carrying its own `(HLC, replica, nonce)` — not

@@ -37,10 +37,15 @@ the compaction section and the format leaves room for it now.
     parsers silently lose precision and corrupt LWW order); `replica` is 13 and
     `nonce` 26 Crockford chars;
   - `actor` — the resolved authoring actor (ADR-0013), free-form UTF-8 text (or
-    `null`). It is provenance only: carried on every op and projected as
-    `provenance.createdBy` / per-op authorship, but not part of the
+    `null`). It is provenance: carried on every op and projected as
+    `provenance.createdBy` / per-op authorship, and not part of the
     OR-Set/LWW identity key (the add-tag and LWW order use `(hlc, replica, nonce)`
-    only), so it never affects convergence or the kernel. Part of the v1 baseline
+    only), so it never affects convergence or *which* write/entry wins. One op
+    reads it into materialized state — `noteAdd` folds the envelope actor into
+    its journal entry's payload, where it becomes a component of the payload
+    join tuple `(text, handle, actor)` (ADR-0027); even there it decides only a
+    duplicate-triple payload tie, never identity or convergence, which stay
+    actor-free. Part of the v1 baseline
     (an additive optional field — an old reader treats it as unknown); import seed
     ops carry `actor: null`, their provenance being the `source: "imported"`
     marker (ADR-0005). This mirrors git's per-commit author field;
@@ -116,8 +121,8 @@ are not record-op values. The enum and its payloads:
 
 | wire `op` | kernel delta | payload (beyond the envelope) |
 |---|---|---|
-| `create` | create | `id`; optional initial scalars (`title`, `priority`, `description`, `notes`, `slug`, and the lifecycle `status`/`deferUntil` seed) — **not** `assignee`, which is `claim`-only (ADR-0013; a carried `assignee` key is preserved in the unknown bag, never seeded onto the open issue); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
-| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/`notes`/…). Lifecycle status/time fields and `assignee` use the distinguished verbs below so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, ADR-0013) |
+| `create` | create | `id`; optional initial scalars (`title`, `priority`, `description`, `slug`, and the lifecycle `status`/`deferUntil` seed) — **not** `assignee`, which is `claim`-only (ADR-0013; a carried `assignee` key is preserved in the unknown bag, never seeded onto the open issue), and **not** `notes`, which is the append-only journal (ADR-0027; a carried `notes` key is likewise preserved in the unknown bag); `status` defaults to `open` and `priority` to `2` — each seeded as an LWW write at the create HLC unless an initial value is carried (both are total fields, never absent) |
+| `update` | setFields | `id`; one or more non-lifecycle scalar assignments (`title`/`priority`/`slug`/`description`/…). Lifecycle status/time fields, `assignee`, and `notes` use the distinguished verbs so their provenance projections stay well-defined (`assignee` is `claim`/`claim --steal`-only, ADR-0013; `notes` is `note add`/`note remove`, ADR-0027) |
 | `claim` | setFields | `id`; sets `status=in_progress`, `assignee` |
 | `close` | setFields | `id`; sets `status` (`done`\|`cancelled`), `closeResolution` (with `--of <id>` the *command* additionally emits a separate `metaSet` record — composites below) |
 | `reopen` | setFields | `id`; sets `status=open`, clears `closeResolution` and `assignee` (ADR-0013) |
@@ -126,12 +131,18 @@ are not record-op values. The enum and its payloads:
 | `depAdd` / `relate` | edgeAdd | `from`, `to`, `kind` (`blocks`/`parent`/`related`); add-tag = the envelope triple in its canonical string form (`"<hlc>.<replica>.<nonce>"`, above), an opaque equality token for the OR-Set — distinct from LWW *comparison* of scalar writes, which is HLC-primary `(hlc, replica, nonce)` (ADR-0007). CLI `dep add A B` ⇒ `from=B, to=A` — A blocked-by B (ADR-0003) |
 | `depRemove` / `unrelate` | edgeRemove | `from`, `to`, `kind`; `observed` add-tags (the OR-Set payload above) |
 | `labelAdd` / `labelRemove` | labelAdd / labelRemove | `id`, `label`; (`labelRemove` also `observed`) |
+| `noteAdd` | noteAdd | `id`, `note` (the minted 16-char note id), `text` — one immutable journal entry (ADR-0027); stamped `v: 2` |
+| `noteRemove` | noteRemove | `id`, `note`, `observed` — the entry's canonical add-tag(s); stamped `v: 2` |
 
 Provenance timestamps are not op payload fields — `createdAt`,
-`updatedAt`, `closedAt`, `claimedAt` are fold-time projections of op HLCs:
-`createdAt` = the `create` op's HLC; `updatedAt` = the max HLC over the issue's
-own scalar writes (`update`/`claim`/`close`/`reopen`/`defer`; edge/label/meta
-ops do not bump it); `closedAt` = the HLC of the `close` that set the
+`updatedAt`, `closedAt`, `claimedAt` are fold-time projections. `createdAt`
+= the `create` op's HLC. `updatedAt` is a pure projection of *materialized
+state*, not an envelope scan (ADR-0027): the max over the issue's scalar
+LWW-register write stamps and its notes-journal add-tags — a `noteAdd` bumps
+it (its stamp is an add-tag), a `noteRemove` does *not* (a tombstone
+materializes the *observed* add-tags, never the remove op's own stamp — the
+disclosed asymmetry), and `labels`/`meta`/edge writes and losing LWW writes
+do not (their stamps are not materialized). `closedAt` = the HLC of the `close` that set the
 current terminal status (absent once `reopen`ed); `claimedAt` = the HLC of the
 latest `claim`-semantics op (`claim` or `claim --steal`) that is later than
 any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.

@@ -160,7 +160,8 @@ reported by `dep cycles`, never write-rejected (the CRDT rule).
 **Why a dedicated verb pair, not `update --parent`.** The whole argument
 reduces to one fact: *a parent is an edge, not a scalar* (this §4 — an LWW parent
 *field* was rejected). `update` is the **scalar** verb (title/priority/
-description/notes/slug); the edge verbs are `dep`/`relate`/`parent`. Everything
+description/slug); the edge verbs are `dep`/`relate`/`parent`, and `notes` is
+the append-only journal (`note add`/`note remove`, ADR-0027). Everything
 else follows:
 
 - **`update` already excludes every edge flag.** It mirrors `create`'s *scalar*
@@ -242,10 +243,12 @@ additive-only forever-contract, ADR-0008), so every consumer reads one
 canonical shape:
 
 - Scalar LWW fields by their field-table names: `id`, `title`, `status`
-  (the stored enum), `priority`, `assignee`, `slug`, `description`, `notes`,
+  (the stored enum), `priority`, `assignee`, `slug`, `description`,
   `deferUntil`, `closeResolution`.
 - Provenance projections `createdAt`/`updatedAt`/`closedAt`/`claimedAt`
-  (fold-time, ADR-0008); the `labels` array; the `meta` object; the
+  (fold-time, ADR-0008); the `labels` array; the `notes` array (the journal
+  entries, oldest first — ADR-0027, an array of `{id, tag, time, actor, text}`
+  objects, *not* a scalar string); the `meta` object; the
   `dependencies` array (above) with the convenience `parent` scalar.
 - Derived projections (camelCase, reflecting effective state at the query's
   `now`): `effectiveStatus` (`open`/`in_progress`/`done`/`cancelled` — distinct

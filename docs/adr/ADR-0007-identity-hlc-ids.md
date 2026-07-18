@@ -35,8 +35,15 @@ an optional slug gives a memorable display handle without becoming identity.
   big-endian integer, Crockford-base32 = 16 characters after
   `tl-`. The native preimage is the three canonical fixed-width strings
   concatenated — `replica-id`(13) ++ `hlc`(16 hex) ++ `nonce`(26) — unambiguous by
-  fixed width, no delimiter (the import preimage below is the one exception).
-  SHA-256 is ubiquitous; minting is one hash per `create`, not a hot path. The
+  fixed width, no delimiter (the import preimage below, and the note-id preimage,
+  are the exceptions). A **note id** (ADR-0027) is minted the same way — the
+  leftmost 80 bits, Crockford = 16 chars — from the note-add op's stamp, but
+  behind a `"note:"` domain prefix (`"note:" ++ replica-id(13) ++ hlc(16 hex) ++
+  nonce(26)`), so the issue-id and note-id spaces can never share a preimage;
+  the prefix makes it 60 bytes, a two-block hash (ADR-0018). A note id carries
+  no `tl-` affix — it appears only in the dedicated `<note-id>` argument
+  position, so there is nothing to disambiguate.
+  SHA-256 is ubiquitous; minting is one hash per `create` (or per `note add`), not a hot path. The
   canonical stored id is the bare 16-char hash — no `tl-` on disk, in the
   preimage, or in the merge/OR-Set key — read back as data, never re-derived on
   read (re-hashing happens only at mint time). The `tl-` is a display/reference

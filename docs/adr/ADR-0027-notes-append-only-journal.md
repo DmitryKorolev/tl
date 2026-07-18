@@ -188,45 +188,61 @@ Each clause is a theorem obligation on the implementation or an explicit
 non-guarantee:
 
 - **Convergence** — union merge of two journals is commutative, associative,
-  idempotent on both legs (adds and tombstones). *Theorem (OrSet reuse).*
+  idempotent on both legs (adds and tombstones). *Theorem* (`Journal.merge_comm`
+  / `_assoc` / `_idem`, `Tl/Crdt/Journal.lean` — OrSet reuse on the entries leg,
+  the payload semilattice `NotePayload.join_comm`/`_assoc`/`_idem` on the other).
 - **Delivery- and duplication-independence** — folding the same op multiset
   in any order, with duplicates, yields the same journal; duplicate delivery
-  of one op yields one entry. *Theorem.*
+  of one op yields one entry. *Theorem* (`Journal.merge_right_comm`,
+  `Journal.merge_addDelta_duplicate`; the state-level fold rides the proved
+  `fold_perm`/`fold_eq_of_mem_iff` through the re-discharged join laws).
 - **Concurrent adds all retained** — no append is ever lost to a concurrent
-  append. Equal text from separate ops stays separate entries. *Theorem.*
+  append. Equal text from separate ops stays separate entries. *Theorem*
+  (`Journal.visible_both_concurrent_adds`;
+  `Journal.visibleEntries_distinct_rows` for the two-rows-per-two-stamps
+  rendering).
 - **Removal is delivery-order independent** — a remove folded before its add
   still hides the entry when the add arrives (tombstone by tag value).
-  *Theorem.*
+  *Theorem* (`Journal.not_visible_removeDelta_then_addDelta`).
 - **Remove-exactness** — a remove affects exactly the entry whose tag it
   names, for any payload bytes: tombstones are tag-keyed and the handle is
   not a kernel key, so cross-entry interference is unrepresentable.
-  *Theorem, unconditional.*
+  *Theorem, unconditional* (`Journal.visible_merge_removeDelta_iff_of_not_mem`,
+  plus `Journal.payloads_merge_removeDelta` for the payload half).
 - **No resurrection** — a removed entry never becomes visible again:
-  tombstoned tags stay tombstoned, and no op can re-add a tag. *Theorem.*
-  Tag freshness across ops is the same nonce-uniqueness carried assumption
-  every OR-Set add already leans on — no separate handle-uniqueness
-  assumption is introduced.
+  tombstoned tags stay tombstoned, and no op can re-add a tag. *Theorem*
+  (`Journal.not_visible_merge_of_tombstoned`, merge-general over the whole
+  future; `Journal.tombstone_mono`). Tag freshness across ops is the same
+  nonce-uniqueness carried assumption every OR-Set add already leans on — no
+  separate handle-uniqueness assumption is introduced.
 - **Deterministic order and payload** — the visible journal is ordered by
   the complete stamp `(hlc, replica, nonce)` ascending. Between distinct
   entries this is total outright — an entry's identity *is* its stamp — so
   there are no tie-break levels and no distinct-stamps hypothesis. What can
   collide is payload: records sharing one complete triple fold to a single
   entry, and that entry's payload joins by the unconditional lexicographic
-  maximum over the canonical `(text, handle, actor)` byte tuple — actor
-  encoded as its canonical JSON token with `null` ordering below every
-  string, strings compared by canonical UTF-8 bytes — a
-  semilattice max, the same realization discipline as the LWW value
-  tie-break (ADR-0002) and the canonical-parent selection (ADR-0003 §4).
+  maximum over the *decoded* `(text, handle, actor)` tuple, compared
+  componentwise: the two strings by canonical UTF-8 bytes (equivalently, by
+  code point — the order the kernel's `String` order realizes), and the
+  optional actor with an absent actor (`none`) ordered below every present
+  one. This is a semilattice max, the same realization discipline as the LWW
+  value tie-break (ADR-0002) and the canonical-parent selection (ADR-0003 §4).
   Under honest writers the rule never fires (one op, one payload); on
   adversarial or duplicated records determinism — not any particular winner
-  — is the guarantee. *Theorem: rendering is invariant under fold
-  permutation, duplication, and replica merge, unconditionally.*
+  — is the guarantee. *Theorem* (`Journal.visibleEntries_pairwise_lt` for the
+  stamp-ascending order; `Journal.mem_visibleEntries` +
+  `Journal.visibleEntries_merge_comm` + the payload join laws for the
+  permutation/duplication/merge invariance; `Journal.PayloadTotal` — discharged
+  for every folded state by `payloadTotal_fold` — makes the rendering's skip
+  case unreachable, so retention *is* rendering).
 - **Immutability** — there is no note edit in the first release (excluded
   below);
   corrections are new notes. *Holds by absence of any mutating op.*
 - **Frame-safety** — notes drive no scheduling or graph behavior: `ready`,
   epic rollup, cycle detection, and every graph behavior never read the
-  journal (ADR-0002/0003). Unlike `labels` and `meta`, the journal *does*
+  journal (ADR-0002/0003), *proved* — `ready_noteAdd`/`ready_noteRemove`,
+  `effectiveStatus_noteAdd`/`effectiveStatus_noteRemove` (`Tl/Kernel/Frame.lean`).
+  Unlike `labels` and `meta`, the journal *does*
   feed one projection — `updatedAt`, exactly as pinned above — and nothing
   else. *By construction; stated in the overview, with frame lemmas only if
   near-free.*

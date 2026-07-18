@@ -46,11 +46,14 @@ ADR-0004).
   the import replica-id 64, the import-nonce candidate 128, and the source
   fingerprint keeps the whole digest — the differing widths are exactly why
   truncation does not belong in the hash module. No streaming/incremental
-  API: every message is bytes-in-hand — mint preimages are a single block
-  (55 bytes is precisely the one-block padding maximum), import preimages a
-  few blocks, and the one large message (the import source manifest) is still
-  hashed once, in hand, per one-shot import. A streaming API can be added
-  later with a one-shot-equals-folded test.
+  API: every message is bytes-in-hand — the issue-id mint preimage is a single
+  block (its 55 bytes is precisely the one-block padding maximum), the note-id
+  mint preimage is two blocks (the `"note:"` domain prefix pushes it to 60
+  bytes — ADR-0007/0027), import preimages a few blocks, and the one large
+  message (the import source manifest) is still hashed once, in hand, per
+  one-shot import. The padding-edge vectors already cover multi-block messages,
+  so the two-block note preimage rides existing coverage. A streaming API can
+  be added later with a one-shot-equals-folded test.
 - **Truncation is pinned here as the NIST convention: the leftmost N bits —
   the first N/8 digest bytes.** This is the reading the `[0..80 bits]` /
   `[0..64 bits]` notation in ADR-0005/0007 already suggests, and the

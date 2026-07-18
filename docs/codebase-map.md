@@ -25,13 +25,23 @@ Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
                         --   element-scoped (`removed` mirrors `adds` per
                         --   element), so a remove can never cross elements —
                         --   the basis of the unconditional unrelate frame lemma
+  Journal.lean          --   the append-only notes journal (ADR-0027): an OR-Set
+                        --   keyed by the add-tag + a tag-keyed payload map;
+                        --   join laws, add-wins/re-add/remove-exactness/
+                        --   no-resurrection, stamp-ascending rendering, payload
+                        --   semilattice (lex-max over (text, handle, actor))
 
 Tl/Kernel/              -- the verified core (no I/O)
   State.lean            --   issues OR-Set, edges OR-Set, per-issue field maps,
-                        --   labels OR-Set, and a per-key-LWW `meta` map (ADR-0002)
-  Op.lean               --   the Op inductive; seven deltas (create, setFields,
-                        --   metaSet, edgeAdd, edgeRemove, labelAdd, labelRemove) —
-                        --   readable CLI verbs map onto these in the shell (ADR-0008)
+                        --   labels OR-Set, the notes Journal (ADR-0027), and a
+                        --   per-key-LWW `meta` map (ADR-0002); updatedAtStamp =
+                        --   max over scalar-register stamps + journal add-tags
+  Op.lean               --   the Op inductive; nine deltas (create, setFields,
+                        --   metaSet, edgeAdd, edgeRemove, labelAdd, labelRemove,
+                        --   noteAdd, noteRemove) — readable CLI verbs map onto
+                        --   these in the shell (ADR-0008/0027)
+  NotesInvariant.lean   --   fold-level discharge of the journal's SelfTagged /
+                        --   PayloadTotal invariants for every materialized state
   Apply.lean            --   apply : State → Op → State  (total reducer + fold)
   Ready.lean            --   ready : State → Now → List Id  (total on cyclic and
                         --   dangling graphs; blocker discharged iff its
@@ -80,8 +90,8 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   component maps by batched construction (O(N log N))
                         --   + the bridge foldFast_eq_fold — equal to fold, so
                         --   every fold theorem transfers (cold path, ADR-0022)
-  Frame.lean            --   frame lemmas: meta/labels/relate/unrelate move
-                        --   neither ready nor rollup (all unconditional)
+  Frame.lean            --   frame lemmas: meta/labels/notes/relate/unrelate
+                        --   move neither ready nor rollup (all unconditional)
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's Mathlib zone starts here, ADR-0009)
@@ -165,7 +175,9 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
                         --   (ADR-0008; the non-destructive snapshot is the
                         --   no-bump fold cache)
   Ids.lean              --   issue-id mint (leftmost 80 SHA-256 bits over the
-                        --   fixed-width preimage, ADR-0018) + the tl- display affix
+                        --   fixed-width preimage, ADR-0018) + the tl- display
+                        --   affix; note-id mint behind the "note:" domain
+                        --   prefix (two-block preimage, ADR-0027)
 
 Tl/Error.lean           -- the structured error contract: the closed code enum,
                         -- stable wire strings + exit codes, teaching messages,
