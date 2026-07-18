@@ -58,22 +58,29 @@ The contention signal checks whether this replica's own most recent
 `claim` — read from its own segment `.tl/log/<replica-id>.jsonl` (the same
 per-issue log scan `tl log <id>` uses, ADR-0008) — still *holds* in the
 converged state. A claim writes `in_progress` + `assignee` at one stamp, so
-holding is a property of **both** registers: the outcome is `won` iff the
-winning entries of `status` and `assignee` are both the claim's exact stamped
-writes — `(stamp, in_progress)` and `(stamp, assignee)` — the decidable form
-of the kernel's proved `ClaimWon` predicate (`claimWonB`); anything else,
-including a partial survival (assignee kept, status lost to a concurrent
-close or status-only write), is `superseded`. The assignee register alone
-would misreport a concurrent close — which outstamps `status` but never
-writes `assignee` — as a win on a closed issue. Which claim is "this
-replica's latest" stays an I/O-shell concern: the converged state alone
-cannot tell a replica that *its* actor claimed and lost, because that fact is
-replica-relative, not a property of the merged state. The verdict is
-surfaced as the `claim` block on **every** `tl show`, decoupled from any age
-window (the block is the replica's own provenance, so age never hides it),
-and by `tl claim` itself, whose human line explains a partial survival
-(what outstamped the status, and what to do next) rather than emitting a
-bare "superseded". The *stale-claim* window is a
+holding is a property of **both** registers — the decidable form of the
+kernel's proved `ClaimWon` predicate (`claimWonB`): both winning entries are
+one claim's exact stamped writes, `(stamp, in_progress)` and
+`(stamp, assignee)`. The assignee register alone would misreport a concurrent
+close — which outstamps `status` but never writes `assignee` — as a win on a
+closed issue. On `tl claim`'s own echo the outcome is binary: `won` when the
+just-written claim holds, else `superseded` — including a partial survival
+(assignee kept, status lost to a concurrent close or status-only write),
+which the human line explains (the surviving assignee, the resulting status,
+and what to do next — the truthful status/assignee ride the JSON payload)
+rather than emitting a bare "superseded". `show`'s claim block adds two
+refinements: it reads `won` whenever the *actor's current* claim holds —
+`claimWonB` at the winning assignee stamp, at or after the surfaced claim —
+so the same actor's re-claim after a reopen (from any replica) is not
+misreported as a loss; and it reads `ended` (not `superseded`) when the claim
+no longer holds but the winning status write is this replica's *own later*
+close or reopen — the claim ended by its own successor write, history rather
+than a lost race. Which claim is "this replica's latest" stays an I/O-shell
+concern: the converged state alone cannot tell a replica that *its* actor
+claimed and lost, because that fact is replica-relative, not a property of
+the merged state. The block appears on **every** `tl show`, decoupled from
+any age window (it is the replica's own provenance, so age never hides it).
+The *stale-claim* window is a
 separate concern, read by `doctor` and by `claim --steal` (§ takeover
 below), with **no default**: it is the `tl.staleAfter`
 git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
@@ -81,8 +88,8 @@ git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
 `doctor` reports no stale verdict. `tl list --stale <duration>` takes the
 window as a mandatory argument (also no default). It is advisory output,
 never a write-time guard. In `--json` it is structured, not prose: `show`
-carries `claim: { outcome, currentAssignee }` (ADR-0003/0008) so an agent branches
-on the outcome rather than parsing text.
+carries `claim: { outcome: won|superseded|ended, currentAssignee }`
+(ADR-0003/0008) so an agent branches on the outcome rather than parsing text.
 
 ### Config-free for now
 

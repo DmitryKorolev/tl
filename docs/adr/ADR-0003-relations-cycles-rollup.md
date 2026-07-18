@@ -245,12 +245,21 @@ canonical shape:
   the schema-level statement that content is untrusted — are defined at the
   consumption boundary (ADR-0011 / ADR-0014), not in the kernel.
 - Claim outcome (on `show` and the `claim` verb):
-  `claim: { "outcome": "won"|"superseded", "currentAssignee": <assignee>|null }`
-  — an `ok: true` data outcome, *not* an error, when a ready-only claim write
-  succeeded and then either still wins (`won`) or lost on LWW (`superseded`).
-  `currentAssignee` names whoever holds the claim in the converged state — you on
-  `won`, the winner on `superseded`. An existing target that is not in
-  `ready s now` is refused before writing as the `not-claimable` error
+  `claim: { "outcome": ..., "currentAssignee": <assignee>|null }` — an
+  `ok: true` data outcome, *not* an error. The `claim` verb's own echo is
+  binary: `"won"` iff BOTH winning register entries are the claim's exact
+  stamped writes — `status = (stamp, in_progress)` and `assignee =
+  (stamp, actor)`, the kernel `ClaimWon` — else `"superseded"` (including
+  the partial survival where only the assignee write held). `show`'s block
+  carries the same two values plus a third, `"ended"`: the claim no longer
+  holds and the winning status write is this *replica's own later* close or
+  reopen — the claim ended by its own successor write, history rather than a
+  lost race. `show`'s `"won"` also covers a later claim by the same actor
+  that currently holds both registers at one stamp (a re-claim after reopen,
+  from any replica). `currentAssignee` reports the converged winning
+  `assignee` value, whoever that is — on a partial survival it can name you
+  even though the outcome reads `superseded`. An existing target that is not
+  in `ready s now` is refused before writing as the `not-claimable` error
   (ADR-0008), with structured reasons: closed, already `in_progress` / claimed,
   epic, deferred-until, or the direct unclosed blocker set (`tl why` gives the
   transitive set — ADR-0020). A nonexistent id
