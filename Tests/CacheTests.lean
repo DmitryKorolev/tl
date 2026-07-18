@@ -211,11 +211,17 @@ def cacheCodecTests : List Outcome :=
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
-      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":\"y\",\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":[]}")).isNone,
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":\"y\",\"lines\":0,\"ck\":\"e\",\"refused\":false,\"deferred\":[]}")).isNone,
+    -- control for the two deferred rows below: the same payload with a
+    -- well-formed deferred set decodes, so those rows genuinely die at the
+    -- deferred branch, not at an earlier key (a "sha"-for-"ck" key typo once
+    -- made them vacuous — decode died before ever reaching `deferred`)
+    check "a well-formed segment entry decodes (control for the deferred rows)"
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"ck\":\"e\",\"refused\":false,\"deferred\":[3]}")).isSome,
     check "a non-array deferred set is rejected"
-      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":{}}")).isNone,
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"ck\":\"e\",\"refused\":false,\"deferred\":{}}")).isNone,
     check "a non-numeric deferred entry is rejected"
-      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"sha\":\"e\",\"refused\":false,\"deferred\":[\"x\"]}")).isNone,
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"ck\":\"e\",\"refused\":false,\"deferred\":[\"x\"]}")).isNone,
     check "duplicate segment entries are rejected"
       (decodeCache (encodeCache { c with segments := [metaOwn, metaOwn] })).isNone,
     -- canonicality + per-decoder arms: a decoding twin is each row's control
@@ -243,6 +249,10 @@ def cacheCodecTests : List Outcome :=
       (decodeCache (handIssues "[]" "[[\"a\",5]]")).isNone,
     check "a non-pair tombstone entry is rejected"
       (decodeCache (handIssues "[]" "[[\"a\"]]")).isNone,
+    check "a non-array tombstone leg is rejected"
+      (decodeCache (handIssues "[]" "5")).isNone,
+    check "a non-array adds leg is rejected"
+      (decodeCache (handIssues "5" "[]")).isNone,
     check "a malformed stamp tag is rejected"
       (decodeCache (handIssues "[[\"a\",[\"bogus\"]]]" "[]")).isNone,
     check "a non-array tag set is rejected"

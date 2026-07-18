@@ -416,8 +416,44 @@ def storeSkewTests : IO (List Outcome) := do
       (refusedDec.refusal.isSome && refusedDec.deferred.isEmpty && refusedDec.maxDeferred == 0)
       s!"refusal={refusedDec.refusal.isSome} deferred={refusedDec.deferred}"]
 
+/-- Element-scoped OR-Set tombstones at the `WireOp.toOp → apply` fold seam
+    (ADR-0002): an `unrelate` whose `observed` payload also names ANOTHER edge's
+    add-tag (here the `blocks` edge's) removes only its own `related` element.
+    Under the retired global-tombstone semantics the cross-element tag would
+    kill the `blocks` edge too — this is the one row where the two semantics
+    diverge (every other remove row in the suite observes only its own
+    element's tags, where they coincide). -/
+def storeTombstoneScopeTests : List Outcome :=
+  let idA := "a000000000000000"
+  let idB := "b000000000000000"
+  let hlc (i : Nat) : Nat := 2000000000000 * 2 ^ 16 + i
+  let stampAt (i : Nat) : Stamp := ⟨hlc i, (ofCrockford? fixedReplica).getD 0, 5000 + i⟩
+  let line (op : WireOp) (i : Nat) : String := craftLine op (hlc i) (5000 + i) fixedReplica
+  -- the adversarial observed set: the related edge's own tag AND the blocks edge's
+  let obs : Tl.Crdt.FinSet Stamp :=
+    Tl.Crdt.FinSet.union (Tl.Crdt.FinSet.singleton (stampAt 3))
+      (Tl.Crdt.FinSet.singleton (stampAt 4))
+  let seg : SegmentData := { replicaId := fixedReplica, bytes :=
+    (line (.create idA { title := some "A" }) 1
+      ++ "\n" ++ line (.create idB { title := some "B" }) 2
+      ++ "\n" ++ line (.depAdd (idA, idB, .Blocks)) 3
+      ++ "\n" ++ line (.relate (idA, idB, .Related)) 4
+      ++ "\n" ++ line (.unrelate (idA, idB, .Related) obs) 5
+      ++ "\n").toUTF8 }
+  let loaded := materialize [seg]
+  let readyIds := loaded.state.ready 2000000000000
+  [ check "unrelate with a cross-element observed tag removes only its own related edge"
+      (loaded.state.presentEdges == [(idA, idB, .Blocks)])
+      s!"live edges={loaded.state.presentEdges.length} (want exactly the blocks edge)",
+    check "the blocks edge still blocks: B's blocker list is untouched"
+      (loaded.state.blockersOf idB == [idA])
+      s!"blockers of B={loaded.state.blockersOf idB}",
+    check "B stays blocked in ready; A is ready"
+      (readyIds.contains idA && !readyIds.contains idB) s!"ready={readyIds}" ]
+
 def storeTests : IO (List Outcome) := do
   return (← storeDiscoveryTests) ++ (← storeWriteTests)
     ++ (← storeAdversityTests) ++ (← storeLockTests) ++ (← storeSkewTests)
+    ++ storeTombstoneScopeTests
 
 end Tl.Tests
