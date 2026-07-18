@@ -129,6 +129,10 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   precCyclesFast_eq — equal to the spec, thm 6
                         --   transfers; commands compute each result once
   SccProps.lean         --   SCC-witness enumeration: exactly one witness per cyclic SCC
+  CycleRepair.lean      --   the dep cycles → dep remove loop terminates: remove-only
+                        --   chain of well-formed removes, edge-count measure;
+                        --   no-new-cycle + SCC refinement, per-witness progress,
+                        --   in-witness edge bound (ADR-0004 thm 11)
   Unblocks.lean         --   unblocks = the ready-set diff; exact and unconditional
   Ranking.lean          --   ready-queue ranking; the queue is proved sorted
 

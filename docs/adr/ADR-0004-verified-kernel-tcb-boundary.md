@@ -277,10 +277,37 @@ Robustness additions (reuse existing machinery — 8 strengthens the lattice lay
     `unblocks` as the exact ready-diff, which re-derives readiness in the closed world
     and so captures the ripple by construction.
 
+11. Cycle-repair termination. The `dep cycles → dep remove` loop's advice is
+    provably terminating — the diagnostic never sends an agent into an unbounded
+    repair. Formalized as a remove-only protocol on the materialized state: each
+    step applies exactly one well-formed `edgeRemove` (`observed` = the edge's
+    full tag set, the CLI's shape; a non-present pair is a noop, not a step) and
+    nothing else is folded between diagnostic and repair. Remove-only is the
+    sound regime, not a convenience: forbidding only kind-`k` `edgeAdd`s would
+    not suffice, since a concurrent `create` can materialize a dangling endpoint
+    and activate inert kind-`k` edges into a brand-new cycle (theorem 6's
+    successor map drops non-present targets).
+
+    Proved, total on cyclic/dangling graphs: a removal — *any* observed set —
+    never creates a kind-`k` cycle, and every surviving cyclic SCC refines a
+    prior witness; a well-formed remove of a present kind-`k` edge strictly
+    decreases the present kind-`k` edge count; every reported witness is
+    nonempty and contains a present kind-`k` edge internal to it, so a state
+    with no effective step left is already cycle-free; and no run of effective
+    steps is longer than the number of present kind-`k` edges internal to
+    reported witnesses — every maximal run (and an explicit constructed run)
+    reaches `hasCycle = false` within that bound.
+
+    The edge count is the *corrected* measure: a per-SCC measure is unsound (a
+    removal can leave the witness list unchanged, or split one cyclic SCC into
+    several — the SCC count can grow), and the `≤ #SCCs` bound of the
+    every-SCC-is-one-simple-cycle special case is deliberately excluded, not
+    deferred.
+
 This is the whole spec: the convergence theorems (1–2, with the inflation
-strengthening 8) and the tracker theorems (3–7 and 9–10), plus the rollup / frame
+strengthening 8) and the tracker theorems (3–7 and 9–11), plus the rollup / frame
 theorems of ADR-0003 — the per-kind cycle diagnostic is theorem 6 above, not a
-separate ADR-0003 theorem. Theorems 8–10 add no new state and no new CRDT theory;
+separate ADR-0003 theorem. Theorems 8–11 add no new state and no new CRDT theory;
 they reuse the existing lattice and reachability machinery.
 
 ### The shell (tested, not proved) — the TCB

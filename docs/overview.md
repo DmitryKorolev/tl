@@ -142,7 +142,9 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
 - **SCC-witness enumeration** (`Tl/Kernel/SccProps.lean`). `sccWitnesses` partitions the
   cyclic nodes by SCC exactly: `sameSCC` is an equivalence on present nodes, the
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),
-  and two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`).
+  two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`),
+  and each witness is nonempty and absorbs any cyclic node `sameSCC` to a member
+  (`sccWitnesses_ne_nil`, `mem_sccWitness_of_sameSCC`).
   Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
 - **Cycle-repair termination** (`Tl/Kernel/CycleRepair.lean`). The
   `dep cycles` → `dep remove` loop is proved sound and terminating in the
