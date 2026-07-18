@@ -651,7 +651,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let out ← spawn ["version", "--json"]
   o := o ++
     [check "version --json envelope bytes"
-      (out.stdout == "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"logFormat\":2,\"version\":\"0.1.0\"}}\n")
+      (out.stdout == "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"logFormat\":2,\"version\":\"0.1.0\"}}\n")
       out.stdout,
      check "version exits 0" (out.exitCode == 0)]
   -- `tl licenses` stdout is byte-equal to the repo THIRD-PARTY-LICENSES file
@@ -666,7 +666,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let bad ← spawn ["frobnicate", "--json"]
   o := o ++
     [check "usage error emits the error envelope on stdout"
-      (bad.stdout.startsWith "{\"schemaVersion\":2,\"ok\":false,\"error\":{\"code\":\"usage\"")
+      (bad.stdout.startsWith "{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"usage\"")
       bad.stdout,
      check "usage exits 2" (bad.exitCode == 2)]
   -- no-project exit 3

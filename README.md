@@ -78,7 +78,7 @@ and returns a stable envelope (fields elided here):
 
 ```console
 $ tl ready --json
-{"schemaVersion":2,"ok":true,"data":{"count":1,"items":[{"blocked":false,…,"id":"tl-r835zbdeyht18zt5",…,"priority":2,"ready":true,"status":"open","title":"Write the schema migration",…}],"staleness":null}}
+{"schemaVersion":3,"ok":true,"data":{"count":1,"items":[{"blocked":false,…,"id":"tl-r835zbdeyht18zt5",…,"priority":2,"ready":true,"status":"open","title":"Write the schema migration",…}],"staleness":null}}
 ```
 
 Failures return `"ok": false` with a stable `error.code` to branch on, and

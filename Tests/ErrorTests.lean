@@ -55,16 +55,16 @@ def envelopeTests : List Outcome :=
       context := [("path", Json.str ".tl/local/lock"), ("timeoutMs", Json.num 5000)] }
   let okNotes := Tl.Cli.okEnvelope (Json.mkObj [("count", Json.num 0)]) ["a", "b"]
   [checkEq "ok envelope bytes" okStr
-     "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"count\":0}}",
+     "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"count\":0}}",
    checkEq "ok envelope appends a notes array (omit-empty otherwise)" okNotes
-     "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"count\":0},\"notes\":[\"a\",\"b\"]}",
+     "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"count\":0},\"notes\":[\"a\",\"b\"]}",
    check "ok envelope with notes is valid JSON" (Json.parse okNotes).toOption.isSome,
    checkEq "error envelope bytes (no context)" (Tl.Cli.errorEnvelope plainErr)
-     ("{\"schemaVersion\":2,\"ok\":false,\"error\":{\"code\":\"no-project\"," ++
+     ("{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"no-project\"," ++
       "\"message\":\"no tl project here; run `tl init`\"}}"),
    checkEq "error envelope bytes (context, in carried order)"
      (Tl.Cli.errorEnvelope ctxErr)
-     ("{\"schemaVersion\":2,\"ok\":false,\"error\":{\"code\":\"lock-busy\"," ++
+     ("{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"lock-busy\"," ++
       "\"message\":\"another tl process holds the lock; retry shortly\"," ++
       "\"path\":\".tl/local/lock\",\"timeoutMs\":5000}}"),
    check "ok envelope is valid JSON" (Json.parse okStr).toOption.isSome,

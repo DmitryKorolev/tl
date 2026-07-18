@@ -357,6 +357,12 @@ governed by the same discipline as the log format:
     two-value enum. The `claim` verb's own echo stays binary won/superseded
     (ADR-0013). A 0.x break under the §stability-horizon rule — bumped and
     disclosed, never silent.
+  - `3` — the issue object's `notes` field changed type from a string to an
+    array of journal entries (the append-only notes journal, ADR-0027): each
+    entry `{id, tag, time, actor, text}`, oldest first (a removed placeholder
+    under `--all` carries `removed: true` and no `text`). A re-typed field is
+    breaking for a consumer that read `notes` as a string — the same 0.x
+    bump-and-disclose rule.
 - Within a major schema version, changes are additive only — new fields,
   never renamed/removed/re-typed ones — so a consumer reading known fields is
   never broken by an upgrade.
