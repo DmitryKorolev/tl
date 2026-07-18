@@ -11,7 +11,7 @@ This is the projection moved kernel-side under the ADR-0024 §3 bridge pattern:
 a spec definition (`canonicalParent`, over `parentsOf` + `maxLiveTag`), a shared
 selection core (`canonParentSelect`) the production/view path also calls, and a
 pointwise bridge to that path (the shell's `canonicalParentE`, via the
-`Edge`-keyed hash probe below).
+key-generic `HashMapView.hashAssoc` probe at `K := Edge`).
 
 The ranking is the lexicographic `(maxLiveTag, parentId)` order, and the pick is
 its maximum (`maxOpt`) — total, and independent of the order the candidates are
@@ -35,80 +35,6 @@ import Tl.Kernel.HashMapView
 namespace Tl.Kernel
 
 open Tl.Crdt
-
-/-! ## An `Edge`-keyed hash probe (the `HashMapView` bridges are `IssueId`-keyed)
-
-The canonical-parent tie-break hoists `state.edges.adds` and `state.edges.removed`
-— both `Edge`-keyed — into `Std.HashMap`s, but `HashMapView`'s probes are all
-`IssueId`-keyed. This is the generic-key twin, instantiated at `K := Edge`; the
-`IssueId` `hashAssoc` is the `K := IssueId` specialization it could later absorb.
-The truth rests on the `AMap` no-duplicate-keys invariant (`keys_nodup`). -/
-
-/-- A hash copy of a `(K × V)` assoc list, generic in the key. -/
-def hashAssocK {K V : Type _} [BEq K] [Hashable K] (l : List (K × V)) : Std.HashMap K V :=
-  l.foldl (fun m p => m.insert p.1 p.2) ∅
-
-variable {K : Type _} [TotalOrd K] [BEq K] [LawfulBEq K] [Hashable K] [LawfulHashable K]
-
-omit [BEq K] [LawfulBEq K] [Hashable K] [LawfulHashable K] in
-/-- A key absent from an assoc list's key set is not found. -/
-theorem lookupK_none {V : Type _} {k : K} :
-    (l : List (K × V)) → k ∉ l.map Prod.fst → AssocList.lookup k l = none
-  | [], _ => rfl
-  | p :: ps, h => by
-    have hne : k ≠ p.1 := fun he => by
-      rw [List.map_cons] at h; exact h (he ▸ List.mem_cons_self ..)
-    show (if k = p.1 then some p.2 else AssocList.lookup k ps) = none
-    rw [if_neg hne]
-    exact lookupK_none ps (fun hm => by rw [List.map_cons] at h; exact h (List.mem_cons_of_mem _ hm))
-
-/-- `getElem?` after folding a key-nodup assoc list's inserts is its `lookup`. -/
-theorem getElem?_foldlK_insert {V : Type _} (l : List (K × V))
-    (m0 : Std.HashMap K V) (hnd : (l.map Prod.fst).Nodup) (k : K) :
-    (l.foldl (fun m p => m.insert p.1 p.2) m0)[k]?
-      = match AssocList.lookup k l with
-        | some v => some v
-        | none => m0[k]? := by
-  induction l generalizing m0 with
-  | nil => rfl
-  | cons p ps ih =>
-    rw [List.map_cons, List.nodup_cons] at hnd
-    obtain ⟨hp, hps⟩ := hnd
-    rw [List.foldl_cons, ih _ hps]
-    by_cases hk : k = p.1
-    · have hnone : AssocList.lookup k ps = none := lookupK_none ps (hk ▸ hp)
-      have hlk : AssocList.lookup k (p :: ps) = some p.2 := by
-        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some p.2
-        rw [if_pos hk]
-      rw [hnone, hlk]
-      show (m0.insert p.1 p.2)[k]? = some p.2
-      rw [Std.HashMap.getElem?_insert, if_pos (beq_iff_eq.mpr hk.symm)]
-    · have hlk : AssocList.lookup k (p :: ps) = AssocList.lookup k ps := by
-        show (if k = p.1 then some p.2 else AssocList.lookup k ps) = _
-        rw [if_neg hk]
-      rw [hlk]
-      cases hcase : AssocList.lookup k ps with
-      | some v => rfl
-      | none =>
-        show (m0.insert p.1 p.2)[k]? = m0[k]?
-        rw [Std.HashMap.getElem?_insert, if_neg (fun h => hk (beq_iff_eq.mp h).symm)]
-
-/-- The generic-key probe (list form). -/
-theorem getElem?_hashAssocK {V : Type _} (l : List (K × V))
-    (hnd : (l.map Prod.fst).Nodup) (k : K) :
-    (hashAssocK l)[k]? = AssocList.lookup k l := by
-  unfold hashAssocK
-  rw [getElem?_foldlK_insert l ∅ hnd k]
-  cases AssocList.lookup k l with
-  | some v => rfl
-  | none => exact Std.HashMap.getElem?_empty
-
-/-- **The `Edge`-keyed probe** (instantiated at `K := Edge` for `edgeTags` /
-    `edgeRemoved`): the hash copy of an `AMap`'s `toList` looks up exactly
-    `find`. Discharged through the `AMap` key-nodup invariant. -/
-theorem getElem?_hashAssocK_amap {V : Type _} (m : AMap K V) (k : K) :
-    (hashAssocK m.toList)[k]? = m.find k :=
-  getElem?_hashAssocK m.toList (AMap.keys_nodup m) k
 
 /-! ## The order-maximum of a list (the reasoning form of the fold) -/
 

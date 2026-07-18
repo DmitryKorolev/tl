@@ -229,8 +229,8 @@ def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     pbk := Tl.Kernel.bucketBy pedges
     pbc := Tl.Kernel.bucketBy (pedges.map (fun p => (p.2, p.1)))
     provH := Tl.Kernel.hashAssoc prov.toList
-    edgeTags := edgeAdds.foldl (fun m p => m.insert p.1 p.2) ∅
-    edgeRemoved := edgeRemoved.foldl (fun m p => m.insert p.1 p.2) ∅
+    edgeTags := Tl.Kernel.hashAssoc edgeAdds
+    edgeRemoved := Tl.Kernel.hashAssoc edgeRemoved
     shortLen := shortIdLens present }
 
 /-- A command's read view. -/
@@ -397,12 +397,12 @@ is no shell twin of the pick. -/
     spec `maxLiveTag` — the two `Edge`-keyed probes discharge the tag/tombstone
     lookups, then the fold is the same `State.maxLiveFold`. -/
 theorem View.maxTag_eq (v : View) (e : Edge)
-    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssocK v.state.edges.adds.toList)
-    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssocK v.state.edges.removed.toList) :
+    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssoc v.state.edges.adds.toList)
+    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssoc v.state.edges.removed.toList) :
     v.maxTag e = v.state.maxLiveTag e := by
   show State.maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty)
       (v.idx.edgeRemoved[e]?.getD FinSet.empty) = _
-  rw [hadds, hrem, Tl.Kernel.getElem?_hashAssocK_amap, Tl.Kernel.getElem?_hashAssocK_amap]
+  rw [hadds, hrem, Tl.Kernel.getElem?_hashAssoc_amap, Tl.Kernel.getElem?_hashAssoc_amap]
   rfl
 
 /-- The production canonical parent — the shared kernel selection core
@@ -470,8 +470,8 @@ theorem View.parents_eq (v : View) (i : IssueId)
     does not); the hash hypotheses discharge the `Edge`-keyed probes. -/
 theorem canonicalParentE_eq (v : View) (i : IssueId) (hi : v.state.hasIssue i)
     (hpbc : v.idx.pbc = Tl.Kernel.bucketBy (v.state.parentEdges.map (fun p => (p.2, p.1))))
-    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssocK v.state.edges.adds.toList)
-    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssocK v.state.edges.removed.toList) :
+    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssoc v.state.edges.adds.toList)
+    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssoc v.state.edges.removed.toList) :
     canonicalParentE v i = v.state.canonicalParent i := by
   unfold canonicalParentE State.canonicalParent
   rw [View.parents_eq v i hpbc hi]

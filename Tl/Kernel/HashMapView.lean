@@ -56,13 +56,19 @@ theorem contains_hashSetOf_present (s : State) (j : IssueId) :
   rw [Std.HashSet.contains_iff_mem, decide_eq_true_iff, mem_hashSetOf]
   exact OrSet.mem_presentElements s.issues j
 
-/-! ## A hash copy of an association list (e.g. the rollup `AMap`'s `toList`) -/
+/-! ## A hash copy of an association list (e.g. the rollup `AMap`'s `toList`)
 
-def hashAssoc {V : Type _} (l : List (IssueId × V)) : Std.HashMap IssueId V :=
+Generic in the key `K` (any lawful-`BEq`/`Hashable`/`TotalOrd` type). The
+`IssueId`-keyed views (`dataH`/`rollupH`/`provH`, `CyclesFast`/`ReadyFast`) are
+the `K := IssueId` instantiation; the canonical-parent tie-break
+(`Tl.Kernel.CanonParent`) is the `K := Edge` one — one probe, no per-key copy,
+so a fix cannot split the two. -/
+
+def hashAssoc {K V : Type _} [BEq K] [Hashable K] (l : List (K × V)) : Std.HashMap K V :=
   l.foldl (fun m p => m.insert p.1 p.2) ∅
 
-theorem lookup_eq_none_of_not_fst {V : Type _} {k : IssueId} :
-    (l : List (IssueId × V)) → k ∉ l.map Prod.fst → AssocList.lookup k l = none
+theorem lookup_eq_none_of_not_fst {K V : Type _} [TotalOrd K] {k : K} :
+    (l : List (K × V)) → k ∉ l.map Prod.fst → AssocList.lookup k l = none
   | [], _ => rfl
   | p :: ps, h => by
     have hne : k ≠ p.1 := fun he => by
@@ -74,8 +80,9 @@ theorem lookup_eq_none_of_not_fst {V : Type _} {k : IssueId} :
       rw [List.map_cons] at h
       exact h (List.mem_cons_of_mem _ hm))
 
-theorem getElem?_foldl_insert {V : Type _} (l : List (IssueId × V))
-    (m0 : Std.HashMap IssueId V) (hnd : (l.map Prod.fst).Nodup) (k : IssueId) :
+theorem getElem?_foldl_insert {K V : Type _} [TotalOrd K] [BEq K] [LawfulBEq K]
+    [Hashable K] [LawfulHashable K] (l : List (K × V))
+    (m0 : Std.HashMap K V) (hnd : (l.map Prod.fst).Nodup) (k : K) :
     (l.foldl (fun m p => m.insert p.1 p.2) m0)[k]?
       = match AssocList.lookup k l with
         | some v => some v
@@ -106,8 +113,9 @@ theorem getElem?_foldl_insert {V : Type _} (l : List (IssueId × V))
         rw [Std.HashMap.getElem?_insert,
           if_neg (fun h => hk (beq_iff_eq.mp h).symm)]
 
-theorem getElem?_hashAssoc {V : Type _} (l : List (IssueId × V))
-    (hnd : (l.map Prod.fst).Nodup) (k : IssueId) :
+theorem getElem?_hashAssoc {K V : Type _} [TotalOrd K] [BEq K] [LawfulBEq K]
+    [Hashable K] [LawfulHashable K] (l : List (K × V))
+    (hnd : (l.map Prod.fst).Nodup) (k : K) :
     (hashAssoc l)[k]? = AssocList.lookup k l := by
   unfold hashAssoc
   rw [getElem?_foldl_insert l ∅ hnd k]
@@ -115,8 +123,11 @@ theorem getElem?_hashAssoc {V : Type _} (l : List (IssueId × V))
   | some v => rfl
   | none => exact Std.HashMap.getElem?_empty
 
-/-- The `AMap` instance of the bridge: the hash copy looks up exactly `find`. -/
-theorem getElem?_hashAssoc_amap {V : Type _} (m : AMap IssueId V) (k : IssueId) :
+/-- The `AMap` instance of the bridge: the hash copy looks up exactly `find`.
+    Instantiated at `K := IssueId` (the row-view probes) and `K := Edge` (the
+    canonical-parent tag/tombstone hashes). -/
+theorem getElem?_hashAssoc_amap {K V : Type _} [TotalOrd K] [BEq K] [LawfulBEq K]
+    [Hashable K] [LawfulHashable K] (m : AMap K V) (k : K) :
     (hashAssoc m.toList)[k]? = m.find k :=
   getElem?_hashAssoc m.toList (AMap.keys_nodup m) k
 
