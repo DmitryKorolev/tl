@@ -470,11 +470,22 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
 /-- The `show` claim block: surfaces this replica's latest own claim on the
     issue. Decoupled from staleness (ADR-0013, amended) — your own claim
     provenance is shown regardless of age; the stale *window* is a `doctor`
-    concern (`tl.staleAfter`), not a display gate here. `outcome` is `won` only
-    while BOTH registers still hold the claim's exact stamped writes (the
-    kernel `claimWonB`), else `superseded` — the assignee register alone would
-    misreport a concurrent close (which outstamps `status` but never writes
-    `assignee`) as a win. -/
+    concern (`tl.staleAfter`), not a display gate here. `outcome`:
+    - `won` — the actor's CURRENT claim holds: both registers carry one
+      coherent winning claim by this actor stamped at or after the surfaced
+      claim (the kernel `claimWonB`, evaluated at the winning assignee stamp) —
+      so a re-claim by the same actor from another replica still reads won
+      after convergence, while the assignee register alone would misreport a
+      concurrent close (which outstamps `status` but never writes `assignee`).
+    - `ended` — the claim no longer holds and the winning status write is this
+      replica's own later one (its close or reopen): the claim ended by this
+      replica's own successor write, history rather than a lost race, so the
+      block is the factual record (the truthful status/resolution/assignee are
+      already in the payload), not a contest verdict.
+    - `superseded` — a concurrent write this replica did not make took either
+      register.
+    `show`-only surface: the `claim` verb's own echo stays binary
+    won/superseded (the ratified wire contract). -/
 def claimBlock (v : View) (i : IssueId) : Option Json := do
   let own ← v.replica
   let ownVal ← own.toNat?
@@ -490,8 +501,16 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
     | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
   let d := v.state.issueData i
   let current := d.assignee.value.getD none
+  let won := match d.assignee with
+    | some (t, some a) =>
+      a == actor && decide (Tl.Crdt.TotalOrd.le stamp t) && claimWonB d t actor
+    | _ => false
+  let ended := match d.status with
+    | some (t, _) => t.replica == ownVal && decide (Tl.Crdt.TotalOrd.lt stamp t)
+    | none => false
+  let outcome := if won then "won" else if ended then "ended" else "superseded"
   some (Json.mkObj
-    [("outcome", Json.str (if claimWonB d stamp actor then "won" else "superseded")),
+    [("outcome", Json.str outcome),
      ("currentAssignee", current.elim Json.null Json.str)])
 
 def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
@@ -1032,6 +1051,20 @@ def reloadOrFallback (reload : TlM View) (fallback : View) (i : IssueId) :
   catch e =>
     pure (fallback, [s!"the claim is recorded but the post-sync reload failed ({e.message}); this echo reflects local state — re-read with `tl show {displayId i}`"])
 
+/-- The `claim` partial-survival explanation: the assignee write held but the
+    status write lost. Worded from the ACTUAL winning status so it can never
+    contradict itself: when that winner is itself `in_progress` (a concurrent
+    equivalent write — e.g. a status-carrying imported or crafted `create`
+    outstamping the claim), there is nothing to repair and the line says so,
+    instead of the impossible "the issue is in_progress, not in_progress".
+    Extracted so each status branch is unit-testable without staging the rare
+    concurrent fold that reaches it through the command. -/
+def partialClaimMessage (i : IssueId) (actor : String) (st : Status) : String :=
+  if st == .InProgress then
+    s!"claim of {displayId i} was superseded — {sanitizeSingle actor} still holds the assignee and the issue is already in_progress: this claim's own status write lost to a concurrent equivalent one; no action needed unless `tl log {displayId i}` shows a writer you don't expect"
+  else
+    s!"claim of {displayId i} was superseded — {sanitizeSingle actor} still holds the assignee, but a concurrent write outstamped the status: the issue is {statusWire st}, not in_progress; run `tl show {displayId i}` to inspect, then reopen or re-claim if the work is still intended"
+
 def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     (sync verify steal : Bool) (staleArg : Option String) : TlM CmdOut := do
   -- `--stale` only sets the window for `--steal`; alone it is a usage error so a
@@ -1173,7 +1206,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let human :=
     if tookOver then s!"Took over {displayId i} from {(priorHolder.map sanitizeSingle).getD "—"} as {sanitizeSingle actor} (its claim was stale)"
     else if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
-    else if partialWin then s!"claim of {displayId i} was superseded — {sanitizeSingle actor} still holds the assignee, but a concurrent write outstamped the status: the issue is {statusWire dFinal.statusOf}, not in_progress; run `tl show {displayId i}` to inspect, then reopen or re-claim if the work is still intended"
+    else if partialWin then partialClaimMessage i actor dFinal.statusOf
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   return { data, human
            notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes ++ reloadNotes }

@@ -1401,6 +1401,63 @@ GARBAGE
   o := o ++ [← expectData "show's claim block reads the partial win as superseded"
       ["show", "tl-" ++ pwId, "--dir", dirPW]
       (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- a claim ended by this replica's OWN later close is history, not a lost
+  -- race: show's block reads "ended" (never "superseded" — every normally
+  -- completed task would read like a contest), with the factual payload
+  -- (done + still-assigned) alongside
+  let dirSC ← freshDir
+  let tgtSC ← mkIssue dirSC "ClaimedThenSelfClosed"
+  let _ ← run' ["claim", "tl-" ++ tgtSC, "--dir", dirSC, "--actor", "carol"]
+  let _ ← run' ["close", "tl-" ++ tgtSC, "--dir", dirSC, "--as", "done", "--actor", "carol"]
+  o := o ++ [← expectData "own close after own claim reads ended, not superseded"
+      ["show", "tl-" ++ tgtSC, "--dir", dirSC]
+      (fun j => jStr j "status" == some "done"
+        && jStr j "assignee" == some "carol"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  match ← run' ["show", "tl-" ++ tgtSC, "--dir", dirSC] with
+  | .error e => o := o ++ [check "show human after own close stays non-contest" false e.message]
+  | .ok out => o := o ++
+      [check "show human after own close stays non-contest (no 'superseded' wording)"
+        ((out.human.splitOn "superseded").length == 1) out.human]
+  -- ... and the same reading after this replica's own reopen (the other own
+  -- status-writing successor): the old claim is over, not out-raced
+  let _ ← run' ["reopen", "tl-" ++ tgtSC, "--dir", dirSC, "--actor", "carol"]
+  o := o ++ [← expectData "own reopen after own claim also reads ended"
+      ["show", "tl-" ++ tgtSC, "--dir", dirSC]
+      (fun j => jStr j "status" == some "open"
+        && (jGet j "assignee").isNone
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  -- a re-claim by the SAME actor from another replica: after convergence the
+  -- actor's current claim holds both registers at one (later) stamp, so this
+  -- replica still reads won — its actor holds the issue, just via a newer op
+  let dirRR ← freshDir
+  let tgtRR ← mkIssue dirRR "ReclaimedElsewhere"
+  let _ ← run' ["claim", "tl-" ++ tgtRR, "--dir", dirRR, "--actor", "carol"]
+  let baseRR ← nowMs
+  let segRR := foreignLine (.reopen tgtRR) ((baseRR + 20000) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
+            ++ foreignLine (.claim tgtRR "carol") ((baseRR + 40000) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 2 ++ "\n"
+  IO.FS.writeFile (System.FilePath.mk dirRR / "log" / "2zzzzzzzzzzzz.jsonl") segRR
+  o := o ++ [← expectData "the same actor's cross-replica re-claim still reads won"
+      ["show", "tl-" ++ tgtRR, "--dir", dirRR]
+      (fun j => jStr j "assignee" == some "carol"
+        && jStr j "status" == some "in_progress"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
+  -- partialClaimMessage rows (unit — reaching the rarer status winners through
+  -- the command needs a mid-command concurrent fold): every status wording is
+  -- self-consistent; the in_progress winner never yields the contradictory
+  -- "in_progress, not in_progress" and drops the reopen/re-claim remedy
+  for st in [Status.Open, Status.InProgress, Status.Done, Status.Cancelled] do
+    let msg := partialClaimMessage "aaaabbbbccccdd77" "carol" st
+    let base := (msg.splitOn "superseded").length == 2
+      && (msg.splitOn "still holds the assignee").length == 2
+    let shaped :=
+      if st == Status.InProgress then
+        (msg.splitOn "not in_progress").length == 1
+          && (msg.splitOn "already in_progress").length == 2
+      else
+        (msg.splitOn s!"{statusWire st}, not in_progress").length == 2
+    o := o ++ [check s!"partial-claim wording is self-consistent for status {statusWire st}"
+      (base && shaped) msg]
   -- reopen clears the assignee (ADR-0013): a claimed-then-reopened issue is Open
   -- AND unassigned (the prior claim ended with the close the reopen reverses).
   -- omit-empty ⇒ the assignee field is absent once cleared.
