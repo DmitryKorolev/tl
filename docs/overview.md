@@ -144,6 +144,28 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   witnesses cover exactly the present on-cycle nodes (`mem_flatten_sccWitnesses_iff`),
   and two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`).
   Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
+- **Cycle-repair termination** (`Tl/Kernel/CycleRepair.lean`). The
+  `dep cycles` → `dep remove` loop is proved sound and terminating in the
+  edge-count form: an `edgeRemove` (any observed set) never creates a kind-`k`
+  cycle and every surviving cyclic SCC refines a prior witness
+  (`onCycle_edgeRemove`/`hasCycle_edgeRemove`/`cycles_edgeRemove_refine`); a
+  well-formed remove of a present kind-`k` edge strictly decreases the present
+  kind-`k` edge count (`kindEdgeCount_repairStep_lt`); every reported witness
+  is nonempty and holds a present in-witness edge, so a state with no
+  effective step left is already cycle-free (`cycles_witness_edge_exists`,
+  `hasCycle_eq_false_of_no_effectiveStep`); and no chain of effective repair
+  steps exceeds the in-witness present-edge count, with an explicit run — and
+  every *maximal* run — ending at `hasCycle = false` within that bound
+  (`effectiveChain_length_le`, `repair_terminates`,
+  `effectiveChain_maximal_terminates`). The proved hypothesis regime is
+  *remove-only*: the chain folds well-formed removes (`observed` = the edge's
+  full tag set, the CLI's `dep remove` shape) with **nothing** else
+  interleaved — kind-`k`-add-freedom alone is not sufficient, since a
+  concurrent `create` can materialize a dangling endpoint and activate inert
+  kind-`k` edges into a brand-new cycle. Total on cyclic and dangling graphs.
+  The `≤ #SCCs` bound of the every-SCC-is-one-simple-cycle special case is
+  deliberately excluded, not deferred: the general edge-count bound is the
+  contract.
 - **`unblocks` correctness — exact & unconditional** (`Tl/Kernel/Unblocks.lean`).
   `unblocks` is *defined* as the ready-set diff `ready (withClosed s i) \ ready s`
   (`withClosed` forces `i`'s status to `Cancelled`, the full close effect incl. the

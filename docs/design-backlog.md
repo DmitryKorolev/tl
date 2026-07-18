@@ -22,28 +22,6 @@ and bulk `import` (Stage 3) have landed. Still open: `edit`.
 Everything below remains stage-gated (decide when building that surface) or a
 forever-contract surface that freezes on first implementation.
 
-## Proof obligations (theorems to settle)
-
-Kernel theorems still to decide whether to commit to:
-
-- Cycle-breaking progress / termination [low] — prove that the
-  `dep cycles → dep remove` repair loop terminates. The provable form:
-  (a) removing a present kind-`k` edge with both endpoints inside a witness
-  `cycles s k` reports strictly decreases the present kind-`k` edge count and
-  cannot create a cycle; (b) SCC refinement — every cyclic SCC after the
-  removal is a subset of a prior one; (c) hence the loop reaches an acyclic
-  kind-`k` graph in ≤ (# present kind-`k` edges with both endpoints inside
-  some reported witness) effective steps, and while any witness is nonempty
-  such an edge exists. Hypotheses, both required: no concurrent kind-`k`
-  `edgeAdd` at all (the OR-Set does not distinguish add from re-add — both
-  are fresh-tag adds), and each remove tombstones every live tag of its edge
-  (the CLI's shape). A per-SCC measure is not provable: removing a chord of a
-  3-cycle leaves `cycles s k` unchanged, the complete digraph on 3 nodes is
-  one SCC needing 3 removals, and a removal can split one cyclic SCC into two
-  (the cyclic-SCC count can increase). The ≤ (#SCCs) bound does hold in the
-  special case where every cyclic SCC is a single simple cycle. Makes the
-  diagnostic's advice provably terminating (ADR-0004).
-
 ## Sync, discovery & local concurrency
 
 - Discovery: bare repos, `.git`-file worktrees, `GIT_DIR`/`GIT_WORK_TREE` [low]
