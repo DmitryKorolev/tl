@@ -54,17 +54,26 @@ The kernel never reads the environment.
 
 ### The "superseded by …" signal is shell-only and replica-relative
 
-The contention signal compares the materialized winning `assignee` (a
-pure LWW value of the converged state) against this replica's own most
-recent `claim` — read from its own segment `.tl/log/<replica-id>.jsonl`
-(the same per-issue log scan `tl log <id>` uses, ADR-0008). It is therefore an
-I/O-shell concern, not a kernel function: the converged state alone cannot
-tell a replica that *its* actor claimed and lost, because that fact is
-replica-relative, not a property of the merged state. `show` emits
-"superseded by `<assignee>`" whenever the winning `assignee` differs from this
-replica's latest local claim — surfaced as the `claim` block on **every**
-`tl show`, decoupled from any age window (the block is the replica's own
-provenance, so age never hides it). The *stale-claim* window is a
+The contention signal checks whether this replica's own most recent
+`claim` — read from its own segment `.tl/log/<replica-id>.jsonl` (the same
+per-issue log scan `tl log <id>` uses, ADR-0008) — still *holds* in the
+converged state. A claim writes `in_progress` + `assignee` at one stamp, so
+holding is a property of **both** registers: the outcome is `won` iff the
+winning entries of `status` and `assignee` are both the claim's exact stamped
+writes — `(stamp, in_progress)` and `(stamp, assignee)` — the decidable form
+of the kernel's proved `ClaimWon` predicate (`claimWonB`); anything else,
+including a partial survival (assignee kept, status lost to a concurrent
+close or status-only write), is `superseded`. The assignee register alone
+would misreport a concurrent close — which outstamps `status` but never
+writes `assignee` — as a win on a closed issue. Which claim is "this
+replica's latest" stays an I/O-shell concern: the converged state alone
+cannot tell a replica that *its* actor claimed and lost, because that fact is
+replica-relative, not a property of the merged state. The verdict is
+surfaced as the `claim` block on **every** `tl show`, decoupled from any age
+window (the block is the replica's own provenance, so age never hides it),
+and by `tl claim` itself, whose human line explains a partial survival
+(what outstamped the status, and what to do next) rather than emitting a
+bare "superseded". The *stale-claim* window is a
 separate concern, read by `doctor` and by `claim --steal` (§ takeover
 below), with **no default**: it is the `tl.staleAfter`
 git config (a compact relative duration — `45m`/`1h`/`24h`), measured as
@@ -113,7 +122,9 @@ CLI ossifies:
   under clock skew, or a crafted segment) loses the status LWW but keeps the
   assignee LWW. No write-time guard could forbid that merge (§core-principle-2);
   the superseded signal and a future `list --stale` are *derived* and tolerate
-  it. `tl reopen` is the CLI remedy: it is a value-equality idempotent (it fires
+  it — such a split is exactly a *partial claim win*, which the both-register
+  outcome above classifies as `superseded` (never `won`; the kernel's
+  `ClaimPartial.not_won`). `tl reopen` is the CLI remedy: it is a value-equality idempotent (it fires
   unless the issue already equals open + no-resolution + no-assignee), so it
   clears any such smuggled-in assignee and restores the steady state.
 - **`reopen` clears `assignee`.** Returning a closed issue to `open` clears the
