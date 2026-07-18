@@ -1355,6 +1355,52 @@ GARBAGE
       [check "claim command reports superseded in JSON" (outc == some "superseded") s!"outcome={outc}",
        check "claim command discloses supersession in the human line"
          ((out.human.splitOn "superseded").length == 2) out.human]
+  -- a foreign close outstamping the claim: the assignee register alone still
+  -- reads carol (a close never writes assignee), but the claim did NOT hold —
+  -- the status register was lost to the close, so the outcome derives from
+  -- BOTH registers and reads superseded on the (truthfully done) issue
+  let dirFC ← freshDir
+  let tgtFC ← mkIssue dirFC "ClosedUnderTheClaim"
+  let _ ← run' ["claim", "tl-" ++ tgtFC, "--dir", dirFC, "--actor", "carol"]
+  let closeHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirFC / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.close tgtFC .Done) closeHlc "2zzzzzzzzzzzz" "eve" ++ "\n")
+  o := o ++ [← expectData "a foreign close outstamping the claim supersedes it (both-register outcome)"
+      ["show", "tl-" ++ tgtFC, "--dir", dirFC]
+      (fun j => jStr j "status" == some "done"
+        && jStr j "assignee" == some "carol"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- the partial win through the claim command itself: a foreign `create` dated
+  -- ahead (within the skew window) seeds status=(high stamp, open), so the
+  -- issue is claimable, but the fresh claim's lower-stamped status write loses
+  -- while its assignee write survives — assignee-only would read "won"; the
+  -- both-register outcome is superseded, and the human line explains the
+  -- partial survival instead of a bare verdict
+  let dirPW ← freshDir
+  -- a local write first, so the persisted HLC is seeded at wall-clock now and
+  -- the upcoming claim does NOT reseed from (and outstamp) the foreign segment
+  let _ ← mkIssue dirPW "WarmTheClock"
+  let pwId := "aaaabbbbccccff00"
+  let pwHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirPW / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create pwId { title := some "SeededAhead" }) pwHlc "2zzzzzzzzzzzz" "eve" ++ "\n")
+  match ← run' ["claim", "tl-" ++ pwId, "--dir", dirPW, "--actor", "carol"] with
+  | .error e => o := o ++ [check "partial claim win is reachable via the command" false s!"unexpected: {e.message}"]
+  | .ok out =>
+    let outc := (jGet out.data "claim").bind (fun c => jStr c "outcome")
+    o := o ++
+      [check "partial claim win reports superseded in JSON (binary wire outcome)"
+         (outc == some "superseded") s!"outcome={outc}",
+       check "partial claim win keeps the truthful issue payload (open + assigned)"
+         (jStr out.data "status" == some "open" && jStr out.data "assignee" == some "carol")
+         out.data.compress,
+       check "partial claim win's human line explains the split, not a bare verdict"
+         ((out.human.splitOn "still holds the assignee").length == 2
+          && (out.human.splitOn "superseded").length == 2) out.human]
+  -- the show claim block agrees on the partial case (same both-register derivation)
+  o := o ++ [← expectData "show's claim block reads the partial win as superseded"
+      ["show", "tl-" ++ pwId, "--dir", dirPW]
+      (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- reopen clears the assignee (ADR-0013): a claimed-then-reopened issue is Open
   -- AND unassigned (the prior claim ended with the close the reopen reverses).
   -- omit-empty ⇒ the assignee field is absent once cleared.

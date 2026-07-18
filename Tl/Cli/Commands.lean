@@ -17,6 +17,7 @@ import Tl.Cli.Resolve
 import Tl.Cli.Init
 import Tl.Cli.Licenses
 import Tl.Kernel.Path
+import Tl.Kernel.Claim
 import Tl.Sync.Local
 import Tl.Sync.Remote
 import Tl.Sync.AutoSync
@@ -469,8 +470,11 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
 /-- The `show` claim block: surfaces this replica's latest own claim on the
     issue. Decoupled from staleness (ADR-0013, amended) — your own claim
     provenance is shown regardless of age; the stale *window* is a `doctor`
-    concern (`tl.staleAfter`), not a display gate here. `outcome` is `won` when
-    the assignee is still this actor, else `superseded`. -/
+    concern (`tl.staleAfter`), not a display gate here. `outcome` is `won` only
+    while BOTH registers still hold the claim's exact stamped writes (the
+    kernel `claimWonB`), else `superseded` — the assignee register alone would
+    misreport a concurrent close (which outstamps `status` but never writes
+    `assignee`) as a win. -/
 def claimBlock (v : View) (i : IssueId) : Option Json := do
   let own ← v.replica
   let ownVal ← own.toNat?
@@ -480,13 +484,14 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
     | _ => none)
   -- latest own claim by the full stamp order (the cross-op comparison rule,
   -- Tl/Cli/Project.lean §provenance)
-  let (_, actor) ← claims.foldl (fun acc c =>
+  let (stamp, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
     | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
-  let current := (v.state.issueData i).assignee.value.getD none
+  let d := v.state.issueData i
+  let current := d.assignee.value.getD none
   some (Json.mkObj
-    [("outcome", Json.str (if current == some actor then "won" else "superseded")),
+    [("outcome", Json.str (if claimWonB d stamp actor then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
 
 def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
@@ -1123,8 +1128,8 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
     else .error (notClaimable
       s!"{displayId i} is not claimable — run `tl why {displayId i}`, or claim something from `tl ready`"))
   let v := writeNow ctx parsed
-  let some i := parsed.head?.bind (fun p =>
-      match p.op with | .claim ci _ => some ci | _ => none)
+  let some (i, claimStamp) := parsed.head?.bind (fun p =>
+      match p.op with | .claim ci _ => some (ci, p.stamp) | _ => none)
     | throw (.mk' .internal "claim wrote no claim record")
   let auto ← Tl.Sync.autoSyncLocal d replica
   -- publish-around-claim (ADR-0001 §5): with --sync, push the take to the remote
@@ -1142,8 +1147,16 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   -- --sync, the just-written state is the freshest we have.
   let (vFinal, reloadNotes) ←
     if sync then reloadOrFallback (loadView dirOverride) v i else pure (v, ([] : List String))
-  let current := (vFinal.state.issueData i).assignee.value.getD none
-  let won := current == some actor
+  let dFinal := vFinal.state.issueData i
+  let current := dFinal.assignee.value.getD none
+  -- the outcome derives from BOTH registers (kernel `claimWonB`): the claim
+  -- holds only while status and assignee both carry its exact stamped writes.
+  -- The assignee alone would misreport a concurrent close — which outstamps
+  -- `status` but never writes `assignee` — as a win on a closed issue.
+  let won := claimWonB dFinal claimStamp actor
+  -- the partial survival (assignee kept, status lost): still `superseded` on
+  -- the wire (the outcome enum stays binary), but the human line explains it
+  let partialWin := claimPartialB dFinal claimStamp actor
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
     [("outcome", Json.str (if won then "won" else "superseded")),
      ("currentAssignee", current.elim Json.null Json.str)])
@@ -1160,6 +1173,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let human :=
     if tookOver then s!"Took over {displayId i} from {(priorHolder.map sanitizeSingle).getD "—"} as {sanitizeSingle actor} (its claim was stale)"
     else if won then s!"Claimed {displayId i} as {sanitizeSingle actor}"
+    else if partialWin then s!"claim of {displayId i} was superseded — {sanitizeSingle actor} still holds the assignee, but a concurrent write outstamped the status: the issue is {statusWire dFinal.statusOf}, not in_progress; run `tl show {displayId i}` to inspect, then reopen or re-claim if the work is still intended"
     else s!"claim of {displayId i} was superseded by a later concurrent write — it is now assigned to {current.elim "no one" sanitizeSingle}; rerun if still intended"
   return { data, human
            notes := preNotes ++ freshNotes ++ writeNotes ctx ++ auto ++ postNotes ++ reloadNotes }
