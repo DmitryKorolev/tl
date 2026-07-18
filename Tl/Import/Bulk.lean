@@ -314,6 +314,16 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
       | none, .Done => [parsedLine (.close id .Done) (stamp "close" (packHlc closeMs 2)) actor]
       | none, .Cancelled => [parsedLine (.close id .Cancelled) (stamp "close" (packHlc closeMs 2)) actor]
       | none, _ => []
+    -- notes: the JSONL `notes` field lowers to ONE synthetic immutable journal
+    -- entry (ADR-0027/0005): a `note` op-role in the nonce preimage, the hlc
+    -- from the record's createdAt like the other non-lifecycle seed ops, the
+    -- note id minted from that stamp as usual. One value in, one entry out —
+    -- the import format's `notes` is a single string.
+    let noteOps := match r.notes with
+      | some txt =>
+        let nst := stamp "note" (packHlc createMs 0)
+        [parsedLine (.noteAdd id (mintNoteId nst) txt) nst actor]
+      | none => []
     -- labels
     let labelOps := r.labels.map (fun l =>
       parsedLine (.labelAdd id l) (stamp s!"label:{l}" (packHlc createMs 0)) actor)
@@ -335,7 +345,8 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
         let e : Edge := if decide (id ≤ a) then (id, a, EdgeKind.Related) else (a, id, EdgeKind.Related)
         edgeOps := edgeOps ++ [parsedLine (.relate e) (stamp s!"related:{rel}" (packHlc createMs 0)) actor]
       else edgeDisc := edgeDisc ++ [s!"import record {r.sourceId}: related '{rel}' is not in the import — edge skipped"]
-    (createOp :: (metaOps ++ claimOps ++ closeOps ++ labelOps ++ edgeOps), edgeDisc ++ lifeDisc))
+    (createOp :: (metaOps ++ claimOps ++ closeOps ++ noteOps ++ labelOps ++ edgeOps),
+     edgeDisc ++ lifeDisc))
   let lines := perRecord.flatMap (·.1)
   let edgeDiscs := perRecord.flatMap (·.2)
   { segmentReplica := replicaId, lines, issueCount := ordered.length,

@@ -4455,7 +4455,16 @@ def cliImportTests : IO (List Outcome) := do
        ["show", idOf "PROJ-9", "--dir", dir]
        (fun j => jNat j "priority" == some 4 && jBool j "deferred" == some true && (jStr j "deferUntil").isSome),
      ← expectData "imported duplicate is cancelled"
-       ["show", idOf "PROJ-3", "--dir", dir] (fun j => jStr j "status" == some "cancelled")]
+       ["show", idOf "PROJ-3", "--dir", dir] (fun j => jStr j "status" == some "cancelled"),
+     ← expectData "imported notes lower to one journal entry (ADR-0027/0005)"
+       ["note", "list", idOf "PROJ-42", "--dir", dir]
+       (fun j => jNat j "count" == some 1
+         && ((jArr j "notes").head?.bind (fun n => jStr n "text"))
+              == some "Imported from Jira with two open questions"
+         && ((jArr j "notes").head?.bind (fun n => jStr n "id")).any (fun h => h.length == 16)),
+     ← expectData "show --json carries the imported journal entry array"
+       ["show", idOf "PROJ-42", "--dir", dir]
+       (fun j => (jArr j "notes").length == 1)]
   -- edges: blocks (blocker done ⇒ not blocked), parent, related all present
   o := o ++ [← expectData "imported edges: blocks + parent + related, not blocked (blocker is done)"
     ["show", idOf "PROJ-42", "--dir", dir]
