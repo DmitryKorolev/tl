@@ -35,6 +35,7 @@ import Tl.Kernel.ReachFrontier
 import Tl.Kernel.Path
 import Tl.Kernel.RollupAcyclic
 import Tl.Kernel.SccProps
+import Tl.Kernel.CycleRepair
 import Tl.Kernel.Unblocks
 import Tl.Kernel.Ranking
 
