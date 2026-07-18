@@ -115,6 +115,9 @@ theorem payloads_merge (a b : Journal) :
 theorem entries_addDelta (st : Stamp) (p : NotePayload) :
     (addDelta st p).entries = OrSet.singletonAdd st st := rfl
 
+theorem payloads_removeDelta (obs : FinSet Stamp) :
+    (removeDelta obs).payloads = AMap.empty := rfl
+
 /-- An entry is visible iff its element is present (its tag has a live,
     untombstoned add). -/
 def Visible (j : Journal) (st : Stamp) : Prop := j.entries.Present st
@@ -330,26 +333,102 @@ theorem tombstone_mono (j k : Journal) {e t : Stamp}
   rw [entries_merge, OrSet.removedOf_merge]
   exact (FinSet.mem_union ..).mpr (Or.inl h)
 
-/-- No resurrection: once `st` is tombstoned at itself, no add of `st` — the
-    only add any note op can contribute for that element — makes it visible
-    again. (With `tombstone_mono`, a removed entry stays removed under every
-    further merge of note deltas.) -/
-theorem not_visible_merge_addDelta_of_tombstoned (j : Journal) (st : Stamp)
-    (p : NotePayload) (htomb : st ∈ j.entries.removedOf st)
-    (htags : ∀ t, t ∈ j.entries.tagsOf st → t = st) :
-    ¬ (merge j (addDelta st p)).Visible st := by
+/-- No resurrection, merge-general: once `st` is tombstoned at itself, no
+    further self-tagged journal — any fold of note deltas, per the closure
+    lemmas above and `Tl.Kernel.selfTagged_fold` — can make it visible again. -/
+theorem not_visible_merge_of_tombstoned {j k : Journal} (st : Stamp)
+    (htomb : st ∈ j.entries.removedOf st)
+    (hj : SelfTagged j) (hk : SelfTagged k) :
+    ¬ (merge j k).Visible st := by
   intro hpres
   obtain ⟨t, hmem, hlive⟩ := (OrSet.present_iff_exists_live_tag ..).mp hpres
-  rw [entries_merge, OrSet.tagsOf_merge] at hmem
-  have ht : t = st := by
-    rcases (FinSet.mem_union ..).mp hmem with h | h
-    · exact htags t h
-    · rw [entries_addDelta, OrSet.tagsOf_singletonAdd_self] at h
-      exact (FinSet.mem_singleton ..).mp h
+  have ht : t = st := selfTagged_merge hj hk st t hmem
   subst ht
-  apply hlive
-  rw [entries_merge, OrSet.removedOf_merge]
-  exact (FinSet.mem_union ..).mpr (Or.inl htomb)
+  exact hlive (tombstone_mono j k htomb)
+
+/-- The single-add instance: a tombstoned entry stays hidden under a re-add of
+    its own tag (the only add any note op can contribute for that element). -/
+theorem not_visible_merge_addDelta_of_tombstoned (j : Journal) (st : Stamp)
+    (p : NotePayload) (htomb : st ∈ j.entries.removedOf st) (hj : SelfTagged j) :
+    ¬ (merge j (addDelta st p)).Visible st :=
+  not_visible_merge_of_tombstoned st htomb hj (selfTagged_addDelta st p)
+
+/-- Removal never touches payloads — the payload half of remove-exactness: a
+    `removeDelta` carries no payload map, so every recorded payload (visible or
+    removed) is byte-identical after the merge. -/
+theorem payloads_merge_removeDelta (j : Journal) (obs : FinSet Stamp) :
+    (merge j (removeDelta obs)).payloads = j.payloads := by
+  rw [payloads_merge, payloads_removeDelta]
+  exact AMap.merge_empty_right NotePayload.join j.payloads
+
+theorem payloadOf_merge_removeDelta (j : Journal) (obs : FinSet Stamp) (st : Stamp) :
+    (merge j (removeDelta obs)).payloadOf st = j.payloadOf st := by
+  show (merge j (removeDelta obs)).payloads.find st = j.payloads.find st
+  rw [payloads_merge_removeDelta]
+
+/-! ## Payload totality: every visible entry has a payload
+
+`visibleEntries` skips an element without a payload; `PayloadTotal` (with its
+closure set and the fold-level discharge `Tl.Kernel.payloadTotal_fold`) proves
+that case unreachable for every state built from the op deltas — the skip is a
+totality device, not a behavior. -/
+
+/-- Every visible entry carries a payload. -/
+def PayloadTotal (j : Journal) : Prop :=
+  ∀ st, j.Visible st → (j.payloadOf st).isSome = true
+
+/-- A merged state's visible entry was visible on (at least) one side: its
+    witness tag lives in one side's adds, and that side's tombstones are a
+    subset of the union's. -/
+theorem visible_merge_cases {a b : Journal} {st : Stamp}
+    (h : (merge a b).Visible st) : a.Visible st ∨ b.Visible st := by
+  obtain ⟨t, hmem, hlive⟩ := (OrSet.present_iff_exists_live_tag ..).mp h
+  rw [entries_merge, OrSet.tagsOf_merge] at hmem
+  rw [entries_merge, OrSet.removedOf_merge] at hlive
+  rcases (FinSet.mem_union ..).mp hmem with hm | hm
+  · exact Or.inl ((OrSet.present_iff_exists_live_tag ..).mpr
+      ⟨t, hm, fun hin => hlive ((FinSet.mem_union ..).mpr (Or.inl hin))⟩)
+  · exact Or.inr ((OrSet.present_iff_exists_live_tag ..).mpr
+      ⟨t, hm, fun hin => hlive ((FinSet.mem_union ..).mpr (Or.inr hin))⟩)
+
+theorem payloadTotal_empty : PayloadTotal empty := by
+  intro st h
+  obtain ⟨t, hmem, _⟩ := (OrSet.present_iff_exists_live_tag ..).mp h
+  exact absurd hmem (FinSet.not_mem_empty t)
+
+theorem payloadTotal_addDelta (st : Stamp) (p : NotePayload) :
+    PayloadTotal (addDelta st p) := by
+  intro st' h
+  obtain ⟨t, hmem, _⟩ := (OrSet.present_iff_exists_live_tag ..).mp h
+  unfold OrSet.tagsOf at hmem
+  rw [show (addDelta st p).entries.adds = AMap.singleton st (FinSet.singleton st) from rfl,
+    AMap.find_singleton] at hmem
+  by_cases he : st' = st
+  · show ((addDelta st p).payloads.find st').isSome = true
+    rw [show (addDelta st p).payloads = AMap.singleton st p from rfl,
+      AMap.find_singleton, if_pos he]
+    rfl
+  · rw [if_neg he] at hmem
+    exact absurd hmem (FinSet.not_mem_empty t)
+
+theorem payloadTotal_removeDelta (obs : FinSet Stamp) :
+    PayloadTotal (removeDelta obs) := by
+  intro st h
+  obtain ⟨t, hmem, _⟩ := (OrSet.present_iff_exists_live_tag ..).mp h
+  exact absurd hmem (FinSet.not_mem_empty t)
+
+theorem payloadTotal_merge {a b : Journal}
+    (ha : PayloadTotal a) (hb : PayloadTotal b) : PayloadTotal (merge a b) := by
+  intro st h
+  show ((merge a b).payloads.find st).isSome = true
+  rw [payloads_merge, AMap.find_merge]
+  rcases visible_merge_cases h with hv | hv
+  · obtain ⟨pa, hpa⟩ := Option.isSome_iff_exists.mp (ha st hv)
+    rw [show a.payloads.find st = some pa from hpa]
+    cases b.payloads.find st <;> rfl
+  · obtain ⟨pb, hpb⟩ := Option.isSome_iff_exists.mp (hb st hv)
+    rw [show b.payloads.find st = some pb from hpb]
+    cases a.payloads.find st <;> rfl
 
 /-! ## Rendering: the visible entries, stamp-ascending -/
 
@@ -422,6 +501,27 @@ theorem mem_visibleEntries (j : Journal) (st : Stamp) (p : NotePayload) :
     show (j.payloads.find st).map ((st, ·)) = some (st, p)
     rw [show j.payloads.find st = some p from hpay]
     rfl
+
+/-- A visible entry with a payload renders. With `PayloadTotal` (discharged
+    for every folded state) the hypothesis is free, so retention is rendering:
+    every retained entry appears in the list. -/
+theorem exists_mem_visibleEntries_of_visible (j : Journal) {st : Stamp}
+    (h : j.Visible st) (hp : (j.payloadOf st).isSome = true) :
+    ∃ p, (st, p) ∈ j.visibleEntries := by
+  obtain ⟨p, hpe⟩ := Option.isSome_iff_exists.mp hp
+  exact ⟨p, (mem_visibleEntries ..).mpr ⟨h, hpe⟩⟩
+
+/-- Two distinct visible stamps render as two distinct rows — equal text from
+    separate ops stays two entries in the output, never collapsed (the entry's
+    identity is its stamp, not its payload). -/
+theorem visibleEntries_distinct_rows (j : Journal) {st1 st2 : Stamp}
+    (hne : st1 ≠ st2) (h1 : j.Visible st1) (h2 : j.Visible st2)
+    (hp1 : (j.payloadOf st1).isSome = true) (hp2 : (j.payloadOf st2).isSome = true) :
+    ∃ p1 p2, (st1, p1) ∈ j.visibleEntries ∧ (st2, p2) ∈ j.visibleEntries ∧
+      (st1, p1) ≠ (st2, p2) := by
+  obtain ⟨p1, hm1⟩ := exists_mem_visibleEntries_of_visible j h1 hp1
+  obtain ⟨p2, hm2⟩ := exists_mem_visibleEntries_of_visible j h2 hp2
+  exact ⟨p1, p2, hm1, hm2, fun hc => hne (congrArg Prod.fst hc)⟩
 
 /-- Rendering is a pure function of the journal, so it inherits merge
     commutativity outright — with the state-level fold theorems (`fold_perm`,

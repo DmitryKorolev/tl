@@ -29,6 +29,7 @@ import Tl.Kernel.CyclesFast
 import Tl.Kernel.Theorems
 import Tl.Kernel.FoldFast
 import Tl.Kernel.Frame
+import Tl.Kernel.NotesInvariant
 import Tl.Kernel.CloseMono
 import Tl.Kernel.Claim
 import Tl.Kernel.Reach
