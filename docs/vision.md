@@ -69,7 +69,7 @@ except where noted:
 | `assignee` | text? | optional free-form actor label; written only by `claim` / `claim --steal` and cleared by `reopen` (claim-only; not settable via `create`/`update`, ADR-0013/0008) |
 | `labels` | set of text | OR-Set; categorical tags, filter facets only, drive nothing |
 | `description` | text? | optional freeform body — task *input* (whole-field, not threaded) |
-| `notes` | text? | optional freeform body — task *output* / human notes (whole-field, not threaded) |
+| `notes` | journal of immutable entries | task *output*: append-only evidence/decision journal (`note add`/`list`/`remove` — per-entry removal, no edit, no threads; ADR-0027); each entry is whole freeform text |
 | `slug` | text? | optional display handle, not identity (ADR-0007) |
 | `deferUntil` | ISO-8601 UTC instant? | timed postponement; stored as a normalized UTC instant string, distinct from the HLC (ADR-0010) |
 | `createdAt` / `updatedAt` / `closedAt` / `claimedAt` | timestamp (derived) | provenance projected from the log at fold time, not stored (`claimedAt` backs `list --stale`); exact projection rules in ADR-0008 |
@@ -135,7 +135,8 @@ Work loop
 | `tl sync` | publish/receive task state: fetch + union-merge + push the `refs/tl/log` ref (ADR-0001) — the transport, since `tl` never commits to your branch |
 | `tl claim <id> [--sync] [--verify]` | take a ready item only; non-ready targets are refused with `not-claimable` and actionable reasons (direct unclosed blockers — `tl why` for the transitive set — deferred until, epic, closed/in-progress; ADR-0020). `--sync` publishes around the take; `--verify` is an explicit preflight against the freshest reachable state (ADR-0001/0003/0013) |
 | `tl update <id> [--actor] [-p] [--slug] …` | scalar field edits via flags (`--actor` records provenance; `assignee` is claim-only, not an `update` field; lifecycle status uses `claim`/`close`/`reopen`; edges use `dep`/`parent`, never `update`) |
-| `tl edit <id>` | open title/description/notes in `$EDITOR` |
+| `tl edit <id>` | open title/description in `$EDITOR` (journal entries are composed once via `note add`, never re-edited; ADR-0027) |
+| `tl note add <id> <text\|-> ` / `tl note list <id> [--all]` / `tl note remove <id> <note-id>` | append-only journal: immutable entries with stable ids, per-entry removal with the honesty disclosure (ADR-0027) |
 | `tl close <id> --as done\|cancelled\|duplicate [--of <id>]` | finish; any closed status discharges blockers (`duplicate` sets `cancelled` + records the canonical via `--of`). An epic can't be closed `--as done` (it rolls up); cancelling an epic leaves its children open and reparentable — there is no `--cascade` (cut, ADR-0003 §3) |
 | `tl reopen <id>` | terminal → `open`; clears `assignee` (ADR-0008/0013) |
 | `tl defer <id> --until <date>` / `--for <dur>` / `tl undefer <id>` | timed postponement; auto-resumes (ADR-0010) |
@@ -365,10 +366,12 @@ This list is a contract against feature creep, not a backlog:
 
 - Any database server / daemon. `tl`'s source of truth is plain files in
   git. No SQL engine, no server process, no lifecycle to manage.
-- Collaborative text editing. Descriptions and notes are whole-field
-  values, not character-level CRDTs (ADR-0002). No RGA / no sequence merge.
-- Comments/labels as logic. `description` and `notes` are single
-  freeform fields (no threaded comments); `labels` are a filterable
+- Collaborative text editing. A description is a whole-field value and a
+  journal entry is immutable whole text (ADR-0002/0027), not
+  character-level CRDTs. No RGA / no sequence merge.
+- Comments/labels as logic. `description` is a single freeform field and
+  `notes` an append-only journal of freeform entries — no threads, replies,
+  or notifications either way (ADR-0027); `labels` are a filterable
   side-channel. All round-trip and can be filtered on, but no behavior or
   theorem depends on them — they never affect `ready`, rollup, or any
   invariant.

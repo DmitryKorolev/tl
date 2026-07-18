@@ -39,9 +39,11 @@ removal. `description` remains the issue's single mutable LWW document. There
 is no replace and no reset on notes: a correction is a new note; cleanup is
 removal of a specific entry. Both scalar interfaces are retired — `update
 --notes` and `update --append-notes` are removed, and using them is a `usage`
-error whose message teaches the replacement (`tl note add`). `create --notes`
-is retired with them: the journal is task *output*, and at creation time
-there is none — creation-time content belongs in `--description`.
+error whose message teaches the replacement (`tl note add`). The `create`
+and `update` wire records lose their `notes` payload key with them (the
+CLI's `create` never exposed a notes flag; the key existed only on the
+record): the journal is task *output*, and at creation time there is none —
+creation-time content belongs in `--description`.
 
 ### Surface
 
@@ -72,24 +74,29 @@ The user-facing *handle* (the note id) is minted like an issue id
 preimage `"note:" ++ replica-id(13) ++ hlc(16 hex) ++ nonce(26)`, Crockford
 base32, 16 lowercase chars — the same fixed-width component concatenation
 ADR-0007 pins for issue ids, behind a domain prefix so the two id spaces can
-never share a preimage (ADR-0007's preimage inventory gains this row with the
-implementation). It is minted at write time, carried as data on
-the record, and never re-derived on read (ADR-0008). It has no display affix:
+never share a preimage (ADR-0007's preimage rules gain this form with the
+implementation). The prefix makes the preimage 60 bytes — two SHA-256
+blocks, where the 55-byte issue-id preimage is one — so the implementing
+change also updates ADR-0018's mint-preimages-are-single-block remark; the
+transcription hashes arbitrary lengths, and its padding-edge vectors already
+cover multi-block messages. The id is minted at write time, carried as data
+on the record, and never re-derived on read (ADR-0008). It has no display affix:
 the `tl-` prefix exists to keep ids and slugs disjoint in the *positional
 issue grammar* (ADR-0007), and a note id only ever appears in the dedicated
 `<note-id>` argument position, so there is nothing to disambiguate. Reference
 rules mirror issue ids: any unambiguous prefix within that issue's journal,
-ASCII-case-folded and Crockford symbol-aliased on input; display lengthens
-the shown prefix only as far as needed to disambiguate within the journal.
+ASCII-case-folded and Crockford symbol-aliased on input; display always
+shows the full 16-character handle (short enough to render bare).
 
 The canonical tag string (`"<hlc>.<replica>.<nonce>"`) is rejected as the
 handle: it is 57 characters, and its hlc-major layout means all of a
 project's tags share a long common prefix (the epoch-millisecond high bits),
 so "unambiguous prefix" would rarely be shorter than ~15 characters. The
-hash id gives git-short-hash ergonomics instead. Note-id uniqueness under
-truncation is carried exactly like issue-id uniqueness (ADR-0007's collision
-policy); the blast radius is smaller still, since resolution is scoped to one
-issue's journal and `note remove` resolves the id to its underlying tag
+hash id gives git-short-hash ergonomics instead. Handle uniqueness matters
+only for reference ergonomics — never for kernel correctness, which is
+tag-keyed throughout (the machinery note below): a collision is refused at
+resolution with the canonical tags offered, resolution is scoped to one
+issue's journal, and `note remove` resolves the handle to its underlying tag
 through the local fold before writing.
 
 ### Wire records
@@ -112,33 +119,57 @@ check) and hides the entry when it arrives.
 Records carrying the new kinds are stamped `v: 2`. This follows ADR-0008's
 versioning rule (a new op kind is exactly what an old reader could not fold)
 and its `compacted`-marker precedent: the bump rides the records an old
-reader actually meets, so a pre-journal binary fail-closes on a segment
-containing note ops with an upgrade message, while its ability to read
-note-free segments is unaffected. All other records are unchanged and stay
-`v: 1`. `create` and `update` lose their `notes` payload key (see the legacy
+reader actually meets, so a pre-journal binary fail-closes with an upgrade
+message on any segment containing note ops. Stated honestly, that is
+segment-wide, not note-local: segments are per-replica and append-only, so
+the first note op an upgraded replica writes makes stale binaries refuse
+that replica's *entire* active segment — every op in it — until the reader
+upgrades; note-free segments remain readable. For this pre-public
+repository's one flag-day window the blast radius is accepted. All other
+records are unchanged and stay `v: 1`. `create` and `update` lose their `notes` payload key (see the legacy
 section below for how a new reader treats old records that carry it).
 
 Like every issue-local write, a `noteAdd`/`noteRemove` folded before its
 issue's `create` is retained, not ignored — the journal lives in the same
 per-id-keyed structure discipline as the field registers and `labels`
 (ADR-0002), which is what keeps the fold permutation-insensitive. The
-projections are pinned too: note ops do not bump `updatedAt` (they follow the
-edge/label/meta rule, not the scalar rule — the journal is a collection, and
-an evidence append is not an edit of the issue's fields), and they appear in
-`tl log` / the `--since` feed like any op.
+projections are pinned too: `noteAdd` bumps `updatedAt` — the journal is
+issue-local *content*, appending progress is exactly the activity
+`updatedAt` exists to reflect, and today's scalar notes writes already bump
+it. The projection stays a pure fold of materialized state: `updatedAt` is
+the max over the scalar-register stamps and the journal's add-tags.
+`noteRemove` does *not* bump it: a tombstone materializes the *observed
+add-tags*, never the remove op's own stamp, so a pure state projection
+cannot see the removal — and removal is cleanup, not content. The asymmetry
+is deliberate and disclosed here. Note ops appear in `tl log` / the
+`--since` feed like any op.
 
 ### Kernel machinery: reuse the OR-Set, no parallel structure
 
-Each note is an element of an OR-Set whose single add-tag *is* its identity;
-entry payloads (text, plus the actor/time provenance projected from the
-envelope) live in a per-note map keyed by the note id. `noteRemove`
-tombstones that one tag. The observed-remove join laws
+Each note is an element of an OR-Set *keyed by its add-tag* — the element is
+the tag, so an entry has exactly one add-tag by construction. Entry payloads
+(the minted handle, the text, and the actor/time provenance projected from
+the envelope) live in a map keyed by the same tag. Nothing kernel-side is
+keyed by the 16-char handle: it is carried payload, so two records carrying
+equal handle bytes from distinct stamps are two independent entries, and a
+tombstone — keyed by tag — cannot reach a sibling under any payload bytes.
+`noteRemove` tombstones that one tag. The observed-remove join laws
 (commutative/associative/idempotent, both legs) therefore come from the
-existing `OrSet` lemmas rather than a new structure, and removal-exactness is
-element-scoped — a tombstone keyed at one note cannot disturb a sibling —
-rather than resting on the stamp-uniqueness carried assumption. (The
+existing `OrSet` lemmas rather than a new structure, and removal-exactness
+is element-scoped and unconditional over tags — not conditional on handle
+uniqueness, and not resting on the stamp-uniqueness carried assumption. (The
 implementation lands on the element-scoped tombstone shape; if the two
 changes are in flight together, the journal reuses that shape directly.)
+
+Handle collisions confine themselves to the CLI reference grammar:
+`note remove` resolves `<note-id>` through the local fold, and if the handle
+names more than one live entry it refuses with a teaching error listing the
+colliding entries' canonical tag strings — and the canonical tag
+(`"<hlc>.<replica>.<nonce>"`) is itself accepted in the `<note-id>` position
+as the always-unique fallback, parsed by shape exactly as ids are told from
+slugs (ADR-0007). Records sharing one *complete* triple fold to one entry;
+their payloads join by the unconditional rule pinned with the ordering
+clause below.
 
 One coincidence to state plainly so nobody "fixes" it later: the OR-Set is
 add-wins, but for notes the add-wins/remove-wins distinction collapses. Ids
@@ -163,22 +194,28 @@ non-guarantee:
 - **Removal is delivery-order independent** — a remove folded before its add
   still hides the entry when the add arrives (tombstone by tag value).
   *Theorem.*
-- **Remove-exactness** — a remove affects exactly the named note, for any
-  payload bytes (element-scoped tombstones make cross-entry interference
-  unrepresentable). *Theorem.*
-- **No resurrection** — a removed note never becomes visible again; a
-  removed id is never reused (ids are minted from fresh op stamps).
-  *Theorem, plus the id-uniqueness carried assumption for the reuse half.*
-- **Deterministic order** — the visible journal is ordered by the complete
-  stamp `(hlc, replica, nonce)` ascending, with the note id and then the
-  remaining payload as unconditional final tie-breaks. The order is total
-  with *no* distinct-stamps hypothesis and no traversal-order dependence —
-  the same realization discipline as the LWW value tie-break (ADR-0002) and
-  the canonical-parent selection (ADR-0003 §4). Under honest writers the
-  stamp alone already decides; the tail levels only ever fire on
-  (assumed-away) stamp collisions or adversarial records, where determinism
-  — not any particular winner — is the guarantee. *Theorem: rendering is
-  invariant under fold permutation, duplication, and replica merge.*
+- **Remove-exactness** — a remove affects exactly the entry whose tag it
+  names, for any payload bytes: tombstones are tag-keyed and the handle is
+  not a kernel key, so cross-entry interference is unrepresentable.
+  *Theorem, unconditional.*
+- **No resurrection** — a removed entry never becomes visible again:
+  tombstoned tags stay tombstoned, and no op can re-add a tag. *Theorem.*
+  Tag freshness across ops is the same nonce-uniqueness carried assumption
+  every OR-Set add already leans on — no separate handle-uniqueness
+  assumption is introduced.
+- **Deterministic order and payload** — the visible journal is ordered by
+  the complete stamp `(hlc, replica, nonce)` ascending. Between distinct
+  entries this is total outright — an entry's identity *is* its stamp — so
+  there are no tie-break levels and no distinct-stamps hypothesis. What can
+  collide is payload: records sharing one complete triple fold to a single
+  entry, and that entry's payload joins by the unconditional lexicographic
+  maximum over the canonical `(text, handle, actor)` byte tuple — a
+  semilattice max, the same realization discipline as the LWW value
+  tie-break (ADR-0002) and the canonical-parent selection (ADR-0003 §4).
+  Under honest writers the rule never fires (one op, one payload); on
+  adversarial or duplicated records determinism — not any particular winner
+  — is the guarantee. *Theorem: rendering is invariant under fold
+  permutation, duplication, and replica merge, unconditionally.*
 - **Immutability** — there is no note edit in the first release (excluded
   below);
   corrections are new notes. *Holds by absence of any mutating op.*
@@ -207,9 +244,11 @@ entries visible as placeholders — provenance shown, text hidden by default
 
 ### `--json` shapes and `show`
 
-An entry renders as `{ "id": <note-id>, "time": <ISO-8601 UTC>, "actor":
-<string|null>, "text": <string> }`; a placeholder (under `--all`) is the same
-object with `"removed": true` and no `text`. `time` is the add op's HLC
+An entry renders as `{ "id": <note-id>, "tag": <canonical add-tag string>,
+"time": <ISO-8601 UTC>, "actor": <string|null>, "text": <string> }` — `tag`
+is the always-unique reference form, the escape hatch when handles collide;
+a placeholder (under `--all`) is the same object with `"removed": true` and
+no `text`. `time` is the add op's HLC
 physical time projected like every other timestamp; `actor` is the envelope
 actor. Note ids render bare (16 chars, no affix — there is no display form to
 diverge from). Human and `--json` output show the same entries in the same
@@ -259,7 +298,11 @@ For live logs written before this change, the rule is:
   the log, so reusing its complete triple would put two records on one
   envelope identity and break the add-tag/nonce-uniqueness posture
   (ADR-0007) for no provenance gain — same-`(hlc, replica)` op pairs are
-  exactly what the nonce level exists to keep distinct. Historically
+  exactly what the nonce level exists to keep distinct. This deliberately
+  refines the ratified shorthand "stamped with the winning write's stamp":
+  hlc, replica, and actor — the provenance the ratification protects — are
+  preserved verbatim; the nonce is identity, not provenance. The migration
+  task defers to this rule. Historically
   overwritten values do **not** each become entries. Only the tracker ref is rewritten; the repository's commit
   history is untouched. tl is pre-public, so this flag-day (including the
   forced update of the shared tracker ref) is a one-time owner operation, not
@@ -267,10 +310,16 @@ For live logs written before this change, the rule is:
 - **Stragglers.** During the window, a stale pre-journal binary that meets
   `v: 2` note records fail-closes on that segment with an upgrade message
   (ADR-0008) — it cannot silently mis-fold or quietly fight the new format.
-  Its own legacy `notes` writes fold inert (unknown bag) on new readers. Both
-  effects end when the last working copy updates and re-syncs; accepted and
-  recorded here rather than engineered around, because the window is one
-  repository for one flag-day.
+  Its own legacy `notes` writes fold inert (unknown bag) on new readers, and
+  the one-off migration will already have run — an inert straggler write is
+  therefore *permanently* invisible to materialized views unless re-entered.
+  The text survives in the log bytes; recovery is manual (`note add` it
+  again) — the migration is not re-run. The fail-closed effect ends when the
+  last working copy updates; the flag-day protocol is therefore to update
+  every working copy before resuming writes, and the migration's
+  verification includes a check for scalar-notes records stamped after the
+  migration cut. Accepted and recorded here rather than engineered around,
+  because the window is one repository for one flag-day.
 
 Nothing in this section is a released compatibility surface: no release has
 shipped the scalar, and the first release ships the journal (ADR-0008
@@ -303,6 +352,11 @@ stability horizon).
   (ADR-0001/0008).
 - One-time surface bumps, both disclosed: record `v: 2` on the two new op
   kinds; `--json` `schemaVersion` 2 for the re-typed `notes` field.
+- Doc-corpus staging: vision.md's prose surface (field table, command
+  tables, exclusions) moves to the journal with this ADR; its generated
+  grammar block, and the ADR-0003/0008 lines that inventory the *current*
+  scalar code (plus ADR-0018's single-block remark), stay accurate until the
+  implementing change lands and are updated by it in the same change.
 - Entry order is stamp order, not causal order: a skewed clock places its
   entries by its own timestamps (within the ADR-0007 skew window's
   admission). That is the same LWW-family posture as every timestamp in tl —
@@ -330,9 +384,16 @@ stability horizon).
 - **`retract` verb.** Rejected: the removal vocabulary is `remove`
   (dep/parent/label); a synonym would suggest a semantic difference that
   does not exist.
-- **`--message`/`-m` text flag.** Rejected: the grammar has no message-flag
-  precedent — payloads are positional with `-` for stdin (`create`); git
-  familiarity does not outweigh internal consistency.
+- **`--message`/`-m` text flag** (the preference relayed into the ratifying
+  task). Rejected, with the precedent stated honestly: the grammar does
+  carry one text-payload flag — `create --description` — so a message flag
+  would not be unprecedented; but `--description` is a *secondary* field on
+  a verb whose primary payload (the title) is positional, and every primary
+  payload in the grammar is positional. An entry's text is `note add`'s sole
+  primary payload, so it is positional like `create`'s title, with `-`
+  reading stdin (the `create` body convention). Overriding the relayed
+  preference on grammar-consistency grounds is recorded deliberately;
+  before first release the reversal cost is one grammar row.
 - **The canonical stamp string as the note id.** Rejected above: 57 chars
   with a shared hlc-major prefix defeats prefix ergonomics; the hash handle
   matches issue-id conventions.
