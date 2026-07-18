@@ -82,7 +82,7 @@ private def mkst (h n : Nat) : Stamp := ⟨h, 7, n⟩
 private def fullWrites : ScalarWrites :=
   { title := some "alpha", status := some Status.InProgress,
     priority := some (1 : Fin 5), assignee := some (some "ann"),
-    description := some (some "desc"), notes := some (some "note"),
+    description := some (some "desc"),
     slug := some (some "alpha-slug"), deferUntil := some (some 123456),
     closeResolution := some none }
 
@@ -135,7 +135,8 @@ private def handIssues (aaa rrr : String) : String :=
 /-- A full `IssueData` JSON object with selected fields overridden. -/
 private def issueDataJson (overrides : List (String × String)) : String :=
   let base := [("title", "null"), ("status", "null"), ("prio", "null"),
-               ("assignee", "null"), ("desc", "null"), ("notes", "null"),
+               ("assignee", "null"), ("desc", "null"),
+               ("notes", "{\"e\":" ++ orsetJson "[]" "[]" ++ ",\"p\":[]}"),
                ("slug", "null"), ("defer", "null"), ("close", "null"),
                ("labels", orsetJson "[]" "[]"), ("meta", "[]")]
   "{" ++ String.intercalate "," (base.map (fun (k, v) =>
@@ -543,8 +544,7 @@ def cacheVersionGuardTests : List Outcome :=
       mkLine (.create idB { title := some "Beta" }) 1 ownStem,
       mkLine (.create idC { title := some "Gamma" }) 2 ownStem,
       mkLine (.claim idA "alice") 3 ownStem,
-      mkLine (.update idA { description := some (some "the body"),
-                            notes := some (some "a note") }) 4 ownStem,
+      mkLine (.update idA { description := some (some "the body") }) 4 ownStem,
       mkLine (.close idA .Done) 5 ownStem,
       mkLine (.reopen idA) 6 ownStem,
       mkLine (.defer idB 2100000000000) 7 ownStem,

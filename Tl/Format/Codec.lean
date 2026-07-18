@@ -302,8 +302,9 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
   -- update record carrying it preserves it in the unknown bag, never applied.
   if let some j := field? fs "description" then
     w := { w with description := some (← strOrNull "description" j) }
-  if let some j := field? fs "notes" then
-    w := { w with notes := some (← strOrNull "notes" j) }
+  -- `notes` is no longer a scalar payload key (ADR-0027): on a legacy record
+  -- it is not consumed here, so it routes to the preserve-unknown bag —
+  -- preserved verbatim on any rewrite, never materialized.
   if let some j := field? fs "slug" then
     w := { w with slug := some (← strOrNull "slug" j) }
   if lifecycle then
@@ -334,8 +335,8 @@ def decodeScalars (fs : List (String × Json)) (lifecycle : Bool) :
     preserved verbatim in the unknown bag (additive evolution, ADR-0008). -/
 def consumedKeys : String → List String
   | "create" => ["id", "title", "status", "priority", "description",
-                 "notes", "slug", "deferUntil", "closeResolution"]
-  | "update" => ["id", "title", "priority", "description", "notes", "slug"]
+                 "slug", "deferUntil", "closeResolution"]
+  | "update" => ["id", "title", "priority", "description", "slug"]
   | "claim" => ["id", "assignee"]
   | "close" => ["id", "status", "closeResolution"]
   | "reopen" => ["id"]
@@ -429,7 +430,6 @@ def scalarFields (w : ScalarWrites) : List (String × Json) :=
     w.priority.map (fun p => ("priority", jnum p.val)),
     w.assignee.map (fun a => ("assignee", jStrOrNull a)),
     w.description.map (fun d => ("description", jStrOrNull d)),
-    w.notes.map (fun n => ("notes", jStrOrNull n)),
     w.slug.map (fun s => ("slug", jStrOrNull s)),
     w.deferUntil.map (fun d =>
       ("deferUntil", jStrOrNull (d.map Time.isoOfEpochMs))),

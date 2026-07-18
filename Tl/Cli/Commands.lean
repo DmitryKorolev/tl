@@ -1376,38 +1376,29 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       s!"close of {displayId i} was superseded by a later concurrent write — it is closed as {heldAs}, not {asStr}; rerun if still intended"
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
-/-- `tl update`'s `--append-notes` is a non-atomic read-modify-write: it reads the
-    issue's current `notes` register from the materialized state, joins the new line
-    with a `\n`, and writes the whole string back as one LWW value. `notes` is a
-    single register (ADR-0008 LWW), so two appends racing across replicas resolve by
-    the join's triple key — the loser's line is dropped, not merged. For a serial
-    agent loop (the documented primary use) this is exactly the intended accumulate;
-    concurrent appenders should `sync` between writes. `--notes` (replace) and
-    `--append-notes` are mutually exclusive. -/
+/-- `tl update` writes the mutable scalar fields. The notes scalar is retired
+    (ADR-0027): notes are an append-only journal of immutable entries, so
+    `--notes` (replace) and `--append-notes` (a non-atomic read-modify-write
+    that dropped a racing writer's line wholesale) are gone — each fails with a
+    usage error that teaches the replacement, `tl note add`. -/
 def cmdUpdate (dirOverride : Option String) (tok : String)
     (title description notes appendNotes slug : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
-  if title.isNone && description.isNone && notes.isNone && appendNotes.isNone
-      && slug.isNone && priority.isNone then
+  if notes.isSome then
     throw (.mk' .usage
-      "update needs at least one of --title, --priority, --description, --notes, --append-notes, --slug")
-  if notes.isSome && appendNotes.isSome then
-    throw (.mk' .usage "use one of --notes (replace) or --append-notes (append a line), not both")
+      "--notes is retired (ADR-0027): notes are an append-only journal — append an entry with `tl note add <id> <text>`; a correction is a new note, and `tl note remove <id> <note-id>` deletes one")
+  if appendNotes.isSome then
+    throw (.mk' .usage
+      "--append-notes is retired (ADR-0027): `tl note add <id> <text>` appends an immutable entry with no lost-update race — concurrent appends are all retained")
+  if title.isNone && description.isNone && slug.isNone && priority.isNone then
+    throw (.mk' .usage
+      "update needs at least one of --title, --priority, --description, --slug (notes moved to `tl note add`)")
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
   let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
-    -- replace (--notes) wins by writing the value verbatim; append reads the current
-    -- notes off the same materialized state and writes current ++ "\n" ++ line.
-    let notesWrite : Option (Option String) := match appendNotes with
-      | some line =>
-        match (ctx.loaded.state.issueData i).notes.value.getD none with
-        | some cur => some (some (cur ++ "\n" ++ line))
-        | none     => some (some line)
-      | none => notes.map some
     .ok [.update i { title, priority := prio,
-                     description := description.map some,
-                     notes := notesWrite, slug := slug.map some }])
+                     description := description.map some, slug := slug.map some }])
   let v := writeNow ctx parsed
   let some i := parsed.head?.bind (fun p =>
       match p.op with | .update ui _ => some ui | _ => none)

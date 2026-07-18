@@ -27,7 +27,6 @@ structure ScalarWrites where
   priority : Option (Fin 5) := none
   assignee : Option (Option String) := none
   description : Option (Option String) := none
-  notes : Option (Option String) := none
   slug : Option (Option String) := none
   deferUntil : Option (Option Instant) := none
   closeResolution : Option (Option CloseResolution) := none
@@ -37,10 +36,13 @@ def writeIf {V : Type _} (st : Stamp) : Option V → Reg V
   | some v => Reg.write st v
   | none => none
 
-/-- The seven kernel deltas (ADR-0004). The `Stamp` is the op's `(hlc, replica,
-    nonce)` (ADR-0007); on add-ops it is the OR-Set add-tag and the LWW write
-    stamp; `observed` on remove-ops is the tombstoned add-tag set, scoped in the
-    delta to the element the op carries (the edge / the label). -/
+/-- The nine kernel deltas (ADR-0004/0027). The `Stamp` is the op's `(hlc,
+    replica, nonce)` (ADR-0007); on add-ops it is the OR-Set add-tag and the LWW
+    write stamp; `observed` on remove-ops is the tombstoned add-tag set, scoped
+    in the delta to the element the op carries (the edge / the label / the
+    note's own tag). `noteAdd` carries the minted handle, text, and envelope
+    actor as journal *payload* (ADR-0027 — actor becomes tag-keyed payload and
+    a join-tuple component here; convergence and identity stay actor-free). -/
 inductive Op where
   | create (id : IssueId) (st : Stamp) (writes : ScalarWrites)
   | setFields (id : IssueId) (st : Stamp) (writes : ScalarWrites)
@@ -49,6 +51,8 @@ inductive Op where
   | edgeRemove (e : Edge) (observed : FinSet Stamp)
   | labelAdd (id : IssueId) (label : Label) (st : Stamp)
   | labelRemove (id : IssueId) (label : Label) (observed : FinSet Stamp)
+  | noteAdd (id : IssueId) (st : Stamp) (note : String) (text : String) (actor : Option String)
+  | noteRemove (id : IssueId) (observed : FinSet Stamp)
 
 namespace Op
 
@@ -59,7 +63,7 @@ def scalarData (st : Stamp) (w : ScalarWrites) : IssueData where
   priority := writeIf st w.priority
   assignee := writeIf st w.assignee
   description := writeIf st w.description
-  notes := writeIf st w.notes
+  notes := Journal.empty
   slug := writeIf st w.slug
   deferUntil := writeIf st w.deferUntil
   closeResolution := writeIf st w.closeResolution
@@ -90,6 +94,18 @@ def labelData (st : Stamp) (label : Label) : IssueData :=
 def labelRemoveData (label : Label) (obs : FinSet Stamp) : IssueData :=
   { IssueData.empty with labels := OrSet.tombstonesAt label obs }
 
+/-- The data delta of a `noteAdd`: one journal entry, keyed by the op's own
+    stamp, carrying the minted handle, the text, and the envelope actor as
+    payload (ADR-0027). -/
+def noteData (st : Stamp) (note text : String) (actor : Option String) : IssueData :=
+  { IssueData.empty with notes := Journal.addDelta st ⟨note, text, actor⟩ }
+
+/-- The data delta of a `noteRemove`: tombstone each observed tag at itself
+    (the journal element *is* the tag). The remove op's own stamp is never
+    materialized (ADR-0027 — `noteRemove` does not bump `updatedAt`). -/
+def noteRemoveData (obs : FinSet Stamp) : IssueData :=
+  { IssueData.empty with notes := Journal.removeDelta obs }
+
 /-- The op's contribution as a standalone state; `apply` joins it in. -/
 def delta : Op → State
   | create id st w => ⟨OrSet.singletonAdd id st, AMap.singleton id (createData st w), OrSet.empty⟩
@@ -100,6 +116,9 @@ def delta : Op → State
   | labelAdd id label st => ⟨OrSet.empty, AMap.singleton id (labelData st label), OrSet.empty⟩
   | labelRemove id label obs =>
     ⟨OrSet.empty, AMap.singleton id (labelRemoveData label obs), OrSet.empty⟩
+  | noteAdd id st note text actor =>
+    ⟨OrSet.empty, AMap.singleton id (noteData st note text actor), OrSet.empty⟩
+  | noteRemove id obs => ⟨OrSet.empty, AMap.singleton id (noteRemoveData obs), OrSet.empty⟩
 
 end Op
 

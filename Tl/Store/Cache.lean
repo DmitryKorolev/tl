@@ -174,6 +174,26 @@ private def decOptStr : Json → Option (Option String)
   | Json.str s => some (some s)
   | _ => none
 
+private def encPayload (p : NotePayload) : Json :=
+  Json.mkObj [("h", Json.str p.handle), ("x", Json.str p.text), ("a", encOptStr p.actor)]
+
+private def decPayload (j : Json) : Option NotePayload := do
+  let handle ← (← (j.getObjVal? "h").toOption).getStr?.toOption
+  let text ← (← (j.getObjVal? "x").toOption).getStr?.toOption
+  let actor ← decOptStr (← (j.getObjVal? "a").toOption)
+  some ⟨handle, text, actor⟩
+
+/-- The notes journal (ADR-0027): both legs are canonical maps keyed by the
+    add-tag — the entries OR-Set over stamps and the payload map. -/
+private def encJournal (jn : Journal) : Json :=
+  Json.mkObj [("e", encOrSet encStamp jn.entries),
+              ("p", encAMap encStamp encPayload jn.payloads)]
+
+private def decJournal (j : Json) : Option Journal := do
+  let entries ← decOrSet decStamp (← (j.getObjVal? "e").toOption)
+  let payloads ← decAMap decStamp decPayload (← (j.getObjVal? "p").toOption)
+  some ⟨entries, payloads⟩
+
 private def encOptNat : Option Nat → Json
   | none => Json.null
   | some n => jnum n
@@ -236,7 +256,7 @@ private def encIssueData (d : IssueData) : Json :=
     ("prio", encReg (fun (p : Fin 5) => jnum p.val) d.priority),
     ("assignee", encReg encOptStr d.assignee),
     ("desc", encReg encOptStr d.description),
-    ("notes", encReg encOptStr d.notes),
+    ("notes", encJournal d.notes),
     ("slug", encReg encOptStr d.slug),
     ("defer", encReg encOptNat d.deferUntil),
     ("close", encReg encOptCloseRes d.closeResolution),
@@ -249,7 +269,7 @@ private def decIssueData (j : Json) : Option IssueData := do
   let priority ← decReg decFin5 (← (j.getObjVal? "prio").toOption)
   let assignee ← decReg decOptStr (← (j.getObjVal? "assignee").toOption)
   let description ← decReg decOptStr (← (j.getObjVal? "desc").toOption)
-  let notes ← decReg decOptStr (← (j.getObjVal? "notes").toOption)
+  let notes ← decJournal (← (j.getObjVal? "notes").toOption)
   let slug ← decReg decOptStr (← (j.getObjVal? "slug").toOption)
   let deferUntil ← decReg decOptNat (← (j.getObjVal? "defer").toOption)
   let closeResolution ← decReg decOptCloseRes (← (j.getObjVal? "close").toOption)

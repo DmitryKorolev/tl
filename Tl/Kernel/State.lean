@@ -18,6 +18,7 @@ The state join is componentwise, so its commutativity/associativity/idempotence
 -/
 import Tl.Crdt.Lww
 import Tl.Crdt.OrSet
+import Tl.Crdt.Journal
 
 namespace Tl.Kernel
 
@@ -96,7 +97,10 @@ structure IssueData where
   priority : Reg (Fin 5)
   assignee : Reg (Option String)
   description : Reg (Option String)
-  notes : Reg (Option String)
+  /-- The append-only notes journal (ADR-0027) — immutable entries with
+      per-entry removal, not a scalar register; `description` stays the sole
+      LWW document. -/
+  notes : Journal
   slug : Reg (Option String)
   deferUntil : Reg (Option Instant)
   closeResolution : Reg (Option CloseResolution)
@@ -107,7 +111,7 @@ namespace IssueData
 
 /-- No writes yet — every register unwritten, label/meta empty. -/
 def empty : IssueData :=
-  ⟨none, none, none, none, none, none, none, none, none, OrSet.empty, AMap.empty⟩
+  ⟨none, none, none, none, none, Journal.empty, none, none, none, OrSet.empty, AMap.empty⟩
 
 /-- Componentwise join. -/
 def merge (a b : IssueData) : IssueData where
@@ -116,7 +120,7 @@ def merge (a b : IssueData) : IssueData where
   priority := Reg.merge a.priority b.priority
   assignee := Reg.merge a.assignee b.assignee
   description := Reg.merge a.description b.description
-  notes := Reg.merge a.notes b.notes
+  notes := Journal.merge a.notes b.notes
   slug := Reg.merge a.slug b.slug
   deferUntil := Reg.merge a.deferUntil b.deferUntil
   closeResolution := Reg.merge a.closeResolution b.closeResolution
@@ -127,7 +131,7 @@ theorem merge_comm (a b : IssueData) : merge a b = merge b a := by
   unfold merge
   rw [Reg.merge_comm a.title b.title, Reg.merge_comm a.status b.status,
     Reg.merge_comm a.priority b.priority, Reg.merge_comm a.assignee b.assignee,
-    Reg.merge_comm a.description b.description, Reg.merge_comm a.notes b.notes,
+    Reg.merge_comm a.description b.description, Journal.merge_comm a.notes b.notes,
     Reg.merge_comm a.slug b.slug, Reg.merge_comm a.deferUntil b.deferUntil,
     Reg.merge_comm a.closeResolution b.closeResolution,
     OrSet.merge_comm a.labels b.labels, MetaMap.merge_comm a.metadata b.metadata]
@@ -138,7 +142,7 @@ theorem merge_assoc (a b c : IssueData) : merge (merge a b) c = merge a (merge b
     Reg.merge_assoc a.priority b.priority c.priority,
     Reg.merge_assoc a.assignee b.assignee c.assignee,
     Reg.merge_assoc a.description b.description c.description,
-    Reg.merge_assoc a.notes b.notes c.notes, Reg.merge_assoc a.slug b.slug c.slug,
+    Journal.merge_assoc a.notes b.notes c.notes, Reg.merge_assoc a.slug b.slug c.slug,
     Reg.merge_assoc a.deferUntil b.deferUntil c.deferUntil,
     Reg.merge_assoc a.closeResolution b.closeResolution c.closeResolution,
     OrSet.merge_assoc a.labels b.labels c.labels, MetaMap.merge_assoc a.metadata b.metadata c.metadata]
@@ -146,7 +150,7 @@ theorem merge_assoc (a b c : IssueData) : merge (merge a b) c = merge a (merge b
 theorem merge_idem (a : IssueData) : merge a a = a := by
   unfold merge
   rw [Reg.merge_idem a.title, Reg.merge_idem a.status, Reg.merge_idem a.priority,
-    Reg.merge_idem a.assignee, Reg.merge_idem a.description, Reg.merge_idem a.notes,
+    Reg.merge_idem a.assignee, Reg.merge_idem a.description, Journal.merge_idem a.notes,
     Reg.merge_idem a.slug, Reg.merge_idem a.deferUntil, Reg.merge_idem a.closeResolution,
     OrSet.merge_idem a.labels, MetaMap.merge_idem a.metadata]
 
@@ -164,6 +168,33 @@ def priorityOf (d : IssueData) : Fin 5 := d.priority.value.getD 2
 
 /-- Materialized defer instant: `none` if unwritten or cleared (ADR-0010). -/
 def deferUntilOf (d : IssueData) : Option Instant := d.deferUntil.value.getD none
+
+/-- The later of a running optional max and a stamp. -/
+private def stampMax (acc : Option Stamp) (st : Stamp) : Option Stamp :=
+  match acc with
+  | none => some st
+  | some m => some (Tl.Crdt.TotalOrd.tmax m st)
+
+/-- Fold one register's write stamp (if any) into the running max. -/
+private def regStampMax {V : Type _} (r : Reg V) (acc : Option Stamp) : Option Stamp :=
+  match r with
+  | none => acc
+  | some (st, _) => stampMax acc st
+
+/-- The pinned `updatedAt` projection (ADR-0027): the max over the scalar
+    registers' write stamps and the journal's add-tags — a pure function of
+    materialized state, `none` for an untouched issue. A `noteAdd` bumps it
+    (its stamp is an add-tag); a `noteRemove` never does (a tombstone
+    materializes *observed* add-tags, never the remove op's own stamp — the
+    disclosed asymmetry). Labels and `meta` are side-channels and do not feed
+    it; a losing LWW write's stamp is not materialized, so it does not either. -/
+def updatedAtStamp (d : IssueData) : Option Stamp :=
+  let fromRegs :=
+    regStampMax d.closeResolution (regStampMax d.deferUntil (regStampMax d.slug
+      (regStampMax d.description (regStampMax d.assignee (regStampMax d.priority
+        (regStampMax d.status (regStampMax d.title none)))))))
+  d.notes.entries.adds.toList.foldl
+    (fun acc p => p.2.toList.foldl (fun a q => stampMax a q.1) acc) fromRegs
 
 end IssueData
 

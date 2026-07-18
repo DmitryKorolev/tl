@@ -282,7 +282,7 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
     -- create carries the scalars (status/assignee come from the lifecycle ops)
     let createWrites : ScalarWrites :=
       { title := some r.title, priority := some r.priority,
-        description := r.description.map some, notes := r.notes.map some,
+        description := r.description.map some,
         deferUntil := r.deferUntil.map some }
     let createOp := parsedLine (.create id createWrites) (stamp "create" (packHlc createMs 0)) actor
     -- meta: source ref + import marker + explicit/unknown meta + duplicate-of

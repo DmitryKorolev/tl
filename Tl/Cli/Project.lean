@@ -489,6 +489,22 @@ def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
 private def labelsJson (d : IssueData) : Json :=
   Json.arr (d.labels.presentElements.map (Json.str ∘ sanitizeSingle)).toArray
 
+/-- One visible journal entry (ADR-0027): `{id, tag, time, actor, text}` — `id`
+    is the minted handle (bare, 16 chars), `tag` the always-unique canonical
+    add-tag string (the collision escape hatch), `time` the add op's HLC
+    physical time, `actor` the envelope actor or `null`. -/
+private def noteEntryJson (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload) : Json :=
+  Json.mkObj [
+    ("id", Json.str (sanitizeSingle p.handle)),
+    ("tag", Json.str (tagOfStamp st)),
+    ("time", Json.str (hlcIso st.hlc)),
+    ("actor", match p.actor with | some a => Json.str (sanitizeSingle a) | none => Json.null),
+    ("text", Json.str (sanitizeMulti p.text))]
+
+/-- The visible journal, oldest first (stamp-ascending — the kernel order). -/
+private def notesJson (d : IssueData) : Json :=
+  Json.arr (d.notes.visibleEntries.map (fun (st, p) => noteEntryJson st p)).toArray
+
 private def metaJson (d : IssueData) : Json :=
   -- Meta keys are emitted as-is (not control-stripped): the `--json` encoder
   -- escapes control bytes safely, and stripping keys would silently collapse
@@ -531,13 +547,13 @@ def issueObj (v : View) (i : IssueId) : Json :=
      ("blocked", Json.bool (v.blocked i)),
      ("deferred", Json.bool (v.deferred i)),
      ("labels", labelsJson d),
+     ("notes", notesJson d),
      ("meta", metaJson d),
      ("dependencies", dependenciesJson v.edges i)]
     ++ optField "title" ((d.title.value).map (Json.str ∘ sanitizeSingle))
     ++ optField "assignee" ((d.assignee.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "slug" ((d.slug.value.getD none).map (Json.str ∘ sanitizeSingle))
     ++ optField "description" ((d.description.value.getD none).map (Json.str ∘ sanitizeMulti))
-    ++ optField "notes" ((d.notes.value.getD none).map (Json.str ∘ sanitizeMulti))
     ++ optField "deferUntil" ((d.deferUntilOf).map (Json.str ∘ Time.isoOfEpochMs))
     ++ optField "closeResolution"
         ((d.closeResolution.value.getD none).map (Json.str ∘ resolutionWire))

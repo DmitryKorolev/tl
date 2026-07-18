@@ -284,7 +284,10 @@ def styledShow (st : Style) (v : View) (i : IssueId)
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
-    ++ fence st "NOTES" (sanitizeMulti ((d.notes.value.getD none).getD ""))
+    ++ fence st "NOTES" (String.intercalate "\n"
+        (d.notes.visibleEntries.map (fun (tag, p) =>
+          let who := match p.actor with | some a => s!" · {sanitizeSingle a}" | none => ""
+          s!"[{sanitizeSingle p.handle}] {hlcIso tag.hlc}{who}\n" ++ sanitizeMulti p.text)))
     ++ rel "blocked by" blockers ++ rel "blocks" deps ++ rel "related" related ++ parentLine
     ++ childrenBlock
   return String.intercalate "\n" body

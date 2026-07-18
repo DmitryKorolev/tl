@@ -1,10 +1,11 @@
 /-
 `Tl.Kernel.Frame` — the frame lemma (ADR-0003 / ADR-0004).
 
-The side-channels — the `meta` map, `labels`, `related` edges, and the per-op
-`actor` — are isolated from the verified core: writing them changes neither
-`effectiveStatus` nor `ready`. This is what lets ADR-0002 keep them out of every
-tracker theorem.
+The side-channels — the `meta` map, `labels`, the notes journal, `related`
+edges, and the per-op `actor` — are isolated from the verified core: writing
+them changes neither `effectiveStatus` nor `ready`. This is what lets ADR-0002
+keep them out of every tracker theorem. (The journal, unlike the others, does
+feed one projection — `updatedAt`, ADR-0027 — and nothing else.)
 
 The proof is by *congruence*: `effectiveStatus` and `ready` read the state only
 through `issues`, `edges`, and the scalar registers (status/priority/deferUntil),
@@ -64,9 +65,10 @@ theorem effectiveStatus_congr {s1 s2 : State}
 
 /-! ## Side-channel ops preserve the core projection
 
-A `metaSet`/`labelAdd`/`labelRemove` delta has empty issue/edge components, and its
-data delta's `IssueData` leaves the `status` register `none` — so merging it fixes
-`issues`, `edges`, and every `status` register. -/
+A `metaSet`/`labelAdd`/`labelRemove`/`noteAdd`/`noteRemove` delta has empty
+issue/edge components, and its data delta's `IssueData` leaves the `status`
+register `none` — so merging it fixes `issues`, `edges`, and every `status`
+register. -/
 
 /-- Merging a single-key data delta whose `status` is `none` leaves every issue's
     status register unchanged. -/
@@ -103,6 +105,19 @@ theorem labelRemove_status (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt
     ((apply s (Op.labelRemove id l obs)).issueData j).status = (s.issueData j).status :=
   status_mergeSingleton s.data id (Op.labelRemoveData l obs) rfl j
 
+/-- A `noteAdd` leaves every status register unchanged (its data delta writes
+    only the journal, ADR-0027 frame-safety). -/
+theorem noteAdd_status (s : State) (id : IssueId) (st : Stamp) (note text : String)
+    (actor : Option String) (j : IssueId) :
+    ((apply s (Op.noteAdd id st note text actor)).issueData j).status = (s.issueData j).status :=
+  status_mergeSingleton s.data id (Op.noteData st note text actor) rfl j
+
+/-- A `noteRemove` leaves every status register unchanged. -/
+theorem noteRemove_status (s : State) (id : IssueId) (obs : Tl.Crdt.FinSet Stamp)
+    (j : IssueId) :
+    ((apply s (Op.noteRemove id obs)).issueData j).status = (s.issueData j).status :=
+  status_mergeSingleton s.data id (Op.noteRemoveData obs) rfl j
+
 /-! ## The frame lemma for `effectiveStatus`
 
 Side-channel writes change neither the issue set, the edge set, nor any stored
@@ -127,6 +142,24 @@ theorem effectiveStatus_labelRemove (s : State) (id : IssueId) (l : Label)
   effectiveStatus_congr (s1 := apply s (Op.labelRemove id l obs)) (s2 := s)
     (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
     (fun j => congrArg (fun r => r.value.getD Status.Open) (labelRemove_status s id l obs j)) i
+
+/-- **Frame lemma, journal cases (ADR-0027).** A `noteAdd`/`noteRemove` changes
+    neither `effectiveStatus` nor (below) `ready`: the journal feeds only the
+    `updatedAt` projection, never scheduling or the graph. -/
+theorem effectiveStatus_noteAdd (s : State) (id : IssueId) (st : Stamp) (note text : String)
+    (actor : Option String) (i : IssueId) :
+    (apply s (Op.noteAdd id st note text actor)).effectiveStatus i = s.effectiveStatus i :=
+  effectiveStatus_congr (s1 := apply s (Op.noteAdd id st note text actor)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (noteAdd_status s id st note text actor j)) i
+
+theorem effectiveStatus_noteRemove (s : State) (id : IssueId) (obs : Tl.Crdt.FinSet Stamp)
+    (i : IssueId) :
+    (apply s (Op.noteRemove id obs)).effectiveStatus i = s.effectiveStatus i :=
+  effectiveStatus_congr (s1 := apply s (Op.noteRemove id obs)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open) (noteRemove_status s id obs j)) i
 
 /-! ## The frame lemma for `ready`
 
@@ -266,6 +299,37 @@ theorem ready_labelRemove (s : State) (id : IssueId) (l : Label) (obs : Tl.Crdt.
       (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData l obs) rfl j))
     (fun j => congrArg (fun r => r.value.getD none)
       (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id (Op.labelRemoveData l obs) rfl j))
+    now
+
+theorem ready_noteAdd (s : State) (id : IssueId) (st : Stamp) (note text : String)
+    (actor : Option String) (now : Instant) :
+    (apply s (Op.noteAdd id st note text actor)).ready now = s.ready now :=
+  ready_congr (s1 := apply s (Op.noteAdd id st note text actor)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id
+        (Op.noteData st note text actor) rfl j))
+    (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id
+        (Op.noteData st note text actor) rfl j))
+    (fun j => congrArg (fun r => r.value.getD none)
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id
+        (Op.noteData st note text actor) rfl j))
+    now
+
+theorem ready_noteRemove (s : State) (id : IssueId) (obs : Tl.Crdt.FinSet Stamp)
+    (now : Instant) : (apply s (Op.noteRemove id obs)).ready now = s.ready now :=
+  ready_congr (s1 := apply s (Op.noteRemove id obs)) (s2 := s)
+    (OrSet.merge_empty_right s.issues) (OrSet.merge_empty_right s.edges)
+    (fun j => congrArg (fun r => r.value.getD Status.Open)
+      (reg_mergeSingleton IssueData.status (fun _ _ => rfl) rfl s.data id
+        (Op.noteRemoveData obs) rfl j))
+    (fun j => congrArg (fun r => r.value.getD (2 : Fin 5))
+      (reg_mergeSingleton IssueData.priority (fun _ _ => rfl) rfl s.data id
+        (Op.noteRemoveData obs) rfl j))
+    (fun j => congrArg (fun r => r.value.getD none)
+      (reg_mergeSingleton IssueData.deferUntil (fun _ _ => rfl) rfl s.data id
+        (Op.noteRemoveData obs) rfl j))
     now
 
 /-! ## View-based congruences (for ops that change `edges` but not the filtered views)

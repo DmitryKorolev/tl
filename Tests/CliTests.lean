@@ -284,21 +284,13 @@ def cliWorkLoopTests : IO (List Outcome) := do
       (fun j => jStr j "title" == some "Parser v2"),
      ← expectErr "update without flags is usage"
        ["update", "tl-" ++ blocked, "--dir", dir] .usage]
-  -- append-notes: seeds when empty, then joins onto the prior notes with a newline;
-  -- --notes still replaces wholesale; the two flags conflict
+  -- the notes scalar is retired (ADR-0027): each old flag is a usage error
+  -- that teaches `tl note add`
   o := o ++
-    [← expectData "append-notes seeds notes when empty"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "first", "--actor", "t"]
-       (fun j => jStr j "notes" == some "first"),
-     ← expectData "append-notes joins onto existing notes with a newline"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "second", "--actor", "t"]
-       (fun j => jStr j "notes" == some "first\nsecond"),
-     ← expectData "--notes replaces the accumulated notes wholesale"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "reset", "--actor", "t"]
-       (fun j => jStr j "notes" == some "reset"),
-     ← expectErr "--notes and --append-notes together is usage"
-       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "x", "--append-notes", "y",
-        "--actor", "t"] .usage]
+    [← expectErr "--notes is a retired-flag usage error"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--notes", "reset", "--actor", "t"] .usage,
+     ← expectErr "--append-notes is a retired-flag usage error"
+       ["update", "tl-" ++ blocked, "--dir", dir, "--append-notes", "x", "--actor", "t"] .usage]
   return o
 
 def cliCloseGuardTests : IO (List Outcome) := do
@@ -4613,8 +4605,8 @@ def cliShapePinTests : IO (List Outcome) := do
   -- every always-present field plus title and timestamps, nothing else
   let echoKeys : List String :=
     ["blocked", "createdAt", "deferred", "dependencies", "effectiveStatus",
-     "id", "isEpic", "labels", "meta", "priority", "provenance", "ready",
-     "status", "title", "updatedAt"]
+     "id", "isEpic", "labels", "meta", "notes", "priority", "provenance",
+     "ready", "status", "title", "updatedAt"]
   -- unblocks: {count, freed, id}; each freed row {effectiveStatus, id, status, title}
   o := o ++ [← expectData "unblocks pins {count, freed, id}"
       ["unblocks", "tl-" ++ hub, "--dir", dir]
@@ -4681,8 +4673,8 @@ def cliShapePinTests : IO (List Outcome) := do
       ["defer", "tl-" ++ solo, "--until", "2098-06-01", "--dir", dir, "--actor", "t"]
     (fun j => jKeys j
         == ["blocked", "createdAt", "deferUntil", "deferred", "dependencies",
-            "effectiveStatus", "id", "isEpic", "labels", "meta", "priority",
-            "provenance", "ready", "status", "title", "updatedAt"]
+            "effectiveStatus", "id", "isEpic", "labels", "meta", "notes",
+            "priority", "provenance", "ready", "status", "title", "updatedAt"]
       && jBool j "deferred" == some true && (jStr j "deferUntil").isSome),
    ← expectData "undefer drops deferUntil and nothing else"
       ["undefer", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
@@ -4692,8 +4684,8 @@ def cliShapePinTests : IO (List Outcome) := do
     (fun j => jKeys j
         == ["blocked", "close", "closeResolution", "closedAt", "createdAt",
             "deferred", "dependencies", "effectiveStatus", "id", "isEpic",
-            "labels", "meta", "priority", "provenance", "ready", "status",
-            "title", "unblocked", "updatedAt"]
+            "labels", "meta", "notes", "priority", "provenance", "ready",
+            "status", "title", "unblocked", "updatedAt"]
       && (jGet j "close").bind (fun c => jStr c "outcome") == some "won"
       && (jGet j "close").bind (fun c => jStr c "resolution") == some "done"),
    ← expectData "reopen restores the bare echo (no closeResolution/closedAt)"
@@ -4775,8 +4767,8 @@ def cliShapePinTests : IO (List Outcome) := do
       [check "a past defer keeps deferUntil in the echo and stays workable"
         (jKeys out.data
             == ["blocked", "createdAt", "deferUntil", "deferred", "dependencies",
-                "effectiveStatus", "id", "isEpic", "labels", "meta", "priority",
-                "provenance", "ready", "status", "title", "updatedAt"]
+                "effectiveStatus", "id", "isEpic", "labels", "meta", "notes",
+                "priority", "provenance", "ready", "status", "title", "updatedAt"]
           && jBool out.data "deferred" == some false
           && jBool out.data "ready" == some true)
         out.data.compress,
