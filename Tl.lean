@@ -39,6 +39,7 @@ import Tl.Kernel.SccProps
 import Tl.Kernel.CycleRepair
 import Tl.Kernel.Unblocks
 import Tl.Kernel.Ranking
+import Tl.Kernel.CanonParent
 
 -- Tested I/O shell
 import Tl.Error
