@@ -47,7 +47,7 @@ private def now0 : Nat := 2000000000000
 /-- A crafted record line for a segment owned by `stem` (the per-replica owner
     check requires the stamp's replica to encode to the segment name). -/
 private def craftLine (op : WireOp) (hlc nonce : Nat) (stem : String) : String :=
-  renderLine { v := supportedVersion, op,
+  renderLine { v := op.recordVersion, op,
                stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some "x" }
 
 /-- A line at physical time `phys` (logical = `idx`), nonce-distinct per `idx`. -/

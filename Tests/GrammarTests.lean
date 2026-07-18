@@ -27,6 +27,7 @@ private def dispatchVerbs : List String :=
    "dep add", "dep remove", "dep cycles", "dep critical", "dep path", "dep relate", "dep unrelate",
    "parent set", "parent remove",
    "label add", "label remove", "label list",
+   "note add", "note list", "note remove",
    "meta set", "meta get", "meta clear", "meta list",
    "why", "unblocks", "show", "list", "log", "stats", "sync", "doctor", "version", "licenses", "help"]
 

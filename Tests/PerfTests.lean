@@ -69,7 +69,7 @@ private def synthId (k : Nat) : String :=
 private def synthOps (n : Nat) (base : Nat := synthNow) : List ParsedOp :=
   let replicaVal := (ofCrockford? stem).getD 0
   let mk (idx : Nat) (op : WireOp) : ParsedOp :=
-    { v := supportedVersion, op
+    { v := op.recordVersion, op
       stamp := ⟨(base - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
       actor := some "perf" }
   (List.range n).flatMap (fun k =>
@@ -98,7 +98,7 @@ private def synthOps (n : Nat) (base : Nat := synthNow) : List ParsedOp :=
 private def ringOps (n : Nat) : List ParsedOp :=
   let replicaVal := (ofCrockford? stem).getD 0
   let mk (idx : Nat) (op : WireOp) : ParsedOp :=
-    { v := supportedVersion, op
+    { v := op.recordVersion, op
       stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
       actor := some "perf" }
   (List.range n).flatMap (fun k =>
@@ -116,7 +116,7 @@ private def ringOps (n : Nat) : List ParsedOp :=
 private def wideOps (n : Nat) : List ParsedOp :=
   let replicaVal := (ofCrockford? stem).getD 0
   let mk (idx : Nat) (op : WireOp) : ParsedOp :=
-    { v := supportedVersion, op
+    { v := op.recordVersion, op
       stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
       actor := some "perf" }
   let creates := (List.range (2 * n + 1)).map (fun k =>

@@ -58,7 +58,6 @@ private def laterStamp : Option Stamp → Stamp → Option Stamp
 structure Prov where
   /-- The earliest `create` (by stamp order) and its actor. -/
   created : Option (Stamp × Option String) := none
-  updated : Option Stamp := none
   lastClose : Option Stamp := none
   lastReopen : Option Stamp := none
   lastClaim : Option Stamp := none
@@ -66,24 +65,22 @@ structure Prov where
 /-- One pass over the log for one issue's provenance projections. -/
 def provenanceOf (ops : List ParsedOp) (id : IssueId) : Prov := Id.run do
   let mut pr : Prov := {}
+  -- `updatedAt` is no longer an envelope scan: it is the pinned pure-state
+  -- projection `IssueData.updatedAtStamp` (ADR-0027) — max over the scalar
+  -- registers' stamps and the journal's add-tags — read where it is rendered.
   for p in ops do
     let st := p.stamp
-    let bump (pr : Prov) : Prov := { pr with updated := laterStamp pr.updated st }
     match p.op with
     | .create i _ =>
       if i == id then
         if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c)) then
           pr := { pr with created := some (st, p.actor) }
-        pr := bump pr
-    | .update i _ => if i == id then pr := bump pr
     | .claim i _ =>
-      if i == id then pr := { bump pr with lastClaim := laterStamp pr.lastClaim st }
+      if i == id then pr := { pr with lastClaim := laterStamp pr.lastClaim st }
     | .close i _ =>
-      if i == id then pr := { bump pr with lastClose := laterStamp pr.lastClose st }
+      if i == id then pr := { pr with lastClose := laterStamp pr.lastClose st }
     | .reopen i =>
-      if i == id then pr := { bump pr with lastReopen := laterStamp pr.lastReopen st }
-    | .defer i _ => if i == id then pr := bump pr
-    | .undefer i => if i == id then pr := bump pr
+      if i == id then pr := { pr with lastReopen := laterStamp pr.lastReopen st }
     | _ => pure ()
   return pr
 
@@ -100,18 +97,13 @@ def provenanceMap (ops : List ParsedOp) : AMap IssueId Prov := Id.run do
   -- positional map insert would be Θ(ops × issues).
   let step (pr : Prov) (p : ParsedOp) : Prov :=
     let st := p.stamp
-    let bump (pr : Prov) : Prov := { pr with updated := laterStamp pr.updated st }
     match p.op with
     | .create _ _ =>
-      let pr := if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c))
-                then { pr with created := some (st, p.actor) } else pr
-      bump pr
-    | .update _ _ => bump pr
-    | .claim _ _ => { bump pr with lastClaim := laterStamp pr.lastClaim st }
-    | .close _ _ => { bump pr with lastClose := laterStamp pr.lastClose st }
-    | .reopen _ => { bump pr with lastReopen := laterStamp pr.lastReopen st }
-    | .defer _ _ => bump pr
-    | .undefer _ => bump pr
+      if pr.created.all (fun (c, _) => decide (TotalOrd.lt st c))
+      then { pr with created := some (st, p.actor) } else pr
+    | .claim _ _ => { pr with lastClaim := laterStamp pr.lastClaim st }
+    | .close _ _ => { pr with lastClose := laterStamp pr.lastClose st }
+    | .reopen _ => { pr with lastReopen := laterStamp pr.lastReopen st }
     | _ => pr
   let target (p : ParsedOp) : Option IssueId :=
     match p.op with
@@ -355,7 +347,6 @@ def View.maxTag (v : View) (e : Edge) : Option Stamp :=
   State.maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty) (v.idx.edgeRemoved[e]?.getD FinSet.empty)
 
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
-def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
 def Prov.createdBy (pr : Prov) : Option String := pr.created.bind (·.2)
 def Prov.createdReplica (pr : Prov) : Option Nat := pr.created.map (·.1.replica)
 
@@ -559,7 +550,7 @@ def issueObj (v : View) (i : IssueId) : Json :=
         ((d.closeResolution.value.getD none).map (Json.str ∘ resolutionWire))
     ++ optField "parent" ((canonicalParentE v i).map (Json.str ∘ displayId))
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
-    ++ optField "updatedAt" (pr.updatedAt.map (Json.str ∘ hlcIso))
+    ++ optField "updatedAt" ((d.updatedAtStamp).map (fun st => Json.str (hlcIso st.hlc)))
     ++ optField "closedAt" (pr.closedAt.map (Json.str ∘ hlcIso))
     ++ optField "claimedAt" (pr.claimedAt.map (Json.str ∘ hlcIso))
     ++ [("provenance", Json.mkObj <|
@@ -592,7 +583,7 @@ def issueRow (v : View) (i : IssueId) : Json :=
     ++ optField "deferUntil"
         (if v.deferred i then (d.deferUntilOf).map (Json.str ∘ Time.isoOfEpochMs) else none)
     ++ optField "createdAt" (pr.createdAt.map (Json.str ∘ hlcIso))
-    ++ optField "updatedAt" (pr.updatedAt.map (Json.str ∘ hlcIso))
+    ++ optField "updatedAt" ((d.updatedAtStamp).map (fun st => Json.str (hlcIso st.hlc)))
 
 /-- One human line per issue (plain stage-1 output). -/
 def issueLine (v : View) (i : IssueId) : String :=

@@ -261,7 +261,8 @@ def styledShow (st : Style) (v : View) (i : IssueId)
   match claimOutcome with
     | some o => prov := prov ++ [s!"claim: {o.wire}"] | none => pure ()
   match pr.createdAt with | some h => prov := prov ++ [s!"created:  {hlcIso h}"] | none => pure ()
-  match pr.updatedAt with | some h => prov := prov ++ [s!"updated:  {hlcIso h}"] | none => pure ()
+  match d.updatedAtStamp with
+    | some st => prov := prov ++ [s!"updated:  {hlcIso st.hlc}"] | none => pure ()
   match pr.closedAt with | some h => prov := prov ++ [s!"closed:   {hlcIso h}"] | none => pure ()
   match d.closeResolution.value.getD none with
     | some r => prov := prov ++ [s!"resolution: {resolutionWire r}"] | none => pure ()

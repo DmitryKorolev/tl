@@ -370,7 +370,7 @@ def storeLockTests : IO (List Outcome) := do
 /-- A crafted record line for a segment with replica id `stem` (the per-replica
     owner check requires the stamp's replica to match the segment name). -/
 private def craftLine (op : WireOp) (hlc nonce : Nat) (stem : String) : String :=
-  renderLine { v := supportedVersion, op,
+  renderLine { v := op.recordVersion, op,
                stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some "x" }
 
 /-- The HLC skew window (ADR-0007): foreign ops dated beyond `now + W` are
@@ -431,7 +431,7 @@ def storeTombstoneScopeTests : List Outcome :=
   -- lines are rendered from the SAME `stampAt` values the observed set uses,
   -- so the tag the test tombstones cannot drift from the tag the line minted
   let line (op : WireOp) (i : Nat) : String :=
-    renderLine { v := supportedVersion, op, stamp := stampAt i, actor := some "x" }
+    renderLine { v := op.recordVersion, op, stamp := stampAt i, actor := some "x" }
   -- the adversarial observed set: the related edge's own tag AND the blocks edge's
   let obs : Tl.Crdt.FinSet Stamp :=
     Tl.Crdt.FinSet.union (Tl.Crdt.FinSet.singleton (stampAt 3))

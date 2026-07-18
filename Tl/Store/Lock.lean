@@ -158,7 +158,7 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
       throw (.mk' .internal
         s!"transact built {wireOps.length} records for {stamps.length} stamps")
     let parsed := List.zipWith (fun w st =>
-        ({ v := supportedVersion, op := w, stamp := st, actor } : ParsedOp))
+        ({ v := w.recordVersion, op := w, stamp := st, actor } : ParsedOp))
       wireOps stamps
     unless parsed.isEmpty do
       let ownBytes := ((segs.find? (·.replicaId == replica.id)).map (·.bytes)).getD ByteArray.empty

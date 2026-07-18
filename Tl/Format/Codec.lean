@@ -149,6 +149,8 @@ inductive WireOp where
   | unrelate (e : Edge) (observed : FinSet Stamp)
   | labelAdd (id : IssueId) (label : Label)
   | labelRemove (id : IssueId) (label : Label) (observed : FinSet Stamp)
+  | noteAdd (id : IssueId) (note : String) (text : String)
+  | noteRemove (id : IssueId) (note : String) (observed : FinSet Stamp)
 
 namespace WireOp
 
@@ -168,6 +170,15 @@ def wire : WireOp → String
   | .unrelate .. => "unrelate"
   | .labelAdd .. => "labelAdd"
   | .labelRemove .. => "labelRemove"
+  | .noteAdd .. => "noteAdd"
+  | .noteRemove .. => "noteRemove"
+
+/-- The `v` a writer stamps on this record (ADR-0027): the two note kinds are
+    `v: 2` — a pre-journal reader fail-closes on them with the upgrade
+    message — and everything else stays `v: 1`. -/
+def recordVersion : WireOp → Nat
+  | .noteAdd .. | .noteRemove .. => 2
+  | _ => 1
 
 /-- `update` writes only non-lifecycle, non-assignee scalars (ADR-0008: the
     lifecycle status/time fields use the distinguished verbs; assignee is
@@ -180,7 +191,7 @@ def stripLifecycle (w : ScalarWrites) : ScalarWrites :=
 /-- The ADR-0008 verb→delta table, executable: project the kernel `Op`. A change
     to this projection's classification must bump `Tl.Store.cacheVersion` — the
     fold cache is keyed on these semantics (Tl/Store/Cache.lean header). -/
-def toOp (w : WireOp) (st : Stamp) : Op :=
+def toOp (w : WireOp) (st : Stamp) (actor : Option String := none) : Op :=
   match w with
   | .create id writes => .create id st writes
   | .update id writes => .setFields id st (stripLifecycle writes)
@@ -205,6 +216,8 @@ def toOp (w : WireOp) (st : Stamp) : Op :=
   | .unrelate e obs => .edgeRemove e obs
   | .labelAdd id label => .labelAdd id label st
   | .labelRemove id label obs => .labelRemove id label obs
+  | .noteAdd id note text => .noteAdd id st note text actor
+  | .noteRemove id _ obs => .noteRemove id obs
 
 end WireOp
 
@@ -221,8 +234,10 @@ structure ParsedOp where
   unknown : List (String × Json) := []
   warnings : List String := []
 
-/-- The kernel delta this record folds as. -/
-def ParsedOp.kernelOp (p : ParsedOp) : Op := p.op.toOp p.stamp
+/-- The kernel delta this record folds as. The envelope actor rides into the
+    `noteAdd` delta as journal payload (ADR-0027) — for every other op it is
+    provenance only and the delta ignores it. -/
+def ParsedOp.kernelOp (p : ParsedOp) : Op := p.op.toOp p.stamp p.actor
 
 /-! ## Decode -/
 
@@ -346,6 +361,8 @@ def consumedKeys : String → List String
   | "depRemove" | "unrelate" => ["from", "to", "kind", "observed"]
   | "labelAdd" => ["id", "label"]
   | "labelRemove" => ["id", "label", "observed"]
+  | "noteAdd" => ["id", "note", "text"]
+  | "noteRemove" => ["id", "note", "observed"]
   | _ => []
 
 /-- Decode a parsed `Record` into the typed model. Fail-closed: an unknown
@@ -406,8 +423,24 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         pure (.labelAdd (← reqId fs) (← reqStr fs "label"), [])
     | "labelRemove" => do
         pure (.labelRemove (← reqId fs) (← reqStr fs "label") (← reqObserved fs), [])
+    | "noteAdd" => do
+        unless r.v ≥ 2 do
+          throw (malformed "noteAdd requires v:2 (ADR-0027) — a v:1 note record was never written by a tl writer")
+        let id ← reqId fs
+        let note ← reqStr fs "note"
+        unless validId note do
+          throw (malformed s!"'note' must be a bare 16-char canonical Crockford note id (got '{note}')")
+        pure (.noteAdd id note (← reqStr fs "text"), [])
+    | "noteRemove" => do
+        unless r.v ≥ 2 do
+          throw (malformed "noteRemove requires v:2 (ADR-0027) — a v:1 note record was never written by a tl writer")
+        let id ← reqId fs
+        let note ← reqStr fs "note"
+        unless validId note do
+          throw (malformed s!"'note' must be a bare 16-char canonical Crockford note id (got '{note}')")
+        pure (.noteRemove id note (← reqObserved fs), [])
     | other =>
-        throw (malformed s!"unknown op kind '{other}' (the v1 enum is closed; a new kind requires a v bump)")
+        throw (malformed s!"unknown op kind '{other}' (the enum is closed per version; a new kind requires a v bump)")
     : Except Tl.Error (WireOp × List String))
   let consumed := consumedKeys r.op
   return { v := r.v, op, stamp, actor := r.actor,
@@ -463,6 +496,10 @@ def payloadFields : WireOp → List (String × Json)
   | .labelAdd id l => [("id", Json.str id), ("label", Json.str l)]
   | .labelRemove id l obs =>
       [("id", Json.str id), ("label", Json.str l), observedField obs]
+  | .noteAdd id note text =>
+      [("id", Json.str id), ("note", Json.str note), ("text", Json.str text)]
+  | .noteRemove id note obs =>
+      [("id", Json.str id), ("note", Json.str note), observedField obs]
 
 /-- Render back to the wire `Record`: envelope re-encoded from the stamp
     (canonical encodings are deterministic), payload + unknown merged in one

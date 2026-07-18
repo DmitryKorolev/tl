@@ -138,7 +138,7 @@ def crEscapeTest : List Outcome :=
 
 /-- Decode-side fail-closed rows: `(name, line, expected code)`. -/
 def failClosedRows : List (String × String × Tl.ErrorCode) :=
-  [("v=2 is fail-closed newer", (env "create").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\"}",
+  [("v=3 is fail-closed newer", (env "create").replace "\"v\":1" "\"v\":3" ++ s!"\"id\":\"{idA}\"}",
     .unknownVersion),
    ("v=0 is malformed, not older", (env "create").replace "\"v\":1" "\"v\":0" ++ s!"\"id\":\"{idA}\"}",
     .malformedLine),

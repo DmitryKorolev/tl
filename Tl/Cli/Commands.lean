@@ -764,7 +764,8 @@ def cmdStats (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
 private def opTargets : WireOp → List IssueId
   | .create id _ | .update id _ | .claim id _ | .close id _ | .reopen id
   | .defer id _ | .undefer id | .metaSet id _ _
-  | .labelAdd id _ | .labelRemove id _ _ => [id]
+  | .labelAdd id _ | .labelRemove id _ _
+  | .noteAdd id _ _ | .noteRemove id _ _ => [id]
   | .depAdd (f, t, _) | .relate (f, t, _)
   | .depRemove (f, t, _) _ | .unrelate (f, t, _) _ => [f, t]
 
@@ -1773,6 +1774,137 @@ def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : S
              ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} had no label '{sanitizeSingle label}' — nothing to do"
                     else s!"Unlabeled {displayId i} '{sanitizeSingle label}'"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+
+/-! ## The notes journal verbs (ADR-0027) -/
+
+/-- The no-secure-deletion disclosure every removal carries (ADR-0027). -/
+private def noteRemovalDisclosure : String :=
+  "hidden from views; the text remains in the replicated log history and in already-synced clones"
+
+/-- One journal entry as its `--json` object (ADR-0027):
+    `{id, tag, time, actor, text}`; a removed placeholder swaps `text` for
+    `removed: true`. -/
+private def noteEntryObj (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload)
+    (removed : Bool) : Json :=
+  Json.mkObj ([
+    ("id", Json.str (sanitizeSingle p.handle)),
+    ("tag", Json.str (tagOfStamp st)),
+    ("time", Json.str (hlcIso st.hlc)),
+    ("actor", match p.actor with
+      | some a => Json.str (sanitizeSingle a) | none => Json.null)]
+    ++ (if removed then [("removed", Json.bool true)]
+        else [("text", Json.str (sanitizeMulti p.text))]))
+
+/-- Resolve a `<note-id>` inside one issue's journal (ADR-0027): a full
+    canonical tag string (`<hlc>.<replica>.<nonce>`, told apart by shape — its
+    dots) is the always-unique fallback; anything else is a handle prefix over
+    the *live* entries, ASCII-case-folded and Crockford-aliased like issue
+    ids. A collision refuses with the colliding entries' canonical tags.
+    Returns the entry's tag, its stored handle, and whether it is already
+    removed. -/
+private def resolveNoteToken (jn : Tl.Crdt.Journal) (noteTok : String) :
+    Except Tl.Error (Tl.Crdt.Stamp × String × Bool) := do
+  if (noteTok.splitOn ".").length == 3 then
+    let tag ← stampOfTag noteTok
+    match jn.payloadOf tag with
+    | some pl => return (tag, pl.handle, !(decide (jn.Visible tag)))
+    | none => throw (.mk' .notFound
+        s!"no note with tag '{noteTok}' in this issue's journal — `tl note list <id> --all` shows every entry with its tag")
+  else
+    let norm := normalizeIdToken noteTok
+    if norm.isEmpty then
+      throw (.mk' .usage
+        "note remove needs a <note-id>: a handle (or unambiguous prefix) from `tl note list`, or a full canonical tag")
+    let cands := jn.visibleEntries.filterMap (fun (st, pl) =>
+      if (normalizeIdToken pl.handle).startsWith norm then some (st, pl.handle) else none)
+    match cands with
+    | [] => throw (.mk' .notFound
+        s!"no visible note matches '{noteTok}' in this issue's journal — `tl note list <id>` shows the handles; a removed entry is reachable by its canonical tag (`--all`)")
+    | [(st, h)] => return (st, h, false)
+    | _ => throw (.mk' .usage
+        (s!"note id '{noteTok}' is ambiguous here (it matches {cands.length} entries) — "
+          ++ "use a longer prefix or a full canonical tag: "
+          ++ String.intercalate ", " (cands.map (fun (st, _) => tagOfStamp st))))
+
+/-- `tl note add <id> <text>`: append one immutable journal entry (ADR-0027).
+    `-` as the text reads stdin (handled at dispatch, the `create` body
+    convention). The note id is minted from the record's own stamp
+    (`mintNoteId`); the envelope actor rides into the entry payload at fold
+    time. Echoes the new entry. -/
+def cmdNoteAdd (dirOverride : Option String) (tok text : String) (actor : String) : TlM CmdOut := do
+  if text.trimAscii.isEmpty then
+    throw (.mk' .usage
+      "a note needs text — `tl note add <id> <text>` (`-` reads it from stdin)")
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx stamps => do
+    let i ← resolveToken ctx.loaded.state tok
+    let some st := stamps.head?
+      | .error (.mk' .internal
+          "transact provided no stamp for note add — this is a bug in tl; please report it")
+    .ok [.noteAdd i (mintNoteId st) text])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  let some (handle, st) := parsed.head?.bind (fun pp =>
+      match pp.op with | .noteAdd _ note _ => some (note, pp.stamp) | _ => none)
+    | throw (.mk' .internal "note add wrote no record — this is a bug in tl; please report it")
+  let entry := noteEntryObj st ⟨handle, text, some actor⟩ false
+  let data := Json.mkObj
+    [("id", Json.str (displayId i)), ("note", entry), ("status", Json.str "added")]
+  return { data, human := s!"Added note [{handle}] to {displayId i}"
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+
+/-- `tl note list <id> [--all]`: the visible journal, oldest first
+    (stamp-ascending — the proved kernel order); `--all` adds removed-entry
+    placeholders in their true positions (provenance shown, text hidden — the
+    log itself is the deliberate escape hatch). -/
+def cmdNoteList (dirOverride : Option String) (tok : String) (all skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  let jn := (v.issueData i).notes
+  let rows : List (Tl.Crdt.Stamp × Tl.Crdt.NotePayload × Bool) :=
+    if all then
+      jn.entries.elements.filterMap (fun st =>
+        (jn.payloadOf st).map (fun pl => (st, pl, !(decide (jn.Visible st)))))
+    else
+      jn.visibleEntries.map (fun (st, pl) => (st, pl, false))
+  let data := Json.mkObj
+    [("id", Json.str (displayId i)), ("count", jnum rows.length),
+     ("notes", Json.arr (rows.map (fun (st, pl, rem) => noteEntryObj st pl rem)).toArray)]
+  let human :=
+    if rows.isEmpty then s!"{displayId i} has no notes"
+    else String.intercalate "\n" (rows.map (fun (st, pl, rem) =>
+      let who := match pl.actor with | some a => s!" · {sanitizeSingle a}" | none => ""
+      if rem then s!"[{sanitizeSingle pl.handle}] {hlcIso st.hlc}{who} (removed)"
+      else s!"[{sanitizeSingle pl.handle}] {hlcIso st.hlc}{who}\n  "
+        ++ sanitizeMulti pl.text))
+  return { data, human, notes }
+
+/-- `tl note remove <id> <note-id>`: tombstone one entry — exactly the entry
+    whose tag the resolved handle names (remove-exactness is a kernel
+    theorem). The output carries the honesty disclosure: removal hides the
+    entry from materialized views only (ADR-0027, no secure deletion). -/
+def cmdNoteRemove (dirOverride : Option String) (tok noteTok : String) (actor : String) : TlM CmdOut := do
+  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
+    let s := ctx.loaded.state
+    let i ← resolveToken s tok
+    let jn := (s.issueData i).notes
+    let (tag, handle, alreadyRemoved) ← resolveNoteToken jn noteTok
+    if alreadyRemoved then .ok []
+    else .ok [.noteRemove i handle (jn.entries.tagsOf tag)])
+  let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  let status := if parsed.isEmpty then "noop" else "removed"
+  let handle := (parsed.head?.bind (fun pp =>
+      match pp.op with | .noteRemove _ n _ => some n | _ => none)).getD (sanitizeSingle noteTok)
+  let data := Json.mkObj
+    [("id", Json.str (displayId i)), ("note", Json.str handle),
+     ("status", Json.str status), ("disclosure", Json.str noteRemovalDisclosure)]
+  let human := (if parsed.isEmpty then
+      s!"note '{sanitizeSingle noteTok}' in {displayId i} is already removed — nothing to do"
+    else s!"Removed note [{handle}] from {displayId i}") ++ s!" ({noteRemovalDisclosure})"
+  return { data, human
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-- `tl label list`: the label vocabulary — every present label with how many

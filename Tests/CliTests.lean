@@ -83,7 +83,7 @@ def cliBasicTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- version
   o := o ++ [← expectData "version payload" ["version"]
-    (fun j => jStr j "version" == some "0.1.0" && jNat j "logFormat" == some 1)]
+    (fun j => jStr j "version" == some "0.1.0" && jNat j "logFormat" == some 2)]
   -- licenses (ADR-0006): the embedded notice is byte-equal to the repo-root
   -- THIRD-PARTY-LICENSES file (the source of truth — a drifted regeneration
   -- fails here), human output IS the notice (human/json parity), the
@@ -651,7 +651,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let out ← spawn ["version", "--json"]
   o := o ++
     [check "version --json envelope bytes"
-      (out.stdout == "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"logFormat\":1,\"version\":\"0.1.0\"}}\n")
+      (out.stdout == "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"logFormat\":2,\"version\":\"0.1.0\"}}\n")
       out.stdout,
      check "version exits 0" (out.exitCode == 0)]
   -- `tl licenses` stdout is byte-equal to the repo THIRD-PARTY-LICENSES file
@@ -1184,7 +1184,7 @@ def cliGitEnvTests : IO (List Outcome) := do
     at a controlled stamp (deterministic ordering without wall-clock races). -/
 private def craftLine (op : WireOp) (hlc : Nat) (stem : String) (actor : Option String)
     (nonce : Nat := 1) : String :=
-  renderLine { v := supportedVersion, op,
+  renderLine { v := op.recordVersion, op,
                stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor }
 
 /-- A canonical line carrying an envelope actor — the `actor := some _`
@@ -2590,7 +2590,7 @@ def provenanceAgreementTests : List Outcome :=
   let stem := "0123456789abc"
   let rv := (ofCrockford? stem).getD 0
   let mk (idx : Nat) (op : WireOp) : ParsedOp :=
-    { v := supportedVersion, op, stamp := ⟨1000000 + idx * 7, rv, 500 + idx⟩,
+    { v := op.recordVersion, op, stamp := ⟨1000000 + idx * 7, rv, 500 + idx⟩,
       actor := some s!"a{idx % 3}" }
   let ids := ["a000000000000000", "b000000000000000", "c000000000000000"]
   let pick (k : Nat) : IssueId := ids.getD (k % 3) ""
@@ -2613,7 +2613,7 @@ def provenanceAgreementTests : List Outcome :=
     let a := provOf m i
     let b := provenanceOf ops i
     check s!"provenance map ≡ per-id scan for {i}"
-      (a.createdAt == b.createdAt && a.updatedAt == b.updatedAt
+      (a.createdAt == b.createdAt
         && a.closedAt == b.closedAt && a.claimedAt == b.claimedAt
         && a.createdBy == b.createdBy && a.createdReplica == b.createdReplica
         -- cmdList sorts on Prov.createdAt instead of the O(N) createdAtOf find;
@@ -2805,7 +2805,7 @@ def rowAccessorAgreementTests : List Outcome :=
   -- both-default-{} match: `a` carries created/updated/close, `d` a claim.
   let prov : Tl.Crdt.AMap IssueId Prov :=
     (Tl.Crdt.AMap.empty.insert a
-        { created := some (⟨100, 7, 5⟩, some "alice"), updated := some ⟨200, 7, 6⟩,
+        { created := some (⟨100, 7, 5⟩, some "alice"),
           lastClose := some ⟨300, 7, 7⟩ }).insert d
         { created := some (⟨150, 8, 9⟩, some "bob"), lastClaim := some ⟨400, 8, 10⟩ }
   let v : View :=
@@ -2837,7 +2837,7 @@ def rowAccessorAgreementTests : List Outcome :=
       && (v.has i == decide (s.hasIssue i))
       && (v.duplicateOf i == duplicateOf s i)
       && (canonicalParentE v i == s.canonicalParent i)
-      && (pa.createdAt == pb.createdAt && pa.updatedAt == pb.updatedAt
+      && (pa.createdAt == pb.createdAt
           && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt
           && pa.createdBy == pb.createdBy && pa.createdReplica == pb.createdReplica)))
 

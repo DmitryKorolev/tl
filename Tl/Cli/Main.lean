@@ -264,7 +264,11 @@ def runVerb : List String → TlM CmdOut
       let actor ← actorOf a
       cmdClose (a.get? "dir") tok asStr (a.get? "of") actor
     | "update" => do
-      let a ← parse "update"
+      -- the retired notes flags stay *parseable* (never advertised) so their
+      -- usage errors can teach `tl note add` (ADR-0027)
+      let a ← MonadExcept.ofExcept (parseArgs
+        (valFlagsOf "update" ++ ["notes", "append-notes"] ++ globalVal)
+        (boolFlagsOf "update" ++ globalBool) (repeatableFlagsOf "update") rest)
       let tok ← MonadExcept.ofExcept (onePositional a "update" "an issue id")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
@@ -336,6 +340,27 @@ def runVerb : List String → TlM CmdOut
         MonadExcept.ofExcept (noPositionals a "label list")
         cmdLabelList (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "label takes add|remove|list")
+    | "note" => do
+      match rest with
+      | "add" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note add" ++ globalVal) (boolFlagsOf "note add" ++ globalBool) (repeatableFlagsOf "note add") rest')
+        match a.positionals with
+        | [x, t] => do
+          -- `-` reads the entry text from stdin (the `create` body convention)
+          let text ← if t == "-" then (← IO.getStdin).readToEnd else pure t
+          cmdNoteAdd (a.get? "dir") x text (← actorOf a)
+        | _ => throw (usageErr "note add takes <id> <text> ('-' reads the text from stdin)")
+      | "list" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note list" ++ globalVal) (boolFlagsOf "note list" ++ globalBool) (repeatableFlagsOf "note list") rest')
+        match a.positionals with
+        | [x] => cmdNoteList (a.get? "dir") x (a.has "all") (a.has "skip-bad")
+        | _ => throw (usageErr "note list takes <id>")
+      | "remove" :: rest' => do
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note remove" ++ globalVal) (boolFlagsOf "note remove" ++ globalBool) (repeatableFlagsOf "note remove") rest')
+        match a.positionals with
+        | [x, n] => cmdNoteRemove (a.get? "dir") x n (← actorOf a)
+        | _ => throw (usageErr "note remove takes <id> <note-id>")
+      | _ => throw (usageErr "note takes add|list|remove")
     | "meta" => do
       match rest with
       | "set" :: rest' => do

@@ -327,7 +327,7 @@ create --priority --blocked-by --blocks --parent --related --description --slug 
 ready --limit --sync
 claim --actor --sync --verify --steal --stale
 close --as --of --actor
-update --title --priority --description --notes --append-notes --slug --actor
+update --title --priority --description --slug --actor
 reopen --actor
 defer --until --for --actor
 undefer --actor
@@ -347,6 +347,9 @@ list --limit --all --flat --label --stale --deferred --status --assignee --prior
 label add --actor
 label remove --actor
 label list
+note add --actor
+note list --all
+note remove --actor
 meta set --actor
 meta get
 meta clear --actor

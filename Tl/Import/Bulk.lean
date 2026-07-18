@@ -230,7 +230,7 @@ def parseRecord (line : String) : Except Tl.Error (ImportRecord × List String) 
 /-! ### Building the seed op-log -/
 
 private def parsedLine (op : WireOp) (st : Stamp) (actor : Option String) : String :=
-  renderLine { v := supportedVersion, op, stamp := st, actor }
+  renderLine { v := op.recordVersion, op, stamp := st, actor }
 
 /-- The full result of a build: the import replica's segment lines + a summary. -/
 structure ImportResult where
