@@ -92,6 +92,19 @@ theorem isSome_of_present {s : OrSet α} {e : α} (h : Present s e) :
 /-- Every element ever added (present or not) — the keys of the add map. -/
 def elements (s : OrSet α) : List α := s.adds.keys
 
+/-- `any` over decided per-element propositions is the decided bounded
+    existential — the bridge from `presentElements`'s hoisted-lookup loop to
+    the `Present` proposition it decides. -/
+theorem any_decide_eq_decide_exists {β : Type _} (l : List β) (P : β → Prop)
+    [DecidablePred P] : (l.any (fun x => decide (P x))) = decide (∃ x ∈ l, P x) := by
+  apply Bool.eq_iff_iff.mpr
+  rw [List.any_eq_true, decide_eq_true_iff]
+  constructor
+  · rintro ⟨x, hx, hP⟩
+    exact ⟨x, hx, of_decide_eq_true hP⟩
+  · rintro ⟨x, hx, hP⟩
+    exact ⟨x, hx, decide_eq_true hP⟩
+
 /-- The present (live) elements — the enumeration `ready`/`list` iterate, proved to
     coincide exactly with `Present` (`mem_presentElements`), so theorems stated over
     `Present` are about the very set the CLI walks.
@@ -101,11 +114,13 @@ def elements (s : OrSet α) : List α := s.adds.keys
     (`elements.filter (Present)`) re-`find`-ed the tags for every key, an O(N)
     lookup per element ⇒ Θ(N²) per enumeration (the dominant `list`/`ready`/
     `stats`/`doctor` cost at scale). The per-entry tombstone lookup
-    (`removedOf`) scans only the *removed-element* map — empty for add-only
-    sets (issues), and each tag then probes only its own element's tombstones. -/
+    (`removedOf`) is hoisted out of the tag loop (the `let`): one scan of the
+    *removed-element* map per entry — empty for add-only sets (issues) — and
+    each tag then probes only its own element's tombstone set. -/
 def presentElements (s : OrSet α) : List α :=
-  (s.adds.toList.filter
-    (fun p => decide (∃ q ∈ p.2.toList, q.1 ∉ s.removedOf p.1))).map Prod.fst
+  (s.adds.toList.filter (fun p =>
+    let rem := s.removedOf p.1
+    p.2.toList.any (fun q => decide (q.1 ∉ rem)))).map Prod.fst
 
 /-- Filtering then projecting the first component equals projecting then
     filtering, when the entry predicate agrees with the key predicate per entry. -/
@@ -131,32 +146,18 @@ theorem presentElements_eq_keys_filter (s : OrSet α) :
   refine map_fst_filter_comm _ _ s.adds.toList (fun p hp => ?_)
   have hfind : s.adds.find p.1 = some p.2 := AMap.find_eq_some_of_mem hp
   have htag : s.tagsOf p.1 = p.2 := by unfold tagsOf; rw [hfind]; rfl
-  show decide (∃ q ∈ p.2.toList, q.1 ∉ s.removedOf p.1) = decide (Present s p.1)
+  show p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1)) = decide (Present s p.1)
+  rw [any_decide_eq_decide_exists p.2.toList (fun q => q.1 ∉ s.removedOf p.1)]
   unfold Present
   simp only [htag]
 
 theorem mem_presentElements (s : OrSet α) (e : α) : e ∈ s.presentElements ↔ Present s e := by
-  unfold presentElements
-  rw [List.mem_map]
+  rw [presentElements_eq_keys_filter, List.mem_filter]
   constructor
-  · rintro ⟨p, hp, hpe⟩
-    rw [List.mem_filter] at hp
-    obtain ⟨hmem, hdec⟩ := hp
-    have hc : ∃ q ∈ p.2.toList, q.1 ∉ s.removedOf p.1 := of_decide_eq_true hdec
-    rw [hpe] at hc
-    have hmem' : (e, p.2) ∈ s.adds.toList := by rw [← hpe]; exact hmem
-    have hfind : s.adds.find e = some p.2 := AMap.find_eq_some_of_mem hmem'
-    show Present s e
-    unfold Present tagsOf
-    rw [hfind]
-    exact hc
+  · rintro ⟨_, hdec⟩
+    exact of_decide_eq_true hdec
   · intro hpres
-    obtain ⟨tags, htags⟩ := Option.isSome_iff_exists.mp (isSome_of_present hpres)
-    have hc : ∃ q ∈ tags.toList, q.1 ∉ s.removedOf e := by
-      unfold Present tagsOf at hpres
-      rw [htags] at hpres
-      exact hpres
-    exact ⟨(e, tags), List.mem_filter.mpr ⟨AMap.mem_toList_of_find htags, decide_eq_true hc⟩, rfl⟩
+    exact ⟨AMap.mem_keys.mpr (isSome_of_present hpres), decide_eq_true hpres⟩
 
 /-- The CRDT join — componentwise: both per-element maps join pointwise by
     `FinSet.union`. -/
@@ -196,47 +197,35 @@ tombstone set) at `e` is the union of the two sides'. These let the
 add-wins/re-add/effectiveness theorems below compute a composite state's
 presence directly. -/
 
+/-- Lift `optCombine FinSet.union` through the empty-defaulted read: the
+    defaulted union of two optional tag sets is the union of their defaults.
+    The shared engine of both merge projections below. -/
+private theorem getD_optCombine_union (x y : Option (FinSet Stamp)) :
+    (optCombine FinSet.union x y).getD FinSet.empty
+      = FinSet.union (x.getD FinSet.empty) (y.getD FinSet.empty) := by
+  cases x with
+  | none =>
+    cases y with
+    | none => exact (FinSet.union_empty_left FinSet.empty).symm
+    | some b => exact (FinSet.union_empty_left b).symm
+  | some a =>
+    cases y with
+    | none => exact (FinSet.union_empty_right a).symm
+    | some b => rfl
+
 theorem tagsOf_merge (s t : OrSet α) (e : α) :
     (merge s t).tagsOf e = FinSet.union (s.tagsOf e) (t.tagsOf e) := by
   unfold tagsOf
   show ((AMap.merge FinSet.union s.adds t.adds).find e).getD FinSet.empty = _
   rw [AMap.find_merge]
-  cases hs : s.adds.find e with
-  | none =>
-    cases ht : t.adds.find e with
-    | none =>
-      show FinSet.empty = FinSet.union FinSet.empty FinSet.empty
-      exact (FinSet.union_empty_left FinSet.empty).symm
-    | some b =>
-      show b = FinSet.union FinSet.empty b
-      exact (FinSet.union_empty_left b).symm
-  | some a =>
-    cases ht : t.adds.find e with
-    | none =>
-      show a = FinSet.union a FinSet.empty
-      exact (FinSet.union_empty_right a).symm
-    | some b => rfl
+  exact getD_optCombine_union (s.adds.find e) (t.adds.find e)
 
 theorem removedOf_merge (s t : OrSet α) (e : α) :
     (merge s t).removedOf e = FinSet.union (s.removedOf e) (t.removedOf e) := by
   unfold removedOf
   show ((AMap.merge FinSet.union s.removed t.removed).find e).getD FinSet.empty = _
   rw [AMap.find_merge]
-  cases hs : s.removed.find e with
-  | none =>
-    cases ht : t.removed.find e with
-    | none =>
-      show FinSet.empty = FinSet.union FinSet.empty FinSet.empty
-      exact (FinSet.union_empty_left FinSet.empty).symm
-    | some b =>
-      show b = FinSet.union FinSet.empty b
-      exact (FinSet.union_empty_left b).symm
-  | some a =>
-    cases ht : t.removed.find e with
-    | none =>
-      show a = FinSet.union a FinSet.empty
-      exact (FinSet.union_empty_right a).symm
-    | some b => rfl
+  exact getD_optCombine_union (s.removed.find e) (t.removed.find e)
 
 /-- An add delta's tags at its own element: the singleton of the new stamp. -/
 theorem tagsOf_singletonAdd_self (e : α) (st : Stamp) :
@@ -275,6 +264,28 @@ theorem present_iff_exists_live_tag (s : OrSet α) (e : α) :
     obtain ⟨u, hu⟩ := Option.isSome_iff_exists.mp hmem
     exact ⟨(st, u), AMap.mem_toList_of_find hu, hlive⟩
 
+/-- Shared scaffolding of the two frame workhorses below: a delta-merged state
+    `s'` whose `P∧Present`-filtered key list matches `se`'s (`helems`) and whose
+    presence agrees with `se`'s away from `e0` (`hpres`) has the same
+    `P`-filtered present elements, for any `P` that rejects `e0`. -/
+private theorem filter_presentElements_congr {s' se : OrSet α} {e0 : α} {P : α → Bool}
+    (hP : P e0 = false)
+    (helems : s'.elements.filter (fun a => P a && decide (Present s' a))
+            = se.elements.filter (fun a => P a && decide (Present s' a)))
+    (hpres : ∀ a, a ≠ e0 → decide (Present s' a) = decide (Present se a)) :
+    (s'.presentElements).filter P = (se.presentElements).filter P := by
+  -- collapse the double filter, swap list (`helems`) then predicate (`hpres`)
+  rw [presentElements_eq_keys_filter, presentElements_eq_keys_filter]
+  rw [List.filter_filter, List.filter_filter]
+  show s'.elements.filter (fun a => P a && decide (Present s' a))
+     = se.elements.filter (fun a => P a && decide (Present se a))
+  rw [helems]
+  apply List.filter_congr
+  intro a _
+  by_cases ha : a = e0
+  · subst ha; rw [hP, Bool.false_and, Bool.false_and]
+  · rw [hpres a ha]
+
 /-- Frame workhorse (ADR-0003 §side-channels): merging in a single-element *add*
     `{e0 ↦ st}` and then filtering the present elements by a predicate `P` that
     *rejects* `e0` leaves the filtered list unchanged. An add at `e0` only adds the
@@ -289,9 +300,16 @@ theorem presentElements_mergeAdd_filter (se : OrSet α) (e0 : α) (st : Stamp)
   have hrem : (merge se (singletonAdd e0 st)).removed = se.removed := by
     show AMap.merge FinSet.union se.removed AMap.empty = se.removed
     exact AMap.merge_empty_right FinSet.union se.removed
-  have hpres : ∀ a, a ≠ e0 →
-      decide (Present (merge se (singletonAdd e0 st)) a) = decide (Present se a) := by
-    intro a ha
+  refine filter_presentElements_congr hP ?_ ?_
+  · -- the merged key list may add `e0`; the filter drops it (`P e0 = false`)
+    rw [show (merge se (singletonAdd e0 st)).elements
+          = (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))).keys from rfl,
+      AMap.keys_merge_singleton_filter se.adds e0 (FinSet.singleton st)
+        (show (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a)) e0 = false by
+          show (P e0 && decide (Present (merge se (singletonAdd e0 st)) e0)) = false
+          rw [hP, Bool.false_and])]
+    rfl
+  · intro a ha
     have hfind : (merge se (singletonAdd e0 st)).adds.find a = se.adds.find a := by
       show AMap.find (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))) a
         = se.adds.find a
@@ -303,25 +321,6 @@ theorem presentElements_mergeAdd_filter (se : OrSet α) (e0 : α) (st : Stamp)
     have hiff : Present (merge se (singletonAdd e0 st)) a ↔ Present se a := by
       unfold Present; rw [htag, hremOf]
     simp only [hiff]
-  -- collapse the double filter, normalise the redex via `show`, swap list then predicate
-  rw [presentElements_eq_keys_filter, presentElements_eq_keys_filter]
-  rw [List.filter_filter, List.filter_filter]
-  show List.filter (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a))
-        (merge se (singletonAdd e0 st)).elements
-     = List.filter (fun a => P a && decide (Present se a)) se.elements
-  rw [show (merge se (singletonAdd e0 st)).elements
-        = (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))).keys from rfl,
-    AMap.keys_merge_singleton_filter se.adds e0 (FinSet.singleton st)
-      (show (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a)) e0 = false by
-        show (P e0 && decide (Present (merge se (singletonAdd e0 st)) e0)) = false
-        rw [hP, Bool.false_and])]
-  show se.elements.filter (fun a => P a && decide (Present (merge se (singletonAdd e0 st)) a))
-     = se.elements.filter (fun a => P a && decide (Present se a))
-  apply List.filter_congr
-  intro a _
-  by_cases ha : a = e0
-  · subst ha; rw [hP, Bool.false_and, Bool.false_and]
-  · rw [hpres a ha]
 
 /-- Removal workhorse (the `unrelate` frame counterpart of
     `presentElements_mergeAdd_filter`): merging in a pure-tombstone delta keyed at
@@ -340,31 +339,22 @@ theorem presentElements_mergeTombstonesAt_filter (se : OrSet α) (e0 : α) (obs 
   have hadds : (merge se (tombstonesAt e0 obs)).adds = se.adds := by
     show AMap.merge FinSet.union se.adds AMap.empty = se.adds
     exact AMap.merge_empty_right FinSet.union se.adds
-  have hpres : ∀ a, a ≠ e0 →
-      decide (Present (merge se (tombstonesAt e0 obs)) a) = decide (Present se a) := by
-    intro a ha
+  refine filter_presentElements_congr hP ?_ ?_
+  · -- same key list on both sides (`adds` fixed)
+    rw [show (merge se (tombstonesAt e0 obs)).elements = se.elements by
+      unfold elements; rw [hadds]]
+  · intro a ha
     have htag : (merge se (tombstonesAt e0 obs)).tagsOf a = se.tagsOf a := by
       unfold tagsOf; rw [hadds]
-    have hremOf : (merge se (tombstonesAt e0 obs)).removedOf a = se.removedOf a := by
-      show ((AMap.merge FinSet.union se.removed (AMap.singleton e0 obs)).find a).getD FinSet.empty
-        = (se.removed.find a).getD FinSet.empty
+    have hfind : (merge se (tombstonesAt e0 obs)).removed.find a = se.removed.find a := by
+      show AMap.find (AMap.merge FinSet.union se.removed (AMap.singleton e0 obs)) a
+        = se.removed.find a
       rw [AMap.find_merge, AMap.find_singleton, if_neg ha, optCombine_none_right]
+    have hremOf : (merge se (tombstonesAt e0 obs)).removedOf a = se.removedOf a := by
+      unfold removedOf; rw [hfind]
     have hiff : Present (merge se (tombstonesAt e0 obs)) a ↔ Present se a := by
       unfold Present; rw [htag, hremOf]
     simp only [hiff]
-  -- same key list on both sides (`adds` fixed); agree pointwise under the filter
-  rw [presentElements_eq_keys_filter, presentElements_eq_keys_filter]
-  rw [List.filter_filter, List.filter_filter]
-  show List.filter (fun a => P a && decide (Present (merge se (tombstonesAt e0 obs)) a))
-        (merge se (tombstonesAt e0 obs)).elements
-     = List.filter (fun a => P a && decide (Present se a)) se.elements
-  rw [show (merge se (tombstonesAt e0 obs)).elements = se.elements by
-    unfold elements; rw [hadds]]
-  apply List.filter_congr
-  intro a _
-  by_cases ha : a = e0
-  · subst ha; rw [hP, Bool.false_and, Bool.false_and]
-  · rw [hpres a ha]
 
 /-! ## Add-wins, re-add, and removal effectiveness (ADR-0002)
 
@@ -404,17 +394,9 @@ theorem present_addWins (s : OrSet α) (e : α) (st : Stamp) (obs : FinSet Stamp
 theorem present_readd (s : OrSet α) (e : α) (st : Stamp) (obs : FinSet Stamp)
     (hunobserved : st ∉ obs) (hfresh : st ∉ s.removedOf e) :
     Present (merge (merge s (tombstonesAt e obs)) (singletonAdd e st)) e := by
-  apply (present_iff_exists_live_tag ..).mpr
-  refine ⟨st, ?_, ?_⟩
-  · rw [tagsOf_merge, tagsOf_merge, tagsOf_tombstonesAt, FinSet.union_empty_right,
-      tagsOf_singletonAdd_self]
-    exact (FinSet.mem_union ..).mpr (Or.inr ((FinSet.mem_singleton ..).mpr rfl))
-  · rw [removedOf_merge, removedOf_merge, removedOf_tombstonesAt_self, removedOf_singletonAdd,
-      FinSet.union_empty_right]
-    intro hmem
-    rcases (FinSet.mem_union ..).mp hmem with h | h
-    · exact hfresh h
-    · exact hunobserved h
+  -- the add-wins state, reassociated: the join order is immaterial
+  rw [merge_assoc, merge_comm (tombstonesAt e obs) (singletonAdd e st), ← merge_assoc]
+  exact present_addWins s e st obs hunobserved hfresh
 
 /-- **Removal effectiveness** (ADR-0002): a remove that observed *all* of `e`'s
     add-tags makes `e` absent — tombstones genuinely remove; a `Present` that

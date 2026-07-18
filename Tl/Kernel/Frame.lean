@@ -375,6 +375,36 @@ private theorem decide_related_false (k : EdgeKind) (hk : EdgeKind.Related ≠ k
     {q : Prop} [Decidable q] : decide (EdgeKind.Related = k ∧ q) = false :=
   decide_eq_false_iff_not.mpr (fun h => hk h.1)
 
+/-! The three `Blocks`/`Parent` view congruences, each from one hypothesis: the
+`P`-filtered present edges agree under every filter that rejects a given
+`Related` element. Instantiated twice each — the `relate` add and the `unrelate`
+remove — so the view filter predicates (which must stay syntactically identical
+to their `State` definitions for the rewrites to fire) are stated once. -/
+
+private theorem childrenOf_congr_of_stable {s1 s2 : State} {i0 j0 : IssueId}
+    (h : ∀ (P : Edge → Bool), P (i0, j0, EdgeKind.Related) = false →
+      (s1.presentEdges).filter P = (s2.presentEdges).filter P) (i : IssueId) :
+    s1.childrenOf i = s2.childrenOf i := by
+  unfold State.childrenOf
+  rw [h (fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
+      (decide_related_false EdgeKind.Parent (fun hk => EdgeKind.noConfusion hk))]
+
+private theorem blockersOf_congr_of_stable {s1 s2 : State} {i0 j0 : IssueId}
+    (h : ∀ (P : Edge → Bool), P (i0, j0, EdgeKind.Related) = false →
+      (s1.presentEdges).filter P = (s2.presentEdges).filter P) (i : IssueId) :
+    s1.blockersOf i = s2.blockersOf i := by
+  unfold State.blockersOf
+  rw [h (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
+      (decide_related_false EdgeKind.Blocks (fun hk => EdgeKind.noConfusion hk))]
+
+private theorem dependentsOf_congr_of_stable {s1 s2 : State} {i0 j0 : IssueId}
+    (h : ∀ (P : Edge → Bool), P (i0, j0, EdgeKind.Related) = false →
+      (s1.presentEdges).filter P = (s2.presentEdges).filter P) (i : IssueId) :
+    s1.dependentsOf i = s2.dependentsOf i := by
+  unfold State.dependentsOf
+  rw [h (fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
+      (decide_related_false EdgeKind.Blocks (fun hk => EdgeKind.noConfusion hk))]
+
 /-- A `related` edge add leaves the edge set's present list fixed under any filter
     that rejects the added `Related` element (lifts the OR-Set add workhorse). -/
 theorem presentEdges_relate_filter (s : State) (i0 j0 : IssueId) (st : Stamp)
@@ -384,25 +414,19 @@ theorem presentEdges_relate_filter (s : State) (i0 j0 : IssueId) (st : Stamp)
   OrSet.presentElements_mergeAdd_filter s.edges (i0, j0, EdgeKind.Related) st hP
 
 theorem childrenOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
-    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).childrenOf i = s.childrenOf i := by
-  unfold State.childrenOf
-  rw [presentEdges_relate_filter s i0 j0 st
-    (P := fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
-    (decide_related_false EdgeKind.Parent (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).childrenOf i = s.childrenOf i :=
+  childrenOf_congr_of_stable
+    (fun P hP => presentEdges_relate_filter s i0 j0 st (P := P) hP) i
 
 theorem blockersOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
-    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).blockersOf i = s.blockersOf i := by
-  unfold State.blockersOf
-  rw [presentEdges_relate_filter s i0 j0 st
-    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
-    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).blockersOf i = s.blockersOf i :=
+  blockersOf_congr_of_stable
+    (fun P hP => presentEdges_relate_filter s i0 j0 st (P := P) hP) i
 
 theorem dependentsOf_relate (s : State) (i0 j0 : IssueId) (st : Stamp) (i : IssueId) :
-    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).dependentsOf i = s.dependentsOf i := by
-  unfold State.dependentsOf
-  rw [presentEdges_relate_filter s i0 j0 st
-    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
-    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).dependentsOf i = s.dependentsOf i :=
+  dependentsOf_congr_of_stable
+    (fun P hP => presentEdges_relate_filter s i0 j0 st (P := P) hP) i
 
 theorem issues_relate (s : State) (i0 j0 : IssueId) (st : Stamp) :
     (apply s (Op.edgeAdd (i0, j0, EdgeKind.Related) st)).issues = s.issues :=
@@ -459,25 +483,19 @@ theorem presentEdges_edgeRemove_filter (s : State) (e : Edge) (obs : FinSet Stam
   OrSet.presentElements_mergeTombstonesAt_filter s.edges e obs hP
 
 theorem childrenOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
-    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).childrenOf i = s.childrenOf i := by
-  unfold State.childrenOf
-  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
-    (P := fun e => decide (e.2.2 = EdgeKind.Parent ∧ e.1 = i))
-    (decide_related_false EdgeKind.Parent (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).childrenOf i = s.childrenOf i :=
+  childrenOf_congr_of_stable
+    (fun P hP => presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs (P := P) hP) i
 
 theorem blockersOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
-    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).blockersOf i = s.blockersOf i := by
-  unfold State.blockersOf
-  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
-    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.2.1 = i))
-    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).blockersOf i = s.blockersOf i :=
+  blockersOf_congr_of_stable
+    (fun P hP => presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs (P := P) hP) i
 
 theorem dependentsOf_unrelate (s : State) (i0 j0 : IssueId) (obs : FinSet Stamp) (i : IssueId) :
-    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).dependentsOf i = s.dependentsOf i := by
-  unfold State.dependentsOf
-  rw [presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs
-    (P := fun e => decide (e.2.2 = EdgeKind.Blocks ∧ e.1 = i))
-    (decide_related_false EdgeKind.Blocks (fun h => EdgeKind.noConfusion h))]
+    (apply s (Op.edgeRemove (i0, j0, EdgeKind.Related) obs)).dependentsOf i = s.dependentsOf i :=
+  dependentsOf_congr_of_stable
+    (fun P hP => presentEdges_edgeRemove_filter s (i0, j0, EdgeKind.Related) obs (P := P) hP) i
 
 /-- **Frame lemma, `unrelate` case (ADR-0003).** A `related` edge removal changes
     neither `effectiveStatus` … -/
