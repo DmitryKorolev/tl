@@ -454,9 +454,93 @@ def storeTombstoneScopeTests : List Outcome :=
     check "B stays blocked in ready; A is ready"
       (readyIds.contains idA && !readyIds.contains idB) s!"ready={readyIds}" ]
 
+
+/-- The journal fold semantics at the wire seam (ADR-0027): concurrent adds
+    all retained; removal hides in either delivery order (tombstone by tag
+    value); remove-exactness under a forged duplicate handle; the same-triple
+    payload join is order-independent; duplicate delivery is one entry; equal
+    text from separate ops stays two entries; ordering is stamp-ascending;
+    `updatedAt` bumps on a note add, never on a note remove, and a legacy
+    notes-only update (unknown-bag routed) neither materializes nor bumps. -/
+def storeJournalTests : List Outcome :=
+  let idA := "a000000000000000"
+  let foreignId := "1zzzzzzzzzzzz"
+  let hlc (i : Nat) : Nat := 2000000000000 * 2 ^ 16 + i
+  let stampAt (i : Nat) (repl : String := fixedReplica) : Stamp :=
+    ⟨hlc i, (ofCrockford? repl).getD 0, 5000 + i⟩
+  let lineAs (repl : String) (op : WireOp) (i : Nat) : String :=
+    renderLine { v := op.recordVersion, op, stamp := stampAt i repl, actor := some "x" }
+  let line := lineAs fixedReplica
+  let segOf (repl : String) (ls : List String) : SegmentData :=
+    { replicaId := repl, bytes := (ls.foldl (fun a l => a ++ l ++ "\n") "").toUTF8 }
+  let journalOf (segs : List SegmentData) : Tl.Crdt.Journal :=
+    ((materialize segs).state.issueData idA).notes
+  let texts (jn : Tl.Crdt.Journal) : List String :=
+    jn.visibleEntries.map (fun (_, pl) => pl.text)
+  let createL := line (.create idA { title := some "A" }) 1
+  -- (a) concurrent adds from two replicas: both retained, stamp-ascending
+  let ownAdd := line (.noteAdd idA (mintNoteId (stampAt 3)) "own progress") 3
+  let forAdd := lineAs foreignId (.noteAdd idA (mintNoteId (stampAt 2 foreignId)) "foreign progress") 2
+  let jConc := journalOf [segOf fixedReplica [createL, ownAdd], segOf foreignId [forAdd]]
+  -- (b) remove folded before its add still hides the entry on arrival
+  let remove3 := line (.noteRemove idA (mintNoteId (stampAt 3)) (Tl.Crdt.FinSet.singleton (stampAt 3))) 6
+  let jRemFirst := journalOf [segOf fixedReplica [createL, remove3, ownAdd]]
+  -- (c) forged duplicate handle from a distinct stamp: independent entries;
+  -- removal touches exactly the observed tag
+  let dupHandle := mintNoteId (stampAt 3)
+  let forged := line (.noteAdd idA dupHandle "forged twin") 4
+  let jDup := journalOf [segOf fixedReplica [createL, ownAdd, forged]]
+  let jDupRemoved := journalOf [segOf fixedReplica [createL, ownAdd, forged, remove3]]
+  -- (d) same complete triple, different payloads: the join is order-independent
+  let twinA := renderLine { v := 2, op := .noteAdd idA dupHandle "alpha payload",
+                            stamp := stampAt 5, actor := some "x" }
+  let twinB := renderLine { v := 2, op := .noteAdd idA dupHandle "beta payload",
+                            stamp := stampAt 5, actor := some "x" }
+  let jTwinAB := journalOf [segOf fixedReplica [createL, twinA, twinB]]
+  let jTwinBA := journalOf [segOf fixedReplica [createL, twinB, twinA]]
+  -- (e) duplicate delivery of one op is one entry
+  let jDouble := journalOf [segOf fixedReplica [createL, ownAdd, ownAdd]]
+  -- (f) identical text from separate ops stays two entries
+  let sameText := line (.noteAdd idA (mintNoteId (stampAt 7)) "own progress") 7
+  let jSame := journalOf [segOf fixedReplica [createL, ownAdd, sameText]]
+  -- (g) updatedAt: bumps on add, never on remove; a legacy notes-only update
+  -- routes to the unknown bag — no materialization, no bump
+  let upd (segs : List SegmentData) : Option Stamp :=
+    ((materialize segs).state.issueData idA).updatedAtStamp
+  let legacyNotes :=
+    "{\"v\":1,\"op\":\"update\",\"hlc\":\"" ++ hlcHex (hlc 9)
+      ++ "\",\"replica\":\"" ++ fixedReplica
+      ++ "\",\"nonce\":\"" ++ toCrockford 5009 26
+      ++ "\",\"actor\":\"x\",\"id\":\"" ++ idA
+      ++ "\",\"notes\":\"legacy scalar text\"}"
+  let jLegacy := journalOf [segOf fixedReplica [createL, legacyNotes]]
+  [ check "concurrent note adds are both retained, stamp-ascending"
+      (texts jConc == ["foreign progress", "own progress"]) s!"texts={texts jConc}",
+    check "a remove folded before its add hides the entry on arrival"
+      ((texts jRemFirst).isEmpty) s!"texts={texts jRemFirst}",
+    check "a forged duplicate handle from a distinct stamp is an independent entry"
+      ((texts jDup).length == 2) s!"texts={texts jDup}",
+    check "removal touches exactly the observed tag, not its handle twin"
+      (texts jDupRemoved == ["forged twin"]) s!"texts={texts jDupRemoved}",
+    check "same-triple payload twins join order-independently (lexicographic max)"
+      (texts jTwinAB == ["beta payload"] && texts jTwinBA == ["beta payload"])
+      s!"ab={texts jTwinAB} ba={texts jTwinBA}",
+    check "duplicate delivery of one add renders once"
+      (texts jDouble == ["own progress"]) s!"texts={texts jDouble}",
+    check "identical text from separate ops renders twice"
+      (texts jSame == ["own progress", "own progress"]) s!"texts={texts jSame}",
+    check "note add bumps updatedAt to its own stamp"
+      (upd [segOf fixedReplica [createL, ownAdd]] == some (stampAt 3))
+      s!"upd={(upd [segOf fixedReplica [createL, ownAdd]]).map (fun st => st.hlc)}",
+    check "note remove does not bump updatedAt (the disclosed asymmetry)"
+      (upd [segOf fixedReplica [createL, ownAdd, remove3]] == some (stampAt 3)),
+    check "a legacy scalar-notes update neither materializes nor bumps updatedAt"
+      ((texts jLegacy).isEmpty
+        && upd [segOf fixedReplica [createL, legacyNotes]] == some (stampAt 1)) ]
+
 def storeTests : IO (List Outcome) := do
   return (← storeDiscoveryTests) ++ (← storeWriteTests)
     ++ (← storeAdversityTests) ++ (← storeLockTests) ++ (← storeSkewTests)
-    ++ storeTombstoneScopeTests
+    ++ storeTombstoneScopeTests ++ storeJournalTests
 
 end Tl.Tests

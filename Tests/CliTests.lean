@@ -2468,9 +2468,82 @@ def cliDoctorSkewTests : IO (List Outcome) := do
     ["list", "--dir", dir2, "--json"] (fun j => jNat j "count" == some 1)]
   return o
 
+/-- The notes journal CLI surface (ADR-0027): add echo, oldest-first list,
+    show parity, prefix removal with the honesty disclosure, `--all`
+    placeholders, canonical-tag fallback, collision refusal, not-found. -/
+def cliNoteTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  let dir ← freshDir
+  let a ← mkIssue dir "Journal host"
+  o := o ++ [← expectData "note add echoes {id, note{id,tag,time,actor,text}, status:added}"
+      ["note", "add", "tl-" ++ a, "first finding", "--dir", dir, "--actor", "ann"]
+    (fun j => jStr j "status" == some "added"
+      && ((jGet j "note").bind (fun n => jStr n "text")) == some "first finding"
+      && ((jGet j "note").bind (fun n => jStr n "actor")) == some "ann"
+      && ((jGet j "note").bind (fun n => jStr n "id")).any (fun h => h.length == 16)
+      && ((jGet j "note").bind (fun n => jStr n "tag")).any (fun t => (t.splitOn ".").length == 3))]
+  let _ ← run' ["note", "add", "tl-" ++ a, "second finding", "--dir", dir, "--actor", "bob"]
+  let handle ← do
+    match ← run' ["note", "list", "tl-" ++ a, "--dir", dir] with
+    | .ok out => pure (((jArr out.data "notes").head?.bind (fun n => jStr n "id")).getD "")
+    | .error _ => pure ""
+  o := o ++ [← expectData "note list is oldest-first with a count"
+      ["note", "list", "tl-" ++ a, "--dir", dir]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "notes").map (fun n => jStr n "text")
+           == [some "first finding", some "second finding"]),
+    ← expectData "show --json notes is the same entry array (parity)"
+      ["show", "tl-" ++ a, "--dir", dir] (fun j => (jArr j "notes").length == 2)]
+  o := o ++ [← expectData "note remove by handle prefix carries the honesty disclosure"
+      ["note", "remove", "tl-" ++ a, (handle.take 6).toString, "--dir", dir, "--actor", "ann"]
+    (fun j => jStr j "status" == some "removed"
+      && (jStr j "disclosure").any (fun d => (d.splitOn "log history").length > 1))]
+  o := o ++ [← expectData "note list hides the removed entry"
+      ["note", "list", "tl-" ++ a, "--dir", dir] (fun j => jNat j "count" == some 1),
+    ← expectData "note list --all shows the removed placeholder, text hidden"
+      ["note", "list", "tl-" ++ a, "--all", "--dir", dir]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "notes").any (fun n =>
+           jBool n "removed" == some true && (jGet n "text").isNone))]
+  let tag ← do
+    match ← run' ["note", "list", "tl-" ++ a, "--all", "--dir", dir] with
+    | .ok out => pure (((((jArr out.data "notes").filter
+        (fun n => jBool n "removed" == some true)).head?).bind
+          (fun n => jStr n "tag")).getD "")
+    | .error _ => pure ""
+  o := o ++ [← expectData "a full canonical tag is accepted as <note-id> (noop on a removed entry)"
+      ["note", "remove", "tl-" ++ a, tag, "--dir", dir, "--actor", "ann"]
+    (fun j => jStr j "status" == some "noop"),
+    ← expectErr "an unknown note id is not-found with teaching"
+      ["note", "remove", "tl-" ++ a, "zzzzzzzz", "--dir", dir, "--actor", "t"] .notFound,
+    ← expectErr "note add without text is usage"
+      ["note", "add", "tl-" ++ a, "", "--dir", dir, "--actor", "t"] .usage]
+  -- collision refusal: a forged foreign segment carries two live entries with
+  -- equal handle bytes from distinct stamps — the prefix is ambiguous, the
+  -- canonical tag is the always-unique fallback
+  let dir3 ← freshDir
+  let b ← mkIssue dir3 "Collision host"
+  let foreignStem := "1zzzzzzzzzzzz"
+  -- past-dated stamps: a far-future FOREIGN hlc would be skew-deferred out of
+  -- the fold (ADR-0007), hiding the collision this row needs
+  let st (i : Nat) : Tl.Crdt.Stamp :=
+    ⟨1700000000000 * 2 ^ 16 + i, (ofCrockford? foreignStem).getD 0, 9000 + i⟩
+  let h := mintNoteId (st 1)
+  let mk (op : WireOp) (i : Nat) : String :=
+    renderLine { v := op.recordVersion, op, stamp := st i, actor := some "f" }
+  IO.FS.writeFile (System.FilePath.mk dir3 / "log" / (foreignStem ++ ".jsonl"))
+    (mk (.noteAdd b h "one") 1 ++ "\n" ++ mk (.noteAdd b h "two") 2 ++ "\n")
+  o := o ++ [← expectErr "a colliding handle is refused (usage) listing the canonical tags"
+      ["note", "remove", "tl-" ++ b, h, "--dir", dir3, "--actor", "t"] .usage,
+    ← expectData "the canonical tag disambiguates the collision"
+      ["note", "remove", "tl-" ++ b, tagOfStamp (st 1), "--dir", dir3, "--actor", "t"]
+    (fun j => jStr j "status" == some "removed")]
+  return o
+
 /-- Labels (ADR-0002 OR-Set): add (idempotent), remove (noop when absent),
     the `label list` vocabulary, and the `tl list --label` facet (conjunctive across
     repeats). -/
+
 def cliLabelTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let dir ← freshDir
@@ -4912,7 +4985,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
-    ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliDefaultLimitTests)
+    ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)

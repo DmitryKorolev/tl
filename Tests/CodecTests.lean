@@ -45,9 +45,9 @@ def tagLater : String := "0000018d07f4c812.0123456789abc.0123456789abcdefghjkmnp
 def canonicalLines : List (String × String) :=
   [("create (title, priority)",
     env "create" ++ s!"\"id\":\"{idA}\",\"priority\":1,\"title\":\"Write the parser\"}"),
-   ("create (full scalar seed, nullable clears)",
+   ("create (full scalar seed; the legacy notes key rides the unknown bag)",
     env "create" ++ s!"\"assignee\":null,\"closeResolution\":null,\"deferUntil\":\"2026-06-15T09:00:00Z\",\"description\":\"body\",\"id\":\"{idA}\",\"notes\":null,\"priority\":0,\"slug\":\"write-parser\",\"status\":\"open\",\"title\":\"t\"}"),
-   ("update (non-lifecycle scalars)",
+   ("update (non-lifecycle scalars; the legacy notes key rides the unknown bag)",
     env "update" ++ s!"\"assignee\":\"dana\",\"id\":\"{idA}\",\"notes\":\"done part 1\",\"title\":\"Write the parser v2\"}"),
    ("claim",
     env "claim" ++ s!"\"assignee\":\"carol\",\"id\":\"{idA}\"}"),
@@ -79,6 +79,12 @@ def canonicalLines : List (String × String) :=
     env "labelRemove" ++ s!"\"id\":\"{idA}\",\"label\":\"type:bug\",\"observed\":[\"{tagLater}\"]}"),
    ("unknown fields preserved in place (claim + future keys)",
     env "claim" ++ s!"\"assignee\":\"carol\",\"futureFlag\":\{\"nested\":[1,2]},\"id\":\"{idA}\",\"zzz\":true}"),
+   ("noteAdd (v:2)",
+    (env "noteAdd").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"text\":\"progress: lexer done\"}"),
+   ("noteRemove (v:2, observed tag)",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"observed\":[\"{tagLater}\"]}"),
    ("actor null is the canonical absent-actor form",
     "{\"v\":1,\"op\":\"reopen\",\"hlc\":\"0000018d07f4c812\"," ++
     "\"replica\":\"0123456789abc\",\"nonce\":\"0123456789abcdefghjkmnpqrs\"," ++
@@ -143,6 +149,20 @@ def failClosedRows : List (String × String × Tl.ErrorCode) :=
    ("v=0 is malformed, not older", (env "create").replace "\"v\":1" "\"v\":0" ++ s!"\"id\":\"{idA}\"}",
     .malformedLine),
    ("unknown op kind", env "frobnicate" ++ s!"\"id\":\"{idA}\"}", .malformedLine),
+   ("noteAdd at v:1 is malformed (no tl writer stamps it)",
+    env "noteAdd" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"text\":\"x\"}", .malformedLine),
+   ("noteRemove at v:1 is malformed",
+    env "noteRemove" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"observed\":[\"{tagLater}\"]}",
+    .malformedLine),
+   ("noteAdd missing text is malformed",
+    (env "noteAdd").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\"}",
+    .malformedLine),
+   ("noteAdd with a malformed note handle is malformed",
+    (env "noteAdd").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"NOT-A-HANDLE\",\"text\":\"x\"}", .malformedLine),
+   ("noteRemove missing observed is malformed",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\"}",
+    .malformedLine),
    ("unparseable JSON", "{\"v\":1,", .malformedLine),
    ("hlc too short", (env "create").replace "0000018d07f4c812" "0000018d07f4c81" ++ s!"\"id\":\"{idA}\"}",
     .malformedLine),
