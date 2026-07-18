@@ -92,19 +92,6 @@ theorem isSome_of_present {s : OrSet α} {e : α} (h : Present s e) :
 /-- Every element ever added (present or not) — the keys of the add map. -/
 def elements (s : OrSet α) : List α := s.adds.keys
 
-/-- `any` over decided per-element propositions is the decided bounded
-    existential — the bridge from `presentElements`'s hoisted-lookup loop to
-    the `Present` proposition it decides. -/
-theorem any_decide_eq_decide_exists {β : Type _} (l : List β) (P : β → Prop)
-    [DecidablePred P] : (l.any (fun x => decide (P x))) = decide (∃ x ∈ l, P x) := by
-  apply Bool.eq_iff_iff.mpr
-  rw [List.any_eq_true, decide_eq_true_iff]
-  constructor
-  · rintro ⟨x, hx, hP⟩
-    exact ⟨x, hx, of_decide_eq_true hP⟩
-  · rintro ⟨x, hx, hP⟩
-    exact ⟨x, hx, decide_eq_true hP⟩
-
 /-- The present (live) elements — the enumeration `ready`/`list` iterate, proved to
     coincide exactly with `Present` (`mem_presentElements`), so theorems stated over
     `Present` are about the very set the CLI walks.
@@ -147,7 +134,7 @@ theorem presentElements_eq_keys_filter (s : OrSet α) :
   have hfind : s.adds.find p.1 = some p.2 := AMap.find_eq_some_of_mem hp
   have htag : s.tagsOf p.1 = p.2 := by unfold tagsOf; rw [hfind]; rfl
   show p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1)) = decide (Present s p.1)
-  rw [any_decide_eq_decide_exists p.2.toList (fun q => q.1 ∉ s.removedOf p.1)]
+  rw [← List.decide_exists_mem]
   unfold Present
   simp only [htag]
 

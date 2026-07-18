@@ -212,6 +212,8 @@ def cacheCodecTests : List Outcome :=
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":\"y\",\"lines\":0,\"ck\":\"e\",\"refused\":false,\"deferred\":[]}")).isNone,
+    check "a segment entry missing the checksum key is rejected"
+      (decodeCache (handSeg "{\"replica\":\"x\",\"bytes\":0,\"lines\":0,\"refused\":false,\"deferred\":[]}")).isNone,
     -- control for the two deferred rows below: the same payload with a
     -- well-formed deferred set decodes, so those rows genuinely die at the
     -- deferred branch, not at an earlier key (a "sha"-for-"ck" key typo once

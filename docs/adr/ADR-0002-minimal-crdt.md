@@ -47,12 +47,12 @@ reuses the same join law:
    is element-scoped by construction and can never affect any other element's
    presence, whatever its `observed` payload contains (the concrete payload
    schema is in ADR-0008). Concurrent add/remove therefore resolves add-wins:
-   an add the remove never saw survives. These remove semantics are theorems,
-   not just prose (`Tl.Crdt.OrSet`): add-wins is `present_addWins`, re-add is
-   `present_readd` (each with stamp-freshness as an explicit hypothesis,
-   discharged by the carried nonce-uniqueness assumption — overview Trusted),
-   and removal effectiveness — a remove that observed every add-tag makes the
-   element absent — is `not_present_mergeTombstonesAt_of_observed_all`,
+   an add the remove never saw survives. Proved in `Tl.Crdt.OrSet`: add-wins
+   as `present_addWins` and re-add as `present_readd` (each with
+   stamp-freshness as an explicit hypothesis, discharged by the carried
+   nonce-uniqueness assumption — overview Trusted), and removal
+   effectiveness — a remove that observed every add-tag makes the element
+   absent — as `not_present_mergeTombstonesAt_of_observed_all`,
    unconditionally. This gives `tl create` / `tl dep add` / `tl dep remove`
    convergent add and remove.
 
@@ -126,19 +126,20 @@ orphan edge). `create` carries identity + optional initial scalars and never
 ### Issues are resolved, not removed
 
 OR-Set *removal* is used for edges (`dep remove` / `unrelate`) and labels
-(`label remove`). An issue is never removed from the issue OR-Set — there is
-no hard delete (vision). To retire an issue, `close --as cancelled` sets a terminal status;
-the issue stays in the set. This sidesteps the concurrent delete-vs-edit
-hazard (one replica deletes an issue while another adds a blocker pointing at
-it → a *resurrected* issue with no fields). Note the no-delete rule prevents
-an endpoint from *disappearing*, but it does not make endpoint-existence
-a stepwise invariant — an order-insensitive fold can still apply a `depAdd`
-before its `create` (or never see the `create` at all), so a dangling edge is
-reachable regardless. Endpoint-existence is therefore not an `apply`
-invariant; dangling edges are tolerated as inert at read time (ADR-0004
-theorem 3). What no-delete *does* buy is that a reference, once its endpoint
-exists, never becomes dangling later. Tombstoned/deleted issues on *import*
-(ADR-0005) are simply skipped, not represented.
+(`label remove`). An issue is never removed from the issue OR-Set — there
+is no hard delete (vision). To retire an issue, `close --as cancelled` sets
+a terminal status; the issue stays in the set. This sidesteps the concurrent
+delete-vs-edit hazard (one replica deletes an issue while another adds a
+blocker pointing at it → a *resurrected* issue with no fields). Note the
+no-delete rule prevents an endpoint from *disappearing*, but it does not
+make endpoint-existence a stepwise invariant — an order-insensitive fold can
+still apply a `depAdd` before its `create` (or never see the `create` at
+all), so a dangling edge is reachable regardless. Endpoint-existence is
+therefore not an `apply` invariant; dangling edges are tolerated as inert at
+read time (ADR-0004 theorem 3). What no-delete *does* buy is that a
+reference, once its endpoint exists, never becomes dangling later.
+Tombstoned/deleted issues on *import* (ADR-0005) are simply skipped, not
+represented.
 
 ### Explicitly excluded
 

@@ -172,6 +172,18 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   can only change its own `Related` element's presence, for **any** observed
   payload — malformed or adversarial included — not just under honest stamp
   uniqueness. The `actor` case is not a kernel `Op` field at all.
+- **OR-Set add-wins, re-add & removal effectiveness** (`Tl/Crdt/OrSet.lean`).
+  ADR-0002's remove semantics as theorems over the element-scoped shape:
+  `present_addWins` — an add whose tag a concurrent remove did not observe
+  keeps the element present; `present_readd` — after a remove, including one
+  that observed every prior tag, a fresh-tag add makes the element present
+  again (the OR-Set is not a 2P-set); and
+  `not_present_mergeTombstonesAt_of_observed_all` — a remove that observed
+  all of an element's add-tags makes it absent, so a degenerate `Present`
+  that ignored tombstones cannot satisfy the set. Stamp-freshness reliance in
+  the first two is an explicit hypothesis (`st ∉ obs`, `st ∉ removedOf e`),
+  discharged in a live system by the Trusted nonce-uniqueness assumption;
+  effectiveness carries no such hypothesis.
 
 **Residual history** — each was defined and total in the kernel with its
 soundness/completeness proof outstanding; all are now resolved. Three were

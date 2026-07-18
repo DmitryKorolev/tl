@@ -428,7 +428,10 @@ def storeTombstoneScopeTests : List Outcome :=
   let idB := "b000000000000000"
   let hlc (i : Nat) : Nat := 2000000000000 * 2 ^ 16 + i
   let stampAt (i : Nat) : Stamp := ⟨hlc i, (ofCrockford? fixedReplica).getD 0, 5000 + i⟩
-  let line (op : WireOp) (i : Nat) : String := craftLine op (hlc i) (5000 + i) fixedReplica
+  -- lines are rendered from the SAME `stampAt` values the observed set uses,
+  -- so the tag the test tombstones cannot drift from the tag the line minted
+  let line (op : WireOp) (i : Nat) : String :=
+    renderLine { v := supportedVersion, op, stamp := stampAt i, actor := some "x" }
   -- the adversarial observed set: the related edge's own tag AND the blocks edge's
   let obs : Tl.Crdt.FinSet Stamp :=
     Tl.Crdt.FinSet.union (Tl.Crdt.FinSet.singleton (stampAt 3))
