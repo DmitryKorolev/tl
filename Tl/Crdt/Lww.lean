@@ -64,6 +64,94 @@ theorem merge_value_cases (R W : Reg V) :
     · exact Or.inl (congrArg (Option.map Prod.snd) (congrArg some h))
     · exact Or.inr (congrArg (Option.map Prod.snd) (congrArg some h))
 
+/-- Merging a write that no existing entry exceeds installs that write. -/
+theorem merge_write_right {R : Reg V} {st : Stamp} {v : V}
+    (h : ∀ e, R = some e → le e (st, v)) :
+    merge R (write st v) = write st v := by
+  match R with
+  | none => rfl
+  | some e =>
+    show some (tmax e (st, v)) = some (st, v)
+    unfold tmax
+    rw [if_pos (h e rfl)]
+
+/-- The merged register holds exactly the write `(st, v)` iff one side holds it
+    and neither side exceeds it — the join arbitrates a write's survival
+    exactly. -/
+theorem merge_eq_write_iff (R W : Reg V) (st : Stamp) (v : V) :
+    merge R W = write st v ↔
+      ((R = write st v ∨ W = write st v)
+        ∧ (∀ e, R = some e → le e (st, v))
+        ∧ (∀ e, W = some e → le e (st, v))) := by
+  constructor
+  · intro h
+    match R, W with
+    | none, none =>
+      exact nomatch h
+    | none, some w =>
+      cases Option.some.inj h
+      refine ⟨Or.inr rfl, ⟨fun e he => ?_, fun e he => ?_⟩⟩
+      · exact nomatch he
+      · cases Option.some.inj he
+        exact le_refl _
+    | some r, none =>
+      cases Option.some.inj h
+      refine ⟨Or.inl rfl, ⟨fun e he => ?_, fun e he => ?_⟩⟩
+      · cases Option.some.inj he
+        exact le_refl _
+      · exact nomatch he
+    | some r, some w =>
+      have hm : tmax r w = (st, v) := Option.some.inj h
+      have hler : le r (st, v) := by rw [← hm]; exact le_tmax_left r w
+      have hlew : le w (st, v) := by rw [← hm]; exact le_tmax_right r w
+      have hside : r = (st, v) ∨ w = (st, v) := by
+        rcases tmax_eq r w with he | he
+        · rw [he] at hm
+          exact Or.inl hm
+        · rw [he] at hm
+          exact Or.inr hm
+      refine ⟨?_, ⟨fun e he => ?_, fun e he => ?_⟩⟩
+      · rcases hside with he | he
+        · exact Or.inl (congrArg some he)
+        · exact Or.inr (congrArg some he)
+      · cases Option.some.inj he
+        exact hler
+      · cases Option.some.inj he
+        exact hlew
+  · intro h
+    obtain ⟨hor, hR, hW⟩ := h
+    match R, W with
+    | none, none =>
+      rcases hor with h' | h' <;>
+        exact nomatch h'
+    | none, some w =>
+      have hw : w = (st, v) := by
+        rcases hor with h' | h'
+        · exact nomatch h'
+        · exact Option.some.inj h'
+      cases hw
+      rfl
+    | some r, none =>
+      have hr : r = (st, v) := by
+        rcases hor with h' | h'
+        · exact Option.some.inj h'
+        · exact nomatch h'
+      cases hr
+      rfl
+    | some r, some w =>
+      show some (tmax r w) = some (st, v)
+      have h1 : le r (st, v) := hR r rfl
+      have h2 : le w (st, v) := hW w rfl
+      rcases hor with h' | h'
+      · cases Option.some.inj h'
+        unfold tmax
+        by_cases hc : le (st, v) w
+        · rw [if_pos hc, le_antisymm h2 hc]
+        · rw [if_neg hc]
+      · cases Option.some.inj h'
+        unfold tmax
+        rw [if_pos h1]
+
 end Reg
 
 /-- The per-key-LWW metadata map (ADR-0002): a map of registers, its join the

@@ -32,16 +32,33 @@ theorem setFields_issueData_ne (s : State) (i : IssueId) (st : Stamp) (w : Scala
       IssueData.empty = (s.data.find k).getD IssueData.empty
   rw [AMap.find_merge, AMap.find_singleton, if_neg hk, optCombine_none_right]
 
+/-- A `setFields i` sets each of `i`'s registers to the merge of the old
+    register and the written value — stated once for any register projection
+    that distributes over `IssueData.merge` (every field of the fieldwise merge
+    does, by `rfl`), so per-register instances need no per-field proof clone. -/
+theorem setFields_reg_i (s : State) (i : IssueId) (st : Stamp) (w : ScalarWrites)
+    {V : Type} [TotalOrd V] (f : IssueData → Reg V)
+    (hmerge : ∀ a b, f (IssueData.merge a b) = Reg.merge (f a) (f b))
+    (hempty : f IssueData.empty = none) :
+    f ((apply s (Op.setFields i st w)).issueData i)
+      = Reg.merge (f (s.issueData i)) (f (Op.scalarData st w)) := by
+  show f (((AMap.merge IssueData.merge s.data (AMap.singleton i (Op.scalarData st w))).find i).getD
+      IssueData.empty)
+    = Reg.merge (f ((s.data.find i).getD IssueData.empty)) (f (Op.scalarData st w))
+  rw [AMap.find_merge, AMap.find_singleton, if_pos rfl]
+  cases s.data.find i with
+  | none =>
+    rw [Option.getD_none, hempty, Reg.merge_none_left]
+    rfl
+  | some d0 =>
+    exact hmerge d0 (Op.scalarData st w)
+
 /-- A `setFields i` sets `i`'s status register to the merge of the old register and
     the written value. -/
 theorem setFields_status_i (s : State) (i : IssueId) (st : Stamp) (w : ScalarWrites) :
     ((apply s (Op.setFields i st w)).issueData i).status
-      = Reg.merge (s.issueData i).status (Op.scalarData st w).status := by
-  show (((AMap.merge IssueData.merge s.data (AMap.singleton i (Op.scalarData st w))).find i).getD
-      IssueData.empty).status
-    = Reg.merge ((s.data.find i).getD IssueData.empty).status (Op.scalarData st w).status
-  rw [AMap.find_merge, AMap.find_singleton, if_pos rfl]
-  cases s.data.find i <;> rfl
+      = Reg.merge (s.issueData i).status (Op.scalarData st w).status :=
+  setFields_reg_i s i st w (fun d => d.status) (fun _ _ => rfl) rfl
 
 /-! ## Status monotonicity under cancel -/
 

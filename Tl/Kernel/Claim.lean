@@ -78,19 +78,15 @@ theorem ClaimPartial.not_won {d : IssueData} {st : Stamp} {actor : String}
 
 /-! ## The claim delta on the issue's registers
 
-`setFields_status_i` (CloseMono) gives the status leg; the assignee leg is its
-mirror. -/
+`setFields_reg_i` (CloseMono) gives any register leg; `setFields_status_i` is
+its status instance, and the assignee instance is here. -/
 
 /-- A `setFields i` sets `i`'s assignee register to the merge of the old
-    register and the written value (the `setFields_status_i` mirror). -/
+    register and the written value (the `setFields_reg_i` assignee instance). -/
 theorem setFields_assignee_i (s : State) (i : IssueId) (st : Stamp) (w : ScalarWrites) :
     ((apply s (Op.setFields i st w)).issueData i).assignee
-      = Reg.merge (s.issueData i).assignee (Op.scalarData st w).assignee := by
-  show (((AMap.merge IssueData.merge s.data (AMap.singleton i (Op.scalarData st w))).find i).getD
-      IssueData.empty).assignee
-    = Reg.merge ((s.data.find i).getD IssueData.empty).assignee (Op.scalarData st w).assignee
-  rw [AMap.find_merge, AMap.find_singleton, if_pos rfl]
-  cases s.data.find i <;> rfl
+      = Reg.merge (s.issueData i).assignee (Op.scalarData st w).assignee :=
+  setFields_reg_i s i st w (fun d => d.assignee) (fun _ _ => rfl) rfl
 
 /-- The claim delta's status leg is the claim's own stamped write. -/
 theorem claim_scalarData_status (st : Stamp) (actor : String) :
@@ -99,17 +95,6 @@ theorem claim_scalarData_status (st : Stamp) (actor : String) :
 /-- The claim delta's assignee leg is the claim's own stamped write. -/
 theorem claim_scalarData_assignee (st : Stamp) (actor : String) :
     (Op.scalarData st (claimWrites actor)).assignee = Reg.write st (some actor) := rfl
-
-/-- Merging a write that no existing entry exceeds installs that write. -/
-theorem reg_merge_write_right {V : Type _} [TotalOrd V] {R : Reg V} {st : Stamp} {v : V}
-    (h : ∀ e, R = some e → le e (st, v)) :
-    Reg.merge R (Reg.write st v) = Reg.write st v := by
-  match R with
-  | none => rfl
-  | some e =>
-    show some (tmax e (st, v)) = some (st, v)
-    unfold tmax
-    rw [if_pos (h e rfl)]
 
 /-- Establishment: folding the claim op wins when its stamp strictly dominates
     every existing entry of both registers — the fresh-write case (the HLC
@@ -121,89 +106,15 @@ theorem claimWon_apply_of_fresh (s : State) (i : IssueId) (st : Stamp) (actor : 
   constructor
   · show ((apply s (Op.setFields i st (claimWrites actor))).issueData i).status = _
     rw [setFields_status_i, claim_scalarData_status]
-    exact reg_merge_write_right (fun e he => Or.inl (hs e he))
+    exact Reg.merge_write_right (fun e he => Or.inl (hs e he))
   · show ((apply s (Op.setFields i st (claimWrites actor))).issueData i).assignee = _
     rw [setFields_assignee_i, claim_scalarData_assignee]
-    exact reg_merge_write_right (fun e he => Or.inl (ha e he))
+    exact Reg.merge_write_right (fun e he => Or.inl (ha e he))
 
-/-! ## Merge-exactness -/
+/-! ## Merge-exactness
 
-/-- The merged register holds exactly the write `(st, v)` iff one side holds it
-    and neither side exceeds it — the join arbitrates a write's survival
-    exactly. -/
-theorem reg_merge_eq_write_iff {V : Type _} [TotalOrd V] (R W : Reg V) (st : Stamp) (v : V) :
-    Reg.merge R W = Reg.write st v ↔
-      ((R = Reg.write st v ∨ W = Reg.write st v)
-        ∧ (∀ e, R = some e → le e (st, v))
-        ∧ (∀ e, W = some e → le e (st, v))) := by
-  constructor
-  · intro h
-    match R, W with
-    | none, none =>
-      exact nomatch h
-    | none, some w =>
-      cases Option.some.inj h
-      refine ⟨Or.inr rfl, ⟨fun e he => ?_, fun e he => ?_⟩⟩
-      · exact nomatch he
-      · cases Option.some.inj he
-        exact le_refl _
-    | some r, none =>
-      cases Option.some.inj h
-      refine ⟨Or.inl rfl, ⟨fun e he => ?_, fun e he => ?_⟩⟩
-      · cases Option.some.inj he
-        exact le_refl _
-      · exact nomatch he
-    | some r, some w =>
-      have hm : tmax r w = (st, v) := Option.some.inj h
-      have hler : le r (st, v) := by rw [← hm]; exact le_tmax_left r w
-      have hlew : le w (st, v) := by rw [← hm]; exact le_tmax_right r w
-      have hside : r = (st, v) ∨ w = (st, v) := by
-        rcases tmax_eq r w with he | he
-        · rw [he] at hm
-          exact Or.inl hm
-        · rw [he] at hm
-          exact Or.inr hm
-      refine ⟨?_, ⟨fun e he => ?_, fun e he => ?_⟩⟩
-      · rcases hside with he | he
-        · exact Or.inl (congrArg some he)
-        · exact Or.inr (congrArg some he)
-      · cases Option.some.inj he
-        exact hler
-      · cases Option.some.inj he
-        exact hlew
-  · intro h
-    obtain ⟨hor, hR, hW⟩ := h
-    match R, W with
-    | none, none =>
-      rcases hor with h' | h' <;>
-        exact nomatch h'
-    | none, some w =>
-      have hw : w = (st, v) := by
-        rcases hor with h' | h'
-        · exact nomatch h'
-        · exact Option.some.inj h'
-      cases hw
-      rfl
-    | some r, none =>
-      have hr : r = (st, v) := by
-        rcases hor with h' | h'
-        · exact Option.some.inj h'
-        · exact nomatch h'
-      cases hr
-      rfl
-    | some r, some w =>
-      show some (tmax r w) = some (st, v)
-      have h1 : le r (st, v) := hR r rfl
-      have h2 : le w (st, v) := hW w rfl
-      rcases hor with h' | h'
-      · cases Option.some.inj h'
-        unfold tmax
-        by_cases hc : le (st, v) w
-        · rw [if_pos hc, le_antisymm h2 hc]
-        · rw [if_neg hc]
-      · cases Option.some.inj h'
-        unfold tmax
-        rw [if_pos h1]
+`Reg.merge_eq_write_iff` (Lww) arbitrates a single register; the claim-level
+form conjoins its two instances. -/
 
 /-- Merge-exactness at the claim level: after any merge the claim reads won iff
     its own write is the winning entry of both registers — one side carries
@@ -217,8 +128,8 @@ theorem claimWon_merge_iff (d f : IssueData) (st : Stamp) (actor : String) :
       ∧ ((d.assignee = Reg.write st (some actor) ∨ f.assignee = Reg.write st (some actor))
         ∧ (∀ e, d.assignee = some e → le e (st, some actor))
         ∧ (∀ e, f.assignee = some e → le e (st, some actor))) :=
-  and_congr (reg_merge_eq_write_iff d.status f.status st Status.InProgress)
-    (reg_merge_eq_write_iff d.assignee f.assignee st (some actor))
+  and_congr (Reg.merge_eq_write_iff d.status f.status st Status.InProgress)
+    (Reg.merge_eq_write_iff d.assignee f.assignee st (some actor))
 
 /-- Preservation: a won claim stays won across a merge that brings nothing
     exceeding either of its writes. -/
