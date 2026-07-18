@@ -430,8 +430,9 @@ def cliDepTests : IO (List Outcome) := do
         ((out.human.splitOn "tl dep remove").length > 1
           && (out.human.splitOn "tl parent remove").length > 1) out.human)
     | .error e => pure { name := "dep cycles hint (mixed)", passed := false, msg := e.message })]
-  -- a readiness-only deadlock (the epic rollup-waits on its child, the child
-  -- is blocked by the epic) is mixed-kind by nature: both verbs again
+  -- a mixed-kind readiness deadlock (the epic rollup-waits on its child over
+  -- a parent edge; the child is blocked by the epic over a blocks edge):
+  -- both kinds occur inside the witness, so the hint teaches both verbs
   let rdir ← freshDir
   let re ← mkIssue rdir "R epic"
   let rc ← mkIssue rdir "R child" ["--parent", "tl-" ++ re]
@@ -442,10 +443,35 @@ def cliDepTests : IO (List Outcome) := do
       (fun j => jNat j "count" == some 1
         && (jArr j "cycles").all (fun c => jStr c "kind" == some "readiness")),
      ← (match ← run' ["dep", "cycles", "--dir", rdir] with
-       | .ok out => pure (check "dep cycles hint for a readiness deadlock teaches both verbs"
+       | .ok out => pure (check "dep cycles hint for a mixed readiness deadlock teaches both verbs"
            ((out.human.splitOn "tl dep remove").length > 1
              && (out.human.splitOn "tl parent remove").length > 1) out.human)
        | .error e => pure { name := "dep cycles hint (readiness)", passed := false, msg := e.message })]
+  -- a readiness witness is not always mixed-kind (`precCycles`: pure-blocks or
+  -- mixed): blocks 2-cycles A↔B and B↔C with C closed leave one structural
+  -- witness {A,B,C} but a pure-blocks precedence cycle {A,B} — a distinct node
+  -- set that survives the readiness dedup filter. With zero parent edges in
+  -- the state, the hint must not name the parent verbs
+  let sdir ← freshDir
+  let sa ← mkIssue sdir "SA"
+  let sb ← mkIssue sdir "SB"
+  let sc ← mkIssue sdir "SC"
+  let _ ← run' ["dep", "add", "tl-" ++ sa, "tl-" ++ sb, "--dir", sdir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ sb, "tl-" ++ sa, "--dir", sdir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ sb, "tl-" ++ sc, "--dir", sdir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ sc, "tl-" ++ sb, "--dir", sdir, "--actor", "t"]
+  let _ ← run' ["close", "tl-" ++ sc, "--dir", sdir, "--as", "cancelled", "--actor", "t"]
+  o := o ++
+    [← expectData "a pure-blocks readiness witness survives the dedup filter"
+      ["dep", "cycles", "--dir", sdir]
+      (fun j => (jArr j "cycles").any (fun c => jStr c "kind" == some "readiness")
+        && (jArr j "cycles").any (fun c => jStr c "kind" == some "blocks")
+        && !(jArr j "cycles").any (fun c => jStr c "kind" == some "parent")),
+     ← (match ← run' ["dep", "cycles", "--dir", sdir] with
+       | .ok out => pure (check "dep cycles hint for a pure-blocks readiness witness teaches dep remove only"
+           ((out.human.splitOn "tl dep remove").length > 1
+             && (out.human.splitOn "tl parent").length == 1) out.human)
+       | .error e => pure { name := "dep cycles hint (pure-blocks readiness)", passed := false, msg := e.message })]
   -- dep path (over the proved blocksPath extractor): a chain c blocks d blocks e
   -- (`dep add X Y` makes Y block X, so add d⊣c and e⊣d)
   let c ← mkIssue dir "C"

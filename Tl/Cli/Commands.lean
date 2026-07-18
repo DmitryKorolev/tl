@@ -600,19 +600,30 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
     ++ parentCycles.map (entry "parent")
     ++ readiness.map (entry "readiness")
   -- the repair verb differs by kind: blocks edges are retracted with
-  -- `dep remove`, parent edges with `parent remove`/`parent set`; a readiness
-  -- deadlock is mixed, so it gets both. Teach the verb(s) the witnesses need.
-  let hint :=
-    if parentCycles.isEmpty && readiness.isEmpty then
-      "break each with `tl dep remove`"
-    else if blocksCycles.isEmpty && readiness.isEmpty then
-      "break each with `tl parent remove` (or move a member with `tl parent set`)"
+  -- `dep remove`, parent edges with `parent remove`/`parent set`. A witness's
+  -- label does not determine the kinds involved (a readiness witness is
+  -- pure-blocks or mixed, `precCycles`), so probe which edge kinds actually
+  -- occur between members of a reported witness — one short-circuit pass per
+  -- kind over the hoisted present edges — and name only the verbs for kinds
+  -- that occur. Every prec-wait step is a direct present blocks or parent
+  -- edge inside its SCC (`liveBlockersSucc`/`liveChildrenSucc`), so a
+  -- nonempty witness always probes at least one kind.
+  let human :=
+    if rows.isEmpty then "no cycles"
     else
-      "break blocks edges with `tl dep remove` and parent edges with `tl parent remove` (or `tl parent set`)"
+      let witnesses := blocksCycles ++ parentCycles ++ readiness
+      let inWitness (f t : IssueId) : Bool :=
+        witnesses.any (fun w => w.contains f && w.contains t)
+      let occurs (k : EdgeKind) : Bool :=
+        v.edges.any (fun (f, t, ek) => decide (ek = k) && inWitness f t)
+      let hint :=
+        match occurs EdgeKind.Blocks, occurs EdgeKind.Parent with
+        | true, false => "break each with `tl dep remove`"
+        | false, true => "break each with `tl parent remove` (or move a member with `tl parent set`)"
+        | _, _ => "break blocks edges with `tl dep remove` and parent edges with `tl parent remove` (or `tl parent set`)"
+      s!"{rows.length} cycle(s) — {hint}"
   return { data := listPayload "cycles" rows.length rows
-           human :=
-             if rows.isEmpty then "no cycles"
-             else s!"{rows.length} cycle(s) — {hint}"
+           human
            notes }
 
 /-- The cycle count (structural per kind + the non-duplicate readiness
