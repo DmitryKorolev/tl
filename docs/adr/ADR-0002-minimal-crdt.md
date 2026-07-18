@@ -40,11 +40,15 @@ reuses the same join law:
 
    An OR-Set tags every add with a unique token — which is just the op's
    existing `(hlc, replica, nonce)` envelope identity (canonical string form
-   pinned in ADR-0008), not a separately generated value (ADR-0007/0008) — and a remove tombstones only the tokens
-   it has *observed*, carried in the remove op's `observed` field (the
-   concrete payload schema is in ADR-0008). Concurrent add/remove therefore
-   resolves add-wins: an add the remove never saw survives. This gives
-   `tl create` / `tl dep add` / `tl dep remove` convergent add and remove.
+   pinned in ADR-0008), not a separately generated value (ADR-0007/0008) — and
+   a remove tombstones only the tokens it has *observed*, carried in the remove
+   op's `observed` field and recorded *at the removed element's own key*: the
+   tombstone store is a per-element map mirroring the add-tag map, so a remove
+   is element-scoped by construction and can never affect any other element's
+   presence, whatever its `observed` payload contains (the concrete payload
+   schema is in ADR-0008). Concurrent add/remove therefore resolves add-wins:
+   an add the remove never saw survives. This gives `tl create` / `tl dep add`
+   / `tl dep remove` convergent add and remove.
 
 2. LWW-register (last-writer-wins) for every *scalar field* of an
    issue — status, title, priority, assignee, description, notes, and the

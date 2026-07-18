@@ -157,23 +157,30 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove` delta fixes all of those, so those
   side-channel writes change neither (`effectiveStatus_*`, `ready_*`). The
-  `relate` (`related` `edgeAdd`) case is now proved **unconditionally**
-  (`effectiveStatus_relate`, `ready_relate`): a second family of congruences keyed
-  on the `Blocks`/`Parent` *views* (`childrenOf`/`blockersOf`/`dependentsOf`) rather
-  than full `edges` equality (`*_congr_view`), discharged by an OR-Set add/key-filter
-  workhorse (`OrSet.presentElements_mergeAdd_filter`) showing that adding a `Related`
-  element is invisible to any `Blocks`/`Parent` filter. The `unrelate` (`edgeRemove`)
-  case has its exact in-kernel boundary stated and proved
-  (`effectiveStatus_edgeRemove_of_undisturbed`, `ready_edgeRemove_of_undisturbed`):
-  an `edgeRemove` fixes `ready` iff it leaves those three views fixed — the only
-  residual is *discharging* that for a related removal, which is a tier-3 carried
-  assumption (below), not a kernel obligation. The `actor` case is not a kernel `Op`
-  field at all.
+  `relate` (`related` `edgeAdd`) and `unrelate` (`related` `edgeRemove`) cases
+  are both proved **unconditionally** (`effectiveStatus_relate`/`ready_relate`,
+  `effectiveStatus_unrelate`/`ready_unrelate`): a second family of congruences
+  keyed on the `Blocks`/`Parent` *views* (`childrenOf`/`blockersOf`/
+  `dependentsOf`) rather than full `edges` equality (`*_congr_view`), discharged
+  by a pair of OR-Set key-filter workhorses
+  (`OrSet.presentElements_mergeAdd_filter`,
+  `OrSet.presentElements_mergeTombstonesAt_filter`) showing that an add of a
+  `Related` element — and a tombstone delta keyed at one — is invisible to any
+  `Blocks`/`Parent` filter. The removal side carries no side condition because
+  OR-Set tombstones are *element-scoped* (`removed` is a per-element map
+  mirroring `adds`, and the edge kind is part of the element key): an `unrelate`
+  can only change its own `Related` element's presence, for **any** observed
+  payload — malformed or adversarial included — not just under honest stamp
+  uniqueness. The `actor` case is not a kernel `Op` field at all.
 
 **Residual history** — each was defined and total in the kernel with its
-soundness/completeness proof outstanding; all but one are now proved (struck
-through below), leaving a single live tier-3 carried assumption — the `unrelate`
-discharge (Trusted section). None was downgraded to a test (Definition-of-Done #5):
+soundness/completeness proof outstanding; all are now resolved. Three were
+proved as stated (struck through below); the fourth — the `unrelate` frame
+discharge, formerly a live tier-3 carried assumption — was *retired
+structurally* rather than proved in its old form: OR-Set tombstones became
+element-scoped, making `effectiveStatus_unrelate`/`ready_unrelate`
+unconditional theorems with nothing left to assume. None was downgraded to a
+test (Definition-of-Done #5):
 
 - ~~**Ready-queue sortedness (ADR-0004 thm 4).**~~ **Now proved** (`Tl/Kernel/Ranking.lean`).
   Beyond determinism (free — `rankSort` is a pure function), `ready_sorted` shows the
@@ -208,16 +215,6 @@ discharge (Trusted section). None was downgraded to a test (Definition-of-Done #
   completeness with no side condition (the force-closed projection captures the
   epic-rollup ripple a local check missed), and `ready_withClosed_eq_cancel` /
   `mem_unblocks_iff_cancel` ground it in the real `cancelOp` when the close wins LWW.
-- **Frame lemma (`unrelate` discharge only).** The `relate` add case is now fully
-  proved (above), and the `edgeRemove` boundary theorem is proved. What remains is
-  *not* a kernel theorem: an `edgeRemove` tombstones the observed add-tags
-  **globally** (the delta does not see the edge kind — `unrelate (i,j,Related)` and
-  `dep remove (i,j,Blocks)` have the *same* delta), so it preserves the
-  `Blocks`/`Parent` views only when those tags spare every present `Blocks`/`Parent`
-  edge. For a well-formed `unrelate` (obs = that `related` edge's own tags) this
-  follows from add-tag/stamp uniqueness — a **tier-3 carried assumption** (Trusted
-  section), correctly *not* a `sorry`/`axiom` and not a forced theorem.
-
 Reserved (proved when its feature is built). The destructive-GC set, pinned
 with the compaction design (ADR-0008): *fold-preservation* —
 `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable
@@ -247,7 +244,7 @@ serviceable (ADR-0025).
 | CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008) |
 | ref sync transport | **Built + tested** (`Tests/SyncTests.lean`, `Tests/CliTests.lean`): `refs/tl/log` plumbing (read/write, CAS, parent-chaining, byte-faithful non-UTF-8 blob round-trip), the complete-line union merge, the local-first worktree leg (`syncLocal` — publish the own segment with CAS-retry and no churn commit, absorb siblings via atomic rename, never the own segment), and the **read-time refresh** (`refreshFromRef` — an O(1) ref-OID trigger against the `.tl/local/ref-mark` that materializes a sibling's published change before a fold; best-effort and lock-free, degrading on a read-only FS without ever failing the read). Covered branches: no-ref skip, moved-materialize, unchanged-skip, read-only degrade, and a read absorbing a sibling end-to-end; proven with two linked worktrees sharing one ref (0001/0016). The **remote leg** (`syncRemote`, ADR-0001 §5) is also built + tested: remote resolution (`tl.remote`/branch-upstream/`origin`, detached-HEAD), `fetch → union → push` with a merge commit parented on both tips (fast-forward), non-fast-forward rejection detection, retry-once-then-`push-rejected`, and `no-upstream` (reported, not fatal). Covered against a bare remote: push-to-fresh, a second clone pulling, converged no-op, divergence recovery (fetch+union+re-push), the single non-fast-forward `pushRefLog` rejection signal, the retry-exhaustion `push-rejected` *throw* (an injected push that signals non-fast-forward on every attempt drives `reconcileRemote` through both attempts to its fuel-0 arm — the real fetch/union/CAS legs still run — asserting the `push-rejected` code, exit 10, and the "moved during the push … run `tl sync` again" message), and that a hook/policy decline is not misreported as `push-rejected` (`Tests/SyncTests.lean`). **Auto-sync** (ADR-0021) is built + tested: a write verb publishes the own segment into `refs/tl/log` after `transact` when `tl.autosync` is on (best-effort — a publish failure is a non-fatal `notes` entry, never failing the write; off by default, on for a linked worktree at `init`), and every write first absorbs the ref *before* its guards (the pre-transact local absorb, ADR-0016 write-path freshness — a directed write by id is never staler than a read). Covered: off/on/publish-failure-disclosed/no-git, and a directed close finding a sibling-only task (`Tests/CliTests.lean`) |
 | "superseded by …" signal | shell compares the converged winning `assignee` vs this replica's own latest `claim` op (0013); replica-relative, not a kernel property. Covered: a foreign claim at a later HLC supersedes the local one (`Tests/CliTests.lean`) |
-| performance scaling | **Built + tested** (`Tests/PerfTests.lean`): every covered command path (cold batched fold, warm cached materialize, batched rollup, ready queue, cycle-diagnostics SCC machinery, provenance map, sync line-union) is ratio-asserted in CI — ×4 synthetic ops may grow ≤ ×12 (quadratic is ×16), with floors against timer noise. Native `String` equality and order both route through core comparators. The cold fold is near-linear: `Tl.Kernel.foldFast` builds each component map by batched canonical construction (mergeSort + adjacent collapse, O(N log N)) and is proved equal to the per-op `fold` (`foldFast_eq_fold`), so it ships on the cache-miss path with every fold theorem intact; the ready queue merge-sorts cached keys, and the cycle diagnostics run the checked-certificate Tarjan path (near-linear machinery, ratio-asserted on an acyclic fixture *and* a giant-SCC blocks ring; the certificate-accepted branch is itself test-pinned). The former find-per-key quadratic in the OR-Set `presentElements` view scans is fixed (one pass over the entry list, liveness decided in place); the scans stay near-linear on tombstone-light logs, with the per-tag tombstone probe (a sorted-list membership, O(|removed|)) as the remaining unproved cost shape. The one accepted superlinear residual is SCC witness *grouping*, Θ(cyclic-nodes × cycle-components) — zero on healthy graphs, quadratic only when the cyclic set shatters into many components; an explicitly accepted cost compromise per the ADR-0023 discipline, not open work. The full diagnostics command path stays pinned by an explicit absolute-ceiling row (a backstop over that accepted residual) rather than a ratio. The human tree render shares nodes (a multi-parent diamond expands once; later encounters and re-encountered roots are marked; a parent cycle keeps its distinct "↺" marker) — pinned by the diamond, cycle, and shared-root fixtures (`Tests/CliTests.lean`) |
+| performance scaling | **Built + tested** (`Tests/PerfTests.lean`): every covered command path (cold batched fold, warm cached materialize, batched rollup, ready queue, cycle-diagnostics SCC machinery, provenance map, sync line-union) is ratio-asserted in CI — ×4 synthetic ops may grow ≤ ×12 (quadratic is ×16), with floors against timer noise. Native `String` equality and order both route through core comparators. The cold fold is near-linear: `Tl.Kernel.foldFast` builds each component map by batched canonical construction (mergeSort + adjacent collapse, O(N log N)) and is proved equal to the per-op `fold` (`foldFast_eq_fold`), so it ships on the cache-miss path with every fold theorem intact; the ready queue merge-sorts cached keys, and the cycle diagnostics run the checked-certificate Tarjan path (near-linear machinery, ratio-asserted on an acyclic fixture *and* a giant-SCC blocks ring; the certificate-accepted branch is itself test-pinned). The former find-per-key quadratic in the OR-Set `presentElements` view scans is fixed (one pass over the entry list, liveness decided in place); the scans stay near-linear on tombstone-light logs, with the tombstone probe — one find in the per-element tombstone map per entry (O(#removed elements); the empty map for add-only sets like issues) plus a membership test per tag against that element's own tombstone set — as the remaining unproved cost shape. The one accepted superlinear residual is SCC witness *grouping*, Θ(cyclic-nodes × cycle-components) — zero on healthy graphs, quadratic only when the cyclic set shatters into many components; an explicitly accepted cost compromise per the ADR-0023 discipline, not open work. The full diagnostics command path stays pinned by an explicit absolute-ceiling row (a backstop over that accepted residual) rather than a ratio. The human tree render shares nodes (a multi-parent diamond expands once; later encounters and re-encountered roots are marked; a parent cycle keeps its distinct "↺" marker) — pinned by the diamond, cycle, and shared-root fixtures (`Tests/CliTests.lean`) |
 | materialization fold cache | **Built + tested** (`Tests/CacheTests.lean`, 0022): `.tl/local/cache` holds the folded `State` keyed per segment on `(byteLen, checksum(prefix), lineCount, refused, deferredLines)` (the checksum is the non-crypto `ByteArray.hash`, not a security digest); valid ⇒ reads/writes fold only appended suffixes plus newly-admissible skew-deferred lines on top (anchored on the **proved** `fold_append` + `fold_perm`/`fold_eq_of_mem_iff`; `AMap.ofAscList?` re-establishes canonical sortedness on decode, with `ascending_of_sorted` proving an encode is never rejected); anything stale/absent/corrupt/wrong-version rebuilds from the segments, never repairs — including *value* corruption: the file is a non-crypto checksum line (`ByteArray.hash`; the cache is a discardable rot-check, not a security surface — tampering is the segments' trust domain, ADR-0014) over its payload, so a shape-preserving flipped digit rebuilds too. Everything a command discloses (`ops`, refusals, skips, deferrals, HLC maxima, warnings) is recomputed live per invocation — the cache changes how the state is computed, never what is reported. Covered: codec round-trip + one fail-closed row per corrupt-input shape (incl. checksum-caught value flips); every validity branch with the path taken observed directly (a marker poisoned into the cache survives iff the cache was used) — unchanged/append/new-segment/shrink/same-length-rewrite/suffix-refusal/refused-at-snapshot/deferral-admission/backwards-clock/skew-off; a seeded property pinning `materializeCached ≡ materialize` across random prefix splits and `now` advances; file lifecycle (transact warms it, corrupt caches heal on persisted reads, doctor's `persist := false` mutates nothing, `--skip-bad` bypasses, symlinked cache names refused on read and replaced—not followed—on write) |
 
 ## Trusted (carried assumptions)
@@ -263,7 +260,7 @@ defect is closed);
 the deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
-SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness, which is what lets a well-formed `unrelate` tombstone only its own `related` edge and so discharges the `edgeRemove` frame boundary (`ready_edgeRemove_of_undisturbed`) for a related removal; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007) — and the read-time skew window (ADR-0007) rests on this same system-clock assumption for its *timeliness* (how promptly a future-dated foreign op becomes visible), but **not** for convergence, which is clock-independent: deferral is monotone in `now`, so every replica converges as its clock advances regardless of the clock's accuracy;
+SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness: issue-id derivation hashes the stamp, and add-wins *distinctness* (two concurrent adds of one element staying distinct live tags) rests on it (`Tl/Crdt/OrSet.lean`); it no longer backs any frame lemma — the `unrelate` case is proved unconditionally now that tombstones are element-scoped; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007) — and the read-time skew window (ADR-0007) rests on this same system-clock assumption for its *timeliness* (how promptly a future-dated foreign op becomes visible), but **not** for convergence, which is clock-independent: deferral is monotone in `now`, so every replica converges as its clock advances regardless of the clock's accuracy;
 git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
 branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
 moot now that the log lives in its own ref, not the user's commits,

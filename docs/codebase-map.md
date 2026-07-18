@@ -21,7 +21,10 @@ Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
   Lww.lean              --   LWW register; key is the triple (HLC, replica, nonce)
                         --   (ADR-0002/0007; wire encodings ADR-0007/0008 — 16-hex HLC, 13/26-char Crockford);
                         --   lifted pointwise over a key map = the `meta` CRDT
-  OrSet.lean            --   observed-remove set + join laws
+  OrSet.lean            --   observed-remove set + join laws; tombstones are
+                        --   element-scoped (`removed` mirrors `adds` per
+                        --   element), so a remove can never cross elements —
+                        --   the basis of the unconditional unrelate frame lemma
 
 Tl/Kernel/              -- the verified core (no I/O)
   State.lean            --   issues OR-Set, edges OR-Set, per-issue field maps,
@@ -77,7 +80,8 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   component maps by batched construction (O(N log N))
                         --   + the bridge foldFast_eq_fold — equal to fold, so
                         --   every fold theorem transfers (cold path, ADR-0022)
-  Frame.lean            --   frame lemmas: meta/labels/relate move neither ready nor rollup
+  Frame.lean            --   frame lemmas: meta/labels/relate/unrelate move
+                        --   neither ready nor rollup (all unconditional)
   CloseMono.lean        --   close-monotonicity (ADR-0004 thm 7)
   Reach.lean            --   reach⁺ closure; liveness/deadlock + why (thms 5/6/10;
                         --   the kernel's Mathlib zone starts here, ADR-0009)
@@ -401,7 +405,7 @@ table).
 
 | Invariant | Relied on by | Enforced / checked by |
 |---|---|---|
-| `(hlc, replica, nonce)` is a total order | every LWW/OR-Set join (the join is a *function*), issue-id derivation | kernel proof *given* the order; shell mints/validates the triple; nonce-uniqueness is a carried assumption (overview Trusted) — ADR-0002/0007 |
+| `(hlc, replica, nonce)` is a total order | every LWW/OR-Set join (the join is a *function*), issue-id derivation | kernel proof *given* the order; shell mints/validates the triple; nonce-uniqueness is a carried assumption (overview Trusted) governing which write wins and add-wins distinctness only — never join well-definedness, and no longer any frame lemma (element-scoped tombstones made the unrelate case unconditional) — ADR-0002/0007 |
 | Clocks / ids / actor are *data* (kernel reads no clock/RNG/env) | convergence being provable at all (the fold stays deterministic) | kernel has no I/O by type (`State → Op → State`); shell mints and freezes them into ops — ADR-0001 §1 / 0007 / 0013 |
 | Order/duplicate-insensitivity of the fold | git-as-transport, the segment union, the worktree local-leg, at-least-once delivery | ADR-0004 thm 2 (+ thm 8 inflation/idempotent re-delivery) |
 | Dangling `blocks`/`parent` edges are read-time inert | `ready` / `effectiveStatus` / cycle totality; no spurious not-ready | kernel: `Invariant` excludes endpoint-existence; reads treat a nonexistent endpoint as discharged — ADR-0002 / 0003 §5 / 0004 thm 3-4 |
