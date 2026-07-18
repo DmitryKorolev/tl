@@ -267,8 +267,9 @@ carries the same array under the issue's `notes` key. `show` means one issue
 evidence-reading surface; if real journals ever outgrow this, an explicit
 limit flag can be added additively. The issue object's `notes` field thereby
 changes type (string → array of entries): a re-typed field is a breaking
-`--json` change, so it bumps `schemaVersion` to 2 under ADR-0008's 0.x rule —
-disclosed, never silent. Consumers of any other field are unaffected.
+`--json` change, so it bumps `schemaVersion` to 3 under ADR-0008's 0.x rule
+(the claim-outcome enum took 2, ADR-0013) — disclosed, never silent.
+Consumers of any other field are unaffected.
 
 ### Import, and the legacy scalar
 
@@ -364,7 +365,8 @@ stability horizon).
   every OR-Set collection (ADR-0002); the growth story is unchanged
   (ADR-0001/0008).
 - One-time surface bumps, both disclosed: record `v: 2` on the two new op
-  kinds; `--json` `schemaVersion` 2 for the re-typed `notes` field.
+  kinds; `--json` `schemaVersion` 3 for the re-typed `notes` field (the
+  claim-outcome enum took 2, ADR-0013).
 - Doc-corpus staging: vision.md's prose surface (field table, command
   tables, editor prose, exclusions) moves to the journal with this ADR; the
   corpus lines that inventory the *current* scalar code stay accurate until

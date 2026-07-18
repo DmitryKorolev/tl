@@ -72,19 +72,33 @@ rather than emitting a bare "superseded". `show`'s claim block adds two
 refinements: it reads `won` whenever the *actor's current* claim holds —
 `claimWonB` at the winning assignee stamp — so the same actor's re-claim
 after a reopen (from any replica) is not misreported as a loss; and it reads
-`ended` (not `superseded`) when the claim no longer holds but nobody took the
-assignee (its winning entry is still the claimant's value, or a clear the
-claimant wrote — a reopen) *and* the winning status write's envelope `actor`
-is the claimant — the claim ended by the claimant's own close or reopen,
-history rather than a lost race. The actor test is envelope provenance, not
-authentication (ADR-0014): fine for a display classifier, never a guard; an
-origin op absent from the loaded set classifies conservatively as
-`superseded`. Two consequences pin the honesty of `ended`: an interleaved
-foreign claim buried under the claimant's own later close stays `superseded`
-(the assignee winner is not the claimant — the lost race is never masked),
-and on a shared replica another actor's close of your claim is `superseded`,
-not your history (the envelope actor distinguishes actors sharing one
-replica). Which claim is "this replica's latest" stays an I/O-shell
+`ended` (not `superseded`) when this replica's own claim ran its course by the
+claimant's own successor write with **no lost race hidden underneath**. Three
+conditions, all checked only on the not-won path: (a) *no contest* — no
+foreign `claim` op on this issue is stamped above the surfaced own claim; (b)
+the winning *status* write is the claimant's own; (c) the *assignee* winner is
+the claimant's value, or a clear the claimant authored (a reopen). Condition
+(a) is the crux, and it is why a register winner alone is insufficient: a
+register cannot carry contest history, because the claimant's own later close
+**or reopen** buries the losing foreign claim's stamp — a close leaves the
+foreign assignee winner visible (so (c) would already fail), but a reopen
+*clears* the assignee to `(t, none)` authored by the claimant (so (c) passes
+and would mask the loss). The classifier therefore scans the op log directly
+for a burying foreign claim rather than trusting the register winners. A
+foreign op is one whose envelope `actor` differs from the claimant, or — on
+the ADR-0008 lenient actor-less decode — whose `replica` differs from this
+one. Authorship everywhere is envelope provenance, not authentication
+(ADR-0014): the envelope `actor` when the origin op carries one, the
+replica-id proxy (`replica == own`) on a *present* actor-less origin, and a
+conservative `superseded` when the origin op is *absent* (compaction). Three
+consequences pin the honesty of `ended`: an interleaved foreign claim buried
+under the claimant's own later close **or reopen** stays `superseded` (the
+contest scan, condition (a), never masks a lost race either way); on a shared
+replica another actor's close of your claim is `superseded`, not your history
+(the envelope `actor`, condition (b), distinguishes actors sharing one
+replica); and an actor-less own close still reads `ended` (the replica-id
+proxy authorship — the pre-fix envelope-actor-only test wrongly read it as a
+loss). Which claim is "this replica's latest" stays an I/O-shell
 concern: the converged state alone cannot tell a replica that *its* actor
 claimed and lost, because that fact is replica-relative, not a property of
 the merged state. The block appears on **every** `tl show`, decoupled from

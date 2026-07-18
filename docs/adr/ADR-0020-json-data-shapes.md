@@ -19,6 +19,9 @@ revision *between releases*; iterating a shape **before the first release/tag**
 (no consumer ever saw the prior shape) is not such a break and needs no bump —
 e.g. `tl log`'s `cursor` settling from a bare string to the `{since, until}`
 object (ADR-0025) happened entirely pre-release within `schemaVersion: 1`.
+The first post-baseline bump is `schemaVersion: 2` — `show`'s `claim.outcome`
+enum (ADR-0013/0008 §ledger); the examples below show the current envelope at
+`2`.
 
 ## Decision
 
@@ -64,7 +67,7 @@ object (ADR-0025) happened entirely pre-release within `schemaVersion: 1`.
 edge flags, `dependencies` reflects the edges just written:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "title": "Write the parser",
   "status": "open", "effectiveStatus": "open", "priority": 2,
   "isEpic": false, "ready": false, "blocked": true, "deferred": false,
@@ -82,7 +85,7 @@ trimmed issue object (the ADR-0003 scalars + derived booleans that drive
 selection) plus two graph counts:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "count": 23,
   "items": [
     { "id": "tl-kz8w2n4jp7e9h3vt", "title": "Design the AST",
@@ -112,7 +115,7 @@ when a recent local claim makes the contention signal meaningful (ADR-0013).
 **`tl claim <id> --json`** — echo the updated issue plus the pinned outcome:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "...": "full issue object — status in_progress, assignee, claimedAt set",
   "claim": { "outcome": "won", "currentAssignee": "carol" }
 } }
@@ -122,7 +125,7 @@ A target that is not in `ready s now` is refused before writing with the
 `not-claimable` error; its pinned context fields:
 
 ```json
-{ "schemaVersion": 1, "ok": false, "error": {
+{ "schemaVersion": 2, "ok": false, "error": {
   "code": "not-claimable",
   "message": "tl-9f3cq7rkv2m8e4ha is blocked by 1 open issue — run `tl why tl-9f3cq7rkv2m8e4ha`, or claim something from `tl ready`",
   "id": "tl-9f3cq7rkv2m8e4ha",
@@ -140,7 +143,7 @@ transitive set).
 **`tl close <id> --as … --json`** — echo, plus the proved freed set:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "...": "full issue object — status done|cancelled, closeResolution, closedAt set",
   "unblocked": ["tl-9f3cq7rkv2m8e4ha"]
 } }
@@ -177,7 +180,7 @@ orientation (`from` blocks `to`; for `parent`, `from` is the parent —
 ADR-0003):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "type": "blocks", "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
   "status": "added"
 } }
@@ -192,7 +195,7 @@ undirected (canonicalized to the sorted endpoint pair), so `relate A B` and
 `relate B A` write the same edge:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "type": "related", "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
   "status": "added"
 } }
@@ -208,7 +211,7 @@ issues; all four fields always present, `path` the consecutive `blocks` chain
 from `A` to `B` inclusive, empty exactly when `found` is `false`:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "from": "tl-kz8w2n4jp7e9h3vt", "to": "tl-9f3cq7rkv2m8e4ha",
   "path": ["tl-kz8w2n4jp7e9h3vt", "tl-0dd3p1cqv2m8e4ha", "tl-9f3cq7rkv2m8e4ha"],
   "found": true
@@ -219,7 +222,7 @@ from `A` to `B` inclusive, empty exactly when `found` is `false`:
 `{count, items}` discipline:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "count": 2,
   "items": [
     { "id": "tl-kz8w2n4jp7e9h3vt", "title": "Design the AST", "status": "open", "weight": 3 },
@@ -242,7 +245,7 @@ courtesy *replace* (drop the child's other parent edges, add the target);
 `replaced` lists the tombstoned parents (`status` ∈ `set` / `noop`):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "parent": "tl-kz8w2n4jp7e9h3vt", "...": "…",
   "reparent": { "status": "set", "replaced": ["tl-0dd3p1cqv2m8e4ha"] }
 } }
@@ -258,7 +261,7 @@ relationship ack (`status` ∈ `added` / `removed` / `noop`; an add of a present
 label or a remove of an absent one is the idempotent `noop`):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "type": "label", "id": "tl-kz8w2n4jp7e9h3vt", "label": "feature", "status": "added"
 } }
 ```
@@ -267,7 +270,7 @@ label or a remove of an absent one is the idempotent `noop`):
 many issues carry it, sorted by name; `count` is the number of distinct labels.
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "count": 2, "labels": [ { "label": "feature", "count": 3 }, { "label": "parser", "count": 1 } ]
 } }
 ```
@@ -280,7 +283,7 @@ many issues carry it, sorted by name; `count` is the number of distinct labels.
 key, not an edge) with the relationship ack's `status` discipline:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "key": "owner", "value": "carol", "status": "set"
 } }
 ```
@@ -296,8 +299,8 @@ is absent (the pinned `|null` field — a missing key is an answer, not an
 error). Keyless: every value-bearing key on the issue, key-ascending:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "key": "owner", "value": "carol" } }
-{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 1, "meta": [ { "key": "owner", "value": "carol" } ] } }
+{ "schemaVersion": 2, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "key": "owner", "value": "carol" } }
+{ "schemaVersion": 2, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 1, "meta": [ { "key": "owner", "value": "carol" } ] } }
 ```
 
 **`tl meta list [<id>] --json`** — the key vocabulary. With an id: that
@@ -306,8 +309,8 @@ vocabulary in the `label list` shape — key-sorted rows, per-row `count` = how
 many issues carry the key:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 2, "keys": ["area", "owner"] } }
-{ "schemaVersion": 1, "ok": true, "data": { "count": 2, "keys": [ { "key": "area", "count": 3 }, { "key": "owner", "count": 1 } ] } }
+{ "schemaVersion": 2, "ok": true, "data": { "id": "tl-9f3cq7rkv2m8e4ha", "count": 2, "keys": ["area", "owner"] } }
+{ "schemaVersion": 2, "ok": true, "data": { "count": 2, "keys": [ { "key": "area", "count": 3 }, { "key": "owner", "count": 1 } ] } }
 ```
 
 (The two forms share the `keys` name with different element shapes — a bare
@@ -319,7 +322,7 @@ of `id` discriminates.)
 enough context to act on each:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha", "ready": false,
   "status": "open", "isEpic": false,
   "blockedBy": [
@@ -337,7 +340,7 @@ enough context to act on each:
 writing anything. `freed` may be empty; `count` = its length:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "id": "tl-9f3cq7rkv2m8e4ha",
   "count": 1,
   "freed": [
@@ -356,7 +359,7 @@ kernel's `unblocks` (ADR-0004 thm 10) — the same set `close` then echoes as
 thm 6), one entry per witness:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "count": 1,
   "cycles": [
     { "kind": "blocks", "issues": ["tl-9f3cq7rkv2m8e4ha", "tl-kz8w2n4jp7e9h3vt"] }
@@ -372,7 +375,7 @@ still exits `0` with `ok: true` (the command succeeded; the findings are its
 answer — pinned here so agents and CI branch on content, not exit code):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "healthy": false,
   "checks": [
     { "name": "replica", "status": "ok", "replica": "chp14mvsxr027" },
@@ -392,8 +395,8 @@ diagnostics, stale claims); checks are added additively.
 **`tl init --json`** / **`tl version --json`**:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": { "root": ".tl", "replica": "chp14mvsxr027", "created": true } }
-{ "schemaVersion": 1, "ok": true, "data": { "version": "0.1.0", "logFormat": 1 } }
+{ "schemaVersion": 2, "ok": true, "data": { "root": ".tl", "replica": "chp14mvsxr027", "created": true } }
+{ "schemaVersion": 2, "ok": true, "data": { "version": "0.1.0", "logFormat": 1 } }
 ```
 
 (`"created": false` on an idempotent re-run. The ADR-0006 build-provenance
@@ -406,7 +409,7 @@ single-command/group filter share one shape (an agent parses
 `commands`/`globalFlags` either way):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "commands": [
     { "command": "close", "positionals": "<id>",
       "summary": "finish an issue; any closed status discharges its blockers",
@@ -430,7 +433,7 @@ omit one it accepts — drift is structurally impossible, not merely tested.
 **`tl stats --json`** — board counts (a pure projection):
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "total": 23, "open": 16, "openEpics": 2, "openTasks": 14, "inProgress": 1,
   "done": 6, "cancelled": 0, "ready": 10, "blocked": 8, "deferred": 0,
   "cycles": 0 } }
@@ -468,7 +471,7 @@ are each delivered exactly once on the forward feed. A malformed cursor is a
 `--limit`); a cursor is scoped to the `<id>` filter it was produced under.
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "count": 41,
   "entries": [
     { "timestamp": "2026-06-11T01:27:49.277Z", "op": "close",
@@ -486,7 +489,7 @@ both endpoints for edge ops — the same set `tl log <id>` filters on).
 fail-closed batch wrote. All five fields always present:
 
 ```json
-{ "schemaVersion": 1, "ok": true, "data": {
+{ "schemaVersion": 2, "ok": true, "data": {
   "issues": 3, "ops": 15,
   "replica": "chp14mvsxr027", "source": "github",
   "disclosures": []
