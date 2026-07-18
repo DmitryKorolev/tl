@@ -251,7 +251,7 @@ def perfTests : IO (List Outcome) := do
       { dirs := ⟨"", ".tl"⟩, loaded, now := synthNow, replica := none,
         rollup, present, edges, pedges := pe, prov := provenanceMap loaded.ops,
         idx := Tl.Cli.ViewIndex.of s.data rollup present edges pe
-                 (provenanceMap loaded.ops) s.edges.adds.toList }
+                 (provenanceMap loaded.ops) s.edges.adds.toList s.edges.removed.toList }
     let row ← bench 1200 (fun _ =>
       present.foldl (fun acc i =>
         acc + (v.issueData i).priorityOf.val + (v.effStatus i).toNat

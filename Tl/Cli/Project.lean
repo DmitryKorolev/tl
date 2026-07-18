@@ -188,6 +188,12 @@ structure ViewIndex where
       candidate; the spec `tagsOf` is an O(E) `AMap.find`, and the tree's
       `isRoot` runs it per visible issue (Θ(N·E)). -/
   edgeTags : Std.HashMap Edge (FinSet Stamp)
+  /-- The edge OR-Set's tombstones, keyed by edge — a hash copy of
+      `state.edges.removed`, so `edgeRemoved[e]?.getD ∅ = state.edges.removedOf e`.
+      The canonical-parent rank is over *live* tags (`maxLiveFold`); the
+      tombstones of an edge are needed alongside its add-tags to drop the
+      superseded ones (ADR-0003 §4 "surviving"). -/
+  edgeRemoved : Std.HashMap Edge (FinSet Stamp)
   /-- Each present id's shortest unambiguous display-prefix length (`shortIdLens`
       over `present`) — `View.shortId` renders `tl-` + that many chars. Display
       only; JSON keeps the full id (ADR-0020). -/
@@ -225,7 +231,7 @@ def shortIdLens (ids : List IssueId) : Std.HashMap IssueId Nat := Id.run do
     spec accessor over those lists. -/
 def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     (present : List IssueId) (edges : List Edge) (pedges : List (IssueId × IssueId))
-    (prov : AMap IssueId Prov) (edgeAdds : List (Edge × FinSet Stamp)) : ViewIndex :=
+    (prov : AMap IssueId Prov) (edgeAdds edgeRemoved : List (Edge × FinSet Stamp)) : ViewIndex :=
   { dataH := Tl.Kernel.hashAssoc data.toList
     rollupH := Tl.Kernel.hashAssoc rollup.toList
     presentH := Tl.Kernel.hashSetOf present
@@ -235,6 +241,7 @@ def ViewIndex.of (data : AMap IssueId IssueData) (rollup : AMap IssueId Status)
     pbc := Tl.Kernel.bucketBy (pedges.map (fun p => (p.2, p.1)))
     provH := Tl.Kernel.hashAssoc prov.toList
     edgeTags := edgeAdds.foldl (fun m p => m.insert p.1 p.2) ∅
+    edgeRemoved := edgeRemoved.foldl (fun m p => m.insert p.1 p.2) ∅
     shortLen := shortIdLens present }
 
 /-- A command's read view. -/
@@ -349,15 +356,31 @@ def View.duplicateOf (v : View) (i : IssueId) : Option IssueId :=
   match ((v.issueData i).metadata.find "duplicate-of").bind (·.value) with
   | some (some val) => if validId val then some val else none
   | _ => none
-/-- The greatest surviving add-tag of an edge, via the edge-tag hash (=
-    `maxTagOf v.state e`: `edgeTags[e]?.getD ∅ = v.state.edges.tagsOf e`, and the
-    fold is identical). O(1) lookup vs the spec's O(E) `AMap.find`. -/
-def View.maxTag (v : View) (e : Edge) : Option Stamp :=
-  (AMap.keys (v.idx.edgeTags[e]?.getD FinSet.empty)).foldl
-    (fun acc st => match acc with
-      | none => some st
-      | some m => some (if TotalOrd.le m st then st else m))
+/-- The greatest *live* (untombstoned) add-tag of an edge, from its observed
+    tags and its tombstones: the `≤`-max over the tags not in `removed`, or
+    `none` when none survives (the edge is not `Present`). This is the corrected
+    canonical-parent LWW key (ADR-0003 §4 "surviving") — the earlier form
+    maximized over *all* observed tags, so an edge kept present only by a low
+    surviving tag could still rank by a tombstoned higher one (reachable via
+    concurrent same-edge adds and a remove that observed only the greater tag).
+    Shared by the spec `maxTagOf` and the hoisted `View.maxTag`, so the two
+    cannot drift. -/
+def maxLiveFold (tags removed : FinSet Stamp) : Option Stamp :=
+  (AMap.keys tags).foldl
+    (fun acc st =>
+      if st ∈ removed then acc
+      else match acc with
+        | none => some st
+        | some m => some (TotalOrd.tmax m st))
     none
+
+/-- The greatest surviving (live) add-tag of an edge, via the edge-tag and
+    edge-tombstone hashes (= `maxTagOf v.state e`: `edgeTags[e]?.getD ∅ =
+    v.state.edges.tagsOf e` and `edgeRemoved[e]?.getD ∅ = v.state.edges.removedOf
+    e`, and the fold is `maxLiveFold`). O(1) lookups vs the spec's O(E)
+    `AMap.find`s. -/
+def View.maxTag (v : View) (e : Edge) : Option Stamp :=
+  maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty) (v.idx.edgeRemoved[e]?.getD FinSet.empty)
 
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
 def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
@@ -393,13 +416,10 @@ def deferredOf (s : State) (now : Nat) (i : IssueId) : Bool :=
 
 /-! ## Edges, canonical parent, labels, meta -/
 
-/-- The greatest surviving add-tag of an edge (for the canonical parent). -/
+/-- The greatest *live* surviving add-tag of an edge (the canonical-parent LWW
+    key) — `maxLiveFold` over the edge's observed tags and its tombstones. -/
 private def maxTagOf (s : State) (e : Edge) : Option Stamp :=
-  (AMap.keys (s.edges.tagsOf e)).foldl
-    (fun acc st => match acc with
-      | none => some st
-      | some m => some (if TotalOrd.le m st then st else m))
-    none
+  maxLiveFold (s.edges.tagsOf e) (s.edges.removedOf e)
 
 /-- The canonical-parent LWW pick: among the candidate parents, the one whose
     greatest surviving `parent` add-tag is `(hlc, replica, nonce)`-greatest

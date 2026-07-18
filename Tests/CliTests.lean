@@ -2536,7 +2536,7 @@ def treeCycleRenderTests : List Outcome :=
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty
-      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList }
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList s.edges.removed.toList }
   -- a 2-cycle: a parent-of b, b parent-of a
   let sCyc := Tl.Kernel.fold [
     Op.create a stA { title := some "A" }, Op.create b stB { title := some "B" },
@@ -2597,17 +2597,64 @@ def canonicalParentTieTests : List Outcome :=
       now := 0, replica := none
       rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
       prov := Tl.Crdt.AMap.empty
-      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList }
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges Tl.Crdt.AMap.empty s.edges.adds.toList s.edges.removed.toList }
   -- a parent edge to an absent child (dangling): parentEdges drops it, so the
   -- fast presence-filter must too
   let sDangling := Tl.Kernel.fold [
     Op.create pOld ⟨10, 7, 1⟩ { title := some "p" },
     Op.edgeAdd (pOld, child, .Parent) ⟨20, 7, 4⟩,
     Op.edgeAdd (pOld, "h000000000000000", .Parent) ⟨21, 7, 5⟩]  -- child & h absent
+  -- the tag-universe fix (ADR-0003 §4 "surviving"): pA's p→kid edge is present
+  -- only via its low live tag `low` (a concurrent re-add at `high` was later
+  -- removed, observing only `high`); pB's edge is present at `mid`, with
+  -- low < mid < high. Ranking by the *live* max makes pB (mid) win; ranking by
+  -- all observed tags would pick pA (its tombstoned high) — the bug this fixes.
+  let pA := "e000000000000000"
+  let pB := "f000000000000000"
+  let kid := "d000000000000000"
+  let low := (⟨20, 7, 4⟩ : Tl.Crdt.Stamp)
+  let mid := (⟨25, 7, 6⟩ : Tl.Crdt.Stamp)
+  let high := (⟨30, 7, 9⟩ : Tl.Crdt.Stamp)
+  let sBug := Tl.Kernel.fold [
+    Op.create pA ⟨10, 7, 1⟩ { title := some "A" },
+    Op.create pB ⟨11, 7, 2⟩ { title := some "B" },
+    Op.create kid ⟨12, 7, 3⟩ { title := some "kid" },
+    Op.edgeAdd (pA, kid, .Parent) low,
+    Op.edgeAdd (pA, kid, .Parent) high,                      -- concurrent same-edge re-add
+    Op.edgeRemove (pA, kid, .Parent) (Tl.Crdt.FinSet.singleton high),  -- observed only `high`
+    Op.edgeAdd (pB, kid, .Parent) mid]
+  let vBug : View :=
+    { dirs := ⟨"", ".tl"⟩
+      loaded := { state := sBug, ops := [], refused := [], skipped := [], deferred := [],
+                  maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      now := 0, replica := none
+      rollup := sBug.effStatusAll, present := sBug.presentIssues, edges := sBug.presentEdges
+      pedges := sBug.parentEdges, prov := Tl.Crdt.AMap.empty
+      idx := ViewIndex.of sBug.data sBug.effStatusAll sBug.presentIssues sBug.presentEdges
+               sBug.parentEdges Tl.Crdt.AMap.empty sBug.edges.adds.toList sBug.edges.removed.toList }
+  -- an explicit parentId tie-break: two surviving parent edges with the *same*
+  -- max live tag (identical stamps — a collision the join tolerates). The pick
+  -- is the greater parentId ("f…" > "e…"), deterministic regardless of
+  -- enumeration order — replacing the old later-enumerated-wins accident.
+  let sameTag := (⟨40, 7, 1⟩ : Tl.Crdt.Stamp)
+  let sTie := Tl.Kernel.fold [
+    Op.create pA ⟨10, 7, 1⟩ { title := some "A" },
+    Op.create pB ⟨11, 7, 2⟩ { title := some "B" },
+    Op.create kid ⟨12, 7, 3⟩ { title := some "kid" },
+    Op.edgeAdd (pA, kid, .Parent) sameTag,
+    Op.edgeAdd (pB, kid, .Parent) sameTag]
   [ check "canonicalParent picks the LWW-greatest surviving parent edge"
       (canonicalParent s child == some pNew),
     check "canonicalParentE agrees with the spec form"
       (canonicalParentE v child == canonicalParent s child),
+    check "canonicalParent ranks by the live tag, not a tombstoned higher one"
+      (canonicalParent sBug kid == some pB),
+    check "the low-surviving-tag edge is still present (add-wins over the observed remove)"
+      (decide (sBug.edges.Present (pA, kid, .Parent))),
+    check "canonicalParentE agrees on the live-tag ranking"
+      (canonicalParentE vBug kid == canonicalParent sBug kid),
+    check "equal live tags break to the greater parent id, not enumeration order"
+      (canonicalParent sTie kid == some pB),
     -- the loadView optimization: parentEdgesFast = State.parentEdges (same list),
     -- so v.pedges stays exactly the spec list every kernel function expects
     check "parentEdgesFast = parentEdges (present children)"
@@ -2664,7 +2711,7 @@ def rowAccessorAgreementTests : List Outcome :=
                   maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
       now, replica := none
       rollup, present := s.presentIssues, edges, pedges, prov
-      idx := ViewIndex.of s.data rollup s.presentIssues edges pedges prov s.edges.adds.toList }
+      idx := ViewIndex.of s.data rollup s.presentIssues edges pedges prov s.edges.adds.toList s.edges.removed.toList }
   s.presentIssues.map (fun i =>
     let dh := v.issueData i
     let ds := s.issueData i
