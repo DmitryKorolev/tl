@@ -26,12 +26,23 @@ forever-contract surface that freezes on first implementation.
 
 Kernel theorems still to decide whether to commit to:
 
-- Cycle-breaking progress / termination [low] — prove that removing one
-  kind-`k` edge between members of any SCC witness `cycles s k` reports
-  strictly reduces the cyclic-SCC set, so the
-  `dep cycles → dep remove` loop reaches an acyclic kind-`k` graph in ≤ (#SCCs)
-  steps. Makes the diagnostic's advice provably *terminating*, not just correct
-  (ADR-0004).
+- Cycle-breaking progress / termination [low] — prove that the
+  `dep cycles → dep remove` repair loop terminates. The provable form:
+  (a) removing a present kind-`k` edge with both endpoints inside a witness
+  `cycles s k` reports strictly decreases the present kind-`k` edge count and
+  cannot create a cycle; (b) SCC refinement — every cyclic SCC after the
+  removal is a subset of a prior one; (c) hence the loop reaches an acyclic
+  kind-`k` graph in ≤ (# present kind-`k` edges with both endpoints inside
+  some reported witness) effective steps, and while any witness is nonempty
+  such an edge exists. Hypotheses, both required: no concurrent kind-`k`
+  `edgeAdd` at all (the OR-Set does not distinguish add from re-add — both
+  are fresh-tag adds), and each remove tombstones every live tag of its edge
+  (the CLI's shape). A per-SCC measure is not provable: removing a chord of a
+  3-cycle leaves `cycles s k` unchanged, the complete digraph on 3 nodes is
+  one SCC needing 3 removals, and a removal can split one cyclic SCC into two
+  (the cyclic-SCC count can increase). The ≤ (#SCCs) bound does hold in the
+  special case where every cyclic SCC is a single simple cycle. Makes the
+  diagnostic's advice provably terminating (ADR-0004).
 - Add-wins / re-add as explicit OR-Set theorems [low] — ADR-0002 states
   add-wins and re-addability in prose; elevate them to stated theorems (an
   unobserved add survives a concurrent remove; a removed element is re-addable with
