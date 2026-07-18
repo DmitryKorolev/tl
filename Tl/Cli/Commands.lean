@@ -484,33 +484,36 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
     - `ended` — not won, and this replica's own claim ran its course by the
       claimant's own successor write, with no lost race hidden underneath.
       Three conditions, all evaluated only on the not-won path:
-      (a) *no contest* — no foreign `claim` op on this issue is stamped above
-      the surfaced own claim (a register winner cannot represent contest
-      history — a claimant's own later close or reopen buries the foreign
-      claim's stamp — so the op log is scanned directly); (b) the winning
-      *status* write is the claimant's own; (c) the *assignee* winner is the
-      claimant's value or a clear the claimant authored (a reopen). Authorship
-      is envelope `actor` when present; on the ADR-0008 lenient actor-less
-      decode of a *present* origin op it falls back to `stamp.replica == own`
-      (the documented provenance proxy — never authentication, ADR-0014); an
-      *absent* origin (compaction) classifies conservatively as `superseded`.
-    - `superseded` — otherwise: a write the claimant did not make took either
-      register, or a foreign claim raced and was later buried — the lost race
-      stays visible under both a burying close and a burying reopen.
+      (a) *no contest* — no claim op on this issue is stamped above the
+      surfaced own claim that the claimant did not author (a register winner
+      cannot represent contest history — a claimant's own later close or reopen
+      buries the foreign claim's stamp — so the op log is scanned directly);
+      (b) the winning *status* write is the claimant's own; (c) the *assignee*
+      winner is the claimant's value or a clear the claimant authored (a
+      reopen). All three read authorship through the single `opAuthoredByOwn`
+      predicate below, so the contest test (a) is exactly its negation.
+    - `superseded` — otherwise: a write the claimant did not make (or cannot be
+      proven to have made) took either register, or a foreign claim raced and
+      was later buried — the lost race stays visible under a burying close, a
+      burying reopen, and an unattributable successor alike.
     `show`-only surface: the `claim` verb's own echo stays binary
     won/superseded (the ratified wire contract).
 
-    `stampAuthoredByOwn ops ownVal actor t`: did the claimant write the op whose
-    stamp is `t`, among `ops`? Envelope `actor` when the origin carries one; on
-    the ADR-0008 lenient actor-less decode of a *present* origin it falls back
-    to the replica-id provenance proxy (`t.replica == ownVal`); an *absent*
-    origin (compaction dropped it) stays conservatively `false`. Provenance,
-    never authentication (ADR-0014) — a display classifier only. -/
-def stampAuthoredByOwn (ops : List ParsedOp) (ownVal : Nat) (actor : String) (t : Stamp) : Bool :=
+    Authorship for this classifier is the envelope `actor` ONLY: an actor-less
+    op is *not* attributable — two parties can share a replica-id (the
+    documented footgun, ADR-0013), so the replica is not proof of authorship —
+    and `ended` asserts "your own successor write, no contention", which must
+    never rest on unprovable authorship. So the unattributable cases (an
+    actor-less op, or an origin absent under compaction) resolve toward
+    `superseded` ("inspect"), never toward a false `ended`. -/
+def opAuthoredByOwn (actor : String) (p : ParsedOp) : Bool := p.actor == some actor
+
+/-- Did the claimant author the op whose stamp is `t`, among `ops`? Envelope
+    actor only (`opAuthoredByOwn`); an absent origin (compaction) is likewise
+    unattributable ⇒ `false`. -/
+def stampAuthoredByOwn (ops : List ParsedOp) (actor : String) (t : Stamp) : Bool :=
   match ops.find? (fun p => decide (p.stamp = t)) with
-  | some p => match p.actor with
-    | some a => a == actor
-    | none => t.replica == ownVal
+  | some p => opAuthoredByOwn actor p
   | none => false
 
 def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option String) := do
@@ -535,25 +538,23 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
     if won then .won
     else
       -- contention analysis — reached only when NOT won (the common path
-      -- returns immediately, so the two scans below never run on it).
+      -- returns immediately, so the scans below never run on it).
       -- A register winner cannot carry contest history: a claimant's own
       -- later close/reopen buries a foreign claim's stamp, so scan the op log
-      -- for any foreign claim above the surfaced own claim. foreign = a
-      -- different envelope actor, or (actor-less) a different replica.
+      -- for any claim above the surfaced own claim the claimant did not author
+      -- — exactly `!opAuthoredByOwn` (the same authorship predicate, negated).
       let contested := v.loaded.ops.any (fun p =>
         match p.op with
         | .claim ci _ =>
           ci == i && decide (Tl.Crdt.TotalOrd.lt ownClaimStamp p.stamp)
-            && (match p.actor with
-                | some a => a != actor
-                | none => p.stamp.replica != ownVal)
+            && !opAuthoredByOwn actor p
         | _ => false)
       let statusOwn := match d.status with
-        | some (t, _) => stampAuthoredByOwn v.loaded.ops ownVal actor t
+        | some (t, _) => stampAuthoredByOwn v.loaded.ops actor t
         | none => false
       let assigneeHeld := match d.assignee with
         | some (_, some a) => a == actor
-        | some (t, none) => stampAuthoredByOwn v.loaded.ops ownVal actor t
+        | some (t, none) => stampAuthoredByOwn v.loaded.ops actor t
         | none => false
       if !contested && statusOwn && assigneeHeld then .ended else .superseded
   some (outcome, current)
@@ -1238,8 +1239,11 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   -- the partial survival (assignee kept, status lost): still `superseded` on
   -- the wire (the outcome enum stays binary), but the human line explains it
   let partialWin := claimPartialB dFinal claimStamp actor
+  -- the echo stays binary won/superseded, but spelled through the same
+  -- `ClaimOutcome.wire` boundary as `show` so the surfaces cannot drift
+  let echoOutcome : ClaimOutcome := if won then .won else .superseded
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
-    [("outcome", Json.str (if won then "won" else "superseded")),
+    [("outcome", Json.str echoOutcome.wire),
      ("currentAssignee", current.elim Json.null Json.str)])
   -- a takeover: --steal won an item that was *in progress* under a different
   -- holder (read from ctx.loaded, the pre-fold state). Gating on the pre-state
