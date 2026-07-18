@@ -4,7 +4,7 @@
 Four suites, per the tested-shell mandate (every branch, in the same change):
 
 * codec — round-trip over a state exercising every `IssueData` field and
-  OR-Set tombstones; fail-closed decode (non-JSON, version bump, truncation,
+  element-scoped OR-Set tombstones; fail-closed decode (non-JSON, version bump, truncation,
   non-ascending canonical lists, duplicate entries, bad stamp tags,
   out-of-range enum/`Fin` payloads each yield `none`, never a wrong state);
 * validity branches — for each stale/valid case the cached result must equal
@@ -126,7 +126,7 @@ private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ 
 /-- A handcrafted, correctly-signed payload with all three state components
     injectable — for shapes the encoder can never produce. -/
 private def handState (issues data edges : String) : String :=
-  sign ("{\"v\":3,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+  sign ("{\"v\":4,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
     ++ ",\"edges\":" ++ edges ++ "}}")
 
 private def handIssues (aaa rrr : String) : String :=
@@ -151,7 +151,7 @@ private def emptyStateJson : String :=
   "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
 
 private def handSeg (segJson : String) : String :=
-  sign ("{\"v\":3,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
+  sign ("{\"v\":4,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
@@ -192,7 +192,9 @@ def cacheCodecTests : List Outcome :=
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
     check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":3}" "\"v\":4}").isNone,
+      (surgery "\"v\":4}" "\"v\":5}").isNone,
+    check "the previous cache version is rejected (forces a rebuild)"
+      (surgery "\"v\":4}" "\"v\":3}").isNone,
     check "a missing version is rejected"
       (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a non-numeric version is rejected"
@@ -200,12 +202,12 @@ def cacheCodecTests : List Outcome :=
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache (sign "{\"v\":3,\"segments\":[]}")).isNone,
+      (decodeCache (sign "{\"v\":4,\"segments\":[]}")).isNone,
     check "a state missing a component is rejected"
-      (decodeCache (sign ("{\"v\":3,\"segments\":[],\"state\":{\"issues\":"
+      (decodeCache (sign ("{\"v\":4,\"segments\":[],\"state\":{\"issues\":"
         ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache (sign ("{\"v\":3,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+      (decodeCache (sign ("{\"v\":4,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
@@ -223,12 +225,26 @@ def cacheCodecTests : List Outcome :=
        | none => false),
     check "a non-ascending canonical list is rejected"
       (decodeCache (handIssues "[[\"b\",[]],[\"a\",[]]]" "[]")).isNone,
-    check "duplicate stamps in a tombstone set are rejected"
-      (decodeCache (handIssues "[]" s!"[\"{validTag}\",\"{validTag}\"]")).isNone,
+    -- the element-scoped tombstone ("r") leg — an AMap-of-FinSet like "a"
+    check "a canonical element-scoped tombstone leg decodes and suppresses its element (control)"
+      (match decodeCache (handIssues s!"[[\"a\",[\"{validTag}\"]]]"
+                                     s!"[[\"a\",[\"{validTag}\"]]]") with
+       | some d => d.state.presentIssues == []
+       | none => false),
+    check "the retired global-tombstone leg (bare stamp strings) fails closed"
+      (decodeCache (handIssues "[]" s!"[\"{validTag}\"]")).isNone,
+    check "duplicate stamps in an element's tombstone set are rejected"
+      (decodeCache (handIssues "[]" s!"[[\"a\",[\"{validTag}\",\"{validTag}\"]]]")).isNone,
+    check "a non-ascending tombstone-element list is rejected"
+      (decodeCache (handIssues "[]" "[[\"b\",[]],[\"a\",[]]]")).isNone,
+    check "a malformed stamp tag in a tombstone set is rejected"
+      (decodeCache (handIssues "[]" "[[\"a\",[\"bogus\"]]]")).isNone,
+    check "a non-array tombstone tag set is rejected"
+      (decodeCache (handIssues "[]" "[[\"a\",5]]")).isNone,
+    check "a non-pair tombstone entry is rejected"
+      (decodeCache (handIssues "[]" "[[\"a\"]]")).isNone,
     check "a malformed stamp tag is rejected"
       (decodeCache (handIssues "[[\"a\",[\"bogus\"]]]" "[]")).isNone,
-    check "a non-string tombstone entry is rejected"
-      (decodeCache (handIssues "[]" "[5]")).isNone,
     check "a non-array tag set is rejected"
       (decodeCache (handIssues "[[\"a\",5]]" "[]")).isNone,
     check "an or-set missing a component is rejected"
@@ -504,7 +520,7 @@ def cacheVersionGuardTests : List Outcome :=
   -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
   -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
-    (3, "7258734232952399290")
+    (4, "9692624437576134300")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
