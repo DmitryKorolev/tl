@@ -21,6 +21,23 @@ open Tl.Kernel
 open Tl.Format
 open Lean (Json)
 
+/-- The `show` claim-block verdict — a closed enum so a new case is a
+    compile error, not a stringly-typed typo (ADR-0013; `schemaVersion` 2).
+    `won`/`superseded` are shared with the `claim` verb's echo; `ended`
+    (a claim ended by the claimant's own later close/reopen) is `show`-only.
+    `wire` is the single JSON/render spelling boundary — both surfaces route
+    through it, so they cannot drift. -/
+inductive ClaimOutcome
+  | won | ended | superseded
+deriving DecidableEq, Repr
+
+/-- The wire/render spelling of a claim outcome (the only place the strings
+    live). -/
+def ClaimOutcome.wire : ClaimOutcome → String
+  | .won => "won"
+  | .ended => "ended"
+  | .superseded => "superseded"
+
 /-! ## Style: the two independent surfaces (ADR-0017 §6) -/
 
 inductive ColorMode | on | off deriving DecidableEq
@@ -210,9 +227,9 @@ private def fence (st : Style) (label : String) (body : String) : List String :=
     into the provenance row so the human surface discloses the same outcome
     the JSON claim block carries (parity); `none` ⇒ no own claim to report.
     Computed by the caller (`claimVerdict`) — one derivation feeds both
-    surfaces. -/
+    surfaces, both spelled by `ClaimOutcome.wire`. -/
 def styledShow (st : Style) (v : View) (i : IssueId)
-    (claimOutcome : Option String := none) : String := Id.run do
+    (claimOutcome : Option ClaimOutcome := none) : String := Id.run do
   let d := v.issueData i
   let ds := displayState v i
   let pr := v.provFor i
@@ -227,7 +244,7 @@ def styledShow (st : Style) (v : View) (i : IssueId)
   match d.assignee.value.getD none with
     | some a => prov := prov ++ [s!"assignee: {sanitizeSingle a}"] | none => pure ()
   match claimOutcome with
-    | some o => prov := prov ++ [s!"claim: {o}"] | none => pure ()
+    | some o => prov := prov ++ [s!"claim: {o.wire}"] | none => pure ()
   match pr.createdAt with | some h => prov := prov ++ [s!"created:  {hlcIso h}"] | none => pure ()
   match pr.updatedAt with | some h => prov := prov ++ [s!"updated:  {hlcIso h}"] | none => pure ()
   match pr.closedAt with | some h => prov := prov ++ [s!"closed:   {hlcIso h}"] | none => pure ()

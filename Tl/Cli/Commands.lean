@@ -481,19 +481,39 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
       `status` but never writes `assignee`). The winner is at least the
       surfaced claim's own folded write, so its stamp is at/after the claim's
       and `claimWonB` pins its value — neither needs a separate check.
-    - `ended` — not won, nobody took the assignee (its winning entry is still
-      this actor's value, or a clear this actor wrote — a reopen), and the
-      winning status write's envelope actor IS the claimant: the claim ended
-      by the claimant's own close/reopen, history rather than a lost race.
-      Actor here is envelope provenance, not authentication (ADR-0013/0014) —
-      fine for a display classifier, never a guard. An origin op absent from
-      the loaded set classifies conservatively as superseded.
+    - `ended` — not won, and this replica's own claim ran its course by the
+      claimant's own successor write, with no lost race hidden underneath.
+      Three conditions, all evaluated only on the not-won path:
+      (a) *no contest* — no foreign `claim` op on this issue is stamped above
+      the surfaced own claim (a register winner cannot represent contest
+      history — a claimant's own later close or reopen buries the foreign
+      claim's stamp — so the op log is scanned directly); (b) the winning
+      *status* write is the claimant's own; (c) the *assignee* winner is the
+      claimant's value or a clear the claimant authored (a reopen). Authorship
+      is envelope `actor` when present; on the ADR-0008 lenient actor-less
+      decode of a *present* origin op it falls back to `stamp.replica == own`
+      (the documented provenance proxy — never authentication, ADR-0014); an
+      *absent* origin (compaction) classifies conservatively as `superseded`.
     - `superseded` — otherwise: a write the claimant did not make took either
-      register (this includes an interleaved foreign claim later buried by the
-      claimant's own close — the lost race stays visible).
+      register, or a foreign claim raced and was later buried — the lost race
+      stays visible under both a burying close and a burying reopen.
     `show`-only surface: the `claim` verb's own echo stays binary
-    won/superseded (the ratified wire contract). -/
-def claimVerdict (v : View) (i : IssueId) : Option (String × Option String) := do
+    won/superseded (the ratified wire contract).
+
+    `stampAuthoredByOwn ops ownVal actor t`: did the claimant write the op whose
+    stamp is `t`, among `ops`? Envelope `actor` when the origin carries one; on
+    the ADR-0008 lenient actor-less decode of a *present* origin it falls back
+    to the replica-id provenance proxy (`t.replica == ownVal`); an *absent*
+    origin (compaction dropped it) stays conservatively `false`. Provenance,
+    never authentication (ADR-0014) — a display classifier only. -/
+def stampAuthoredByOwn (ops : List ParsedOp) (ownVal : Nat) (actor : String) (t : Stamp) : Bool :=
+  match ops.find? (fun p => decide (p.stamp = t)) with
+  | some p => match p.actor with
+    | some a => a == actor
+    | none => t.replica == ownVal
+  | none => false
+
+def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option String) := do
   let own ← v.replica
   let ownVal ← own.toNat?
   let claims := v.loaded.ops.filterMap (fun p =>
@@ -502,27 +522,40 @@ def claimVerdict (v : View) (i : IssueId) : Option (String × Option String) := 
     | _ => none)
   -- latest own claim by the full stamp order (the cross-op comparison rule,
   -- Tl/Cli/Project.lean §provenance)
-  let (_, actor) ← claims.foldl (fun acc c =>
+  let (ownClaimStamp, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
     | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
   let d := v.state.issueData i
   let current := d.assignee.value.getD none
-  -- the envelope actor of the op that made a given winning write — a linear
-  -- probe of the already-loaded ops; `none` when the origin is not among them
-  let actorOfStamp : Stamp → Option String := fun t =>
-    (v.loaded.ops.find? (fun p => decide (p.stamp = t))).bind (·.actor)
   let won := match d.assignee with
     | some (t, _) => claimWonB d t actor
     | none => false
-  let assigneeHeld := match d.assignee with
-    | some (_, some a) => a == actor
-    | some (t, none) => actorOfStamp t == some actor
-    | none => false
-  let statusOwn := match d.status with
-    | some (t, _) => actorOfStamp t == some actor
-    | none => false
-  let outcome := if won then "won" else if assigneeHeld && statusOwn then "ended" else "superseded"
+  let outcome : ClaimOutcome :=
+    if won then .won
+    else
+      -- contention analysis — reached only when NOT won (the common path
+      -- returns immediately, so the two scans below never run on it).
+      -- A register winner cannot carry contest history: a claimant's own
+      -- later close/reopen buries a foreign claim's stamp, so scan the op log
+      -- for any foreign claim above the surfaced own claim. foreign = a
+      -- different envelope actor, or (actor-less) a different replica.
+      let contested := v.loaded.ops.any (fun p =>
+        match p.op with
+        | .claim ci _ =>
+          ci == i && decide (Tl.Crdt.TotalOrd.lt ownClaimStamp p.stamp)
+            && (match p.actor with
+                | some a => a != actor
+                | none => p.stamp.replica != ownVal)
+        | _ => false)
+      let statusOwn := match d.status with
+        | some (t, _) => stampAuthoredByOwn v.loaded.ops ownVal actor t
+        | none => false
+      let assigneeHeld := match d.assignee with
+        | some (_, some a) => a == actor
+        | some (t, none) => stampAuthoredByOwn v.loaded.ops ownVal actor t
+        | none => false
+      if !contested && statusOwn && assigneeHeld then .ended else .superseded
   some (outcome, current)
 
 def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
@@ -533,7 +566,7 @@ def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM 
   let verdict := claimVerdict v i
   let data := match verdict with
     | some (outcome, current) => base.setObjVal! "claim" (Json.mkObj
-        [("outcome", Json.str outcome),
+        [("outcome", Json.str outcome.wire),
          ("currentAssignee", current.elim Json.null Json.str)])
     | none => base
   let r : Style → String := fun st => styledShow st v i (verdict.map (·.1))

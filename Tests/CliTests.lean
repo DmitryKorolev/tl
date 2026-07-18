@@ -1192,6 +1192,22 @@ private def foreignLine (op : WireOp) (hlc : Nat) (stem : String) (actor : Strin
   renderLine { v := supportedVersion, op,
                stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor := some actor }
 
+/-- A canonical line with an explicit HLC and an *optional* envelope actor —
+    the general crafted-segment form (`foreignLine` is the `actor := some _`
+    specialization). `actor := none` exercises the ADR-0008 lenient actor-less
+    decode; using the OWN replica stem crafts an own op at a controlled stamp
+    (deterministic ordering without wall-clock races). -/
+private def craftLine (op : WireOp) (hlc : Nat) (stem : String) (actor : Option String)
+    (nonce : Nat := 1) : String :=
+  renderLine { v := supportedVersion, op,
+               stamp := ⟨hlc, (ofCrockford? stem).getD 0, nonce⟩, actor }
+
+/-- This replica's own id string (the segment stem for crafted own ops). `dir`
+    is the `.tl` state dir. -/
+private def ownReplicaStem (dir : String) : IO String := do
+  let s ← IO.FS.readFile (System.FilePath.mk dir / "local" / "replica")
+  return s.trimAscii.toString
+
 def cliReviewTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- sanitization reaches the payloads (ADR-0014)
@@ -1429,29 +1445,74 @@ GARBAGE
       (fun j => jStr j "status" == some "open"
         && (jGet j "assignee").isNone
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
-  -- ended never MASKS a lost race: carol's claim is outstamped by dave's
-  -- foreign claim, then carol closes with an even higher stamp. Her own close
-  -- is the winning status write, but dave took the assignee in between — the
-  -- verdict stays superseded (an assignee winner that is not the claimant
-  -- blocks the ended reading)
-  let dirMask ← freshDir
-  let tgtMask ← mkIssue dirMask "LostThenSelfClosed"
-  let _ ← run' ["claim", "tl-" ++ tgtMask, "--dir", dirMask, "--actor", "carol"]
-  -- dave's claim lands just a few ms ahead — above carol's claim, below her
-  -- upcoming close (the sleep lets wall-clock pass it, so the close outstamps
-  -- dave's claim and genuinely wins the status LWW)
-  let daveHlc := ((← nowMs) + 20) * 2 ^ 16
-  IO.FS.writeFile (System.FilePath.mk dirMask / "log" / "2zzzzzzzzzzzz.jsonl")
-    (foreignLine (.claim tgtMask "dave") daveHlc "2zzzzzzzzzzzz" "dave" ++ "\n")
-  o := o ++ [← expectData "an interleaved foreign claim reads superseded before the close"
-      ["show", "tl-" ++ tgtMask, "--dir", dirMask]
-      (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
-  IO.sleep 60
-  let _ ← run' ["close", "tl-" ++ tgtMask, "--dir", dirMask, "--as", "done", "--actor", "carol"]
-  o := o ++ [← expectData "carol's later own close does not mask the lost race (still superseded)"
-      ["show", "tl-" ++ tgtMask, "--dir", dirMask]
+  -- The masking cases and the cross-replica cells are built from CRAFTED
+  -- segments at explicit HLCs (deterministic ordering, no wall-clock sleeps):
+  -- own ops go in the own replica's segment (`craftLine … ownStem`), foreign
+  -- ops in a crafted foreign segment. A register winner cannot represent
+  -- contest history, so the classifier scans the op log directly for a
+  -- burying foreign claim.
+  --
+  -- Cell 3 — contested + own CLOSE: carol claims, dave's foreign claim
+  -- outstamps it, then carol's own close outstamps dave. The close is the
+  -- winning status write, but dave's claim (above the surfaced own claim)
+  -- means the race was lost — superseded, not masked as ended.
+  let dirC3 ← freshDir
+  let stem3 ← ownReplicaStem dirC3
+  IO.FS.createDirAll (System.FilePath.mk dirC3 / "log")
+  let b3 ← nowMs
+  let h3 : Nat → Nat := fun k => (b3 + k) * 2 ^ 16
+  let id3 := "aaaabbbbcccc0003"
+  IO.FS.writeFile (System.FilePath.mk dirC3 / "log" / (stem3 ++ ".jsonl"))
+    (craftLine (.create id3 { title := some "LostThenSelfClosed" }) (h3 1000) stem3 (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id3 "carol") (h3 2000) stem3 (some "carol") 2 ++ "\n"
+     ++ craftLine (.close id3 .Done) (h3 4000) stem3 (some "carol") 3 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirC3 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.claim id3 "dave") (h3 3000) "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "contested + own close is not masked (superseded, not ended)"
+      ["show", "tl-" ++ id3, "--dir", dirC3]
       (fun j => jStr j "status" == some "done"
         && jStr j "assignee" == some "dave"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- Cell 4 (the NEW variant the close-based fix could not catch) — contested +
+  -- own REOPEN: the reopen clears the assignee at a higher OWN stamp, so the
+  -- assignee winner becomes (t, none) authored by carol — the clear-arm would
+  -- fire and mask the lost race. The contest scan closes it: dave's claim is
+  -- still above the surfaced own claim → superseded.
+  let dirC4 ← freshDir
+  let stem4 ← ownReplicaStem dirC4
+  IO.FS.createDirAll (System.FilePath.mk dirC4 / "log")
+  let b4 ← nowMs
+  let h4 : Nat → Nat := fun k => (b4 + k) * 2 ^ 16
+  let id4 := "aaaabbbbcccc0004"
+  IO.FS.writeFile (System.FilePath.mk dirC4 / "log" / (stem4 ++ ".jsonl"))
+    (craftLine (.create id4 { title := some "LostThenSelfReopened" }) (h4 1000) stem4 (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id4 "carol") (h4 2000) stem4 (some "carol") 2 ++ "\n"
+     ++ craftLine (.reopen id4) (h4 4000) stem4 (some "carol") 3 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirC4 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.claim id4 "dave") (h4 3000) "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "contested + own reopen (assignee cleared by own) still superseded"
+      ["show", "tl-" ++ id4, "--dir", dirC4]
+      (fun j => jStr j "status" == some "open"
+        && (jGet j "assignee").isNone
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- Cell 5 — foreign reopen-clear: a foreign reopen clears the assignee at a
+  -- higher stamp. The clear-arm asks who authored it: dave, not carol → the
+  -- assignee is not held → superseded.
+  let dirC5 ← freshDir
+  let stem5 ← ownReplicaStem dirC5
+  IO.FS.createDirAll (System.FilePath.mk dirC5 / "log")
+  let b5 ← nowMs
+  let h5 : Nat → Nat := fun k => (b5 + k) * 2 ^ 16
+  let id5 := "aaaabbbbcccc0005"
+  IO.FS.writeFile (System.FilePath.mk dirC5 / "log" / (stem5 ++ ".jsonl"))
+    (craftLine (.create id5 { title := some "ForeignReopenClear" }) (h5 1000) stem5 (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id5 "carol") (h5 2000) stem5 (some "carol") 2 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirC5 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.reopen id5) (h5 3000) "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "foreign reopen-clear of the assignee reads superseded"
+      ["show", "tl-" ++ id5, "--dir", dirC5]
+      (fun j => jStr j "status" == some "open"
+        && (jGet j "assignee").isNone
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- shared replica, two actors: alice claims, bob closes with --actor bob.
   -- The winning status write is this replica's — but not the CLAIMANT's: the
@@ -1466,46 +1527,106 @@ GARBAGE
       (fun j => jStr j "status" == some "done"
         && jStr j "assignee" == some "alice"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
-  -- a re-claim by the SAME actor from another replica: after convergence the
-  -- actor's current claim holds both registers at one (later) stamp, so this
-  -- replica still reads won — its actor holds the issue, just via a newer op
-  let dirRR ← freshDir
-  let tgtRR ← mkIssue dirRR "ReclaimedElsewhere"
-  let _ ← run' ["claim", "tl-" ++ tgtRR, "--dir", dirRR, "--actor", "carol"]
-  -- a few-ms lead (not tens of seconds): the later own close below must be
-  -- able to outstamp the re-claim once wall-clock passes it
-  let baseRR ← nowMs
-  let segRR := foreignLine (.reopen tgtRR) ((baseRR + 10) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
-            ++ foreignLine (.claim tgtRR "carol") ((baseRR + 20) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 2 ++ "\n"
-  IO.FS.writeFile (System.FilePath.mk dirRR / "log" / "2zzzzzzzzzzzz.jsonl") segRR
+  -- Cell 7 — actor-less OWN close: the close carries no envelope actor (the
+  -- ADR-0008 lenient decode reads none). Authorship falls back to the replica
+  -- proxy (own segment ⇒ own) so it is still the claimant's history → ended.
+  -- (The pre-fix `actor == some actor` misread this as superseded.)
+  let dirC7 ← freshDir
+  let stem7 ← ownReplicaStem dirC7
+  IO.FS.createDirAll (System.FilePath.mk dirC7 / "log")
+  let b7 ← nowMs
+  let h7 : Nat → Nat := fun k => (b7 + k) * 2 ^ 16
+  let id7 := "aaaabbbbcccc0007"
+  IO.FS.writeFile (System.FilePath.mk dirC7 / "log" / (stem7 ++ ".jsonl"))
+    (craftLine (.create id7 { title := some "ActorlessOwnClose" }) (h7 1000) stem7 (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id7 "carol") (h7 2000) stem7 (some "carol") 2 ++ "\n"
+     ++ craftLine (.close id7 .Done) (h7 3000) stem7 none 3 ++ "\n")
+  o := o ++ [← expectData "an actor-less own close still reads ended (replica-id provenance proxy)"
+      ["show", "tl-" ++ id7, "--dir", dirC7]
+      (fun j => jStr j "status" == some "done"
+        && jStr j "assignee" == some "carol"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  -- Cell 8 — cross-replica same-actor re-claim: carol claims on this replica,
+  -- then reopens and re-claims from replica B (a foreign segment, same actor).
+  -- After convergence her current claim holds both registers at one stamp →
+  -- won (a same-actor re-claim is never a foreign contest).
+  let dirC8 ← freshDir
+  let stem8 ← ownReplicaStem dirC8
+  IO.FS.createDirAll (System.FilePath.mk dirC8 / "log")
+  let b8 ← nowMs
+  let h8 : Nat → Nat := fun k => (b8 + k) * 2 ^ 16
+  let id8 := "aaaabbbbcccc0008"
+  IO.FS.writeFile (System.FilePath.mk dirC8 / "log" / (stem8 ++ ".jsonl"))
+    (craftLine (.create id8 { title := some "ReclaimedElsewhere" }) (h8 1000) stem8 (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id8 "carol") (h8 2000) stem8 (some "carol") 2 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirC8 / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.reopen id8) (h8 3000) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
+     ++ foreignLine (.claim id8 "carol") (h8 4000) "2zzzzzzzzzzzz" "carol" 2 ++ "\n")
   o := o ++ [← expectData "the same actor's cross-replica re-claim still reads won"
-      ["show", "tl-" ++ tgtRR, "--dir", dirRR]
+      ["show", "tl-" ++ id8, "--dir", dirC8]
       (fun j => jStr j "assignee" == some "carol"
         && jStr j "status" == some "in_progress"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
-  -- ... and the claimant's own close on top of that re-claim ends it: the
-  -- assignee winner is still carol (the re-claim) and the status winner is
-  -- carol's close — ended, by actor, across replicas
-  IO.sleep 60
-  let _ ← run' ["close", "tl-" ++ tgtRR, "--dir", dirRR, "--as", "done", "--actor", "carol"]
+  -- Cell 8b — the claimant's own close over that same-actor re-claim: the
+  -- re-claim (same actor) is not a foreign contest, so the ended reading holds
+  -- across replicas.
+  let dirC8b ← freshDir
+  let stem8b ← ownReplicaStem dirC8b
+  IO.FS.createDirAll (System.FilePath.mk dirC8b / "log")
+  let b8b ← nowMs
+  let h8b : Nat → Nat := fun k => (b8b + k) * 2 ^ 16
+  let id8b := "aaaabbbbccc0008b"
+  IO.FS.writeFile (System.FilePath.mk dirC8b / "log" / (stem8b ++ ".jsonl"))
+    (craftLine (.create id8b { title := some "ReclaimedThenSelfClosed" }) (h8b 1000) stem8b (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id8b "carol") (h8b 2000) stem8b (some "carol") 2 ++ "\n"
+     ++ craftLine (.close id8b .Done) (h8b 5000) stem8b (some "carol") 3 ++ "\n")
+  IO.FS.writeFile (System.FilePath.mk dirC8b / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.reopen id8b) (h8b 3000) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
+     ++ foreignLine (.claim id8b "carol") (h8b 4000) "2zzzzzzzzzzzz" "carol" 2 ++ "\n")
   o := o ++ [← expectData "own close over the same actor's re-claim reads ended"
-      ["show", "tl-" ++ tgtRR, "--dir", dirRR]
+      ["show", "tl-" ++ id8b, "--dir", dirC8b]
       (fun j => jStr j "status" == some "done"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  -- nil case (parity, both directions): an issue with NO own claim history
+  -- renders neither a JSON claim block nor a human `claim:` line.
+  let dirNil ← freshDir
+  let tgtNil ← mkIssue dirNil "NeverClaimed"
+  o := o ++ [← expectData "no claim history ⇒ no JSON claim block"
+      ["show", "tl-" ++ tgtNil, "--dir", dirNil]
+      (fun j => (jGet j "claim").isNone)]
+  match ← run' ["show", "tl-" ++ tgtNil, "--dir", dirNil] with
+  | .error e => o := o ++ [check "no claim history ⇒ no human claim line" false e.message]
+  | .ok out => o := o ++
+      [check "no claim history ⇒ no human 'claim:' line"
+        ((out.human.splitOn "claim:").length == 1) out.human]
+  -- authorship helper (unit — the three branches of stampAuthoredByOwn,
+  -- including the compaction fall-through the CLI cannot reach until
+  -- compaction ships): present-with-matching-actor, present-actor-less on the
+  -- own replica (proxy), present with a foreign actor, and absent origin.
+  let mkOpU : Nat → Nat → Nat → Option String → ParsedOp := fun hlc rep nonce actor =>
+    { v := supportedVersion, op := .close "aaaabbbbccccdddd" .Done, stamp := ⟨hlc, rep, nonce⟩, actor }
+  let ownU := 7
+  let opsU := [mkOpU 100 ownU 1 (some "carol"), mkOpU 200 ownU 2 none, mkOpU 300 5 3 (some "dave")]
+  o := o ++
+    [check "authorship: present with the claimant's actor ⇒ own"
+      (stampAuthoredByOwn opsU ownU "carol" ⟨100, ownU, 1⟩ == true) "",
+     check "authorship: present, actor-less, own replica ⇒ own (proxy)"
+      (stampAuthoredByOwn opsU ownU "carol" ⟨200, ownU, 2⟩ == true) "",
+     check "authorship: present with a foreign actor ⇒ not own"
+      (stampAuthoredByOwn opsU ownU "carol" ⟨300, 5, 3⟩ == false) "",
+     check "authorship: absent origin (compaction) ⇒ conservatively not own"
+      (stampAuthoredByOwn opsU ownU "carol" ⟨999, ownU, 9⟩ == false) ""]
   -- exhaustive enum pin: across the scenario dirs above, the outcome value
   -- set is exactly {won, ended, superseded} — a fourth value or a typo'd
-  -- branch cannot ship silently. (dirRR was just closed: re-derive a won dir.)
-  let dirWon ← freshDir
-  let tgtWon ← mkIssue dirWon "CleanClaim"
-  let _ ← run' ["claim", "tl-" ++ tgtWon, "--dir", dirWon, "--actor", "carol"]
+  -- branch cannot ship silently.
   let mut outcomes : List String := []
-  for (d, t) in [(dirWon, tgtWon), (dirSC, tgtSC), (dirMask, tgtMask), (dirSH, tgtSH), (dirRR, tgtRR)] do
+  for (d, t) in [(dirSC, tgtSC), (dirC3, id3), (dirC7, id7), (dirC8, id8)] do
     match ← run' ["show", "tl-" ++ t, "--dir", d] with
     | .ok out => outcomes := outcomes ++ ((jGet out.data "claim").bind (fun c => jStr c "outcome")).toList
     | .error _ => pure ()
   let allowed := ["won", "ended", "superseded"]
   o := o ++ [check "claim outcome enum is exactly {won, ended, superseded}"
-    (outcomes.length == 5 && outcomes.all allowed.contains && allowed.all outcomes.contains)
+    (outcomes.length == 4 && outcomes.all allowed.contains && allowed.all outcomes.contains)
     (String.intercalate "," outcomes)]
   -- partialClaimMessage rows (unit — reaching the rarer status winners through
   -- the command needs a mid-command concurrent fold): every status wording is
