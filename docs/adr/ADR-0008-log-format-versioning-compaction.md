@@ -138,6 +138,25 @@ any `close`/`reopen` of the issue (absent if none) — backs `list --stale`.
 `createdAt` (the ready-ordering key, ADR-0004) is read from the issue's
 `create` op at fold time.
 
+**Close reporting is value-based (the `close` `--json` block, shape in
+ADR-0020).** `close` lowers to one `setFields` writing `status` and
+`closeResolution` at a single stamp, but — like `claim` — whether it *held* is
+a property of the converged state, not of the write succeeding: `transact` does
+not floor the HLC past a within-window foreign stamp (pure LWW, ADR-0007), so a
+concurrent foreign `close` with a *different* resolution can outstamp the local
+write and leave the issue terminal *as something else*. So the reported outcome
+is derived from the materialized state, not from "the write was appended":
+`won` iff the issue is terminal **and** the winning `closeResolution` is the
+one requested (**and**, for `--as duplicate`, the winning `duplicate-of` names
+the requested canonical); otherwise `superseded`, with the human line naming
+what actually holds. Terminality alone cannot tell the two apart, and a
+"Closed as `<requested>`" line on a `<different>`-resolution win would
+contradict the (truthful) `closeResolution`/`status` in the same payload. This
+mirrors the `claim` outcome (ADR-0003/0013) on the close side. The outcome is a
+*total function of materialized state* (a derived read, never a merge-time
+guard — CLAUDE.md §2), so no kernel predicate is required; the `close` block is
+an **additive** `--json` field (no `schemaVersion` bump).
+
 **`assignee` is claim-only.** Per ADR-0013, the `assignee` field is written
 only by `claim`/`claim --steal` and cleared by `reopen`; neither `create` nor
 `update` may set it (the delta rows above). The versioning status of this

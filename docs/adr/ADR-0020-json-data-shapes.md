@@ -140,18 +140,29 @@ already `in_progress`), `assignee` (current holder), `isEpic: true`,
 `deferUntil`, `blockedBy` (direct unclosed blockers; `why` gives the
 transitive set).
 
-**`tl close <id> --as … --json`** — echo, plus the proved freed set:
+**`tl close <id> --as … --json`** — echo, plus the proved freed set and the
+close outcome:
 
 ```json
 { "schemaVersion": 2, "ok": true, "data": {
   "...": "full issue object — status done|cancelled, closeResolution, closedAt set",
-  "unblocked": ["tl-9f3cq7rkv2m8e4ha"]
+  "unblocked": ["tl-9f3cq7rkv2m8e4ha"],
+  "close": { "outcome": "won", "resolution": "done" }
 } }
 ```
 
 `unblocked` is the kernel's `unblocks` set (ADR-0004 thm 10) — what an agent
 wants in hand immediately after closing. `--cascade` echoes the root epic and
-lists every closed id in an additional `closed: [ids]` array.
+lists every closed id in an additional `closed: [ids]` array. The `close`
+block mirrors `claim`'s `{outcome, currentAssignee}` (the close-side outcome
+contract, ADR-0008 §close reporting): `outcome` is `won` when the issue is
+terminal *as requested*, else `superseded` (a concurrent write took it to a
+different terminal, reopened it, or — for `--as duplicate` — closed it against
+a different canonical); `resolution` is the resolution that actually holds
+(`done`\|`cancelled`\|`duplicate`, or `null` if not terminal), so an agent
+branches on `outcome` and reads the winner without re-deriving it. This is an
+additive field — a consumer reading `unblocked`/`closeResolution`/`status` is
+unaffected — so it did not bump `schemaVersion`.
 
 **`tl update <id> … --json`** — the updated issue (the mutating-verb echo
 convention, exactly as `create`; no additional fields).
