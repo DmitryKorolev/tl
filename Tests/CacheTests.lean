@@ -126,7 +126,7 @@ private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ 
 /-- A handcrafted, correctly-signed payload with all three state components
     injectable — for shapes the encoder can never produce. -/
 private def handState (issues data edges : String) : String :=
-  sign ("{\"v\":4,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+  sign ("{\"v\":5,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
     ++ ",\"edges\":" ++ edges ++ "}}")
 
 private def handIssues (aaa rrr : String) : String :=
@@ -145,6 +145,14 @@ private def issueDataJson (overrides : List (String × String)) : String :=
 private def handData (entry : String) : String :=
   handState (orsetJson "[]" "[]") ("[[\"a\"," ++ entry ++ "]]") (orsetJson "[]" "[]")
 
+/-- A notes journal (ADR-0027) as its cache JSON — the entries OR-Set leg `e`
+    and the tag-keyed payload map leg `p`. -/
+private def journalJson (e p : String) : String := "{\"e\":" ++ e ++ ",\"p\":" ++ p ++ "}"
+
+/-- A hand-crafted issue-data record whose `notes` field is `noteJson`. -/
+private def handNotes (noteJson : String) : String :=
+  handData (issueDataJson [("notes", noteJson)])
+
 private def handEdges (aaa : String) : String :=
   handState (orsetJson "[]" "[]") "[]" (orsetJson aaa "[]")
 
@@ -152,7 +160,7 @@ private def emptyStateJson : String :=
   "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
 
 private def handSeg (segJson : String) : String :=
-  sign ("{\"v\":4,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
+  sign ("{\"v\":5,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
@@ -193,9 +201,9 @@ def cacheCodecTests : List Outcome :=
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
     check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":4}" "\"v\":5}").isNone,
+      (surgery "\"v\":5}" "\"v\":6}").isNone,
     check "the previous cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":4}" "\"v\":3}").isNone,
+      (surgery "\"v\":5}" "\"v\":4}").isNone,
     check "a missing version is rejected"
       (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a non-numeric version is rejected"
@@ -203,12 +211,12 @@ def cacheCodecTests : List Outcome :=
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache (sign "{\"v\":4,\"segments\":[]}")).isNone,
+      (decodeCache (sign "{\"v\":5,\"segments\":[]}")).isNone,
     check "a state missing a component is rejected"
-      (decodeCache (sign ("{\"v\":4,\"segments\":[],\"state\":{\"issues\":"
+      (decodeCache (sign ("{\"v\":5,\"segments\":[],\"state\":{\"issues\":"
         ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache (sign ("{\"v\":4,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+      (decodeCache (sign ("{\"v\":5,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
@@ -278,6 +286,34 @@ def cacheCodecTests : List Outcome :=
       (decodeCache (handData (issueDataJson [("meta", "[[\"k\"]]")]))).isNone,
     check "a non-array meta map is rejected"
       (decodeCache (handData (issueDataJson [("meta", "5")]))).isNone,
+    -- the notes journal (ADR-0027): the two-leg codec, one control + one
+    -- fail-closed row per decoder arm
+    check "a canonical journal with one entry decodes (control)"
+      (match decodeCache (handNotes (journalJson
+          (orsetJson s!"[[\"{validTag}\",[\"{validTag}\"]]]" "[]")
+          s!"[[\"{validTag}\",\{\"h\":\"aaaaaaaaaaaaaaaa\",\"x\":\"body\",\"a\":null}]]")) with
+       | some c => ((c.state.issueData "a").notes.visibleEntries.map (fun (_, pl) => pl.text)) == ["body"]
+       | none => false),
+    check "a journal missing the entries leg is rejected"
+      (decodeCache (handNotes ("{\"p\":[]}"))).isNone,
+    check "a journal missing the payloads leg is rejected"
+      (decodeCache (handNotes ("{\"e\":" ++ orsetJson "[]" "[]" ++ "}"))).isNone,
+    check "a payload missing a field is rejected"
+      (decodeCache (handNotes (journalJson (orsetJson "[]" "[]")
+        s!"[[\"{validTag}\",\{\"h\":\"aaaaaaaaaaaaaaaa\",\"x\":\"body\"}]]"))).isNone,
+    check "a non-string payload text is rejected"
+      (decodeCache (handNotes (journalJson (orsetJson "[]" "[]")
+        s!"[[\"{validTag}\",\{\"h\":\"aaaaaaaaaaaaaaaa\",\"x\":5,\"a\":null}]]"))).isNone,
+    check "a malformed stamp key in the payload map is rejected"
+      (decodeCache (handNotes (journalJson (orsetJson "[]" "[]")
+        "[[\"bogus\",{\"h\":\"aaaaaaaaaaaaaaaa\",\"x\":\"body\",\"a\":null}]]"))).isNone,
+    check "a non-object payload is rejected"
+      (decodeCache (handNotes (journalJson (orsetJson "[]" "[]")
+        s!"[[\"{validTag}\",5]]"))).isNone,
+    check "a non-ascending journal entries leg is rejected"
+      (decodeCache (handNotes (journalJson
+        (orsetJson s!"[[\"{tagOfStamp (mkst 20 2)}\",[]],[\"{tagOfStamp (mkst 10 1)}\",[]]]" "[]")
+        "[]"))).isNone,
     check "a handcrafted edge decodes (control)"
       (decodeCache (handEdges s!"[[[\"a\",\"b\",0],[\"{validTag}\"]]]")).isSome,
     check "an out-of-range edge kind is rejected"
@@ -533,7 +569,7 @@ def cacheVersionGuardTests : List Outcome :=
   -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
   -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
-    (4, "9692624437576134300")
+    (5, "9292294536409594962")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
@@ -559,18 +595,24 @@ def cacheVersionGuardTests : List Outcome :=
       mkLine (.labelRemove idB "backend" (FinSet.singleton (stamp 15 ownStem))) 16 ownStem,
       mkLine (.depRemove (idC, idB, .Blocks) (FinSet.singleton (stamp 9 ownStem))) 17 ownStem,
       mkLine (.unrelate (idA, idB, .Related) (FinSet.singleton (stamp 11 ownStem))) 18 ownStem,
-      mkLine (.close idC .Cancelled) 19 ownStem ]
+      mkLine (.close idC .Cancelled) 19 ownStem,
+      -- the journal (ADR-0027): two note adds, one removed — exercises the
+      -- entries OR-Set (both legs), the tag-keyed payload map, and the
+      -- observed-tag remove at the wire→fold seam
+      mkLine (.noteAdd idA (mintNoteId (stamp 20 ownStem)) "first progress note") 20 ownStem,
+      mkLine (.noteAdd idA (mintNoteId (stamp 21 ownStem)) "second progress note") 21 ownStem,
+      mkLine (.noteRemove idA (mintNoteId (stamp 21 ownStem)) (FinSet.singleton (stamp 21 ownStem))) 22 ownStem ]
   -- forStem segment: a higher-stamped title write wins the LWW on idA.title
   -- (cross-segment merge over the create at idx 0)
   let foreign : List String :=
-    [ mkLine (.update idA { title := some "Alpha-merged" }) 20 forStem ]
+    [ mkLine (.update idA { title := some "Alpha-merged" }) 23 forStem ]
   -- a separate segment whose one line is stamped by ownStem (not newStem): the
   -- per-segment owner check refuses the whole segment, so it folds nothing. A
-  -- regression that accepted it would re-take idA.title at the higher hlc 21 and
+  -- regression that accepted it would re-take idA.title at the higher hlc 24 and
   -- move the digest. (One bad line refuses its segment wholesale, ADR-0001 — so
   -- this sentinel must live alone, not poison the real forStem merge.)
   let refused : List String :=
-    [ craftLine (.update idA { title := some "REFUSED" }) (now0 * 2 ^ 16 + 21) 5021 ownStem ]
+    [ craftLine (.update idA { title := some "REFUSED" }) (now0 * 2 ^ 16 + 24) 5024 ownStem ]
   let st := (materialize
     [segOf ownStem own, segOf forStem foreign, segOf newStem refused]).state
   let live := stateFoldDigest st

@@ -15,6 +15,11 @@
   element-scoped (ADR-0002 — `removed` is a per-element map mirroring `adds`),
   changing both the fold semantics and the codec's OR-Set `"r"` leg (now an
   AMap-of-FinSet like `"a"`), so a v3 cache must rebuild.
+- Amended: 2026-07-18 — `cacheVersion` bumped 4→5: the notes journal (ADR-0027)
+  retyped `IssueData.notes` from a scalar LWW register to a tag-keyed OR-Set +
+  payload map, adding the `noteAdd`/`noteRemove` deltas, so both the fold
+  semantics and the codec's `notes` leg changed (`{"e", "p"}` legs replacing
+  the register). A v4 cache must rebuild.
 
 ## Context
 
