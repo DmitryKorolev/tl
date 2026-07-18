@@ -172,7 +172,7 @@ their payloads join by the unconditional rule pinned with the ordering
 clause below.
 
 One coincidence to state plainly so nobody "fixes" it later: the OR-Set is
-add-wins, but for notes the add-wins/remove-wins distinction collapses. Ids
+add-wins, but for notes the add-wins/remove-wins distinction collapses. Tags
 are unique and never re-added — there is no operation that could re-add a
 removed note's tag — so the journal behaves as a 2P-set (tombstoned forever)
 even though it is built on add-wins machinery. Add-wins governs *re-addable*
@@ -209,7 +209,9 @@ non-guarantee:
   there are no tie-break levels and no distinct-stamps hypothesis. What can
   collide is payload: records sharing one complete triple fold to a single
   entry, and that entry's payload joins by the unconditional lexicographic
-  maximum over the canonical `(text, handle, actor)` byte tuple — a
+  maximum over the canonical `(text, handle, actor)` byte tuple — actor
+  encoded as its canonical JSON token with `null` ordering below every
+  string, strings compared by canonical UTF-8 bytes — a
   semilattice max, the same realization discipline as the LWW value
   tie-break (ADR-0002) and the canonical-parent selection (ADR-0003 §4).
   Under honest writers the rule never fires (one op, one payload); on
@@ -219,10 +221,12 @@ non-guarantee:
 - **Immutability** — there is no note edit in the first release (excluded
   below);
   corrections are new notes. *Holds by absence of any mutating op.*
-- **Frame-safety** — notes drive nothing: `ready`, epic rollup, cycle
-  detection, and every graph behavior never read the journal, like `labels`
-  and `meta` (ADR-0002/0003). *By construction; stated in the overview, with
-  frame lemmas only if near-free.*
+- **Frame-safety** — notes drive no scheduling or graph behavior: `ready`,
+  epic rollup, cycle detection, and every graph behavior never read the
+  journal (ADR-0002/0003). Unlike `labels` and `meta`, the journal *does*
+  feed one projection — `updatedAt`, exactly as pinned above — and nothing
+  else. *By construction; stated in the overview, with frame lemmas only if
+  near-free.*
 - **Provenance, not authentication** — an entry's actor and time are carried
   provenance (ADR-0013), not authenticated facts, and any repository writer
   may remove any note: actor is not an authorization layer (ADR-0014).
@@ -279,9 +283,15 @@ For live logs written before this change, the rule is:
   `create`/`update` payload key, so on a legacy record it routes to the
   ADR-0008 preserve-unknown bag: preserved verbatim on any rewrite, never
   materialized. A journal-capable binary therefore reads a pre-journal log
-  completely and correctly *except* that legacy scalar notes are not
-  displayed — the text stays intact in the log bytes, recoverable by the
-  migration. This is the honest middle ground: folding legacy writes into a
+  completely and correctly *except* on two disclosed counts: legacy scalar
+  notes are not displayed (the text stays intact in the log bytes,
+  recoverable by the migration), and — until the migration runs —
+  `updatedAt` no longer counts a notes-only legacy write (the shipped rule
+  bumps on any `update` op's envelope; the pinned rule counts register
+  stamps and journal add-tags), so an issue whose latest activity was a
+  notes write reads older than the pre-journal binary reported. The
+  migration restores it exactly: the synthetic entry's add-tag carries the
+  winning write's hlc. This is the honest middle ground: folding legacy writes into a
   compatibility register would keep the retired structure alive in the
   kernel, and lowering each historical write to an entry on the fly would
   contradict the migration rule below (overwritten values are history, not
@@ -337,7 +347,7 @@ stability horizon).
 - **No `$EDITOR` pathway for notes.** The editor surface is for re-editing
   mutable documents (title, description); a journal entry is composed once
   and submitted (`-` reads stdin for long text). The vision `edit` surface
-  narrows accordingly when implemented.
+  is narrowed to title/description accordingly.
 - **No secure deletion** (disclosure above).
 
 ## Consequences
@@ -353,10 +363,15 @@ stability horizon).
 - One-time surface bumps, both disclosed: record `v: 2` on the two new op
   kinds; `--json` `schemaVersion` 2 for the re-typed `notes` field.
 - Doc-corpus staging: vision.md's prose surface (field table, command
-  tables, exclusions) moves to the journal with this ADR; its generated
-  grammar block, and the ADR-0003/0008 lines that inventory the *current*
-  scalar code (plus ADR-0018's single-block remark), stay accurate until the
-  implementing change lands and are updated by it in the same change.
+  tables, editor prose, exclusions) moves to the journal with this ADR; the
+  corpus lines that inventory the *current* scalar code stay accurate until
+  the implementing change lands and are updated by it in the same change —
+  vision's generated grammar block, ADR-0002's scalar-register list,
+  ADR-0003's scalar-verb line and JSON-projection field list, ADR-0008's op
+  inventory, `updatedAt` projection rule, and actor-envelope remark ("never
+  affects … the kernel" — actor becomes tag-keyed payload and a join-tuple
+  component here, while convergence and identity stay actor-free),
+  ADR-0017's editor-pathway lines, and ADR-0018's single-block remark.
 - Entry order is stamp order, not causal order: a skewed clock places its
   entries by its own timestamps (within the ADR-0007 skew window's
   admission). That is the same LWW-family posture as every timestamp in tl —
@@ -385,15 +400,16 @@ stability horizon).
   (dep/parent/label); a synonym would suggest a semantic difference that
   does not exist.
 - **`--message`/`-m` text flag** (the preference relayed into the ratifying
-  task). Rejected, with the precedent stated honestly: the grammar does
-  carry one text-payload flag — `create --description` — so a message flag
-  would not be unprecedented; but `--description` is a *secondary* field on
-  a verb whose primary payload (the title) is positional, and every primary
-  payload in the grammar is positional. An entry's text is `note add`'s sole
-  primary payload, so it is positional like `create`'s title, with `-`
-  reading stdin (the `create` body convention). Overriding the relayed
-  preference on grammar-consistency grounds is recorded deliberately;
-  before first release the reversal cost is one grammar row.
+  task). Rejected, with the precedent stated honestly: the grammar already
+  carries text-payload value flags (`create --description`,
+  `update --title`/`--description`), so a message flag would not be
+  unprecedented; but those carry *secondary* fields, and the grammar's one
+  free-text primary payload — `create`'s title — is positional. An entry's
+  text is `note add`'s sole primary payload, so it is positional like
+  `create`'s title, with `-` reading stdin (the `create` body convention).
+  Overriding the relayed preference on grammar-consistency grounds is
+  recorded deliberately; before first release the reversal cost is one
+  grammar row.
 - **The canonical stamp string as the note id.** Rejected above: 57 chars
   with a shared hlc-major prefix defeats prefix ergonomics; the hash handle
   matches issue-id conventions.

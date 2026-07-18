@@ -211,8 +211,9 @@ summary footer + legend and `show`/`stats` layouts; hierarchy, including nested
 epics, renders as a tree (`list` — the default view, `--flat` for rows —
 `why`/`unblocks`, `show`); color and glyphs
 are independent surfaces (`--color` / `--glyphs`; `--plain` = both off;
-`NO_COLOR` honored); and long `description`/`notes` open `$EDITOR` only on
-`create --edit`, a no-title `create`, or `edit`. The machine path is `--json` —
+`NO_COLOR` honored); and a long `description` opens `$EDITOR` only on
+`create --edit`, a no-title `create`, or `edit` (journal entries never do —
+composed once via `note add`, ADR-0027). The machine path is `--json` —
 never colored, never an editor.
 
 ### Minimal by design (deferred, with defaults on record)
