@@ -189,6 +189,92 @@ theorem merge_empty_left (s : OrSet α) : merge empty s = s :=
 theorem merge_empty_right (s : OrSet α) : merge s empty = s :=
   ext (AMap.merge_empty_right _ s.adds) (AMap.merge_empty_right _ s.removed)
 
+/-! ### Merge projections
+
+The per-element reads distribute over the join: a merged state's tag set (and
+tombstone set) at `e` is the union of the two sides'. These let the
+add-wins/re-add/effectiveness theorems below compute a composite state's
+presence directly. -/
+
+theorem tagsOf_merge (s t : OrSet α) (e : α) :
+    (merge s t).tagsOf e = FinSet.union (s.tagsOf e) (t.tagsOf e) := by
+  unfold tagsOf
+  show ((AMap.merge FinSet.union s.adds t.adds).find e).getD FinSet.empty = _
+  rw [AMap.find_merge]
+  cases hs : s.adds.find e with
+  | none =>
+    cases ht : t.adds.find e with
+    | none =>
+      show FinSet.empty = FinSet.union FinSet.empty FinSet.empty
+      exact (FinSet.union_empty_left FinSet.empty).symm
+    | some b =>
+      show b = FinSet.union FinSet.empty b
+      exact (FinSet.union_empty_left b).symm
+  | some a =>
+    cases ht : t.adds.find e with
+    | none =>
+      show a = FinSet.union a FinSet.empty
+      exact (FinSet.union_empty_right a).symm
+    | some b => rfl
+
+theorem removedOf_merge (s t : OrSet α) (e : α) :
+    (merge s t).removedOf e = FinSet.union (s.removedOf e) (t.removedOf e) := by
+  unfold removedOf
+  show ((AMap.merge FinSet.union s.removed t.removed).find e).getD FinSet.empty = _
+  rw [AMap.find_merge]
+  cases hs : s.removed.find e with
+  | none =>
+    cases ht : t.removed.find e with
+    | none =>
+      show FinSet.empty = FinSet.union FinSet.empty FinSet.empty
+      exact (FinSet.union_empty_left FinSet.empty).symm
+    | some b =>
+      show b = FinSet.union FinSet.empty b
+      exact (FinSet.union_empty_left b).symm
+  | some a =>
+    cases ht : t.removed.find e with
+    | none =>
+      show a = FinSet.union a FinSet.empty
+      exact (FinSet.union_empty_right a).symm
+    | some b => rfl
+
+/-- An add delta's tags at its own element: the singleton of the new stamp. -/
+theorem tagsOf_singletonAdd_self (e : α) (st : Stamp) :
+    (singletonAdd e st).tagsOf e = FinSet.singleton st := by
+  unfold tagsOf singletonAdd
+  rw [AMap.find_singleton, if_pos rfl]
+  rfl
+
+/-- An add delta tombstones nothing. -/
+theorem removedOf_singletonAdd (e0 : α) (st : Stamp) (e : α) :
+    (singletonAdd e0 st).removedOf e = FinSet.empty := rfl
+
+/-- A tombstone delta adds no tags. -/
+theorem tagsOf_tombstonesAt (e0 : α) (obs : FinSet Stamp) (e : α) :
+    (tombstonesAt e0 obs).tagsOf e = FinSet.empty := rfl
+
+/-- A tombstone delta's tombstones at its own element: exactly the observed set. -/
+theorem removedOf_tombstonesAt_self (e : α) (obs : FinSet Stamp) :
+    (tombstonesAt e obs).removedOf e = obs := by
+  unfold removedOf tombstonesAt
+  rw [AMap.find_singleton, if_pos rfl]
+  rfl
+
+/-- `Present` phrased over set membership instead of the enumeration list — the
+    intro/elim form the add-wins/re-add/effectiveness theorems use. -/
+theorem present_iff_exists_live_tag (s : OrSet α) (e : α) :
+    Present s e ↔ ∃ st, st ∈ s.tagsOf e ∧ st ∉ s.removedOf e := by
+  unfold Present
+  constructor
+  · rintro ⟨p, hp, hlive⟩
+    refine ⟨p.1, ?_, hlive⟩
+    show (AMap.find (s.tagsOf e) p.1).isSome = true
+    rw [AMap.find_eq_some_of_mem hp]
+    rfl
+  · rintro ⟨st, hmem, hlive⟩
+    obtain ⟨u, hu⟩ := Option.isSome_iff_exists.mp hmem
+    exact ⟨(st, u), AMap.mem_toList_of_find hu, hlive⟩
+
 /-- Frame workhorse (ADR-0003 §side-channels): merging in a single-element *add*
     `{e0 ↦ st}` and then filtering the present elements by a predicate `P` that
     *rejects* `e0` leaves the filtered list unchanged. An add at `e0` only adds the
@@ -279,6 +365,72 @@ theorem presentElements_mergeTombstonesAt_filter (se : OrSet α) (e0 : α) (obs 
   by_cases ha : a = e0
   · subst ha; rw [hP, Bool.false_and, Bool.false_and]
   · rw [hpres a ha]
+
+/-! ## Add-wins, re-add, and removal effectiveness (ADR-0002)
+
+ADR-0002's remove semantics, elevated from prose to theorems. Where a claim
+leans on stamp freshness — a newly minted add-tag is in no earlier `observed`
+set and no earlier tombstone — that reliance is an **explicit hypothesis**
+(`st ∉ obs`, `st ∉ s.removedOf e`), never silent: in a live system those
+hypotheses are discharged by the carried nonce/stamp-uniqueness assumption
+(overview Trusted, ADR-0007), which is exactly where that assumption is
+*allowed* to enter. Removal effectiveness needs no such hypothesis. -/
+
+/-- **Add-wins** (ADR-0002): an add whose tag the concurrent remove did not
+    observe survives the merge. `hunobserved` is the concurrency itself (the
+    remover never saw `st`); `hfresh` — no earlier remove tombstoned the fresh
+    mint at `e` — is the explicit stamp-freshness hypothesis. The join order is
+    immaterial by `merge_comm`/`merge_assoc`. -/
+theorem present_addWins (s : OrSet α) (e : α) (st : Stamp) (obs : FinSet Stamp)
+    (hunobserved : st ∉ obs) (hfresh : st ∉ s.removedOf e) :
+    Present (merge (merge s (singletonAdd e st)) (tombstonesAt e obs)) e := by
+  apply (present_iff_exists_live_tag ..).mpr
+  refine ⟨st, ?_, ?_⟩
+  · rw [tagsOf_merge, tagsOf_merge, tagsOf_tombstonesAt, FinSet.union_empty_right,
+      tagsOf_singletonAdd_self]
+    exact (FinSet.mem_union ..).mpr (Or.inr ((FinSet.mem_singleton ..).mpr rfl))
+  · rw [removedOf_merge, removedOf_merge, removedOf_singletonAdd, FinSet.union_empty_right,
+      removedOf_tombstonesAt_self]
+    intro hmem
+    rcases (FinSet.mem_union ..).mp hmem with h | h
+    · exact hfresh h
+    · exact hunobserved h
+
+/-- **Re-add** (ADR-0002): after a remove — even one whose `obs` covered *every*
+    prior tag of `e`, wiping it (`not_present_mergeTombstonesAt_of_observed_all`
+    below) — an add with a fresh tag makes `e` present again: an OR-Set is not a
+    2P-set. Freshness of the new stamp (`st ∉ obs`, `st ∉ s.removedOf e`) is the
+    explicit stamp-uniqueness hypothesis. -/
+theorem present_readd (s : OrSet α) (e : α) (st : Stamp) (obs : FinSet Stamp)
+    (hunobserved : st ∉ obs) (hfresh : st ∉ s.removedOf e) :
+    Present (merge (merge s (tombstonesAt e obs)) (singletonAdd e st)) e := by
+  apply (present_iff_exists_live_tag ..).mpr
+  refine ⟨st, ?_, ?_⟩
+  · rw [tagsOf_merge, tagsOf_merge, tagsOf_tombstonesAt, FinSet.union_empty_right,
+      tagsOf_singletonAdd_self]
+    exact (FinSet.mem_union ..).mpr (Or.inr ((FinSet.mem_singleton ..).mpr rfl))
+  · rw [removedOf_merge, removedOf_merge, removedOf_tombstonesAt_self, removedOf_singletonAdd,
+      FinSet.union_empty_right]
+    intro hmem
+    rcases (FinSet.mem_union ..).mp hmem with h | h
+    · exact hfresh h
+    · exact hunobserved h
+
+/-- **Removal effectiveness** (ADR-0002): a remove that observed *all* of `e`'s
+    add-tags makes `e` absent — tombstones genuinely remove; a `Present` that
+    ignored them could not satisfy this. The hypothesis is precise for the
+    *merged* state: the tombstone delta adds no tags (`tagsOf_tombstonesAt`), so
+    `s.tagsOf e` *is* the merged state's tag set at `e`. Unconditional — no
+    stamp-uniqueness enters. -/
+theorem not_present_mergeTombstonesAt_of_observed_all (s : OrSet α) (e : α)
+    (obs : FinSet Stamp) (hall : ∀ st, st ∈ s.tagsOf e → st ∈ obs) :
+    ¬ Present (merge s (tombstonesAt e obs)) e := by
+  intro hpres
+  obtain ⟨st, hmem, hlive⟩ := (present_iff_exists_live_tag ..).mp hpres
+  rw [tagsOf_merge, tagsOf_tombstonesAt, FinSet.union_empty_right] at hmem
+  apply hlive
+  rw [removedOf_merge, removedOf_tombstonesAt_self]
+  exact (FinSet.mem_union ..).mpr (Or.inr (hall st hmem))
 
 end OrSet
 
