@@ -169,6 +169,27 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
   The `≤ #SCCs` bound of the every-SCC-is-one-simple-cycle special case is
   deliberately excluded, not deferred: the general edge-count bound is the
   contract.
+- **Canonical display parent** (`Tl/Kernel/CanonParent.lean`, ADR-0003 §4).
+  Concurrent reparenting leaves several surviving `parent` edges (reported, never
+  rejected); `State.canonicalParent` derives the display parent by ranking the
+  candidates lexicographically by `(greatest live add-tag, parentId)` and taking
+  the maximum (`maxOpt`). *Live* is the corrected tag universe — `liveTagsOf`
+  drops the tombstoned tags, so an edge kept present only by a low surviving tag
+  never ranks by a higher tag a `dep remove` retired. Proved, total on
+  cyclic/dangling graphs (edge presence only; the parent id may be dangling):
+  the winner is the `from` of a `Present` parent edge (`canonicalParent_present`);
+  its `(maxLiveTag, id)` pair dominates every candidate's
+  (`canonicalParent_maximal`); the selection is enumeration-order-invariant,
+  unconditional (`canonParentSelect_perm`, the id tie-break mirroring the LWW
+  equal-stamp value tie-break); it is `some` exactly when a present parent edge
+  into the child exists (`canonicalParent_isSome_iff`); and `maxLiveTag` is
+  `some` iff the edge is `Present` (`maxLiveTag_isSome_iff_present`). The pick
+  logic lives once in the shared `canonParentSelect`; the CLI's hoisted accessor
+  (`Tl.Cli.canonicalParentE`, over `Edge`-keyed tag/tombstone hashes) is proved
+  equal to the spec for a present child (`canonicalParentE_eq`, ADR-0024 §3
+  bridge) via a new `Edge`-keyed hash probe (`getElem?_hashAssocK_amap`) and the
+  parent-bucket bridge (`View.parents_eq`, whose `hasIssue` hypothesis closes the
+  child-present candidate-set gap).
 - **`unblocks` correctness — exact & unconditional** (`Tl/Kernel/Unblocks.lean`).
   `unblocks` is *defined* as the ready-set diff `ready (withClosed s i) \ ready s`
   (`withClosed` forces `i`'s status to `Cancelled`, the full close effect incl. the

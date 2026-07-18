@@ -128,10 +128,27 @@ is admissible proof scaffolding, not a shipped fallback).
 `parent` is an add-wins OR-Set edge, so concurrent reparenting converges to
 two surviving `parent` edges. Like a cycle, this is never rejected — it is
 reported (a `multiParent` diagnostic). For display/rollup a canonical
-parent is derived deterministically: the surviving edge greatest in
-`(HLC, replica-id, nonce)` (ADR-0007). "Single parent" stays true for display
-while the store stays honest. (An LWW *parent field* was rejected: it breaks the
+parent is derived deterministically, ranking the candidate parents by the
+lexicographic pair **(greatest live add-tag of the surviving `parent` edge,
+parentId)** and taking the maximum. The tag is the greatest *live*
+(untombstoned) add-tag of the edge — the surviving tag add-wins presence rests
+on, never a tombstoned one (an edge kept present only by a low surviving tag
+must not rank by a higher tag a `dep remove` already retired). The parentId is
+the explicit tie-break, applied when two edges share a maximal live tag (a stamp
+collision), so the pick is total and independent of enumeration order with no
+distinct-stamps hypothesis; it mirrors the LWW equal-stamp *value* tie-break
+(`tmax` on `Stamp × V`, ADR-0002). "Single parent" stays true for display while
+the store stays honest. (An LWW *parent field* was rejected: it breaks the
 all-relations-are-edges model and ADR-0002's two-construction minimality.)
+
+This projection is proved in the kernel (`Tl/Kernel/CanonParent.lean`,
+`State.canonicalParent`): the winner is the `from` of a present `parent` edge
+into the child (edge presence only — the parent id may be dangling), its
+`(liveTag, parentId)` pair dominates every candidate's, the selection is
+enumeration-order-invariant, and it is `some` exactly when a present parent edge
+into the child exists. The production accessor (`Tl.Cli.canonicalParentE`, over
+hoisted `Edge`-keyed tag/tombstone hashes) is proved equal to the spec for a
+present child (`canonicalParentE_eq`, the ADR-0024 §3 bridge).
 
 The reparent surface is `tl parent set <child> <parent>` (a courtesy *replace*:
 tombstone the child's other parent edges, add the target — so a single replica

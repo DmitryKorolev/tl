@@ -133,6 +133,12 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   chain of well-formed removes, edge-count measure;
                         --   no-new-cycle + SCC refinement, per-witness progress,
                         --   in-witness edge bound (ADR-0004 thm 11)
+  CanonParent.lean      --   canonical display parent (ADR-0003 §4): rank by
+                        --   (greatest live add-tag, parentId), pick the max —
+                        --   present-edge winner, maximal live rank, order-
+                        --   invariance, existence; shared canonParentSelect +
+                        --   Edge-keyed hash probe; bridged to the CLI accessor
+                        --   (canonicalParentE_eq, ADR-0024 §3)
   Unblocks.lean         --   unblocks = the ready-set diff; exact and unconditional
   Ranking.lean          --   ready-queue ranking; the queue is proved sorted
 

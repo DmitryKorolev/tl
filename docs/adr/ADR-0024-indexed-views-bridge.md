@@ -97,6 +97,18 @@ already requires that an optimized SHA-256 ship only with a proved
 rule for any accelerated view of any proved structure. They are the same
 discipline at different scope.
 
+The **canonical display parent** (ADR-0003 §4) is a worked instance of the
+bridge over an `Edge`-keyed hash view. The pick logic lives once in the kernel
+(`State.canonParentSelect`); the spec (`State.canonicalParent`) feeds it the
+`parentsOf` candidates and `tagsOf`/`removedOf` tag lookups, the CLI accessor
+(`canonicalParentE`) feeds it the parent-by-child bucket and the `edgeTags` /
+`edgeRemoved` hashes. The bridge `canonicalParentE_eq` proves them equal for a
+present child; it needs two ingredients the earlier bridges did not: a new
+`Edge`-keyed hash probe (`getElem?_hashAssocK_amap` — the `HashMapView` probes
+are `IssueId`-keyed) and a `hasIssue` hypothesis, because the bucket is over
+`parentEdges` (child-present filtered) while `parentsOf` is not — the filter is
+redundant exactly when the child is present.
+
 ### 4. The standing engineering rules
 
 - **Build once, read many.** The view is hoisted at the top of a query (in
