@@ -89,10 +89,13 @@ ASCII-case-folded and Crockford symbol-aliased on input; display always
 shows the full 16-character handle (short enough to render bare).
 
 The canonical tag string (`"<hlc>.<replica>.<nonce>"`) is rejected as the
-handle: it is 57 characters, and its hlc-major layout means all of a
-project's tags share a long common prefix (the epoch-millisecond high bits),
-so "unambiguous prefix" would rarely be shorter than ~15 characters. The
-hash id gives git-short-hash ergonomics instead. Handle uniqueness matters
+*minted display handle* — not as an input form: it is 57 characters, and its
+hlc-major layout means all of a project's tags share a long common prefix
+(the epoch-millisecond high bits), so "unambiguous prefix" would rarely be
+shorter than ~15 characters. The hash id gives git-short-hash ergonomics
+instead, while the `<note-id>` argument position still *accepts* a full
+canonical tag string on input, parsed by shape — that is the always-unique
+fallback the collision paragraph below relies on. Handle uniqueness matters
 only for reference ergonomics — never for kernel correctness, which is
 tag-keyed throughout (the machinery note below): a collision is refused at
 resolution with the canonical tags offered, resolution is scoped to one
