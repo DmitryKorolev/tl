@@ -47,8 +47,14 @@ reuses the same join law:
    is element-scoped by construction and can never affect any other element's
    presence, whatever its `observed` payload contains (the concrete payload
    schema is in ADR-0008). Concurrent add/remove therefore resolves add-wins:
-   an add the remove never saw survives. This gives `tl create` / `tl dep add`
-   / `tl dep remove` convergent add and remove.
+   an add the remove never saw survives. These remove semantics are theorems,
+   not just prose (`Tl.Crdt.OrSet`): add-wins is `present_addWins`, re-add is
+   `present_readd` (each with stamp-freshness as an explicit hypothesis,
+   discharged by the carried nonce-uniqueness assumption — overview Trusted),
+   and removal effectiveness — a remove that observed every add-tag makes the
+   element absent — is `not_present_mergeTombstonesAt_of_observed_all`,
+   unconditionally. This gives `tl create` / `tl dep add` / `tl dep remove`
+   convergent add and remove.
 
 2. LWW-register (last-writer-wins) for every *scalar field* of an
    issue — status, title, priority, assignee, description, notes, and the
@@ -119,9 +125,9 @@ orphan edge). `create` carries identity + optional initial scalars and never
 
 ### Issues are resolved, not removed
 
-OR-Set *removal* is used for edges only (`dep remove` / `unrelate`). An
-issue is never removed from the issue OR-Set — there is no hard delete
-(vision). To retire an issue, `close --as cancelled` sets a terminal status;
+OR-Set *removal* is used for edges (`dep remove` / `unrelate`) and labels
+(`label remove`). An issue is never removed from the issue OR-Set — there is
+no hard delete (vision). To retire an issue, `close --as cancelled` sets a terminal status;
 the issue stays in the set. This sidesteps the concurrent delete-vs-edit
 hazard (one replica deletes an issue while another adds a blocker pointing at
 it → a *resurrected* issue with no fields). Note the no-delete rule prevents
@@ -176,8 +182,11 @@ wins*, never *whether the join is well-defined* — the kernel theorem
 
 ## Consequences
 
-- `dep remove` converges. Removing an edge tombstones the observed add;
-  a concurrent, unobserved add of the same edge survives (add-wins).
+- `dep remove` converges. Removing an edge tombstones the observed add —
+  observing every add-tag genuinely deletes the edge
+  (`OrSet.not_present_mergeTombstonesAt_of_observed_all`); a concurrent,
+  unobserved add of the same edge survives (add-wins,
+  `OrSet.present_addWins`).
 - Add-wins is the decided bias, and it is conservative for blockers. On
   a concurrent "remove this blocker" + "add this blocker", add-wins keeps the
   edge, so the dependent stays blocked rather than becoming spuriously
@@ -200,7 +209,8 @@ wins*, never *whether the join is well-defined* — the kernel theorem
   scope; a grow-only set cannot model it.
 - Remove-by-value (2P-set / naive delete). Rejected: does not converge
   against concurrent re-add, and a removed element can never be re-added
-  (2P-set), which breaks legitimate re-add of a dependency.
+  (2P-set), which breaks legitimate re-add of a dependency — the OR-Set's
+  re-add is a theorem (`OrSet.present_readd`).
 - Sequence CRDT for descriptions/comments. Rejected as scope creep
   (see vision non-goals).
 - Vector-clock LWW instead of HLC. Deferred: HLC keeps timestamps

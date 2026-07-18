@@ -215,6 +215,7 @@ test (Definition-of-Done #5):
   completeness with no side condition (the force-closed projection captures the
   epic-rollup ripple a local check missed), and `ready_withClosed_eq_cancel` /
   `mem_unblocks_iff_cancel` ground it in the real `cancelOp` when the close wins LWW.
+
 Reserved (proved when its feature is built). The destructive-GC set, pinned
 with the compaction design (ADR-0008): *fold-preservation* —
 `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable

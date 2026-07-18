@@ -43,11 +43,6 @@ Kernel theorems still to decide whether to commit to:
   (the cyclic-SCC count can increase). The ≤ (#SCCs) bound does hold in the
   special case where every cyclic SCC is a single simple cycle. Makes the
   diagnostic's advice provably terminating (ADR-0004).
-- Add-wins / re-add as explicit OR-Set theorems [low] — ADR-0002 states
-  add-wins and re-addability in prose; elevate them to stated theorems (an
-  unobserved add survives a concurrent remove; a removed element is re-addable with
-  a fresh tag — not a 2P-set), so the `dep remove`/`unrelate` guarantee is a
-  theorem rather than a consequence left implicit in the join laws (ADR-0002/0004).
 
 ## Sync, discovery & local concurrency
 

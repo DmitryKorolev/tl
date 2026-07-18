@@ -11,6 +11,10 @@
 - Amended: 2026-06-21 — `cacheVersion` bumped 2→3: the `WireOp.toOp` fold changed
   (ADR-0013's claim-only `assignee` — `update` no longer applies an
   `assignee`, `reopen` now clears it), so a v2 cache must rebuild.
+- Amended: 2026-07-18 — `cacheVersion` bumped 3→4: OR-Set tombstones became
+  element-scoped (ADR-0002 — `removed` is a per-element map mirroring `adds`),
+  changing both the fold semantics and the codec's OR-Set `"r"` leg (now an
+  AMap-of-FinSet like `"a"`), so a v3 cache must rebuild.
 
 ## Context
 
