@@ -206,7 +206,13 @@ private def fence (st : Style) (label : String) (body : String) : List String :=
   if body.isEmpty then []
   else [st.paint "1" label, "  " ++ String.intercalate "\n  " (body.splitOn "\n"), ""]
 
-def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
+/-- `claimOutcome`: the `show` claim verdict (won/ended/superseded), rendered
+    into the provenance row so the human surface discloses the same outcome
+    the JSON claim block carries (parity); `none` ⇒ no own claim to report.
+    Computed by the caller (`claimVerdict`) — one derivation feeds both
+    surfaces. -/
+def styledShow (st : Style) (v : View) (i : IssueId)
+    (claimOutcome : Option String := none) : String := Id.run do
   let d := v.issueData i
   let ds := displayState v i
   let pr := v.provFor i
@@ -220,6 +226,8 @@ def styledShow (st : Style) (v : View) (i : IssueId) : String := Id.run do
   if v.isEpic i then prov := prov ++ [st.paint "1" "[epic]"]
   match d.assignee.value.getD none with
     | some a => prov := prov ++ [s!"assignee: {sanitizeSingle a}"] | none => pure ()
+  match claimOutcome with
+    | some o => prov := prov ++ [s!"claim: {o}"] | none => pure ()
   match pr.createdAt with | some h => prov := prov ++ [s!"created:  {hlcIso h}"] | none => pure ()
   match pr.updatedAt with | some h => prov := prov ++ [s!"updated:  {hlcIso h}"] | none => pure ()
   match pr.closedAt with | some h => prov := prov ++ [s!"closed:   {hlcIso h}"] | none => pure ()

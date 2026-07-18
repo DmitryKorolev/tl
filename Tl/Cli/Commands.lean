@@ -467,26 +467,33 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   return { data := listPayload "items" visible.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 
-/-- The `show` claim block: surfaces this replica's latest own claim on the
-    issue. Decoupled from staleness (ADR-0013, amended) — your own claim
-    provenance is shown regardless of age; the stale *window* is a `doctor`
-    concern (`tl.staleAfter`), not a display gate here. `outcome`:
+/-- The `show` claim verdict: surfaces this replica's latest own claim on the
+    issue as `(outcome, currentAssignee)` — one derivation behind both the
+    JSON claim block and the human `claim:` line (parity). Decoupled from
+    staleness (ADR-0013, amended) — your own claim provenance is shown
+    regardless of age; the stale *window* is a `doctor` concern
+    (`tl.staleAfter`), not a display gate here. `outcome`:
     - `won` — the actor's CURRENT claim holds: both registers carry one
-      coherent winning claim by this actor stamped at or after the surfaced
-      claim (the kernel `claimWonB`, evaluated at the winning assignee stamp) —
-      so a re-claim by the same actor from another replica still reads won
-      after convergence, while the assignee register alone would misreport a
-      concurrent close (which outstamps `status` but never writes `assignee`).
-    - `ended` — the claim no longer holds and the winning status write is this
-      replica's own later one (its close or reopen): the claim ended by this
-      replica's own successor write, history rather than a lost race, so the
-      block is the factual record (the truthful status/resolution/assignee are
-      already in the payload), not a contest verdict.
-    - `superseded` — a concurrent write this replica did not make took either
-      register.
+      coherent winning claim by this actor (the kernel `claimWonB`, evaluated
+      at the winning assignee stamp) — so a re-claim by the same actor from
+      another replica still reads won after convergence, while the assignee
+      register alone would misreport a concurrent close (which outstamps
+      `status` but never writes `assignee`). The winner is at least the
+      surfaced claim's own folded write, so its stamp is at/after the claim's
+      and `claimWonB` pins its value — neither needs a separate check.
+    - `ended` — not won, nobody took the assignee (its winning entry is still
+      this actor's value, or a clear this actor wrote — a reopen), and the
+      winning status write's envelope actor IS the claimant: the claim ended
+      by the claimant's own close/reopen, history rather than a lost race.
+      Actor here is envelope provenance, not authentication (ADR-0013/0014) —
+      fine for a display classifier, never a guard. An origin op absent from
+      the loaded set classifies conservatively as superseded.
+    - `superseded` — otherwise: a write the claimant did not make took either
+      register (this includes an interleaved foreign claim later buried by the
+      claimant's own close — the lost race stays visible).
     `show`-only surface: the `claim` verb's own echo stays binary
     won/superseded (the ratified wire contract). -/
-def claimBlock (v : View) (i : IssueId) : Option Json := do
+def claimVerdict (v : View) (i : IssueId) : Option (String × Option String) := do
   let own ← v.replica
   let ownVal ← own.toNat?
   let claims := v.loaded.ops.filterMap (fun p =>
@@ -495,33 +502,41 @@ def claimBlock (v : View) (i : IssueId) : Option Json := do
     | _ => none)
   -- latest own claim by the full stamp order (the cross-op comparison rule,
   -- Tl/Cli/Project.lean §provenance)
-  let (stamp, actor) ← claims.foldl (fun acc c =>
+  let (_, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
     | some m => some (if Tl.Crdt.TotalOrd.le m.1 c.1 then c else m)) none
   let d := v.state.issueData i
   let current := d.assignee.value.getD none
+  -- the envelope actor of the op that made a given winning write — a linear
+  -- probe of the already-loaded ops; `none` when the origin is not among them
+  let actorOfStamp : Stamp → Option String := fun t =>
+    (v.loaded.ops.find? (fun p => decide (p.stamp = t))).bind (·.actor)
   let won := match d.assignee with
-    | some (t, some a) =>
-      a == actor && decide (Tl.Crdt.TotalOrd.le stamp t) && claimWonB d t actor
-    | _ => false
-  let ended := match d.status with
-    | some (t, _) => t.replica == ownVal && decide (Tl.Crdt.TotalOrd.lt stamp t)
+    | some (t, _) => claimWonB d t actor
     | none => false
-  let outcome := if won then "won" else if ended then "ended" else "superseded"
-  some (Json.mkObj
-    [("outcome", Json.str outcome),
-     ("currentAssignee", current.elim Json.null Json.str)])
+  let assigneeHeld := match d.assignee with
+    | some (_, some a) => a == actor
+    | some (t, none) => actorOfStamp t == some actor
+    | none => false
+  let statusOwn := match d.status with
+    | some (t, _) => actorOfStamp t == some actor
+    | none => false
+  let outcome := if won then "won" else if assigneeHeld && statusOwn then "ended" else "superseded"
+  some (outcome, current)
 
 def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let base := issueObj v i
-  let data := match claimBlock v i with
-    | some cb => base.setObjVal! "claim" cb
+  let verdict := claimVerdict v i
+  let data := match verdict with
+    | some (outcome, current) => base.setObjVal! "claim" (Json.mkObj
+        [("outcome", Json.str outcome),
+         ("currentAssignee", current.elim Json.null Json.str)])
     | none => base
-  let r : Style → String := fun st => styledShow st v i
+  let r : Style → String := fun st => styledShow st v i (verdict.map (·.1))
   return { data, human := r Style.plain, render := some r, notes }
 
 def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do

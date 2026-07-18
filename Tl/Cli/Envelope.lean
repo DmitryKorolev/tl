@@ -20,13 +20,15 @@ namespace Tl.Cli
 open Lean (Json)
 
 /-- The `--json` schema version (ADR-0008: bumps are breaking and disclosed;
-    additive-only binds from 1.0). -/
-def schemaVersion : Nat := 1
+    additive-only binds from 1.0). v2: `show`'s `claim.outcome` grew a third
+    value `ended` and re-mapped some formerly-`won`/`superseded` states — a
+    0.x break, disclosed in the ADR-0008 ledger. -/
+def schemaVersion : Nat := 2
 
 private def member (k : String) (v : Json) : String :=
   (Json.str k).compress ++ ":" ++ v.compress
 
-/-- The success envelope: `{"schemaVersion":1,"ok":true,"data":<data>}`, with an
+/-- The success envelope: `{"schemaVersion":2,"ok":true,"data":<data>}`, with an
     optional trailing `"notes":[…]` carrying the same loud-not-silent
     disclosures printed to stderr (foreign-refusal, skew-deferred, stale-read
     degrade — ADR-0008). **Omit-empty** (ADR-0020): absent when there are no
@@ -38,7 +40,7 @@ def okEnvelope (data : Json) (notes : List String := []) : String :=
   s!"\{\"schemaVersion\":{schemaVersion},\"ok\":true,\"data\":" ++ data.compress ++ notesField ++ "}"
 
 /-- The error envelope:
-    `{"schemaVersion":1,"ok":false,"error":{"code":…,"message":…,<context…>}}`,
+    `{"schemaVersion":2,"ok":false,"error":{"code":…,"message":…,<context…>}}`,
     context members in the order the `Tl.Error` carries them (ADR-0020). -/
 def errorEnvelope (e : Error) : String :=
   let members :=

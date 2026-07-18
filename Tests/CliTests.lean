@@ -659,7 +659,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let out ← spawn ["version", "--json"]
   o := o ++
     [check "version --json envelope bytes"
-      (out.stdout == "{\"schemaVersion\":1,\"ok\":true,\"data\":{\"logFormat\":1,\"version\":\"0.1.0\"}}\n")
+      (out.stdout == "{\"schemaVersion\":2,\"ok\":true,\"data\":{\"logFormat\":1,\"version\":\"0.1.0\"}}\n")
       out.stdout,
      check "version exits 0" (out.exitCode == 0)]
   -- `tl licenses` stdout is byte-equal to the repo THIRD-PARTY-LICENSES file
@@ -674,7 +674,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let bad ← spawn ["frobnicate", "--json"]
   o := o ++
     [check "usage error emits the error envelope on stdout"
-      (bad.stdout.startsWith "{\"schemaVersion\":1,\"ok\":false,\"error\":{\"code\":\"usage\"")
+      (bad.stdout.startsWith "{\"schemaVersion\":2,\"ok\":false,\"error\":{\"code\":\"usage\"")
       bad.stdout,
      check "usage exits 2" (bad.exitCode == 2)]
   -- no-project exit 3
@@ -1417,7 +1417,9 @@ GARBAGE
   match ← run' ["show", "tl-" ++ tgtSC, "--dir", dirSC] with
   | .error e => o := o ++ [check "show human after own close stays non-contest" false e.message]
   | .ok out => o := o ++
-      [check "show human after own close stays non-contest (no 'superseded' wording)"
+      [check "show human discloses the claim outcome (human/JSON parity): 'claim: ended'"
+        ((out.human.splitOn "claim: ended").length == 2) out.human,
+       check "show human after own close stays non-contest (no 'superseded' wording)"
         ((out.human.splitOn "superseded").length == 1) out.human]
   -- ... and the same reading after this replica's own reopen (the other own
   -- status-writing successor): the old claim is over, not out-raced
@@ -1427,21 +1429,84 @@ GARBAGE
       (fun j => jStr j "status" == some "open"
         && (jGet j "assignee").isNone
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  -- ended never MASKS a lost race: carol's claim is outstamped by dave's
+  -- foreign claim, then carol closes with an even higher stamp. Her own close
+  -- is the winning status write, but dave took the assignee in between — the
+  -- verdict stays superseded (an assignee winner that is not the claimant
+  -- blocks the ended reading)
+  let dirMask ← freshDir
+  let tgtMask ← mkIssue dirMask "LostThenSelfClosed"
+  let _ ← run' ["claim", "tl-" ++ tgtMask, "--dir", dirMask, "--actor", "carol"]
+  -- dave's claim lands just a few ms ahead — above carol's claim, below her
+  -- upcoming close (the sleep lets wall-clock pass it, so the close outstamps
+  -- dave's claim and genuinely wins the status LWW)
+  let daveHlc := ((← nowMs) + 20) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirMask / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.claim tgtMask "dave") daveHlc "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "an interleaved foreign claim reads superseded before the close"
+      ["show", "tl-" ++ tgtMask, "--dir", dirMask]
+      (fun j => ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  IO.sleep 60
+  let _ ← run' ["close", "tl-" ++ tgtMask, "--dir", dirMask, "--as", "done", "--actor", "carol"]
+  o := o ++ [← expectData "carol's later own close does not mask the lost race (still superseded)"
+      ["show", "tl-" ++ tgtMask, "--dir", dirMask]
+      (fun j => jStr j "status" == some "done"
+        && jStr j "assignee" == some "dave"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- shared replica, two actors: alice claims, bob closes with --actor bob.
+  -- The winning status write is this replica's — but not the CLAIMANT's: the
+  -- envelope actor distinguishes them (provenance, not authentication), so
+  -- alice's view reads superseded, not "her own" history
+  let dirSH ← freshDir
+  let tgtSH ← mkIssue dirSH "SharedReplica"
+  let _ ← run' ["claim", "tl-" ++ tgtSH, "--dir", dirSH, "--actor", "alice"]
+  let _ ← run' ["close", "tl-" ++ tgtSH, "--dir", dirSH, "--as", "done", "--actor", "bob"]
+  o := o ++ [← expectData "another actor's close on the same replica reads superseded, not ended"
+      ["show", "tl-" ++ tgtSH, "--dir", dirSH]
+      (fun j => jStr j "status" == some "done"
+        && jStr j "assignee" == some "alice"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- a re-claim by the SAME actor from another replica: after convergence the
   -- actor's current claim holds both registers at one (later) stamp, so this
   -- replica still reads won — its actor holds the issue, just via a newer op
   let dirRR ← freshDir
   let tgtRR ← mkIssue dirRR "ReclaimedElsewhere"
   let _ ← run' ["claim", "tl-" ++ tgtRR, "--dir", dirRR, "--actor", "carol"]
+  -- a few-ms lead (not tens of seconds): the later own close below must be
+  -- able to outstamp the re-claim once wall-clock passes it
   let baseRR ← nowMs
-  let segRR := foreignLine (.reopen tgtRR) ((baseRR + 20000) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
-            ++ foreignLine (.claim tgtRR "carol") ((baseRR + 40000) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 2 ++ "\n"
+  let segRR := foreignLine (.reopen tgtRR) ((baseRR + 10) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 1 ++ "\n"
+            ++ foreignLine (.claim tgtRR "carol") ((baseRR + 20) * 2 ^ 16) "2zzzzzzzzzzzz" "carol" 2 ++ "\n"
   IO.FS.writeFile (System.FilePath.mk dirRR / "log" / "2zzzzzzzzzzzz.jsonl") segRR
   o := o ++ [← expectData "the same actor's cross-replica re-claim still reads won"
       ["show", "tl-" ++ tgtRR, "--dir", dirRR]
       (fun j => jStr j "assignee" == some "carol"
         && jStr j "status" == some "in_progress"
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "won")]
+  -- ... and the claimant's own close on top of that re-claim ends it: the
+  -- assignee winner is still carol (the re-claim) and the status winner is
+  -- carol's close — ended, by actor, across replicas
+  IO.sleep 60
+  let _ ← run' ["close", "tl-" ++ tgtRR, "--dir", dirRR, "--as", "done", "--actor", "carol"]
+  o := o ++ [← expectData "own close over the same actor's re-claim reads ended"
+      ["show", "tl-" ++ tgtRR, "--dir", dirRR]
+      (fun j => jStr j "status" == some "done"
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "ended")]
+  -- exhaustive enum pin: across the scenario dirs above, the outcome value
+  -- set is exactly {won, ended, superseded} — a fourth value or a typo'd
+  -- branch cannot ship silently. (dirRR was just closed: re-derive a won dir.)
+  let dirWon ← freshDir
+  let tgtWon ← mkIssue dirWon "CleanClaim"
+  let _ ← run' ["claim", "tl-" ++ tgtWon, "--dir", dirWon, "--actor", "carol"]
+  let mut outcomes : List String := []
+  for (d, t) in [(dirWon, tgtWon), (dirSC, tgtSC), (dirMask, tgtMask), (dirSH, tgtSH), (dirRR, tgtRR)] do
+    match ← run' ["show", "tl-" ++ t, "--dir", d] with
+    | .ok out => outcomes := outcomes ++ ((jGet out.data "claim").bind (fun c => jStr c "outcome")).toList
+    | .error _ => pure ()
+  let allowed := ["won", "ended", "superseded"]
+  o := o ++ [check "claim outcome enum is exactly {won, ended, superseded}"
+    (outcomes.length == 5 && outcomes.all allowed.contains && allowed.all outcomes.contains)
+    (String.intercalate "," outcomes)]
   -- partialClaimMessage rows (unit — reaching the rarer status winners through
   -- the command needs a mid-command concurrent fold): every status wording is
   -- self-consistent; the in_progress winner never yields the contradictory
