@@ -29,6 +29,7 @@ import Tl.Kernel.Theorems
 import Tl.Kernel.FoldFast
 import Tl.Kernel.Frame
 import Tl.Kernel.CloseMono
+import Tl.Kernel.Claim
 import Tl.Kernel.Reach
 import Tl.Kernel.ReachBFS
 import Tl.Kernel.ReachFrontier
