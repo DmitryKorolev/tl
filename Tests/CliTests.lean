@@ -395,6 +395,57 @@ def cliDepTests : IO (List Outcome) := do
                && jNat c "cycles" == some 1)),
      ← expectData "neither cycle member is ready" ["ready", "--dir", dir]
       (fun j => jNat j "count" == some 0)]
+  -- the human repair hint is kind-aware. Blocks-only witnesses teach
+  -- `dep remove` and must not mention the parent verbs
+  o := o ++ [← (match ← run' ["dep", "cycles", "--dir", dir] with
+    | .ok out => pure (check "dep cycles hint for a blocks cycle teaches dep remove only"
+        ((out.human.splitOn "tl dep remove").length > 1
+          && (out.human.splitOn "tl parent").length == 1) out.human)
+    | .error e => pure { name := "dep cycles hint (blocks)", passed := false, msg := e.message })]
+  -- parent-kind witness: a 2-cycle in the parent graph (`parent set` refuses
+  -- only the direct self-parent; longer cycles are reported, not rejected)
+  let pdir ← freshDir
+  let p1 ← mkIssue pdir "P1"
+  let p2 ← mkIssue pdir "P2"
+  let _ ← run' ["parent", "set", "tl-" ++ p1, "tl-" ++ p2, "--dir", pdir, "--actor", "t"]
+  let _ ← run' ["parent", "set", "tl-" ++ p2, "tl-" ++ p1, "--dir", pdir, "--actor", "t"]
+  o := o ++
+    [← expectData "dep cycles reports a parent-kind witness" ["dep", "cycles", "--dir", pdir]
+      (fun j => jNat j "count" == some 1
+        && (jArr j "cycles").all (fun c =>
+             jStr c "kind" == some "parent" && (jArr c "issues").length == 2)),
+     ← (match ← run' ["dep", "cycles", "--dir", pdir] with
+       | .ok out => pure (check "dep cycles hint for a parent cycle teaches parent remove/set only"
+           ((out.human.splitOn "tl parent remove").length > 1
+             && (out.human.splitOn "tl parent set").length > 1
+             && (out.human.splitOn "tl dep remove").length == 1) out.human)
+       | .error e => pure { name := "dep cycles hint (parent)", passed := false, msg := e.message })]
+  -- a blocks cycle beside the parent cycle: the hint teaches both verbs
+  let p3 ← mkIssue pdir "P3"
+  let p4 ← mkIssue pdir "P4"
+  let _ ← run' ["dep", "add", "tl-" ++ p3, "tl-" ++ p4, "--dir", pdir, "--actor", "t"]
+  let _ ← run' ["dep", "add", "tl-" ++ p4, "tl-" ++ p3, "--dir", pdir, "--actor", "t"]
+  o := o ++ [← (match ← run' ["dep", "cycles", "--dir", pdir] with
+    | .ok out => pure (check "dep cycles hint for mixed kinds teaches both verbs"
+        ((out.human.splitOn "tl dep remove").length > 1
+          && (out.human.splitOn "tl parent remove").length > 1) out.human)
+    | .error e => pure { name := "dep cycles hint (mixed)", passed := false, msg := e.message })]
+  -- a readiness-only deadlock (the epic rollup-waits on its child, the child
+  -- is blocked by the epic) is mixed-kind by nature: both verbs again
+  let rdir ← freshDir
+  let re ← mkIssue rdir "R epic"
+  let rc ← mkIssue rdir "R child" ["--parent", "tl-" ++ re]
+  let _ ← run' ["dep", "add", "tl-" ++ rc, "tl-" ++ re, "--dir", rdir, "--actor", "t"]
+  o := o ++
+    [← expectData "dep cycles reports the readiness deadlock witness"
+      ["dep", "cycles", "--dir", rdir]
+      (fun j => jNat j "count" == some 1
+        && (jArr j "cycles").all (fun c => jStr c "kind" == some "readiness")),
+     ← (match ← run' ["dep", "cycles", "--dir", rdir] with
+       | .ok out => pure (check "dep cycles hint for a readiness deadlock teaches both verbs"
+           ((out.human.splitOn "tl dep remove").length > 1
+             && (out.human.splitOn "tl parent remove").length > 1) out.human)
+       | .error e => pure { name := "dep cycles hint (readiness)", passed := false, msg := e.message })]
   -- dep path (over the proved blocksPath extractor): a chain c blocks d blocks e
   -- (`dep add X Y` makes Y block X, so add d⊣c and e⊣d)
   let c ← mkIssue dir "C"

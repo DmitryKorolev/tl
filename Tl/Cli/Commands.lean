@@ -599,10 +599,20 @@ def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
   let rows := blocksCycles.map (entry "blocks")
     ++ parentCycles.map (entry "parent")
     ++ readiness.map (entry "readiness")
+  -- the repair verb differs by kind: blocks edges are retracted with
+  -- `dep remove`, parent edges with `parent remove`/`parent set`; a readiness
+  -- deadlock is mixed, so it gets both. Teach the verb(s) the witnesses need.
+  let hint :=
+    if parentCycles.isEmpty && readiness.isEmpty then
+      "break each with `tl dep remove`"
+    else if blocksCycles.isEmpty && readiness.isEmpty then
+      "break each with `tl parent remove` (or move a member with `tl parent set`)"
+    else
+      "break blocks edges with `tl dep remove` and parent edges with `tl parent remove` (or `tl parent set`)"
   return { data := listPayload "cycles" rows.length rows
            human :=
              if rows.isEmpty then "no cycles"
-             else s!"{rows.length} cycle(s) — break each with `tl dep remove`"
+             else s!"{rows.length} cycle(s) — {hint}"
            notes }
 
 /-- The cycle count (structural per kind + the non-duplicate readiness
