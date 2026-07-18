@@ -65,7 +65,7 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   let rollup := st.effStatusAll
   let present := st.presentIssues
   let edges := st.presentEdges
-  let pedges := parentEdgesFast st
+  let pedges := State.parentEdgesFast st
   let prov := provenanceMap loaded.ops
   return { dirs := d, loaded, now, replica, rollup, present, edges, pedges, prov,
            idx := ViewIndex.of st.data rollup present edges pedges prov st.edges.adds.toList st.edges.removed.toList,
@@ -120,7 +120,7 @@ def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
   let rollup := state.effStatusAll
   let present := state.presentIssues
   let edges := state.presentEdges
-  let pedges := parentEdgesFast state
+  let pedges := State.parentEdgesFast state
   let prov := provenanceMap ops
   { dirs := v.dirs
     loaded := { v.loaded with state, ops }
@@ -1981,7 +1981,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let rollup := st.effStatusAll
   let present := st.presentIssues
   let edges := st.presentEdges
-  let pedges := parentEdgesFast st
+  let pedges := State.parentEdgesFast st
   let prov := provenanceMap loaded.ops
   let v : View := { dirs := d, loaded, now, replica := own,
                     rollup, present, edges, pedges, prov,

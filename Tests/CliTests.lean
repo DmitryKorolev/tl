@@ -2644,23 +2644,23 @@ def canonicalParentTieTests : List Outcome :=
     Op.edgeAdd (pA, kid, .Parent) sameTag,
     Op.edgeAdd (pB, kid, .Parent) sameTag]
   [ check "canonicalParent picks the LWW-greatest surviving parent edge"
-      (canonicalParent s child == some pNew),
+      (s.canonicalParent child == some pNew),
     check "canonicalParentE agrees with the spec form"
-      (canonicalParentE v child == canonicalParent s child),
+      (canonicalParentE v child == s.canonicalParent child),
     check "canonicalParent ranks by the live tag, not a tombstoned higher one"
-      (canonicalParent sBug kid == some pB),
+      (sBug.canonicalParent kid == some pB),
     check "the low-surviving-tag edge is still present (add-wins over the observed remove)"
       (decide (sBug.edges.Present (pA, kid, .Parent))),
     check "canonicalParentE agrees on the live-tag ranking"
-      (canonicalParentE vBug kid == canonicalParent sBug kid),
+      (canonicalParentE vBug kid == sBug.canonicalParent kid),
     check "equal live tags break to the greater parent id, not enumeration order"
-      (canonicalParent sTie kid == some pB),
+      (sTie.canonicalParent kid == some pB),
     -- the loadView optimization: parentEdgesFast = State.parentEdges (same list),
     -- so v.pedges stays exactly the spec list every kernel function expects
     check "parentEdgesFast = parentEdges (present children)"
-      (parentEdgesFast s == s.parentEdges),
+      (s.parentEdgesFast == s.parentEdges),
     check "parentEdgesFast = parentEdges (drops dangling-child edges)"
-      (parentEdgesFast sDangling == sDangling.parentEdges
+      (sDangling.parentEdgesFast == sDangling.parentEdges
         && sDangling.parentEdges.isEmpty) ]
 
 /-- The indexed-view row accessors (ADR-0024) equal — pointwise, on every present
@@ -2733,7 +2733,7 @@ def rowAccessorAgreementTests : List Outcome :=
       && (v.dependents i == State.dependentsOfE edges i)
       && (v.has i == decide (s.hasIssue i))
       && (v.duplicateOf i == duplicateOf s i)
-      && (canonicalParentE v i == canonicalParent s i)
+      && (canonicalParentE v i == s.canonicalParent i)
       && (pa.createdAt == pb.createdAt && pa.updatedAt == pb.updatedAt
           && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt
           && pa.createdBy == pb.createdBy && pa.createdReplica == pb.createdReplica)))

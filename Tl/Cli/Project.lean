@@ -23,6 +23,7 @@ import Tl.Kernel.Ready
 import Tl.Kernel.ReadyFast
 import Tl.Kernel.Cycles
 import Tl.Kernel.CyclesFast
+import Tl.Kernel.CanonParent
 
 namespace Tl.Cli
 
@@ -139,18 +140,6 @@ def provenanceMap (ops : List ParsedOp) : AMap IssueId Prov := Id.run do
 
 /-- One issue's provenance from the batched map (absent ⇒ no ops touched it). -/
 def provOf (m : AMap IssueId Prov) (i : IssueId) : Prov := (m.find i).getD {}
-
-/-- `State.parentEdges` with the child-present check through a hash set built
-    once, not an O(N) `hasIssue` (`OrSet.Present`) find per edge — `parentEdges`
-    is Θ(E·N) and `loadView` builds it for every command. The result is the same
-    list: `(hashSetOf present).contains t = decide (hasIssue t)`
-    (`contains_hashSetOf_present`), so `v.pedges = s.parentEdges` (pinned by a
-    test), and every kernel function taking `pe = s.parentEdges` stays correct. -/
-def parentEdgesFast (s : State) : List (IssueId × IssueId) :=
-  let pset := Tl.Kernel.hashSetOf s.presentIssues
-  s.presentEdges.filterMap (fun e =>
-    let (f, t, k) := e
-    if decide (k = EdgeKind.Parent) && pset.contains t then some (f, t) else none)
 
 /-- The per-query indexed views (ADR-0024): O(1)-amortized hash/bucket copies of
     the view's list-backed collections, built once per command and discarded.
@@ -356,31 +345,14 @@ def View.duplicateOf (v : View) (i : IssueId) : Option IssueId :=
   match ((v.issueData i).metadata.find "duplicate-of").bind (·.value) with
   | some (some val) => if validId val then some val else none
   | _ => none
-/-- The greatest *live* (untombstoned) add-tag of an edge, from its observed
-    tags and its tombstones: the `≤`-max over the tags not in `removed`, or
-    `none` when none survives (the edge is not `Present`). This is the corrected
-    canonical-parent LWW key (ADR-0003 §4 "surviving") — the earlier form
-    maximized over *all* observed tags, so an edge kept present only by a low
-    surviving tag could still rank by a tombstoned higher one (reachable via
-    concurrent same-edge adds and a remove that observed only the greater tag).
-    Shared by the spec `maxTagOf` and the hoisted `View.maxTag`, so the two
-    cannot drift. -/
-def maxLiveFold (tags removed : FinSet Stamp) : Option Stamp :=
-  (AMap.keys tags).foldl
-    (fun acc st =>
-      if st ∈ removed then acc
-      else match acc with
-        | none => some st
-        | some m => some (TotalOrd.tmax m st))
-    none
-
 /-- The greatest surviving (live) add-tag of an edge, via the edge-tag and
-    edge-tombstone hashes (= `maxTagOf v.state e`: `edgeTags[e]?.getD ∅ =
+    edge-tombstone hashes — the hoisted twin of the kernel `State.maxLiveTag`
+    (`= v.state.maxLiveTag e`, `View.maxTag_eq`): `edgeTags[e]?.getD ∅ =
     v.state.edges.tagsOf e` and `edgeRemoved[e]?.getD ∅ = v.state.edges.removedOf
-    e`, and the fold is `maxLiveFold`). O(1) lookups vs the spec's O(E)
-    `AMap.find`s. -/
+    e` (the `Edge`-keyed probes), and the fold is the kernel `State.maxLiveFold`.
+    O(1) lookups vs the spec's O(E) `AMap.find`s. -/
 def View.maxTag (v : View) (e : Edge) : Option Stamp :=
-  maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty) (v.idx.edgeRemoved[e]?.getD FinSet.empty)
+  State.maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty) (v.idx.edgeRemoved[e]?.getD FinSet.empty)
 
 def Prov.createdAt (pr : Prov) : Option Nat := pr.created.map (·.1.hlc)
 def Prov.updatedAt (pr : Prov) : Option Nat := pr.updated.map (·.hlc)
@@ -414,43 +386,98 @@ def deferredOf (s : State) (now : Nat) (i : IssueId) : Bool :=
        | some t => now < t
        | none => false
 
-/-! ## Edges, canonical parent, labels, meta -/
+/-! ## Edges, canonical parent, labels, meta
 
-/-- The greatest *live* surviving add-tag of an edge (the canonical-parent LWW
-    key) — `maxLiveFold` over the edge's observed tags and its tombstones. -/
-private def maxTagOf (s : State) (e : Edge) : Option Stamp :=
-  maxLiveFold (s.edges.tagsOf e) (s.edges.removedOf e)
+The canonical display parent is proved kernel-side (`Tl.Kernel.CanonParent`,
+ADR-0003 §4): the spec is `State.canonicalParent`, and the selection core
+`State.canonParentSelect` is shared with the production accessor below, so there
+is no shell twin of the pick. -/
 
-/-- The canonical-parent LWW pick: among the candidate parents, the one whose
-    greatest surviving `parent` add-tag is `(hlc, replica, nonce)`-greatest
-    (ADR-0003 §4). The single canonicalization fold — both the spec `canonicalParent`
-    and the view-hoisted `canonicalParentE` are a candidate source + a per-parent
-    max-tag lookup over this core, so the logic cannot silently drift between them
-    (the two sources are pinned equal by `canonicalParentTieTests` /
-    `rowAccessorAgreementTests`). -/
-def canonicalParentCore (parents : List IssueId)
-    (maxTag : IssueId → Option Stamp) : Option IssueId := Id.run do
-  let mut best : Option (IssueId × Stamp) := none
-  for p in parents do
-    if let some tag := maxTag p then
-      best := match best with
-        | none => some (p, tag)
-        | some (bp, bt) => if TotalOrd.le bt tag then some (p, tag) else some (bp, bt)
-  return best.map (·.1)
+/-- The greatest live tag of an edge via the hoisted hashes equals the kernel
+    spec `maxLiveTag` — the two `Edge`-keyed probes discharge the tag/tombstone
+    lookups, then the fold is the same `State.maxLiveFold`. -/
+theorem View.maxTag_eq (v : View) (e : Edge)
+    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssocK v.state.edges.adds.toList)
+    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssocK v.state.edges.removed.toList) :
+    v.maxTag e = v.state.maxLiveTag e := by
+  show State.maxLiveFold (v.idx.edgeTags[e]?.getD FinSet.empty)
+      (v.idx.edgeRemoved[e]?.getD FinSet.empty) = _
+  rw [hadds, hrem, Tl.Kernel.getElem?_hashAssocK_amap, Tl.Kernel.getElem?_hashAssocK_amap]
+  rfl
 
-/-- The canonical display parent — the spec/reference: candidates from
-    `parentsOf` (re-derives `presentEdges`), tags from `maxTagOf`. Production
-    reads the hoisted `canonicalParentE`; this is the form tests compare to. -/
-def canonicalParent (s : State) (i : IssueId) : Option IssueId :=
-  canonicalParentCore (s.parentsOf i) (fun p => maxTagOf s (p, i, EdgeKind.Parent))
-
-/-- The production canonical parent — the same `canonicalParentCore` fold over
-    the hoisted views: candidates from the parent-by-child bucket (vs `parentsOf`
-    re-deriving `presentEdges`) and tags from the edge-tag hash `v.maxTag` (vs an
-    O(E) `tagsOf` find), so the tree's `isRoot` runs it O(deg)/row, not O(E)/row.
-    Both inputs are pinned equal to the spec's, so the result is identical. -/
+/-- The production canonical parent — the shared kernel selection core
+    (`State.canonParentSelect`) over the hoisted views: candidates from the
+    parent-by-child bucket (vs `parentsOf` re-deriving `presentEdges`) and tags
+    from the edge tag and tombstone hashes `v.maxTag` (vs O(E) `tagsOf`/`removedOf`
+    finds), so the tree's `isRoot` runs it O(deg)/row, not O(E)/row. Pinned equal
+    to the spec `State.canonicalParent` for a present child (`canonicalParentE_eq`). -/
 def canonicalParentE (v : View) (i : IssueId) : Option IssueId :=
-  canonicalParentCore (v.parents i) (fun p => v.maxTag (p, i, EdgeKind.Parent))
+  State.canonParentSelect (fun p => v.maxTag (p, i, EdgeKind.Parent)) (v.parents i)
+
+/-- `(l.filter p).map f` as a `filterMap` — the fusion the parent-bucket bridge
+    below reads `parentsOf` through. -/
+private theorem map_filter_eq_filterMap {α β : Type _} (p : α → Bool) (f : α → β)
+    (l : List α) : (l.filter p).map f = l.filterMap (fun a => if p a then some (f a) else none) := by
+  induction l with
+  | nil => rfl
+  | cons x xs ih =>
+    by_cases h : p x = true
+    · rw [List.filter_cons_of_pos h, List.map_cons, ih,
+        List.filterMap_cons_some (f := fun a => if p a then some (f a) else none)
+          (show (if p x then some (f x) else none) = some (f x) from if_pos h)]
+    · rw [List.filter_cons_of_neg h, ih,
+        List.filterMap_cons_none (f := fun a => if p a then some (f a) else none)
+          (show (if p x then some (f x) else none) = none from if_neg h)]
+
+/-- The parent-by-child bucket lists exactly the spec candidate parents of a
+    *present* child: the bucket is over `parentEdges` (child-present filtered),
+    but for a present `i` that filter is redundant, so it agrees with `parentsOf`
+    (which does not filter the child). -/
+theorem View.parents_eq (v : View) (i : IssueId)
+    (hpbc : v.idx.pbc = Tl.Kernel.bucketBy (v.state.parentEdges.map (fun p => (p.2, p.1))))
+    (hi : v.state.hasIssue i) : v.parents i = v.state.parentsOf i := by
+  show (v.idx.pbc[i]?.getD []).reverse = _
+  rw [hpbc, Tl.Kernel.getD_bucketBy]
+  unfold State.parentEdges State.parentsOf
+  rw [List.map_filterMap, List.filter_filterMap, List.map_filterMap,
+    map_filter_eq_filterMap]
+  apply List.filterMap_congr
+  intro e _
+  obtain ⟨f, t, k⟩ := e
+  show Option.map (fun p => p.2) (Option.filter (fun p => p.1 == i)
+      (Option.map (fun p => (p.2, p.1))
+        (if (decide (k = EdgeKind.Parent) && decide (v.state.hasIssue t)) = true
+         then some (f, t) else none)))
+    = if decide (k = EdgeKind.Parent ∧ t = i) then some f else none
+  by_cases hb : (decide (k = EdgeKind.Parent) && decide (v.state.hasIssue t)) = true
+  · rw [if_pos hb, Option.map_some, Option.filter_some,
+      apply_ite (Option.map (fun p : IssueId × IssueId => p.2)), Option.map_some, Option.map_none]
+    have hk : k = EdgeKind.Parent := of_decide_eq_true (Bool.and_eq_true .. |>.mp hb).1
+    by_cases ht : t = i
+    · rw [if_pos (show ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
+        if_pos (decide_eq_true (show k = EdgeKind.Parent ∧ t = i from ⟨hk, ht⟩))]
+    · rw [if_neg (show ¬ ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
+        if_neg (fun hc => ht (of_decide_eq_true hc).2)]
+  · rw [if_neg hb, Option.map_none, Option.filter_none, Option.map_none, eq_comm, if_neg]
+    intro hc
+    obtain ⟨hck, hct⟩ := of_decide_eq_true hc
+    exact hb (by rw [decide_eq_true hck, decide_eq_true (hct ▸ hi : v.state.hasIssue t), Bool.and_true])
+
+/-- **(d)** the production canonical parent equals the kernel spec for a present
+    child, given a well-formed index (its parent-by-child bucket and edge
+    tag/tombstone hashes built from `v.state`). `hasIssue i` closes the
+    child-present candidate-set gap (`parentEdges` filters the child, `parentsOf`
+    does not); the hash hypotheses discharge the `Edge`-keyed probes. -/
+theorem canonicalParentE_eq (v : View) (i : IssueId) (hi : v.state.hasIssue i)
+    (hpbc : v.idx.pbc = Tl.Kernel.bucketBy (v.state.parentEdges.map (fun p => (p.2, p.1))))
+    (hadds : v.idx.edgeTags = Tl.Kernel.hashAssocK v.state.edges.adds.toList)
+    (hrem : v.idx.edgeRemoved = Tl.Kernel.hashAssocK v.state.edges.removed.toList) :
+    canonicalParentE v i = v.state.canonicalParent i := by
+  unfold canonicalParentE State.canonicalParent
+  rw [View.parents_eq v i hpbc hi]
+  congr 1
+  funext p
+  exact View.maxTag_eq v (p, i, EdgeKind.Parent) hadds hrem
 
 def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
   let rows := edges.filter (fun (f, t, _) => f == i || t == i)
