@@ -1908,7 +1908,72 @@ def cliReviewBatchTests : IO (List Outcome) := do
   o := o ++
     [← expectData "a superseded close echoes consistently (not closed, nothing freed)"
       ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--actor", "t"]
-      (fun j => jStr j "status" != some "done" && (jArr j "unblocked").isEmpty)]
+      (fun j => jStr j "status" != some "done" && (jArr j "unblocked").isEmpty
+        && (jGet j "close").bind (fun c => jStr c "outcome") == some "superseded")]
+  -- the human line for the not-closed supersession also carries the outcome
+  match ← run' ["close", "tl-" ++ blkr, "--dir", dir5, "--as", "done", "--actor", "t"] with
+  | .error e => o := o ++ [check "not-closed superseded close reachable" false e.message]
+  | .ok out => o := o ++
+      [check "not-closed superseded close discloses supersession in the human line"
+        ((out.human.splitOn "superseded").length == 2) out.human]
+  -- close-side mirror of the claim work: a foreign close with a DIFFERENT
+  -- resolution outstamps the local write. The issue IS terminal, so the old
+  -- terminality-only check printed "Closed … as done" with the LOSING
+  -- resolution. Value-based outcome: it is closed as CANCELLED (the winner),
+  -- so `won` would be a lie — human discloses supersession, JSON close.outcome
+  -- is superseded and close.resolution names the winner (parity).
+  let dirCR ← freshDir
+  let tgtCR ← mkIssue dirCR "ContestedResolution"
+  let crHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirCR / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.close tgtCR .Cancelled) crHlc "2zzzzzzzzzzzz" "eve" ++ "\n")
+  match ← run' ["close", "tl-" ++ tgtCR, "--dir", dirCR, "--as", "done", "--actor", "t"] with
+  | .error e => o := o ++ [check "different-resolution superseded close reachable" false s!"unexpected: {e.message}"]
+  | .ok out =>
+    let outc := (jGet out.data "close").bind (fun c => jStr c "outcome")
+    let heldRes := (jGet out.data "close").bind (fun c => jStr c "resolution")
+    o := o ++
+      [check "different-resolution close is terminal (the write did land)"
+        (jStr out.data "status" == some "cancelled") out.data.compress,
+       check "different-resolution close reports superseded in JSON (value-based, not terminality)"
+        (outc == some "superseded") s!"outcome={outc}",
+       check "close.resolution names the winner (cancelled), not the requested (done)"
+        (heldRes == some "cancelled") s!"resolution={heldRes}",
+       check "top-level closeResolution agrees with the close block (no self-contradiction)"
+        (jStr out.data "closeResolution" == some "cancelled") out.data.compress,
+       check "different-resolution close discloses supersession in the human line"
+        ((out.human.splitOn "superseded").length == 2
+         && (out.human.splitOn "closed as cancelled").length == 2) out.human]
+  -- a clean close (no contention) still reports won with the requested resolution
+  let dirCW ← freshDir
+  let tgtCW ← mkIssue dirCW "CleanClose"
+  o := o ++ [← expectData "a clean close reports won with the requested resolution"
+      ["close", "tl-" ++ tgtCW, "--dir", dirCW, "--as", "cancelled", "--actor", "t"]
+      (fun j => jStr j "status" == some "cancelled"
+        && (jGet j "close").bind (fun c => jStr c "outcome") == some "won"
+        && (jGet j "close").bind (fun c => jStr c "resolution") == some "cancelled")]
+  -- --as duplicate, same resolution but a DIFFERENT canonical won: the
+  -- resolution register matches (duplicate), so only the duplicate-target
+  -- check flips this to superseded. The human line names the TARGET (never
+  -- "duplicate, not duplicate"), and close.outcome is superseded.
+  let dirDup ← freshDir
+  let tgtDup ← mkIssue dirDup "DupContested"
+  let can1 ← mkIssue dirDup "Canonical1"
+  let can2 ← mkIssue dirDup "Canonical2"
+  let dupHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirDup / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.close tgtDup .Duplicate) dupHlc "2zzzzzzzzzzzz" "eve" 1 ++ "\n"
+     ++ foreignLine (.metaSet tgtDup "duplicate-of" (some can2)) (dupHlc + 1) "2zzzzzzzzzzzz" "eve" 2 ++ "\n")
+  match ← run' ["close", "tl-" ++ tgtDup, "--dir", dirDup, "--as", "duplicate", "--of", "tl-" ++ can1, "--actor", "t"] with
+  | .error e => o := o ++ [check "duplicate-target-mismatch close reachable" false s!"unexpected: {e.message}"]
+  | .ok out =>
+    let outc := (jGet out.data "close").bind (fun c => jStr c "outcome")
+    o := o ++
+      [check "duplicate-target mismatch reports superseded (target check, not resolution)"
+        (outc == some "superseded") s!"outcome={outc}",
+       check "duplicate-target mismatch human line names the target, not 'duplicate, not duplicate'"
+        ((out.human.splitOn "duplicate, not duplicate").length == 1
+         && (out.human.splitOn "is a duplicate of").length == 2) out.human]
   -- spawn rows: TL_DIR-init, ceiling realpath, error sanitization
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   unless ← exe.pathExists do return o
@@ -4576,13 +4641,15 @@ def cliShapePinTests : IO (List Outcome) := do
    ← expectData "undefer drops deferUntil and nothing else"
       ["undefer", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
     (fun j => jKeys j == echoKeys && jBool j "deferred" == some false),
-   ← expectData "close adds exactly closeResolution/closedAt/unblocked"
+   ← expectData "close adds exactly close/closeResolution/closedAt/unblocked"
       ["close", "tl-" ++ solo, "--as", "done", "--dir", dir, "--actor", "t"]
     (fun j => jKeys j
-        == ["blocked", "closeResolution", "closedAt", "createdAt", "deferred",
-            "dependencies", "effectiveStatus", "id", "isEpic", "labels", "meta",
-            "priority", "provenance", "ready", "status", "title",
-            "unblocked", "updatedAt"]),
+        == ["blocked", "close", "closeResolution", "closedAt", "createdAt",
+            "deferred", "dependencies", "effectiveStatus", "id", "isEpic",
+            "labels", "meta", "priority", "provenance", "ready", "status",
+            "title", "unblocked", "updatedAt"]
+      && (jGet j "close").bind (fun c => jStr c "outcome") == some "won"
+      && (jGet j "close").bind (fun c => jStr c "resolution") == some "done"),
    ← expectData "reopen restores the bare echo (no closeResolution/closedAt)"
       ["reopen", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
     (fun j => jKeys j == echoKeys && jStr j "status" == some "open"),

@@ -1317,20 +1317,57 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   -- concurrent later-stamped foreign claim/reopen can outrank this close in
   -- LWW, so the issue may not actually be closed. `unblocked` is the proved
   -- freed set over the post state, and the message reports what really held.
-  let actuallyClosed := (v.state.issueData i).statusOf.closed
+  let dPost := v.state.issueData i
+  let actuallyClosed := dPost.statusOf.closed
+  -- the outcome is VALUE-based (mirrors the claim task): the close *won* only
+  -- when the issue is terminal AND the winning `closeResolution` is the one
+  -- this close requested — and, for `--as duplicate`, the winning duplicate-of
+  -- points where we asked. A concurrent foreign close with a DIFFERENT
+  -- resolution (or a different duplicate target) that outstamps this write
+  -- leaves the issue closed but not as requested: `superseded`, disclosed
+  -- honestly rather than a "Closed as <losing-resolution>" lie. (Terminality
+  -- alone — the old check — could not tell the two apart.)
+  let resWinner := dPost.closeResolution.value.getD none
+  let echoTarget := ofTok.bind (fun t => (resolveToken v.state t).toOption)
+  let dupTargetOk := match res, echoTarget with
+    | .Duplicate, some t => duplicateOf v.state i == some t
+    | _, _ => true
+  let resWon := actuallyClosed && resWinner == some res && dupTargetOk
   -- `unblocks` is the ready-diff `ready (withClosed s i) \ ready s`, so it is
   -- computed on the PRE-state (where i is still open — on the post-state the
-  -- diff is empty). Report it only when the close actually took effect: a
-  -- superseded close frees nothing.
-  let freed := if actuallyClosed then (State.unblocksFast ctx.loaded.state ctx.now i).map (Json.str ∘ displayId)
+  -- diff is empty). Report it only when the close actually took effect *as
+  -- requested*: a superseded close frees nothing on this replica's terms.
+  let freed := if resWon then (State.unblocksFast ctx.loaded.state ctx.now i).map (Json.str ∘ displayId)
                else []
-  let data := (issueObj v i).setObjVal! "unblocked" (Json.arr freed.toArray)
+  let closeOutcome : CloseOutcome := if resWon then .won else .superseded
+  -- the `close` block mirrors claim's `{outcome, currentAssignee}`: the typed
+  -- outcome plus the resolution that actually holds (null when not terminal),
+  -- so an agent branches on the outcome and reads the winning resolution
+  -- without re-deriving it. Additive field (ADR-0008 §additive-only).
+  let closeBlock := Json.mkObj
+    [("outcome", Json.str closeOutcome.wire),
+     ("resolution", resWinner.elim Json.null (fun r => Json.str (resolutionWire r)))]
+  let data := ((issueObj v i).setObjVal! "unblocked" (Json.arr freed.toArray)).setObjVal! "close" closeBlock
   let human :=
     if parsed.isEmpty then s!"{displayId i} already closed as {asStr} — nothing to do"
     else if !actuallyClosed then
-      s!"close of {displayId i} was superseded by a later concurrent write — it is {statusWire (v.state.issueData i).statusOf}; rerun if still intended"
-    else s!"Closed {displayId i} as {asStr}" ++
+      s!"close of {displayId i} was superseded by a later concurrent write — it is {statusWire dPost.statusOf}; rerun if still intended"
+    else if resWon then s!"Closed {displayId i} as {asStr}" ++
       (if freed.isEmpty then "" else s!" (unblocked {freed.length})")
+    else if resWinner == some res && res == .Duplicate then
+      -- same resolution, different canonical: a concurrent duplicate close won
+      -- the duplicate-of target. Word it in terms of the target, not the
+      -- (identical) resolution, so it never reads "duplicate, not duplicate".
+      let winDup := (duplicateOf v.state i).elim "another issue" displayId
+      let reqDup := echoTarget.elim asStr displayId
+      s!"close of {displayId i} was superseded by a later concurrent write — it is a duplicate of {winDup}, not of {reqDup}; rerun if still intended"
+    else
+      -- terminal, but not as this close asked: a concurrent close won the
+      -- resolution register. Name what actually holds.
+      let heldAs := match resWinner with
+        | some r => resolutionWire r
+        | none => statusWire dPost.statusOf
+      s!"close of {displayId i} was superseded by a later concurrent write — it is closed as {heldAs}, not {asStr}; rerun if still intended"
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
 /-- `tl update`'s `--append-notes` is a non-atomic read-modify-write: it reads the

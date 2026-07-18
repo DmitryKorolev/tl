@@ -38,6 +38,21 @@ def ClaimOutcome.wire : ClaimOutcome → String
   | .ended => "ended"
   | .superseded => "superseded"
 
+/-- The `close` verb's outcome — a closed enum (no `ended`: a close is not a
+    tenancy, so the only readings are that the requested resolution held (`won`)
+    or a concurrent write took the issue to a different terminal / reopened it
+    (`superseded`)). Shares the won/superseded contention vocabulary with
+    `claim`; `wire` is the single JSON/render spelling boundary. -/
+inductive CloseOutcome
+  | won | superseded
+deriving DecidableEq, Repr
+
+/-- The wire/render spelling of a close outcome (the only place the strings
+    live). -/
+def CloseOutcome.wire : CloseOutcome → String
+  | .won => "won"
+  | .superseded => "superseded"
+
 /-! ## Style: the two independent surfaces (ADR-0017 §6) -/
 
 inductive ColorMode | on | off deriving DecidableEq
