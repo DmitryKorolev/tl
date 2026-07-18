@@ -385,6 +385,19 @@ theorem present_readd (s : OrSet α) (e : α) (st : Stamp) (obs : FinSet Stamp)
   rw [merge_assoc, merge_comm (tombstonesAt e obs) (singletonAdd e st), ← merge_assoc]
   exact present_addWins s e st obs hunobserved hfresh
 
+/-- **Removal monotonicity** (ADR-0002): a tombstone delta — any observed set,
+    keyed at any element — never makes an element present: it adds no tags and
+    only grows the tombstones. The shrink-only companion of
+    `not_present_mergeTombstonesAt_of_observed_all` below. -/
+theorem present_mergeTombstonesAt_mono (s : OrSet α) (e0 : α) (obs : FinSet Stamp)
+    {e : α} (h : Present (merge s (tombstonesAt e0 obs)) e) : Present s e := by
+  obtain ⟨st, hmem, hlive⟩ := (present_iff_exists_live_tag ..).mp h
+  rw [tagsOf_merge, tagsOf_tombstonesAt, FinSet.union_empty_right] at hmem
+  refine (present_iff_exists_live_tag ..).mpr ⟨st, hmem, fun hst => ?_⟩
+  apply hlive
+  rw [removedOf_merge]
+  exact (FinSet.mem_union ..).mpr (Or.inl hst)
+
 /-- **Removal effectiveness** (ADR-0002): a remove that observed *all* of `e`'s
     add-tags makes `e` absent — tombstones genuinely remove; a `Present` that
     ignored them could not satisfy this. The hypothesis is precise for the

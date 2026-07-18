@@ -9,7 +9,9 @@ file proves that grouping is exactly the SCC partition of the cyclic node set:
     via the `reachClosure` transitive-closure characterization — transitive);
   * the witnesses **cover** exactly the cyclic present nodes (`mem_flatten_*`);
   * two cyclic nodes share a witness **iff** `sameSCC` (`*_same_witness_iff`) — no SCC
-    is split across witnesses and none are merged, i.e. exactly one witness per SCC.
+    is split across witnesses and none are merged, i.e. exactly one witness per SCC;
+  * each witness is **nonempty** and **absorbs** any cyclic present node `sameSCC`
+    to a member (`sccWitnesses_ne_nil` / `mem_sccWitness_of_sameSCC`).
 
 Generic over any `succ` whose successors stay within `presentIssues` (true for
 `kindSucc`/`precSucc`, ADR-0004 thm 6), so the bounded `reachClosure` saturates.
@@ -192,6 +194,37 @@ theorem sccWitnesses_same_witness_iff (hsucc : ∀ x, succ x ⊆ s.presentIssues
     (∃ W ∈ s.sccWitnesses succ, u ∈ W ∧ v ∈ W) ↔ s.sameSCC succ u v = true := by
   refine ⟨fun ⟨W, hW, huW, hvW⟩ => sccWitnesses_sameSCC hsucc hW huW hvW, ?_⟩
   exact fun h => sameSCC_same_witness hsucc hucyc hvcyc h
+
+/-- Every emitted SCC witness is nonempty (its representative is `sameSCC` to
+    itself). -/
+theorem sccWitnesses_ne_nil {s : State} {succ : IssueId → List IssueId}
+    (hsucc : ∀ x, succ x ⊆ s.presentIssues)
+    {W : List IssueId} (hW : W ∈ s.sccWitnesses succ) : W ≠ [] := by
+  unfold State.sccWitnesses at hW
+  obtain ⟨x, hxvs, rfl⟩ := mem_groupSCCGo_form _ _ _ W hW
+  have hxpres : x ∈ s.presentIssues := List.mem_of_mem_filter hxvs
+  have hxW : x ∈ (s.presentIssues.filter (s.onCycle succ)).filter
+      (fun u => s.sameSCC succ u x) :=
+    List.mem_filter.mpr ⟨hxvs, sameSCC_refl hsucc hxpres⟩
+  intro hnil
+  rw [hnil] at hxW
+  exact nomatch hxW
+
+/-- A cyclic present node `sameSCC` to a witness member is in that witness
+    (witnesses are whole SCCs). -/
+theorem mem_sccWitness_of_sameSCC {s : State} {succ : IssueId → List IssueId}
+    (hsucc : ∀ x, succ x ⊆ s.presentIssues)
+    {W : List IssueId} (hW : W ∈ s.sccWitnesses succ) {v b : IssueId}
+    (hv : v ∈ W) (hbpres : b ∈ s.presentIssues) (hbcyc : s.onCycle succ b = true)
+    (hbv : s.sameSCC succ b v = true) : b ∈ W := by
+  unfold State.sccWitnesses at hW
+  obtain ⟨x, hxvs, rfl⟩ := mem_groupSCCGo_form _ _ _ W hW
+  have hxpres : x ∈ s.presentIssues := List.mem_of_mem_filter hxvs
+  rw [List.mem_filter] at hv
+  have hvpres : v ∈ s.presentIssues := List.mem_of_mem_filter hv.1
+  rw [List.mem_filter]
+  refine ⟨List.mem_filter.mpr ⟨hbpres, hbcyc⟩, ?_⟩
+  exact sameSCC_trans hsucc hbpres hvpres hxpres hbv hv.2
 
 /-! ## Instantiations for the concrete diagnostics (`cycles`, `precCycles`)
 

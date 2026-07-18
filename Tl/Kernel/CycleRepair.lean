@@ -50,7 +50,9 @@ the protocol, never a command path — the CLI keeps calling `cyclesFast`.
 
 Statements are at the state/op level (`apply`, `Op.edgeRemove`, `Present`,
 `tagsOf`, `cycles`) and never mention the OR-Set tombstone representation; the
-one place the *proofs* must open it is the marked bridge section below.
+proofs cross into the OR-Set only through the named `edges_edgeRemove`
+projection (Frame) onto OrSet's public tombstone theorems — this module never
+reads the representation itself.
 -/
 import Tl.Kernel.SccProps
 import Tl.Kernel.ReachBFS
@@ -76,14 +78,13 @@ theorem length_lt_of_nodup_subset_missing {α : Type _} [DecidableEq α]
     _ < l.toFinset.card := hcard
     _ ≤ l.length := List.toFinset_card_le l
 
-/-- Reachability is monotone in the successor map: fewer edges, fewer paths. -/
+/-- Reachability is monotone in the successor map: fewer edges, fewer paths.
+    (`StepRel` is an abbrev, so `ReflTransGen.mono` applies definitionally.) -/
 theorem reflTransGen_mono_succ {succ' succ : IssueId → List IssueId}
     (h : ∀ i, succ' i ⊆ succ i) {a b : IssueId}
     (hab : Relation.ReflTransGen (StepRel succ') a b) :
-    Relation.ReflTransGen (StepRel succ) a b := by
-  induction hab with
-  | refl => exact .refl
-  | tail _ hbc ih => exact ih.tail (h _ hbc)
+    Relation.ReflTransGen (StepRel succ) a b :=
+  Relation.ReflTransGen.mono (fun x _ hxy => h x hxy) _ _ hab
 
 /-! ## The repair protocol -/
 
@@ -127,38 +128,7 @@ def inWitnessKindEdges (s : State) (k : EdgeKind) : List Edge :=
 def inWitnessKindEdgeCount (s : State) (k : EdgeKind) : Nat :=
   (s.inWitnessKindEdges k).length
 
-/-! ## Generic SCC-witness facts (any in-universe successor map) -/
-
-/-- Every emitted SCC witness is nonempty (its representative is `sameSCC` to
-    itself). -/
-theorem sccWitnesses_ne_nil {s : State} {succ : IssueId → List IssueId}
-    (hsucc : ∀ x, succ x ⊆ s.presentIssues)
-    {W : List IssueId} (hW : W ∈ s.sccWitnesses succ) : W ≠ [] := by
-  unfold State.sccWitnesses at hW
-  obtain ⟨x, hxvs, rfl⟩ := mem_groupSCCGo_form _ _ _ W hW
-  have hxpres : x ∈ s.presentIssues := List.mem_of_mem_filter hxvs
-  have hxW : x ∈ (s.presentIssues.filter (s.onCycle succ)).filter
-      (fun u => s.sameSCC succ u x) :=
-    List.mem_filter.mpr ⟨hxvs, sameSCC_refl hsucc hxpres⟩
-  intro hnil
-  rw [hnil] at hxW
-  exact nomatch hxW
-
-/-- A cyclic present node `sameSCC` to a witness member is in that witness
-    (witnesses are whole SCCs). -/
-theorem mem_sccWitness_of_sameSCC {s : State} {succ : IssueId → List IssueId}
-    (hsucc : ∀ x, succ x ⊆ s.presentIssues)
-    {W : List IssueId} (hW : W ∈ s.sccWitnesses succ) {v b : IssueId}
-    (hv : v ∈ W) (hbpres : b ∈ s.presentIssues) (hbcyc : s.onCycle succ b = true)
-    (hbv : s.sameSCC succ b v = true) : b ∈ W := by
-  unfold State.sccWitnesses at hW
-  obtain ⟨x, hxvs, rfl⟩ := mem_groupSCCGo_form _ _ _ W hW
-  have hxpres : x ∈ s.presentIssues := List.mem_of_mem_filter hxvs
-  rw [List.mem_filter] at hv
-  have hvpres : v ∈ s.presentIssues := List.mem_of_mem_filter hv.1
-  rw [List.mem_filter]
-  refine ⟨List.mem_filter.mpr ⟨hbpres, hbcyc⟩, ?_⟩
-  exact sameSCC_trans hsucc hbpres hvpres hxpres hbv hv.2
+/-! ## The kind-successor characterization -/
 
 /-- A kind-`k` successor is exactly a present kind-`k` edge to a present
     target. -/
@@ -178,14 +148,13 @@ theorem mem_kindSucc_iff (s : State) (k : EdgeKind) (i j : IssueId) :
     rw [List.mem_filter, decide_eq_true_eq]
     exact ⟨hmem, rfl, rfl⟩
 
-/-! ## Bridge: presence across an `edgeRemove` — tombstone-coupled proofs
+/-! ## Bridge: presence across an `edgeRemove`
 
-The two lemmas below are the only places this module reads the tombstone
-side of the OR-Set — through its published pointwise-merge lemmas
-(`tagsOf_merge`/`removedOf_merge`, the `present_iff_exists_live_tag`
-characterization, and the removal-effectiveness theorem), never the raw
-fields. Their *statements* are representation-free; a future tombstone
-reshape revisits only these two proof bodies. -/
+Both lemmas cross from `State` into the OR-Set through the named projection
+`edges_edgeRemove` (Frame) and land on OrSet's public tombstone theorems
+(`present_mergeTombstonesAt_mono`,
+`not_present_mergeTombstonesAt_of_observed_all`); the representation is never
+read here, so a reshaped delta fails at the named boundary, legibly. -/
 
 /-- An `edgeRemove` — any observed set — never makes an edge present:
     presence only shrinks (a `tombstonesAt` delta adds no tags and only grows
@@ -193,21 +162,18 @@ reshape revisits only these two proof bodies. -/
 theorem present_edgeRemove_mono (s : State) (e : Edge) (obs : FinSet Stamp)
     {x : Edge} (h : (apply s (Op.edgeRemove e obs)).edges.Present x) :
     s.edges.Present x := by
-  have h' : OrSet.Present (OrSet.merge s.edges (OrSet.tombstonesAt e obs)) x := h
-  obtain ⟨st, hmem, hlive⟩ := (OrSet.present_iff_exists_live_tag ..).mp h'
-  rw [OrSet.tagsOf_merge, OrSet.tagsOf_tombstonesAt, FinSet.union_empty_right] at hmem
-  refine (OrSet.present_iff_exists_live_tag ..).mpr ⟨st, hmem, fun hst => ?_⟩
-  apply hlive
-  rw [OrSet.removedOf_merge]
-  exact (FinSet.mem_union ..).mpr (Or.inl hst)
+  rw [edges_edgeRemove] at h
+  exact OrSet.present_mergeTombstonesAt_mono s.edges e obs h
 
 /-- A well-formed remove kills its edge: carrying every held tag of `e`
     (hypothesis (ii)) leaves `e` with no live tag — whether `e` was present,
     already removed, or never added. Direct from removal effectiveness with
     the full tag set observed. -/
 theorem repairStep_not_present (s : State) (e : Edge) :
-    ¬ (repairStep s e).edges.Present e :=
-  OrSet.not_present_mergeTombstonesAt_of_observed_all s.edges e (s.edges.tagsOf e)
+    ¬ (repairStep s e).edges.Present e := by
+  show ¬ (apply s (Op.edgeRemove e (s.edges.tagsOf e))).edges.Present e
+  rw [edges_edgeRemove]
+  exact OrSet.not_present_mergeTombstonesAt_of_observed_all s.edges e (s.edges.tagsOf e)
     (fun _ hst => hst)
 
 /-! ## Frame: what an `edgeRemove` leaves fixed, and what only shrinks -/
@@ -287,10 +253,7 @@ theorem cycles_edgeRemove_refine (s : State) (e : Edge) (obs : FinSet Stamp) (k 
     exact hupres'
   have hne : W' ≠ [] :=
     sccWitnesses_ne_nil (kindSucc_subset_present (apply s (Op.edgeRemove e obs)) k) hW'
-  obtain ⟨u0, hu0⟩ : ∃ u, u ∈ W' := by
-    cases W' with
-    | nil => exact absurd rfl hne
-    | cons a l => exact ⟨a, List.mem_cons_self ..⟩
+  obtain ⟨u0, hu0⟩ := List.exists_mem_of_ne_nil W' hne
   obtain ⟨hu0pres, hu0cyc⟩ := hface u0 hu0
   have hu0flat : u0 ∈ (s.cycles k).flatten :=
     (mem_flatten_cycles_iff s k u0).mpr ⟨hu0pres, hu0cyc⟩
@@ -305,20 +268,29 @@ theorem cycles_edgeRemove_refine (s : State) (e : Edge) (obs : FinSet Stamp) (k 
     sameSCC_edgeRemove s e obs k hupres hu0pres hsame'
   exact mem_sccWitness_of_sameSCC (kindSucc_subset_present s k) hW hu0W hupres hucyc hsame
 
+/-- A true `hasCycle` yields a witness (the report is nonempty). -/
+private theorem exists_witness_of_hasCycle {s : State} {k : EdgeKind}
+    (h : s.hasCycle k = true) : ∃ W, W ∈ s.cycles k := by
+  unfold State.hasCycle at h
+  cases hcs : s.cycles k with
+  | nil => rw [hcs] at h; exact nomatch h
+  | cons W rest => exact ⟨W, List.mem_cons_self ..⟩
+
+/-- Any witness makes `hasCycle` true. -/
+private theorem hasCycle_of_mem_cycles {s : State} {k : EdgeKind} {W : List IssueId}
+    (hW : W ∈ s.cycles k) : s.hasCycle k = true := by
+  unfold State.hasCycle
+  cases hcs : s.cycles k with
+  | nil => rw [hcs] at hW; exact nomatch hW
+  | cons _ _ => rfl
+
 /-- **(b), summary form**: an `edgeRemove` cannot introduce a kind-`k` cycle. -/
 theorem hasCycle_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) (k : EdgeKind)
     (h : (apply s (Op.edgeRemove e obs)).hasCycle k = true) :
     s.hasCycle k = true := by
-  unfold State.hasCycle at h ⊢
-  cases hc' : (apply s (Op.edgeRemove e obs)).cycles k with
-  | nil => rw [hc'] at h; exact nomatch h
-  | cons W' rest =>
-    have hW' : W' ∈ (apply s (Op.edgeRemove e obs)).cycles k := by
-      rw [hc']; exact List.mem_cons_self ..
-    obtain ⟨W, hW, _⟩ := cycles_edgeRemove_refine s e obs k hW'
-    cases hcs : s.cycles k with
-    | nil => rw [hcs] at hW; exact nomatch hW
-    | cons _ _ => rfl
+  obtain ⟨W', hW'⟩ := exists_witness_of_hasCycle h
+  obtain ⟨W, hW, _⟩ := cycles_edgeRemove_refine s e obs k hW'
+  exact hasCycle_of_mem_cycles hW
 
 /-! ## (a) A repair step strictly decreases the present kind-`k` edge count -/
 
@@ -361,10 +333,7 @@ theorem cycles_witness_edge_exists (s : State) (k : EdgeKind)
     ∃ i ∈ W, ∃ j ∈ W, s.edges.Present (i, j, k) := by
   have hsucc := kindSucc_subset_present s k
   have hne : W ≠ [] := sccWitnesses_ne_nil hsucc hW
-  obtain ⟨v, hv⟩ : ∃ v, v ∈ W := by
-    cases W with
-    | nil => exact absurd rfl hne
-    | cons a l => exact ⟨a, List.mem_cons_self ..⟩
+  obtain ⟨v, hv⟩ := List.exists_mem_of_ne_nil W hne
   have hvflat : v ∈ (s.cycles k).flatten := List.mem_flatten.mpr ⟨W, hW, hv⟩
   obtain ⟨hvpres, hvcyc⟩ := (mem_flatten_cycles_iff s k v).mp hvflat
   obtain ⟨b, hbsucc, hbv⟩ := (onCycle_kindSucc_iff s k v).mp hvcyc
@@ -385,16 +354,12 @@ theorem cycles_witness_edge_exists (s : State) (k : EdgeKind)
     repair step. -/
 theorem effectiveStep_exists_of_hasCycle (s : State) (k : EdgeKind)
     (h : s.hasCycle k = true) : ∃ e : Edge, EffectiveStep s k e := by
-  unfold State.hasCycle at h
-  cases hcs : s.cycles k with
-  | nil => rw [hcs] at h; exact nomatch h
-  | cons W rest =>
-    have hW : W ∈ s.cycles k := by rw [hcs]; exact List.mem_cons_self ..
-    obtain ⟨i, hiW, j, hjW, hpres⟩ := cycles_witness_edge_exists s k hW
-    refine ⟨(i, j, k), ?_⟩
-    show (i, j, k).2.2 = k ∧ s.edges.Present (i, j, k)
-      ∧ ∃ W ∈ s.cycles k, (i, j, k).1 ∈ W ∧ (i, j, k).2.1 ∈ W
-    exact ⟨rfl, hpres, W, hW, hiW, hjW⟩
+  obtain ⟨W, hW⟩ := exists_witness_of_hasCycle h
+  obtain ⟨i, hiW, j, hjW, hpres⟩ := cycles_witness_edge_exists s k hW
+  refine ⟨(i, j, k), ?_⟩
+  show (i, j, k).2.2 = k ∧ s.edges.Present (i, j, k)
+    ∧ ∃ W ∈ s.cycles k, (i, j, k).1 ∈ W ∧ (i, j, k).2.1 ∈ W
+  exact ⟨rfl, hpres, W, hW, hiW, hjW⟩
 
 /-- **(d), loop-exit honesty**: if no effective step is available, the state is
     already kind-`k` cycle-free — the loop never stalls on a live cycle. -/
@@ -455,42 +420,39 @@ theorem effectiveChain_length_le (k : EdgeKind) :
       _ ≤ (repairStep s e).inWitnessKindEdgeCount k + 1 := Nat.add_le_add_right hle 1
       _ ≤ s.inWitnessKindEdgeCount k := Nat.succ_le_of_lt hlt
 
-/-- Termination existence, on an explicit bound for the decreasing measure. -/
+/-- Cycle-free already: the empty run is complete. -/
+private theorem repair_done {s : State} {k : EdgeKind} (hc : s.hasCycle k = false) :
+    ∃ es : List Edge, EffectiveChain k s es ∧ (repairChain s es).hasCycle k = false :=
+  ⟨[], True.intro, hc⟩
+
+/-- Termination existence, on an explicit bound for the decreasing measure. The
+    chain-length bound is not re-proved here — `effectiveChain_length_le`
+    supplies it for any chain, so `repair_terminates` composes the two. -/
 theorem repair_terminates_aux (k : EdgeKind) :
     ∀ (n : Nat) (s : State), s.inWitnessKindEdgeCount k ≤ n →
       ∃ es : List Edge, EffectiveChain k s es
         ∧ (repairChain s es).hasCycle k = false
-        ∧ es.length ≤ s.inWitnessKindEdgeCount k
   | 0, s, hn => by
     cases hc : s.hasCycle k with
-    | false =>
-      refine ⟨[], True.intro, ?_, Nat.zero_le _⟩
-      show s.hasCycle k = false
-      exact hc
+    | false => exact repair_done hc
     | true =>
       obtain ⟨e, hstep⟩ := State.effectiveStep_exists_of_hasCycle s k hc
       have hlt := State.inWitnessKindEdgeCount_effectiveStep_lt s hstep
       exact absurd (Nat.lt_of_lt_of_le hlt hn) (Nat.not_lt_zero _)
   | n + 1, s, hn => by
     cases hc : s.hasCycle k with
-    | false =>
-      refine ⟨[], True.intro, ?_, Nat.zero_le _⟩
-      show s.hasCycle k = false
-      exact hc
+    | false => exact repair_done hc
     | true =>
       obtain ⟨e, hstep⟩ := State.effectiveStep_exists_of_hasCycle s k hc
       have hlt := State.inWitnessKindEdgeCount_effectiveStep_lt s hstep
       have hle' : (repairStep s e).inWitnessKindEdgeCount k ≤ n :=
         Nat.lt_succ_iff.mp (Nat.lt_of_lt_of_le hlt hn)
-      obtain ⟨es', hchain', hcyc', hlen'⟩ := repair_terminates_aux k n (repairStep s e) hle'
-      refine ⟨e :: es', ?_, ?_, ?_⟩
+      obtain ⟨es', hchain', hcyc'⟩ := repair_terminates_aux k n (repairStep s e) hle'
+      refine ⟨e :: es', ?_, ?_⟩
       · show EffectiveStep s k e ∧ EffectiveChain k (repairStep s e) es'
         exact ⟨hstep, hchain'⟩
       · show (repairChain (repairStep s e) es').hasCycle k = false
         exact hcyc'
-      · calc (e :: es').length = es'.length + 1 := List.length_cons ..
-          _ ≤ (repairStep s e).inWitnessKindEdgeCount k + 1 := Nat.add_le_add_right hlen' 1
-          _ ≤ s.inWitnessKindEdgeCount k := Nat.succ_le_of_lt hlt
 
 /-- **(c), termination**: from any state — cyclic and dangling edges included —
     some chain of at most `inWitnessKindEdgeCount` effective repair steps ends
@@ -498,8 +460,10 @@ theorem repair_terminates_aux (k : EdgeKind) :
 theorem repair_terminates (s : State) (k : EdgeKind) :
     ∃ es : List Edge, EffectiveChain k s es
       ∧ (repairChain s es).hasCycle k = false
-      ∧ es.length ≤ s.inWitnessKindEdgeCount k :=
-  repair_terminates_aux k (s.inWitnessKindEdgeCount k) s (Nat.le_refl _)
+      ∧ es.length ≤ s.inWitnessKindEdgeCount k := by
+  obtain ⟨es, hchain, hcyc⟩ :=
+    repair_terminates_aux k (s.inWitnessKindEdgeCount k) s (Nat.le_refl _)
+  exact ⟨es, hchain, hcyc, effectiveChain_length_le k es s hchain⟩
 
 /-- **(c), maximal-run form**: every maximal repair run — one no effective step
     can extend — ends kind-`k` cycle-free, within the in-witness edge bound.

@@ -465,6 +465,14 @@ are fixed **unconditionally**: for any observed payload, malformed or adversaria
 included, with no stamp-uniqueness side condition. (A `Blocks`/`Parent` removal is
 *meant* to change the views — that is `dep remove` doing its job.) -/
 
+/-- The edge component of an `edgeRemove` apply, named: the join of the prior
+    edges with the op's keyed tombstone delta. The explicit boundary theorems
+    about presence across a removal route through this projection, so a
+    reshaping of the delta fails here, legibly, not at a definitional cast. -/
+theorem edges_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) :
+    (apply s (Op.edgeRemove e obs)).edges
+      = OrSet.merge s.edges (OrSet.tombstonesAt e obs) := rfl
+
 theorem issues_edgeRemove (s : State) (e : Edge) (obs : FinSet Stamp) :
     (apply s (Op.edgeRemove e obs)).issues = s.issues :=
   OrSet.merge_empty_right s.issues
