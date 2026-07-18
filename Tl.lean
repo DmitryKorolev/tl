@@ -10,6 +10,7 @@ import Tl.Crdt.Map
 import Tl.Crdt.MapFold
 import Tl.Crdt.Lww
 import Tl.Crdt.OrSet
+import Tl.Crdt.Journal
 import Tl.Kernel.State
 import Tl.Kernel.Op
 import Tl.Kernel.Apply

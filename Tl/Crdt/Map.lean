@@ -348,6 +348,45 @@ theorem sorted_map_fst_nodup : {l : List (K × V)} → Sorted l → (l.map Prod.
     obtain ⟨q, hq, hqk⟩ := hmem
     exact absurd hqk.symm (ne_of_lt (hlb q hq))
 
+/-- A `Sorted` list is pairwise strictly key-ascending — the strong (ordered)
+    form of `sorted_map_fst_nodup`, for enumeration-order theorems. -/
+theorem sorted_pairwise_fst_lt : {l : List (K × V)} → Sorted l →
+    List.Pairwise (fun p q : K × V => lt p.1 q.1) l
+  | [], _ => List.Pairwise.nil
+  | _ :: _, ⟨hlb, hsp⟩ =>
+    List.Pairwise.cons (fun q hq => hlb q hq) (sorted_pairwise_fst_lt hsp)
+
+/-- Mapping values (keys untouched) preserves the canonical sort — the sort is
+    key-only. -/
+theorem sorted_mapVal {W : Type w} {f : K → V → W} :
+    {l : List (K × V)} → Sorted l → Sorted (l.map (fun p => (p.1, f p.1 p.2)))
+  | [], _ => trivial
+  | p :: ps, ⟨hlb, hsp⟩ => by
+    rw [List.map_cons]
+    refine ⟨?_, sorted_mapVal hsp⟩
+    intro q hq
+    rw [List.mem_map] at hq
+    obtain ⟨r, hr, hrq⟩ := hq
+    rw [← hrq]
+    exact hlb r hr
+
+/-- Lookup through a value map: the mapped list's value at `k` is `f k` of the
+    original's. -/
+theorem lookup_mapVal {W : Type w} (f : K → V → W) (k : K) :
+    (l : List (K × V)) →
+    lookup k (l.map (fun p => (p.1, f p.1 p.2))) = (lookup k l).map (f k)
+  | [] => rfl
+  | p :: ps => by
+    rw [List.map_cons]
+    show (if k = p.1 then some (f p.1 p.2) else lookup k (ps.map _))
+       = (if k = p.1 then some p.2 else lookup k ps).map (f k)
+    by_cases hk : k = p.1
+    · rw [if_pos hk, if_pos hk, Option.map_some]
+      subst hk
+      rfl
+    · rw [if_neg hk, if_neg hk]
+      exact lookup_mapVal f k ps
+
 /-- Filtering the keys of `insertWith f e0 v l` by a predicate that *rejects* `e0`
     yields the same list as filtering `l`'s keys: `insertWith` either merges into an
     existing `e0` entry (keys unchanged) or inserts `e0` (dropped by the filter),
@@ -474,6 +513,20 @@ theorem ext {m1 m2 : AMap K V} (h : ∀ k, m1.find k = m2.find k) : m1 = m2 := b
 theorem find_merge (f : V → V → V) (m1 m2 : AMap K V) (k : K) :
     (merge f m1 m2).find k = optCombine f (m1.find k) (m2.find k) :=
   AssocList.lookup_merge m1.sorted m2.sorted k
+
+/-- Map every value, keys untouched — the canonical sort is preserved because
+    it is key-only (`AssocList.sorted_mapVal`). -/
+def mapVal {W : Type w} (f : K → V → W) (m : AMap K V) : AMap K W :=
+  ⟨m.toList.map (fun p => (p.1, f p.1 p.2)), AssocList.sorted_mapVal m.sorted⟩
+
+theorem find_mapVal {W : Type w} (f : K → V → W) (m : AMap K V) (k : K) :
+    (m.mapVal f).find k = (m.find k).map (f k) :=
+  AssocList.lookup_mapVal f k m.toList
+
+/-- The keys, pairwise strictly ascending (the ordered strengthening of
+    `keys_nodup`). -/
+theorem keys_pairwise_lt (m : AMap K V) : List.Pairwise lt m.keys :=
+  List.pairwise_map.mpr (AssocList.sorted_pairwise_fst_lt m.sorted)
 
 /-- Merging a single-key map `{e0 ↦ v}` into `m` and filtering the keys by a
     predicate that *rejects* `e0` leaves the filtered key list unchanged — the frame

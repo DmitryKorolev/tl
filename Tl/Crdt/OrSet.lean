@@ -146,6 +146,13 @@ theorem mem_presentElements (s : OrSet α) (e : α) : e ∈ s.presentElements �
   · intro hpres
     exact ⟨AMap.mem_keys.mpr (isSome_of_present hpres), decide_eq_true hpres⟩
 
+/-- The enumeration is strictly ascending in the element order — order
+    determinism is canonical-form sortedness, not a sort step. -/
+theorem presentElements_pairwise_lt (s : OrSet α) :
+    List.Pairwise TotalOrd.lt s.presentElements := by
+  rw [presentElements_eq_keys_filter]
+  exact List.Pairwise.sublist List.filter_sublist (AMap.keys_pairwise_lt s.adds)
+
 /-- The CRDT join — componentwise: both per-element maps join pointwise by
     `FinSet.union`. -/
 def merge (s t : OrSet α) : OrSet α :=
