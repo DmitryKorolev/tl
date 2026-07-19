@@ -356,6 +356,20 @@ theorem sorted_pairwise_fst_lt : {l : List (K × V)} → Sorted l →
   | _ :: _, ⟨hlb, hsp⟩ =>
     List.Pairwise.cons (fun q hq => hlb q hq) (sorted_pairwise_fst_lt hsp)
 
+/-- A strictly-ascending key list, attached to any per-key value, is a `Sorted`
+    assoc list — the converse of `sorted_pairwise_fst_lt`, to feed an enumerated
+    key list (e.g. `presentElements`, ascending) into the merge-join. -/
+theorem sorted_attach {W : Type w} (g : K → W) :
+    {l : List K} → List.Pairwise lt l → Sorted (l.map (fun k => (k, g k)))
+  | [], _ => trivial
+  | k :: ks, h => by
+    obtain ⟨hhead, htail⟩ := List.pairwise_cons.mp h
+    refine ⟨fun q hq => ?_, sorted_attach g htail⟩
+    rw [List.mem_map] at hq
+    obtain ⟨k', hk', hq'⟩ := hq
+    rw [← hq']
+    exact hhead k' hk'
+
 /-- Mapping values (keys untouched) preserves the canonical sort — the sort is
     key-only. -/
 theorem sorted_mapVal {W : Type w} {f : K → V → W} :

@@ -1861,11 +1861,8 @@ def cmdNoteList (dirOverride : Option String) (tok : String) (all skipBad : Bool
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
   let jn := (v.issueData i).notes
   let rows : List (Tl.Crdt.Stamp × Tl.Crdt.NotePayload × Bool) :=
-    if all then
-      jn.entries.elements.filterMap (fun st =>
-        (jn.payloadOf st).map (fun pl => (st, pl, !(decide (jn.Visible st)))))
-    else
-      jn.visibleEntries.map (fun (st, pl) => (st, pl, false))
+    if all then jn.allEntries
+    else jn.visibleEntries.map (fun (st, pl) => (st, pl, false))
   let data := Json.mkObj
     [("id", Json.str (displayId i)), ("count", jnum rows.length),
      ("notes", Json.arr (rows.map (fun (st, pl, rem) => noteEntryJson st pl rem)).toArray)]

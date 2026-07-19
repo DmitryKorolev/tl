@@ -432,13 +432,35 @@ theorem payloadTotal_merge {a b : Journal}
 
 /-! ## Rendering: the visible entries, stamp-ascending -/
 
+/-- The reference form of `visibleEntries`: a `payloads.find` (linear scan) per
+    present stamp — Θ(#present × #payloads). Proof-only (ADR-0024); the shipped
+    `visibleEntries` is the merge-join below, bridged by `visibleEntries_eq_ref`. -/
+private def visibleEntriesRef (j : Journal) : List (Stamp × NotePayload) :=
+  j.entries.presentElements.filterMap (fun st => (j.payloads.find st).map ((st, ·)))
+
 /-- The visible journal, oldest first: the present tags in ascending stamp
     order (the canonical map order — no sort step, no tie-breaks: between
     distinct entries the complete stamp is total outright), each with its
     payload. An element without a payload (unreachable through the op deltas,
-    which add both together) is skipped, keeping the projection total. -/
+    which add both together) is skipped, keeping the projection total.
+
+    `presentElements` is ascending and `payloads` is the same ascending stamp
+    map, so a single merge-join (`AssocList.zipLookup`) pairs each present stamp
+    with its payload in O(#present + #payloads) — not the O(#present × #payloads)
+    a `find` per stamp would cost. `visibleEntries_eq_ref` bridges the two. -/
 def visibleEntries (j : Journal) : List (Stamp × NotePayload) :=
-  j.entries.presentElements.filterMap (fun st => (j.payloads.find st).map ((st, ·)))
+  (AssocList.zipLookup (j.entries.presentElements.map (fun st => (st, ()))) j.payloads.toList).filterMap
+    (fun t => t.2.2.map (fun p => (t.1, p)))
+
+/-- The merge-join `visibleEntries` equals its per-`find` reference form: the
+    `zipLookup` annotation `(st, (), payloads.find st)` feeds each present stamp
+    the same payload the reference looks up. -/
+theorem visibleEntries_eq_ref (j : Journal) : j.visibleEntries = j.visibleEntriesRef := by
+  unfold visibleEntries visibleEntriesRef
+  rw [AssocList.zipLookup_eq _ j.payloads.toList
+      (AssocList.sorted_attach _ (OrSet.presentElements_pairwise_lt j.entries)) j.payloads.sorted,
+    List.map_map, List.filterMap_map]
+  rfl
 
 /-- `Pairwise` transfers through `filterMap` when the emitted values inherit
     the relation from their sources. -/
@@ -465,7 +487,8 @@ private theorem pairwise_filterMap {α β : Type _} {R : α → α → Prop}
 theorem visibleEntries_pairwise_lt (j : Journal) :
     List.Pairwise (fun a b : Stamp × NotePayload => TotalOrd.lt a.1 b.1)
       j.visibleEntries := by
-  unfold visibleEntries
+  rw [visibleEntries_eq_ref]
+  unfold visibleEntriesRef
   refine pairwise_filterMap _ ?_ (OrSet.presentElements_pairwise_lt j.entries)
   intro a b hab x hx y hy
   cases hpa : (j.payloads.find a) with
@@ -483,7 +506,8 @@ theorem visibleEntries_pairwise_lt (j : Journal) :
     is its recorded payload. -/
 theorem mem_visibleEntries (j : Journal) (st : Stamp) (p : NotePayload) :
     (st, p) ∈ j.visibleEntries ↔ j.Visible st ∧ j.payloadOf st = some p := by
-  unfold visibleEntries
+  rw [visibleEntries_eq_ref]
+  unfold visibleEntriesRef
   rw [List.mem_filterMap]
   constructor
   · rintro ⟨a, ha, hfa⟩
@@ -530,6 +554,75 @@ theorem visibleEntries_distinct_rows (j : Journal) {st1 st2 : Stamp}
 theorem visibleEntries_merge_comm (a b : Journal) :
     (merge a b).visibleEntries = (merge b a).visibleEntries := by
   rw [merge_comm]
+
+/-! ## The `--all` placeholder view (ADR-0027)
+
+`note list --all` shows every entry — visible ones plus removed placeholders
+(provenance shown, text hidden). The reference form probes `payloadOf` and
+`Visible` (two/three `find`s) per element → Θ(N²) per issue journal; the
+shipped form merge-joins the add map against both the tombstone map and the
+payload map (one co-traversal each) → O(N), bridged by `allEntries_eq_ref`. -/
+
+/-- `filterMap` respects a per-member function agreement. -/
+private theorem filterMap_congr_mem {γ δ : Type _} {f g : γ → Option δ} :
+    (l : List γ) → (∀ a ∈ l, f a = g a) → l.filterMap f = l.filterMap g
+  | [], _ => rfl
+  | a :: as, h => by
+    rw [List.filterMap_cons, List.filterMap_cons, h a (List.mem_cons_self ..),
+      filterMap_congr_mem as (fun x hx => h x (List.mem_cons_of_mem a hx))]
+
+/-- The reference form of the `--all` view: `payloadOf` + `Visible` per element
+    (each a `find`). Proof-only (ADR-0024); `allEntries` is the merge-join. -/
+private def allEntriesRef (j : Journal) : List (Stamp × NotePayload × Bool) :=
+  j.entries.elements.filterMap (fun st =>
+    (j.payloadOf st).map (fun pl => (st, pl, !(decide (j.Visible st)))))
+
+/-- Every journal entry (visible or removed) with its payload and a
+    removed-flag, oldest first — the `note list --all` view. One merge-join of
+    the add map against the tombstone map (for the removed-flag) and one against
+    the payload map, zipped positionally (both walk `adds` in order): O(N). -/
+def allEntries (j : Journal) : List (Stamp × NotePayload × Bool) :=
+  ((AssocList.zipLookup j.entries.adds.toList j.entries.removed.toList).zip
+    (AssocList.zipLookup j.entries.adds.toList j.payloads.toList)).filterMap
+      (fun rp => rp.2.2.2.map (fun pl =>
+        (rp.1.1, pl,
+          !(rp.1.2.1.toList.any (fun q => decide (q.1 ∉ rp.1.2.2.getD FinSet.empty))))))
+
+/-- The merge-join `--all` view equals its per-`find` reference form. The
+    positional `zip` aligns because both `zipLookup`s walk `adds` in order; on
+    each member entry `(e, tags)` the payload is `payloadOf e` and the
+    removed-flag matches `¬Visible e` because `tagsOf e = tags` for a member. -/
+theorem allEntries_eq_ref (j : Journal) : j.allEntries = j.allEntriesRef := by
+  unfold allEntries allEntriesRef
+  rw [AssocList.zipLookup_eq j.entries.adds.toList j.entries.removed.toList
+      j.entries.adds.sorted j.entries.removed.sorted,
+    AssocList.zipLookup_eq j.entries.adds.toList j.payloads.toList
+      j.entries.adds.sorted j.payloads.sorted,
+    List.zip_map']
+  show (j.entries.adds.toList.map _).filterMap _
+    = (OrSet.elements j.entries).filterMap _
+  rw [List.filterMap_map]
+  show j.entries.adds.toList.filterMap _
+    = (j.entries.adds.toList.map Prod.fst).filterMap _
+  rw [List.filterMap_map]
+  apply filterMap_congr_mem
+  intro e he
+  -- `tagsOf e.1 = e.2` for a member, so the fast liveness matches `Visible e.1`
+  have hfind : j.entries.adds.find e.1 = some e.2 := AMap.find_eq_some_of_mem he
+  have htag : j.entries.tagsOf e.1 = e.2 := by unfold OrSet.tagsOf; rw [hfind]; rfl
+  have hlive : e.2.toList.any (fun q =>
+        decide (q.1 ∉ (AssocList.lookup e.1 j.entries.removed.toList).getD FinSet.empty))
+      = decide (j.Visible e.1) := by
+    rw [← List.decide_exists_mem]
+    show decide (∃ q ∈ e.2.toList, q.1 ∉ j.entries.removedOf e.1)
+       = decide (∃ q ∈ (j.entries.tagsOf e.1).toList, q.1 ∉ j.entries.removedOf e.1)
+    rw [htag]
+  show (AssocList.lookup e.1 j.payloads.toList).map
+        (fun pl => (e.1, pl, !(e.2.toList.any (fun q =>
+          decide (q.1 ∉ (AssocList.lookup e.1 j.entries.removed.toList).getD FinSet.empty)))))
+     = (j.payloadOf e.1).map (fun pl => (e.1, pl, !(decide (j.Visible e.1))))
+  rw [hlive]
+  rfl
 
 end Journal
 
