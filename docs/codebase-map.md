@@ -165,7 +165,10 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
                         --   covers the full v1 enum, not just stage-1-emitted
                         --   verbs; strictly canonical decode, fail-closed
                         --   malformed-line/unknown-version (priority clamps,
-                        --   disclosed)
+                        --   disclosed); also homes the id-mint core
+                        --   (mintId80/mintIssueId/mintNoteId) so the noteRemove
+                        --   decoder can re-derive a note id to enforce its
+                        --   own-tag singleton (ADR-0027 finding 2)
   Time.lean             --   strict canonical ISO-8601 UTC ↔ epoch-ms codec
                         --   (deferUntil storage + the --json timestamps)
   Version.lean          --   v fail-closed-on-newer; v=0 is malformed, not older;
@@ -174,10 +177,10 @@ Tl/Format/              -- I/O shell: wire encodings + on-disk record (tested)
                         --   v1 reader refuses per segment as unknown-version
                         --   (ADR-0008; the non-destructive snapshot is the
                         --   no-bump fold cache)
-  Ids.lean              --   issue-id mint (leftmost 80 SHA-256 bits over the
-                        --   fixed-width preimage, ADR-0018) + the tl- display
-                        --   affix; note-id mint behind the "note:" domain
-                        --   prefix (two-block preimage, ADR-0027)
+  Ids.lean              --   the tl- display affix; re-exports the id mints from
+                        --   Codec (issue-id: leftmost 80 SHA-256 bits over the
+                        --   fixed-width preimage, ADR-0018; note-id: behind the
+                        --   "note:" domain prefix, two-block preimage, ADR-0027)
 
 Tl/Error.lean           -- the structured error contract: the closed code enum,
                         -- stable wire strings + exit codes, teaching messages,

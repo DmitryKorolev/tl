@@ -40,6 +40,11 @@ def idB : String := "0123456789abcdef"
 def tagEarlier : String := "0000018d07f4c811.0123456789abc.0123456789abcdefghjkmnpqrs"
 def tagLater : String := "0000018d07f4c812.0123456789abc.0123456789abcdefghjkmnpqrs"
 
+/-- The note id minted from `tStamp` (= `tagLater`'s stamp): the handle a valid
+    `noteRemove` observing `tagLater` must carry (ADR-0027, the decoder's own-tag
+    check). -/
+def noteHandleLater : String := mintNoteId tStamp
+
 /-- One pinned canonical line per wire verb (payload keys in lexicographic
     order, observed arrays in stamp order — the canonical render). -/
 def canonicalLines : List (String × String) :=
@@ -79,12 +84,12 @@ def canonicalLines : List (String × String) :=
     env "labelRemove" ++ s!"\"id\":\"{idA}\",\"label\":\"type:bug\",\"observed\":[\"{tagLater}\"]}"),
    ("unknown fields preserved in place (claim + future keys)",
     env "claim" ++ s!"\"assignee\":\"carol\",\"futureFlag\":\{\"nested\":[1,2]},\"id\":\"{idA}\",\"zzz\":true}"),
-   ("noteAdd (v:2)",
+   ("noteAdd (v:2, handle minted from its own stamp)",
     (env "noteAdd").replace "\"v\":1" "\"v\":2"
-      ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"text\":\"progress: lexer done\"}"),
-   ("noteRemove (v:2, observed tag)",
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"text\":\"progress: lexer done\"}"),
+   ("noteRemove (v:2, own-tag observed)",
     (env "noteRemove").replace "\"v\":1" "\"v\":2"
-      ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"observed\":[\"{tagLater}\"]}"),
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[\"{tagLater}\"]}"),
    ("actor null is the canonical absent-actor form",
     "{\"v\":1,\"op\":\"reopen\",\"hlc\":\"0000018d07f4c812\"," ++
     "\"replica\":\"0123456789abc\",\"nonce\":\"0123456789abcdefghjkmnpqrs\"," ++
@@ -155,13 +160,51 @@ def failClosedRows : List (String × String × Tl.ErrorCode) :=
     env "noteRemove" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"observed\":[\"{tagLater}\"]}",
     .malformedLine),
    ("noteAdd missing text is malformed",
-    (env "noteAdd").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\"}",
+    (env "noteAdd").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\"}",
     .malformedLine),
    ("noteAdd with a malformed note handle is malformed",
     (env "noteAdd").replace "\"v\":1" "\"v\":2"
       ++ s!"\"id\":\"{idA}\",\"note\":\"NOT-A-HANDLE\",\"text\":\"x\"}", .malformedLine),
+   -- finding 1: the handle must be the note id minted from the add's own stamp,
+   -- else a foreign/hand-edited note could fold visible yet be un-removable
+   ("noteAdd whose handle does not mint from its own stamp is malformed",
+    (env "noteAdd").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\",\"text\":\"x\"}", .malformedLine),
    ("noteRemove missing observed is malformed",
     (env "noteRemove").replace "\"v\":1" "\"v\":2" ++ s!"\"id\":\"{idA}\",\"note\":\"{idB}\"}",
+    .malformedLine),
+   ("noteRemove with a malformed note handle is malformed",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"NOT-A-HANDLE\",\"observed\":[\"{tagLater}\"]}",
+    .malformedLine),
+   -- finding 2: the removal must observe exactly its own add-tag, or a crafted
+   -- record could remove another entry / mass-remove. Empty, multi-tag, and
+   -- own-tag-mismatch all fail closed.
+   ("noteRemove empty observed is malformed (must name one tag)",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[]}",
+    .malformedLine),
+   ("noteRemove multi-tag observed is malformed (no mass-remove)",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[\"{tagEarlier}\",\"{tagLater}\"]}",
+    .malformedLine),
+   ("noteRemove observed tag not minting to the note handle is malformed (no cross-entry remove)",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[\"{tagEarlier}\"]}",
+    .malformedLine),
+   -- finding 4: the observed-field decode branches (non-array, non-string
+   -- entry, malformed tag string)
+   ("noteRemove non-array observed is malformed",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":\"x\"}",
+    .malformedLine),
+   ("noteRemove non-string observed entry is malformed",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[123]}",
+    .malformedLine),
+   ("noteRemove malformed observed tag is malformed",
+    (env "noteRemove").replace "\"v\":1" "\"v\":2"
+      ++ s!"\"id\":\"{idA}\",\"note\":\"{noteHandleLater}\",\"observed\":[\"junk\"]}",
     .malformedLine),
    ("unparseable JSON", "{\"v\":1,", .malformedLine),
    ("hlc too short", (env "create").replace "0000018d07f4c812" "0000018d07f4c81" ++ s!"\"id\":\"{idA}\"}",
@@ -305,8 +348,25 @@ def assigneeSemanticsTests : List Outcome :=
    check "reopen clears the assignee (closed→open drops the prior claim)"
      (assigneeOf (base ++ [reopenLine]) == some none) s!"got {repr (assigneeOf (base ++ [reopenLine]))}"]
 
+/-- Literal identity vectors through the actual mint functions (finding 2):
+    a fixed stamp → a hardcoded 16-char id, for both `mintIssueId` and
+    `mintNoteId`. Unlike the SHA-256 worked vector (which recomputes the
+    truncation inline over a hardcoded preimage), these run the shipped
+    functions, so a change to `stampPreimage`'s component order, `mintId80`'s
+    width/fold, or `mintNoteId`'s `"note:"` prefix — any silent id drift — fails
+    here. The expected strings were generated with an independent
+    `hashlib`+base32 script. -/
+def identityVectorTests : List Outcome :=
+  [checkEq "mintIssueId identity vector (fixed stamp → fixed id)"
+     (mintIssueId tStamp) "mefp30jkcmfvxa0e",
+   checkEq "mintNoteId identity vector (fixed stamp → fixed note id)"
+     (mintNoteId tStamp) "6we29r21vvwm58mm",
+   -- the two id spaces are disjoint on the same stamp (the domain prefix)
+   check "issue-id and note-id of one stamp differ"
+     (mintIssueId tStamp != mintNoteId tStamp)]
+
 def codecTests : List Outcome :=
   canonicalRoundTripTests ++ escapeTests ++ crEscapeTest ++ failClosedTests
-    ++ clampTests ++ foldSmokeTests ++ assigneeSemanticsTests
+    ++ clampTests ++ foldSmokeTests ++ assigneeSemanticsTests ++ identityVectorTests
 
 end Tl.Tests

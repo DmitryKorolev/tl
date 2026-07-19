@@ -485,16 +485,24 @@ def storeJournalTests : List Outcome :=
   -- (b) remove folded before its add still hides the entry on arrival
   let remove3 := line (.noteRemove idA (mintNoteId (stampAt 3)) (Tl.Crdt.FinSet.singleton (stampAt 3))) 6
   let jRemFirst := journalOf [segOf fixedReplica [createL, remove3, ownAdd]]
-  -- (c) forged duplicate handle from a distinct stamp: independent entries;
-  -- removal touches exactly the observed tag
-  let dupHandle := mintNoteId (stampAt 3)
-  let forged := line (.noteAdd idA dupHandle "forged twin") 4
-  let jDup := journalOf [segOf fixedReplica [createL, ownAdd, forged]]
-  let jDupRemoved := journalOf [segOf fixedReplica [createL, ownAdd, forged, remove3]]
-  -- (d) same complete triple, different payloads: the join is order-independent
-  let twinA := renderLine { v := 2, op := .noteAdd idA dupHandle "alpha payload",
+  -- (c) two distinct valid notes: both retained; removing one by its tag leaves
+  -- the other. (A note handle mints from its own stamp — enforced at decode,
+  -- ADR-0027 — so two entries can never share a handle; the second note carries
+  -- its own `mintNoteId (stampAt 4)`.)
+  let note4 := line (.noteAdd idA (mintNoteId (stampAt 4)) "second note") 4
+  let jTwo := journalOf [segOf fixedReplica [createL, ownAdd, note4]]
+  let jTwoRemoved := journalOf [segOf fixedReplica [createL, ownAdd, note4, remove3]]
+  -- (c') a noteAdd whose handle does not mint from its own stamp is rejected at
+  -- decode, so its segment refuses (fail-closed) — the invariant that makes an
+  -- entry removable (its own removal record re-mints the same handle)
+  let forgedAdd := line (.noteAdd idA (mintNoteId (stampAt 3)) "handle from a foreign stamp") 4
+  let forgedRefused := (materialize [segOf fixedReplica [createL, forgedAdd]]).refused
+  -- (d) same complete triple, different payloads: the join is order-independent.
+  -- Both twins carry the same stamp (stampAt 5) and thus the same valid handle.
+  let twinHandle := mintNoteId (stampAt 5)
+  let twinA := renderLine { v := 2, op := .noteAdd idA twinHandle "alpha payload",
                             stamp := stampAt 5, actor := some "x" }
-  let twinB := renderLine { v := 2, op := .noteAdd idA dupHandle "beta payload",
+  let twinB := renderLine { v := 2, op := .noteAdd idA twinHandle "beta payload",
                             stamp := stampAt 5, actor := some "x" }
   let jTwinAB := journalOf [segOf fixedReplica [createL, twinA, twinB]]
   let jTwinBA := journalOf [segOf fixedReplica [createL, twinB, twinA]]
@@ -518,10 +526,13 @@ def storeJournalTests : List Outcome :=
       (texts jConc == ["foreign progress", "own progress"]) s!"texts={texts jConc}",
     check "a remove folded before its add hides the entry on arrival"
       ((texts jRemFirst).isEmpty) s!"texts={texts jRemFirst}",
-    check "a forged duplicate handle from a distinct stamp is an independent entry"
-      ((texts jDup).length == 2) s!"texts={texts jDup}",
-    check "removal touches exactly the observed tag, not its handle twin"
-      (texts jDupRemoved == ["forged twin"]) s!"texts={texts jDupRemoved}",
+    check "two distinct valid notes are both retained (stamp-ascending)"
+      (texts jTwo == ["own progress", "second note"]) s!"texts={texts jTwo}",
+    check "removal touches exactly the observed tag; the other entry survives"
+      (texts jTwoRemoved == ["second note"]) s!"texts={texts jTwoRemoved}",
+    check "a noteAdd whose handle does not mint from its own stamp refuses its segment"
+      (forgedRefused.any (fun r => r.replicaId == fixedReplica))
+      s!"refused={forgedRefused.length}",
     check "same-triple payload twins join order-independently (lexicographic max)"
       (texts jTwinAB == ["beta payload"] && texts jTwinBA == ["beta payload"])
       s!"ab={texts jTwinAB} ba={texts jTwinBA}",

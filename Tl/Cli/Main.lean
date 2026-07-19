@@ -346,8 +346,14 @@ def runVerb : List String → TlM CmdOut
         let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note add" ++ globalVal) (boolFlagsOf "note add" ++ globalBool) (repeatableFlagsOf "note add") rest')
         match a.positionals with
         | [x, t] => do
-          -- `-` reads the entry text from stdin (the `create` body convention)
-          let text ← if t == "-" then (← IO.getStdin).readToEnd else pure t
+          -- `-` reads the entry text from stdin (the `create` body convention);
+          -- route the read through `liftSys` so an IO failure stays inside the
+          -- `Tl.Error` / JSON-envelope discipline (finding 5), like create's body
+          let text ← if t == "-" then
+              liftSys (fun e => .mk' .internal s!"cannot read stdin: {e}") do
+                let body ← (← (IO.getStdin : IO IO.FS.Stream)).readToEnd
+                pure (if body.endsWith "\n" then (body.dropEnd 1).toString else body)
+            else pure t
           cmdNoteAdd (a.get? "dir") x text (← actorOf a)
         | _ => throw (usageErr "note add takes <id> <text> ('-' reads the text from stdin)")
       | "list" :: rest' => do

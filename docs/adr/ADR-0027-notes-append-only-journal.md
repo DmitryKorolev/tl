@@ -113,11 +113,23 @@ grows by two alongside — the shell verb→delta map stays one-to-one here):
 | `noteRemove` | noteRemove | `id` (issue), `note`, `observed` — the entry's canonical add-tag(s) |
 
 `noteRemove` carries an explicit `observed` array like every OR-Set remove.
-It is a singleton *by construction* — naming the note means having observed
-its one add — and carrying the tag on the record is what makes removal
-delivery-order independent: a replica that folds the remove before the add
-takes the tombstone from the record itself (by tag value, not a presence
-check) and hides the entry when it arrives.
+Carrying the tag on the record is what makes removal delivery-order
+independent: a replica that folds the remove before the add takes the
+tombstone from the record itself (by tag value, not a presence check) and
+hides the entry when it arrives.
+
+`observed` is a singleton — the note's *own* add-tag — and the **decoder
+enforces it** (it is not merely a CLI convention): a `noteRemove` record is
+accepted only when `observed` is exactly one tag `T` **and** the record's
+`note` handle equals the note id minted from `T` (`mintNoteId T` — the handle
+is the SHA-256 of `T`'s `"note:"`-prefixed preimage, re-derivable at decode).
+An empty, multi-tag, or mismatched-`observed` record fails closed as
+malformed (ADR-0008). This is what makes cross-entry interference
+*unrepresentable* through the wire: a kernel `noteRemove` tombstones every
+stamp it carries at that stamp's own element, so without the decoder check a
+crafted record could name one entry while tombstoning another (or many). The
+check is purely structural (handle = hash of tag), independent of whether the
+add has been folded, so remove-before-add still works.
 
 Records carrying the new kinds are stamped `v: 2`. This follows ADR-0008's
 versioning rule (a new op kind is exactly what an old reader could not fold)
@@ -204,11 +216,16 @@ non-guarantee:
 - **Removal is delivery-order independent** — a remove folded before its add
   still hides the entry when the add arrives (tombstone by tag value).
   *Theorem* (`Journal.not_visible_removeDelta_then_addDelta`).
-- **Remove-exactness** — a remove affects exactly the entry whose tag it
-  names, for any payload bytes: tombstones are tag-keyed and the handle is
-  not a kernel key, so cross-entry interference is unrepresentable.
-  *Theorem, unconditional* (`Journal.visible_merge_removeDelta_iff_of_not_mem`,
-  plus `Journal.payloads_merge_removeDelta` for the payload half).
+- **Remove-exactness** — a remove affects exactly the tags it observes, for
+  any payload bytes: tombstones are tag-keyed and the handle is not a kernel
+  key. *Theorem, unconditional* (`Journal.visible_merge_removeDelta_iff_of_not_mem`,
+  plus `Journal.payloads_merge_removeDelta` for the payload half). The kernel
+  op tombstones *every* stamp in `observed`, so "affects exactly the entry it
+  names" is a joint guarantee of this theorem **and** the decoder's own-tag
+  enforcement above (singleton `observed` minting to the `note` handle): the
+  theorem bounds the effect to the observed tags, and the decoder bounds the
+  observed tags to the record's own single entry — a crafted cross-entry or
+  mass remove is rejected as malformed, not folded.
 - **No resurrection** — a removed entry never becomes visible again:
   tombstoned tags stay tombstoned, and no op can re-add a tag. *Theorem*
   (`Journal.not_visible_merge_of_tombstoned`, merge-general over the whole

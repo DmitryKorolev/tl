@@ -27,6 +27,7 @@ import Tl.Format.Time
 import Tl.Format.Version
 import Tl.Clock.Hlc
 import Tl.Kernel.Op
+import Tl.Hash.Sha256
 
 namespace Tl.Format
 
@@ -126,6 +127,48 @@ def stampOfTag (s : String) : Except Tl.Error Stamp :=
   match s.splitOn "." with
   | [h, r, n] => decodeStamp h r n
   | _ => throw (malformed s!"'observed' tag must be '<hlc>.<replica>.<nonce>' (got '{s}')")
+
+/-! ## Id minting (ADR-0007/0018/0027)
+
+The issue-id and note-id mints live here (not in `Tl.Format.Ids`) because the
+`noteRemove` decoder re-derives a note id from the observed add-tag to enforce
+that the removal names its own entry (finding 2 / ADR-0027) — and `Ids` imports
+this module, so the mint core cannot live above it. `Ids` re-exports these via
+its import of this module. -/
+
+/-- The stamp's three canonical fixed-width components concatenated
+    (`replica`(13) ++ `hlc`(16 hex) ++ `nonce`(26)) — the id-mint preimage body,
+    shared by the issue-id and note-id mints (the latter prefixes a domain tag,
+    ADR-0007/0027). -/
+def stampPreimage (st : Stamp) : String :=
+  toCrockford st.replica 13 ++ hlcHex st.hlc ++ toCrockford st.nonce 26
+
+/-- Truncate a SHA-256 of `preimage` to the leftmost 80 bits — the first 10 of
+    the digest's typed 32 bytes, `Fin`-indexed so the slice can neither panic
+    nor run off the end — read big-endian and Crockford-encoded to 16 chars.
+    The single id-mint core; both `mintIssueId` and `mintNoteId` call it, so the
+    truncation convention (ADR-0018) lives in exactly one place. -/
+def mintId80 (preimage : String) : String :=
+  let digest := Tl.Hash.Sha256.digestVec preimage.toUTF8
+  let v := (List.finRange 10).foldl
+    (fun acc i => acc * 256 + (digest.get (i.castLE (Nat.le_add_right 10 22))).toNat) 0
+  toCrockford v 16
+
+/-- Mint the bare 16-char issue id from the create op's stamp (ADR-0007). -/
+def mintIssueId (st : Stamp) : String := mintId80 (stampPreimage st)
+
+/-- Mint the bare 16-char note id from the add op's stamp (ADR-0027): the same
+    leftmost-80-bit truncation as `mintIssueId` (`mintId80`), behind the
+    `"note:"` domain prefix so the two id spaces can never share a preimage. The
+    prefix makes the preimage 60 bytes — two SHA-256 blocks where the issue-id
+    preimage is one (ADR-0018's padding-edge vectors already cover multi-block).
+    The component order matches ADR-0007/0027's pinned form
+    (`"note:" ++ replica ++ hlc ++ nonce`). The id is minted at write time,
+    carried as record data, and re-derived on read **only** by the `noteRemove`
+    decoder's own-tag check (ADR-0027) — never for issue ids (ADR-0008). It has
+    no display affix — a note id only ever appears in the dedicated `<note-id>`
+    position, so there is nothing to disambiguate. -/
+def mintNoteId (st : Stamp) : String := mintId80 ("note:" ++ stampPreimage st)
 
 /-! ## The typed wire operation -/
 
@@ -274,19 +317,38 @@ private def reqEdge (fs : List (String × Json)) : Except Tl.Error Edge := do
     | throw (malformed s!"'kind' must be blocks|parent|related (got '{ks}')")
   return (f, t, k)
 
-private def reqObserved (fs : List (String × Json)) :
-    Except Tl.Error (FinSet Stamp) := do
+/-- The `observed` field as its raw JSON array (fail-closed if absent or not an
+    array) — the shared fetch behind `reqObserved` and `reqSingletonObserved`. -/
+private def observedArray (fs : List (String × Json)) : Except Tl.Error (Array Json) := do
   let some j := field? fs "observed"
     | throw (malformed "missing required 'observed' field")
-  let arr ← match j.getArr? with
-    | .ok a => pure a
-    | .error _ => throw (malformed "'observed' must be an array of add-tag strings")
-  arr.foldlM (fun acc tj => do
-    let ts ← match tj.getStr? with
-      | .ok s => pure s
-      | .error _ => throw (malformed "'observed' entries must be strings")
-    let st ← stampOfTag ts
-    return FinSet.union acc (FinSet.singleton st)) FinSet.empty
+  match j.getArr? with
+  | .ok a => pure a
+  | .error _ => throw (malformed "'observed' must be an array of add-tag strings")
+
+/-- Parse one `observed` entry (a canonical add-tag string) to its `Stamp`. -/
+private def parseObservedTag (tj : Json) : Except Tl.Error Stamp := do
+  match tj.getStr? with
+  | .ok s => stampOfTag s
+  | .error _ => throw (malformed "'observed' entries must be strings")
+
+private def reqObserved (fs : List (String × Json)) :
+    Except Tl.Error (FinSet Stamp) := do
+  (← observedArray fs).foldlM (fun acc tj => do
+    return FinSet.union acc (FinSet.singleton (← parseObservedTag tj))) FinSet.empty
+
+/-- A `noteRemove`'s `observed` must be a *single* add-tag — a note removal
+    tombstones exactly one entry (ADR-0027). Returns that tag; an empty or
+    multi-tag `observed` fails closed (ADR-0008), since a kernel `noteRemove`
+    tombstones every stamp it carries and would otherwise be a mass/cross-entry
+    remove. -/
+private def reqSingletonObserved (fs : List (String × Json)) :
+    Except Tl.Error Stamp := do
+  let arr ← observedArray fs
+  match arr.toList with
+  | [tj] => parseObservedTag tj
+  | _ => throw (malformed
+      s!"noteRemove's 'observed' must be exactly one add-tag — the note's own tag — got {arr.size}; a note removal tombstones exactly one entry (ADR-0027)")
 
 /-- Decode a scalar field set (the `create`/`update` payloads). `lifecycle`
     admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) — true
@@ -430,6 +492,17 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         let note ← reqStr fs "note"
         unless validId note do
           throw (malformed s!"'note' must be a bare 16-char canonical Crockford note id (got '{note}')")
+        -- The handle must be the note id minted from this add's own envelope
+        -- stamp (ADR-0027): the same handle-mints-from-stamp invariant the
+        -- `noteRemove` decoder enforces (below). Enforced on BOTH ops so a
+        -- foreign/hand-edited note whose handle does not mint from its stamp is
+        -- rejected at *add* — never folding visible — which is what keeps the
+        -- entry removable: a legitimate `note remove` re-writes `mintNoteId(the
+        -- add stamp)`, so if a visible entry could carry a non-minting handle,
+        -- its own removal record would fail this very check and be unloadable.
+        unless mintNoteId stamp == note do
+          throw (malformed
+            s!"noteAdd's 'note' handle '{note}' is not the note id minted from its own add stamp — a note id is the hash of its add-tag (ADR-0027)")
         pure (.noteAdd id note (← reqStr fs "text"), [])
     | "noteRemove" => do
         unless r.v ≥ 2 do
@@ -438,7 +511,19 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         let note ← reqStr fs "note"
         unless validId note do
           throw (malformed s!"'note' must be a bare 16-char canonical Crockford note id (got '{note}')")
-        pure (.noteRemove id note (← reqObserved fs), [])
+        -- The removal must name its own entry: `observed` is the single add-tag
+        -- `T`, and the `note` handle is the note id minted from `T` (finding 2 /
+        -- ADR-0027). This makes a cross-entry, mass, or empty-observed record
+        -- unrepresentable through the decoder — a `noteRemove` tombstones every
+        -- stamp it carries, so an unchecked `observed` could remove another
+        -- entry while naming this one. The check is purely structural (handle =
+        -- hash of tag), so it holds whether or not the add has been folded yet
+        -- (remove-before-add still works).
+        let obs ← reqSingletonObserved fs
+        unless mintNoteId obs == note do
+          throw (malformed
+            s!"noteRemove's 'observed' tag does not mint to its 'note' handle '{note}' — a note removal must observe exactly its own add-tag (ADR-0027)")
+        pure (.noteRemove id note (FinSet.singleton obs), [])
     | other =>
         throw (malformed s!"unknown op kind '{other}' (the enum is closed per version; a new kind requires a v bump)")
     : Except Tl.Error (WireOp × List String))

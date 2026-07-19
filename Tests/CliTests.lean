@@ -710,6 +710,55 @@ def cliBinaryTests : IO (List Outcome) := do
       ((logged.stdout.splitOn "target@example.test").length > 1
         && (logged.stdout.splitOn "cwd@example.test").length == 1)
       logged.stdout]
+  -- `note add <id> -` reads the entry text from stdin (finding 5). Drive real
+  -- stdin through a shell redirect (`< file` closes at EOF reliably); the read
+  -- is `liftSys`-wrapped, so an IO failure stays inside the JSON envelope. The
+  -- empty-stdin case (`< /dev/null`) exercises the wrapped read returning "" →
+  -- the usage error a missing body raises (the deterministic failure a user
+  -- hits; a genuine read error is structurally the same liftSys path as create).
+  let sroot ← IO.FS.createTempDir
+  let sdir := (sroot / ".tl").toString
+  let _ ← spawn ["init", "--dir", sdir]
+  let createOut ← spawn ["create", "Note host", "--dir", sdir, "--actor", "t", "--json"]
+  let hostId := match (Json.parse createOut.stdout).toOption.bind (fun j =>
+      (j.getObjVal? "data").toOption.bind (fun d => jStr d "id")) with
+    | some i => i | none => ""
+  -- body WITH a trailing newline: the read must trim exactly it (finding 3),
+  -- so the stored text has no trailing "\n"
+  let bodyFile := sroot / "body.txt"
+  IO.FS.writeFile bodyFile "progress from stdin\n"
+  let shq (s : String) : String := "'" ++ s ++ "'"
+  let noteAt (redirect : String) : IO IO.Process.Output := IO.Process.output { cmd := "sh", args := #["-c",
+    s!"{shq exe.toString} note add {shq hostId} - --dir {shq sdir} --actor t --json < {redirect}"] }
+  let addOk ← noteAt (shq bodyFile.toString)
+  let addEmpty ← noteAt "/dev/null"
+  -- a genuine stdin READ failure (reading a directory → EISDIR): the
+  -- `liftSys`-wrapped read turns it into an `internal` error INSIDE the JSON
+  -- envelope. Without the wrap (the pre-fix bare `readToEnd`) the IO error
+  -- escapes the Tl.Error/envelope discipline — this row is what distinguishes
+  -- the fix.
+  let adir := sroot / "adir"
+  IO.FS.createDirAll adir
+  let addFail ← noteAt (shq adir.toString)
+  let listOut ← spawn ["note", "list", hostId, "--dir", sdir, "--json"]
+  o := o ++ [
+    check "note add - reads the body from stdin and trims the trailing newline (success)"
+      (addOk.exitCode == 0
+        && (match (Json.parse addOk.stdout).toOption.bind (fun j =>
+              (j.getObjVal? "data").toOption.bind (fun d =>
+                (d.getObjVal? "note").toOption.bind (fun n => jStr n "text"))) with
+            | some t => t == "progress from stdin" | none => false))
+      addOk.stdout,
+    check "note add - with empty stdin is a usage error inside the envelope (exit 2)"
+      (addEmpty.exitCode == 2
+        && addEmpty.stdout.startsWith "{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"usage\"")
+      addEmpty.stdout,
+    check "note add - a stdin read failure stays inside the JSON envelope (liftSys, internal, exit 1)"
+      (addFail.exitCode == 1
+        && addFail.stdout.startsWith "{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"internal\"")
+      addFail.stdout,
+    check "note add - stdin body is materialized (note list shows it)"
+      ((listOut.stdout.splitOn "progress from stdin").length > 1) listOut.stdout]
   return o
 
 /-- The ADR-0012 environment scrub, end to end against the compiled binary:
@@ -2560,6 +2609,11 @@ def cliNoteTests : IO (List Outcome) := do
       && jStr j "note" == some handle),
     ← expectErr "an unknown note id is not-found with teaching"
       ["note", "remove", "tl-" ++ a, "zzzzzzzz", "--dir", dir, "--actor", "t"] .notFound,
+    -- a well-formed canonical tag (parses to a stamp) that names no entry in
+    -- this journal is not-found, not a codec error (finding 5)
+    ← expectErr "a valid canonical tag absent from the journal is not-found"
+      ["note", "remove", "tl-" ++ a, tagOfStamp ⟨99999999, 7, 424242⟩, "--dir", dir, "--actor", "t"]
+      .notFound,
     -- a mistyped canonical-tag token (2 dots, not a valid stamp) is a CLI usage
     -- error that teaches note list — NOT the wire codec's malformed-line code
     -- with its "repair / --skip-bad" advice (finding [1])
@@ -2570,25 +2624,33 @@ def cliNoteTests : IO (List Outcome) := do
         && (e.message.splitOn "skip-bad").length == 1),
     ← expectErr "note add without text is usage"
       ["note", "add", "tl-" ++ a, "", "--dir", dir, "--actor", "t"] .usage]
-  -- collision refusal: a forged foreign segment carries two live entries with
-  -- equal handle bytes from distinct stamps — the prefix is ambiguous, the
-  -- canonical tag is the always-unique fallback
+  -- ambiguous <note-id> refusal + canonical-tag fallback. A *full-handle*
+  -- collision is now unrepresentable (each handle mints from its own unique
+  -- stamp, ADR-0027 finding 1), but a handle *prefix* can still match several
+  -- entries. Adding 35 valid notes forces a shared first character by pigeonhole
+  -- over the 32-symbol Crockford handle alphabet, so a 1-char <note-id> is
+  -- deterministically ambiguous.
   let dir3 ← freshDir
   let b ← mkIssue dir3 "Collision host"
-  let foreignStem := "1zzzzzzzzzzzz"
-  -- past-dated stamps: a far-future FOREIGN hlc would be skew-deferred out of
-  -- the fold (ADR-0007), hiding the collision this row needs
-  let st (i : Nat) : Tl.Crdt.Stamp :=
-    ⟨1700000000000 * 2 ^ 16 + i, (ofCrockford? foreignStem).getD 0, 9000 + i⟩
-  let h := mintNoteId (st 1)
-  let mk (op : WireOp) (i : Nat) : String :=
-    renderLine { v := op.recordVersion, op, stamp := st i, actor := some "f" }
-  IO.FS.writeFile (System.FilePath.mk dir3 / "log" / (foreignStem ++ ".jsonl"))
-    (mk (.noteAdd b h "one") 1 ++ "\n" ++ mk (.noteAdd b h "two") 2 ++ "\n")
-  o := o ++ [← expectErr "a colliding handle is refused (usage) listing the canonical tags"
-      ["note", "remove", "tl-" ++ b, h, "--dir", dir3, "--actor", "t"] .usage,
-    ← expectData "the canonical tag disambiguates the collision"
-      ["note", "remove", "tl-" ++ b, tagOfStamp (st 1), "--dir", dir3, "--actor", "t"]
+  for k in [0:35] do
+    let _ ← run' ["note", "add", "tl-" ++ b, s!"n{k}", "--dir", dir3, "--actor", "t"]
+  let entries ← match ← run' ["note", "list", "tl-" ++ b, "--all", "--dir", dir3] with
+    | .ok out => pure ((jArr out.data "notes").filterMap (fun n =>
+        (jStr n "id").bind (fun h => (jStr n "tag").map (fun t => (h, t)))))
+    | .error _ => pure []
+  let handles := entries.map (·.1)
+  -- a first char shared by ≥ 2 handles (guaranteed to exist)
+  let sharedChar : Option Char := (handles.filterMap (fun h => h.toList.head?)).find?
+    (fun c => (handles.filter (fun h => h.startsWith (String.singleton c))).length ≥ 2)
+  let ambig := String.singleton (sharedChar.getD '0')
+  -- the canonical tag of one entry whose handle starts with that char
+  let collidingTag := (entries.find? (fun (h, _) => h.startsWith ambig)).map (·.2) |>.getD ""
+  o := o ++ [← expectErr "an ambiguous handle prefix is refused (usage) listing the canonical tags"
+      ["note", "remove", "tl-" ++ b, ambig, "--dir", dir3, "--actor", "t"] .usage
+      (fun e => (e.message.splitOn "ambiguous").length > 1
+        && (e.message.splitOn ".").length ≥ 3),  -- the message lists canonical tags (dotted)
+    ← expectData "the canonical tag disambiguates the ambiguous prefix"
+      ["note", "remove", "tl-" ++ b, collidingTag, "--dir", dir3, "--actor", "t"]
     (fun j => jStr j "status" == some "removed")]
   return o
 
