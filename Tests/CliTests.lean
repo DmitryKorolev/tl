@@ -1512,6 +1512,25 @@ GARBAGE
       (fun j => jStr j "status" == some "open"
         && (jGet j "assignee").isNone
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- Cell 4b (the masking variant the claim-only contest scan missed) — a
+  -- foreign CLOSE, not a foreign claim, buried under the claimant's own reopen:
+  -- t1 carol claim, t2 dave close (foreign, status→done), t3 carol reopen
+  -- (status→open + assignee clear, both carol-authored). After t3 both winning
+  -- registers are carol's, and NO foreign *claim* exists above the own claim —
+  -- so the old scan (claim ops only) read `ended`, masking dave's close. The
+  -- extended scan matches any foreign status/assignee write (close included)
+  -- above the own claim → superseded.
+  let id4b := "aaaabbbbccc0004b"
+  let (dirC4b, _) ← craftScenario "c4b"
+    (fun h stem => craftLine (.create id4b { title := some "LostToCloseThenReopened" }) (h 1000) stem (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id4b "carol") (h 2000) stem (some "carol") 2 ++ "\n"
+     ++ craftLine (.reopen id4b) (h 4000) stem (some "carol") 3 ++ "\n")
+    (fun h _ => foreignLine (.close id4b .Done) (h 3000) "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "a foreign close buried under the claimant's own reopen still reads superseded"
+      ["show", "tl-" ++ id4b, "--dir", dirC4b]
+      (fun j => jStr j "status" == some "open"
+        && (jGet j "assignee").isNone
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- Cell 5 — foreign reopen-clear: a foreign reopen clears the assignee at a
   -- higher stamp. The clear-arm asks who authored it: dave, not carol → the
   -- assignee is not held → superseded.

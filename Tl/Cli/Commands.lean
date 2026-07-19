@@ -539,16 +539,22 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
     else
       -- contention analysis — reached only when NOT won (the common path
       -- returns immediately, so the scans below never run on it).
-      -- A register winner cannot carry contest history: a claimant's own
-      -- later close/reopen buries a foreign claim's stamp, so scan the op log
-      -- for any claim above the surfaced own claim the claimant did not author
-      -- — exactly `!opAuthoredByOwn` (the same authorship predicate, negated).
+      -- A register winner cannot carry contest history: a claimant's own later
+      -- close/reopen buries a *foreign* status/assignee write, so scan the op
+      -- log directly for one above the surfaced own claim the claimant did not
+      -- author — exactly `!opAuthoredByOwn` (the authorship predicate negated).
+      -- The registers a claim needs are `status` and `assignee`; the ops that
+      -- write either are `create` (status seed), `claim`/steal (both), `close`
+      -- (status), and `reopen` (both, incl. the assignee clear) — NOT
+      -- update/defer/meta/edge/label. Matching all of them (not just `claim`)
+      -- catches a foreign close or reopen that superseded the claim and was
+      -- then buried under the claimant's own later reopen/close.
       let contested := v.loaded.ops.any (fun p =>
-        match p.op with
-        | .claim ci _ =>
-          ci == i && decide (Tl.Crdt.TotalOrd.lt ownClaimStamp p.stamp)
-            && !opAuthoredByOwn actor p
-        | _ => false)
+        let touchesThis := match p.op with
+          | .create ci _ | .claim ci _ | .close ci _ | .reopen ci => ci == i
+          | _ => false
+        touchesThis && decide (Tl.Crdt.TotalOrd.lt ownClaimStamp p.stamp)
+          && !opAuthoredByOwn actor p)
       let statusOwn := match d.status with
         | some (t, _) => stampAuthoredByOwn v.loaded.ops actor t
         | none => false

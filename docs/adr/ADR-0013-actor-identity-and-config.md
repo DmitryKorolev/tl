@@ -74,19 +74,24 @@ refinements: it reads `won` whenever the *actor's current* claim holds —
 after a reopen (from any replica) is not misreported as a loss; and it reads
 `ended` (not `superseded`) when this replica's own claim ran its course by the
 claimant's own successor write with **no lost race hidden underneath**. Three
-conditions, all checked only on the not-won path: (a) *no contest* — no `claim`
-op on this issue is stamped above the surfaced own claim that the claimant did
-not author; (b) the winning *status* write is the claimant's own; (c) the
-*assignee* winner is the claimant's value, or a clear the claimant authored (a
-reopen). Condition (a) is the crux, and it is why a register winner alone is
-insufficient: a register cannot carry contest history, because the claimant's
-own later close **or reopen** buries the losing foreign claim's stamp — a close
-leaves the foreign assignee winner visible (so (c) would already fail), but a
-reopen *clears* the assignee to `(t, none)` authored by the claimant (so (c)
-passes and would mask the loss). The classifier therefore scans the op log
-directly for a burying claim the claimant did not author — condition (a) is
-exactly the negation of the same authorship predicate that decides (b) and (c),
-so there is one predicate, not a separately-drifting foreign test.
+conditions, all checked only on the not-won path: (a) *no contest* — no
+`status`/`assignee` write on this issue that the claimant did not author is
+stamped above the surfaced own claim; (b) the winning *status* write is the
+claimant's own; (c) the *assignee* winner is the claimant's value, or a clear
+the claimant authored (a reopen). The contested ops in (a) are those whose
+delta writes `status` or `assignee` — `claim`/steal (both), `close` (status),
+`reopen` (both, incl. the assignee clear), and `create` (status seed); not
+`update`/`defer`/`meta`/edge/label, which touch neither. Condition (a) is the
+crux, and it is why a register winner alone is insufficient: a register cannot
+carry contest history, because the claimant's own later close **or reopen**
+buries the losing foreign write's stamp — whether that write was a foreign
+*claim* or a foreign *close* — a close leaves the foreign assignee winner
+visible (so (c) would already fail), but a reopen *clears* the assignee to
+`(t, none)` authored by the claimant, and also overwrites the status, so (b)
+and (c) both pass and would mask the loss. The classifier therefore scans the
+op log directly for a burying write the claimant did not author — condition (a)
+is exactly the negation of the same authorship predicate that decides (b) and
+(c), so there is one predicate, not a separately-drifting foreign test.
 
 **Authorship for the show classifier is determined by the envelope `actor`: an
 op the claimant authored is one carrying their `actor`; an actor-less op cannot
@@ -96,9 +101,9 @@ parties may share one replica-id, so replica is not proof of authorship).** An
 absent origin (compaction) is likewise unattributable ⇒ `superseded`. This is
 the honest direction: `ended` asserts "your own successor write, no
 contention", a claim that must never rest on unprovable authorship. Three
-consequences pin it: an interleaved foreign claim buried under the claimant's
-own later close **or reopen** stays `superseded` (the contest scan, condition
-(a), never masks a lost race either way); on a shared replica another actor's
+consequences pin it: an interleaved foreign write — a claim *or* a close —
+buried under the claimant's own later close **or reopen** stays `superseded`
+(the contest scan, condition (a), never masks a lost race either way); on a shared replica another actor's
 close of your claim is `superseded`, not your history (the envelope `actor`,
 condition (b), distinguishes actors sharing one replica); and an *actor-less*
 own close reads `superseded` too — not attributable, so `ended` is withheld

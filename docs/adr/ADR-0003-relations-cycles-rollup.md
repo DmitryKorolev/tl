@@ -273,15 +273,16 @@ canonical shape:
   the partial survival where only the assignee write held). `show`'s block
   carries the same two values plus a third, `"ended"`: this replica's own
   claim ran its course by the claimant's own successor write with no lost race
-  hidden underneath. Three conditions (ADR-0013): (a) *no contest* — no `claim`
-  op the claimant did not author is stamped above the surfaced own claim
+  hidden underneath. Three conditions (ADR-0013): (a) *no contest* — no
+  `status`/`assignee` write the claimant did not author (a foreign
+  `claim`/`close`/`reopen`/`create`) is stamped above the surfaced own claim
   (scanned in the op log, since a register winner cannot carry contest history —
-  the claimant's own later close or reopen buries the losing claim); (b) the
-  winning *status* write is the claimant's own; (c) the *assignee* winner is the
-  claimant's value or a clear the claimant authored (a reopen). So an
-  interleaved foreign claim buried under the claimant's own later close **or
-  reopen** stays `"superseded"`, and another actor's close on a shared replica
-  does too. Authorship is the envelope `actor` only — an actor-less op (or an
+  the claimant's own later close or reopen buries the losing write, claim or
+  close alike); (b) the winning *status* write is the claimant's own; (c) the
+  *assignee* winner is the claimant's value or a clear the claimant authored (a
+  reopen). So an interleaved foreign write — a claim or a close — buried under
+  the claimant's own later close **or reopen** stays `"superseded"`, and another
+  actor's close on a shared replica does too. Authorship is the envelope `actor` only — an actor-less op (or an
   absent origin under compaction) cannot be attributed, so it resolves toward
   `"superseded"`; the replica id is **not** an authorship proxy (the
   shared-replica footgun), which means even an actor-less *own* close reads
