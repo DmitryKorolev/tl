@@ -1335,9 +1335,15 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   let resWon := actuallyClosed && resWinner == some res && dupTargetOk
   -- `unblocks` is the ready-diff `ready (withClosed s i) \ ready s`, so it is
   -- computed on the PRE-state (where i is still open — on the post-state the
-  -- diff is empty). Report it only when the close actually took effect *as
-  -- requested*: a superseded close frees nothing on this replica's terms.
-  let freed := if resWon then (State.unblocksFast ctx.loaded.state ctx.now i).map (Json.str ∘ displayId)
+  -- diff is empty). It is the PROVED freed set (ADR-0004 thm 10) and is gated
+  -- on TERMINALITY alone: *any* terminal status discharges blockers regardless
+  -- of which resolution or duplicate-of target won the LWW. Decoupled from the
+  -- outcome gate on purpose — a superseded-but-terminal close (a concurrent
+  -- write took a *different* resolution/target) still genuinely freed its
+  -- dependents, so it honestly reports both `outcome: superseded` AND the freed
+  -- set. Only a close that lost terminality entirely (a foreign reopen outran
+  -- it) frees nothing.
+  let freed := if actuallyClosed then (State.unblocksFast ctx.loaded.state ctx.now i).map (Json.str ∘ displayId)
                else []
   let closeOutcome : CloseOutcome := if resWon then .won else .superseded
   -- the `close` block mirrors claim's `{outcome, currentAssignee}`: the typed

@@ -1974,6 +1974,52 @@ def cliReviewBatchTests : IO (List Outcome) := do
        check "duplicate-target mismatch human line names the target, not 'duplicate, not duplicate'"
         ((out.human.splitOn "duplicate, not duplicate").length == 1
          && (out.human.splitOn "is a duplicate of").length == 2) out.human]
+  -- the outcome gate (resWon) and the freed-set gate (terminality) are
+  -- DECOUPLED: a superseded-but-TERMINAL close still genuinely frees its
+  -- dependents. Scenario: Yd blocked-by td (both open, Yd else ready); a
+  -- concurrent foreign `metaSet duplicate-of canB` wins the duplicate-of
+  -- register at a higher HLC, but does NOT close td (td is open in the
+  -- pre-state). The LOCAL `close --as duplicate --of canA` is what makes td
+  -- terminal — so Yd is genuinely newly freed — while the winning duplicate-of
+  -- is canB ≠ canA ⇒ outcome superseded. The close must report BOTH:
+  -- outcome superseded AND unblocked = [Yd]. (Gating freed on resWon hides Yd.)
+  let dirDec ← freshDir
+  let td ← mkIssue dirDec "DecoupleTarget"
+  let canA ← mkIssue dirDec "DecoupleCanonA"
+  let canB ← mkIssue dirDec "DecoupleCanonB"
+  let yd ← mkIssue dirDec "DecoupleDependent" ["--blocked-by", "tl-" ++ td]
+  -- a foreign metaSet (NOT a close) wins the duplicate-of register — td stays
+  -- open in the pre-state, so the local close is what discharges Yd
+  let decHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirDec / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.metaSet td "duplicate-of" (some canB)) decHlc "2zzzzzzzzzzzz" "eve" 1 ++ "\n")
+  match ← run' ["close", "tl-" ++ td, "--dir", dirDec, "--as", "duplicate", "--of", "tl-" ++ canA, "--actor", "t"] with
+  | .error e => o := o ++ [check "decoupled superseded-terminal close reachable" false s!"unexpected: {e.message}"]
+  | .ok out =>
+    let outc := (jGet out.data "close").bind (fun c => jStr c "outcome")
+    let unb := (jArr out.data "unblocked").filterMap (fun x => match x with | Json.str s => some s | _ => none)
+    o := o ++
+      [check "superseded-terminal close still reports superseded (target lost)"
+        (outc == some "superseded") s!"outcome={outc}",
+       check "superseded-terminal close is genuinely terminal"
+        (jStr out.data "status" == some "cancelled") out.data.compress,
+       check "superseded-terminal close STILL reports the proved freed set (unblocked=[Yd])"
+        (unb == ["tl-" ++ yd]) s!"unblocked={unb}"]
+  -- and the freed set is empty only when terminality is LOST (foreign reopen):
+  -- Ye blocked-by te; local close te; a foreign reopon outstamps it → te open
+  -- again, nothing freed, outcome superseded.
+  let dirLost ← freshDir
+  let te ← mkIssue dirLost "LostTerminalTarget"
+  let ye ← mkIssue dirLost "LostTerminalDependent" ["--blocked-by", "tl-" ++ te]
+  let _ := ye
+  let lostHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirLost / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.reopen te) lostHlc "2zzzzzzzzzzzz" "eve" 1 ++ "\n")
+  o := o ++ [← expectData "a close that LOST terminality (foreign reopen) frees nothing"
+      ["close", "tl-" ++ te, "--dir", dirLost, "--as", "done", "--actor", "t"]
+      (fun j => jStr j "status" == some "open"
+        && (jArr j "unblocked").isEmpty
+        && (jGet j "close").bind (fun c => jStr c "outcome") == some "superseded")]
   -- spawn rows: TL_DIR-init, ceiling realpath, error sanitization
   let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
   unless ← exe.pathExists do return o
