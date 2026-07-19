@@ -1531,6 +1531,23 @@ GARBAGE
       (fun j => jStr j "status" == some "open"
         && (jGet j "assignee").isNone
         && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
+  -- Cell 4c (the twin, isolating the `.reopen` contest arm) — a foreign REOPEN
+  -- buried under the claimant's own reopen: t1 carol claim, t2 dave (foreign)
+  -- reopen, t3 carol reopen. After t3 the status winner and the assignee clear
+  -- are both carol's, and there is NO foreign claim OR close above the own
+  -- claim — only dave's foreign *reopen*. So ONLY the `.reopen` arm flags the
+  -- contest; drop `.reopen` from the match and this masks back to `ended`.
+  let id4c := "aaaabbbbccc0004c"
+  let (dirC4c, _) ← craftScenario "c4c"
+    (fun h stem => craftLine (.create id4c { title := some "LostToReopenThenReopened" }) (h 1000) stem (some "carol") 1 ++ "\n"
+     ++ craftLine (.claim id4c "carol") (h 2000) stem (some "carol") 2 ++ "\n"
+     ++ craftLine (.reopen id4c) (h 4000) stem (some "carol") 3 ++ "\n")
+    (fun h _ => foreignLine (.reopen id4c) (h 3000) "2zzzzzzzzzzzz" "dave" ++ "\n")
+  o := o ++ [← expectData "a foreign reopen buried under the claimant's own reopen still reads superseded"
+      ["show", "tl-" ++ id4c, "--dir", dirC4c]
+      (fun j => jStr j "status" == some "open"
+        && (jGet j "assignee").isNone
+        && ((jGet j "claim").bind (fun c => jStr c "outcome")) == some "superseded")]
   -- Cell 5 — foreign reopen-clear: a foreign reopen clears the assignee at a
   -- higher stamp. The clear-arm asks who authored it: dave, not carol → the
   -- assignee is not held → superseded.

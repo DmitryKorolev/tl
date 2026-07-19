@@ -484,18 +484,22 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
     - `ended` — not won, and this replica's own claim ran its course by the
       claimant's own successor write, with no lost race hidden underneath.
       Three conditions, all evaluated only on the not-won path:
-      (a) *no contest* — no claim op on this issue is stamped above the
-      surfaced own claim that the claimant did not author (a register winner
-      cannot represent contest history — a claimant's own later close or reopen
-      buries the foreign claim's stamp — so the op log is scanned directly);
-      (b) the winning *status* write is the claimant's own; (c) the *assignee*
-      winner is the claimant's value or a clear the claimant authored (a
-      reopen). All three read authorship through the single `opAuthoredByOwn`
+      (a) *no contest* — no `status`/`assignee` write on this issue that the
+      claimant did not author is stamped above the surfaced own claim. The
+      contested ops are those whose delta touches either register — `create`
+      (status seed), `claim`/steal (both), `close` (status), `reopen` (both,
+      incl. the assignee clear); not `update`/`defer`/`meta`/edge/label. A
+      register winner cannot represent contest history — a claimant's own later
+      close or reopen buries the foreign write's stamp, whether that write was a
+      foreign claim OR a foreign close/reopen — so the op log is scanned
+      directly. (b) the winning *status* write is the claimant's own; (c) the
+      *assignee* winner is the claimant's value or a clear the claimant authored
+      (a reopen). All three read authorship through the single `opAuthoredByOwn`
       predicate below, so the contest test (a) is exactly its negation.
     - `superseded` — otherwise: a write the claimant did not make (or cannot be
-      proven to have made) took either register, or a foreign claim raced and
-      was later buried — the lost race stays visible under a burying close, a
-      burying reopen, and an unattributable successor alike.
+      proven to have made) took either register, or a foreign status/assignee
+      write raced and was later buried — the lost race stays visible under a
+      burying close, a burying reopen, and an unattributable successor alike.
     `show`-only surface: the `claim` verb's own echo stays binary
     won/superseded (the ratified wire contract).
 
@@ -549,6 +553,12 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
       -- update/defer/meta/edge/label. Matching all of them (not just `claim`)
       -- catches a foreign close or reopen that superseded the claim and was
       -- then buried under the claimant's own later reopen/close.
+      --
+      -- NB: this hand-enumerates the "writes status or assignee" op set whose
+      -- source of truth is `WireOp.toOp` + `stripLifecycle` (Tl/Format/Codec.lean).
+      -- If a new op writes `status` or `assignee` there, add its constructor
+      -- here, or a foreign one of it will silently escape the contest scan and
+      -- mask a lost race (mirrors the `updatedAtStamp` NB, Tl/Kernel/State.lean).
       let contested := v.loaded.ops.any (fun p =>
         let touchesThis := match p.op with
           | .create ci _ | .claim ci _ | .close ci _ | .reopen ci => ci == i
