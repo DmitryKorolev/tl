@@ -408,7 +408,7 @@ diagnostics, stale claims); checks are added additively.
 
 ```json
 { "schemaVersion": 3, "ok": true, "data": { "root": ".tl", "replica": "chp14mvsxr027", "created": true } }
-{ "schemaVersion": 3, "ok": true, "data": { "version": "0.1.0", "logFormat": 1 } }
+{ "schemaVersion": 3, "ok": true, "data": { "version": "0.1.0", "logFormat": 2 } }
 ```
 
 (`"created": false` on an idempotent re-run. The ADR-0006 build-provenance

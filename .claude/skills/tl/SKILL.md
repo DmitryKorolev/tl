@@ -82,7 +82,8 @@ tl help <command>  # one command (human)
 ```
 tl create "<title>" [-p 0-4] [--description <body>]        # pipe the body with a trailing `-`: echo body | tl create "<title>" -
 tl create "<title>" --blocked-by <id> --blocks <id> --parent <id> --related <id>
-tl update <id> [--title T] [-p N] [--description D] [--notes N]   # non-lifecycle fields
+tl update <id> [--title T] [-p N] [--description D] [--slug S]   # non-lifecycle scalars
+tl note add <id> "<text>"   # append an immutable note ('-' reads the text from stdin); `tl note list <id>` to read
 tl dep add <A> <B>       # A becomes blocked by B
 tl dep remove <A> <B>
 tl parent set <id> <new-parent>     # (re)place <id> under an epic
