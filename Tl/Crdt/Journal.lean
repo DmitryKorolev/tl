@@ -584,9 +584,9 @@ private def allEntriesRef (j : Journal) : List (Stamp × NotePayload × Bool) :=
 def allEntries (j : Journal) : List (Stamp × NotePayload × Bool) :=
   ((AssocList.zipLookup j.entries.adds.toList j.entries.removed.toList).zip
     (AssocList.zipLookup j.entries.adds.toList j.payloads.toList)).filterMap
-      (fun rp => rp.2.2.2.map (fun pl =>
-        (rp.1.1, pl,
-          !(rp.1.2.1.toList.any (fun q => decide (q.1 ∉ rp.1.2.2.getD FinSet.empty))))))
+      (fun rp =>
+        let ((e, tags, remOpt), (_, _, payOpt)) := rp
+        payOpt.map (fun pl => (e, pl, !(OrSet.entryLive (e, tags, remOpt)))))
 
 /-- The merge-join `--all` view equals its per-`find` reference form. The
     positional `zip` aligns because both `zipLookup`s walk `adds` in order; on
@@ -617,6 +617,10 @@ theorem allEntries_eq_ref (j : Journal) : j.allEntries = j.allEntriesRef := by
     show decide (∃ q ∈ e.2.toList, q.1 ∉ j.entries.removedOf e.1)
        = decide (∃ q ∈ (j.entries.tagsOf e.1).toList, q.1 ∉ j.entries.removedOf e.1)
     rw [htag]
+  show (AssocList.lookup e.1 j.payloads.toList).map
+        (fun pl => (e.1, pl,
+          !(OrSet.entryLive (e.1, e.2, AssocList.lookup e.1 j.entries.removed.toList))))
+     = (j.payloadOf e.1).map (fun pl => (e.1, pl, !(decide (j.Visible e.1))))
   show (AssocList.lookup e.1 j.payloads.toList).map
         (fun pl => (e.1, pl, !(e.2.toList.any (fun q =>
           decide (q.1 ∉ (AssocList.lookup e.1 j.entries.removed.toList).getD FinSet.empty)))))

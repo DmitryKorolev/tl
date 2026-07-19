@@ -94,8 +94,10 @@ def elements (s : OrSet α) : List α := s.adds.keys
 
 /-- Liveness of one entry `(e, tags, remOpt)` from the merge-join: some observed
     tag is not tombstoned at `e` (`remOpt` is `e`'s tombstone set, or `none`
-    ⇒ empty). The filter predicate on `presentElements`'s merge-joined entries. -/
-private def entryLive (p : α × FinSet Stamp × Option (FinSet Stamp)) : Bool :=
+    ⇒ empty). The filter predicate on `presentElements`'s merge-joined entries;
+    reused by the journal's `--all` view so its removed-flag cannot diverge from
+    what `presentElements` reports present. -/
+def entryLive (p : α × FinSet Stamp × Option (FinSet Stamp)) : Bool :=
   p.2.1.toList.any (fun q => decide (q.1 ∉ p.2.2.getD FinSet.empty))
 
 /-- The reference form of `presentElements` — a filter over `adds.toList` with a

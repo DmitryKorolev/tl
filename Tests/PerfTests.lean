@@ -322,10 +322,14 @@ def perfTests : IO (List Outcome) := do
     -- the retired per-add `removedOf` probe was Θ(adds×removed), so a revert
     -- turns this row quadratic and the ratio jumps. This is the only row that
     -- exercises a tombstone-heavy OR-Set (every other fixture is add-only).
+    -- Reps sized so the small scale clears ratioRow's 30ms floor with margin
+    -- (de-masked): below the floor the ×12 check degrades to the 30ms backstop
+    -- and a Θ(adds×removed) revert could sneak under it — the enumeration is a
+    -- few µs/call, so it needs many reps; re-tune if hardware shifts.
     let tsegs := segsOf (tombstoneOps n)
     let (tloaded, _) := materializeCached tsegs none false (some synthNow) (some stem)
     let tstate := tloaded.state
-    let tomb ← bench 3000 (fun _ => tstate.presentEdges.length)
+    let tomb ← bench 5000 (fun _ => tstate.presentEdges.length)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
