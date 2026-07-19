@@ -387,6 +387,142 @@ theorem lookup_mapVal {W : Type w} (f : K → V → W) (k : K) :
     · rw [if_neg hk, if_neg hk]
       exact lookup_mapVal f k ps
 
+/-! ### Sorted merge-join — the `lookup`-per-entry quadratic retired (ADR-0023/0024)
+
+`lookup k l` is a linear scan, so annotating each entry of one sorted map with
+its `lookup` in another (`presentElements`'s tombstone probe, the journal's
+payload probe) is `O(|l1|·|l2|)`. Both maps are key-ascending, so a single
+co-traversal (`zipLookup`) does it in `O(|l1| + |l2|)`. It is the shipped path;
+`zipLookup_eq` bridges it to the per-entry-`lookup` reference form, so every
+theorem stated over that form transfers unchanged. -/
+
+/-- Drop the prefix of entries whose key is strictly `< k` (the merge-join's
+    pointer advance). Clean recursion equations (`if lt p.1 k`) keep the
+    supporting proofs local, independent of `List.dropWhile` lemma shapes. -/
+def dropLt (k : K) : List (K × V) → List (K × V)
+  | [] => []
+  | p :: ps => if lt p.1 k then dropLt k ps else p :: ps
+
+/-- Dropping a prefix of keys `< k` preserves `lookup` at any target not `< k`
+    (a dropped key is `< k ≤ target`, hence `≠ target`). -/
+theorem lookup_dropLt {k target : K} (hge : ¬ lt target k) :
+    (l : List (K × V)) → lookup target (dropLt k l) = lookup target l
+  | [] => rfl
+  | p :: ps => by
+    unfold dropLt
+    by_cases hp : lt p.1 k
+    · rw [if_pos hp]
+      have hne : target ≠ p.1 := fun he => hge (he ▸ hp)
+      rw [lookup_cons_ne hne]
+      exact lookup_dropLt hge ps
+    · rw [if_neg hp]
+
+/-- `Sorted` is preserved under `dropLt` (a suffix). -/
+theorem sorted_dropLt (k : K) :
+    {l : List (K × V)} → Sorted l → Sorted (dropLt k l)
+  | [], _ => trivial
+  | p :: ps, ⟨hlb, hsp⟩ => by
+    unfold dropLt
+    by_cases hp : lt p.1 k
+    · rw [if_pos hp]; exact sorted_dropLt k hsp
+    · rw [if_neg hp]; exact ⟨hlb, hsp⟩
+
+/-- The head of `dropLt k l` has key `≥ k` (that is where the drop stopped). -/
+theorem dropLt_head_ge {k : K} :
+    {l : List (K × V)} → {a : K × V} → {as : List (K × V)} →
+    dropLt k l = a :: as → ¬ lt a.1 k
+  | [], _, _, h => by rw [show dropLt k [] = [] from rfl] at h; exact nomatch h
+  | p :: ps, a, as, h => by
+    unfold dropLt at h
+    by_cases hp : lt p.1 k
+    · rw [if_pos hp] at h; exact dropLt_head_ge h
+    · rw [if_neg hp] at h
+      have hap : p = a := (List.cons.injEq .. ▸ h).1
+      rw [← hap]; exact hp
+
+/-- Annotate each entry of `l1` with its `lookup` in `l2`, by one co-traversal
+    of the two key-ascending lists (a sorted merge-join): `O(|l1| + |l2|)`. The
+    `l2` pointer only advances (`dropLt` past keys below the current `l1` key,
+    forwarding the remainder), so each `l2` entry is visited once. -/
+def zipLookup {W : Type w} : List (K × V) → List (K × W) → List (K × V × Option W)
+  | [], _ => []
+  | (k, v) :: ps, l2 =>
+    match dropLt k l2 with
+    | [] => (k, v, none) :: zipLookup ps []
+    | (k2, w) :: rest =>
+      if k = k2 then (k, v, some w) :: zipLookup ps rest
+      else (k, v, none) :: zipLookup ps ((k2, w) :: rest)
+
+/-- **The bridge.** `zipLookup` equals the per-entry-`lookup` reference form, so
+    it is a drop-in for it (both maps sorted). At each `l1` head `k`, the
+    forwarded `l2` (`dropLt`'d past keys `< k`) has the same `lookup` at `k` and
+    at every later `l1` key (all `> k`) as the original `l2` (`lookup_dropLt`),
+    so the emitted annotation and the recursive tail both agree with the
+    reference. -/
+theorem zipLookup_eq {W : Type w} :
+    (l1 : List (K × V)) → (l2 : List (K × W)) → Sorted l1 → Sorted l2 →
+    zipLookup l1 l2 = l1.map (fun p => (p.1, p.2, lookup p.1 l2))
+  | [], _, _, _ => rfl
+  | (k, v) :: ps, l2, ⟨hlb, hsp⟩, hs2 => by
+    have hfwd : ∀ (t : K), ¬ lt t k → lookup t (dropLt k l2) = lookup t l2 :=
+      fun t ht => lookup_dropLt ht l2
+    -- keys `> k` are `≥ k`, so `hfwd` applies to every `ps` key
+    have hnlt : ∀ p ∈ ps, ¬ lt p.1 k := fun p hp h => lt_irrefl k (lt_trans (hlb p hp) h)
+    -- the recursive tail agrees with the reference over `ps` for any forwarded
+    -- sorted `l2'` that matches `l2` on every `ps` key
+    have htail : ∀ (l2' : List (K × W)), Sorted l2' →
+        (∀ p ∈ ps, lookup p.1 l2' = lookup p.1 l2) →
+        zipLookup ps l2' = ps.map (fun p => (p.1, p.2, lookup p.1 l2)) := by
+      intro l2' hs2' hagree
+      rw [zipLookup_eq ps l2' hsp hs2']
+      apply List.map_congr_left
+      intro p hp
+      show (p.1, p.2, lookup p.1 l2') = (p.1, p.2, lookup p.1 l2)
+      rw [hagree p hp]
+    have hsdrop : Sorted (dropLt k l2) := sorted_dropLt k hs2
+    show zipLookup ((k, v) :: ps) l2 = _
+    rw [List.map_cons]
+    unfold zipLookup
+    cases hd : dropLt k l2 with
+    | nil =>
+      have hkn : lookup k l2 = none := by rw [← hfwd k (lt_irrefl k), hd]; rfl
+      show (k, v, none) :: zipLookup ps [] = (k, v, lookup k l2) :: _
+      rw [hkn]
+      refine congrArg _ (htail [] trivial (fun p hp => ?_))
+      have hfw := hfwd p.1 (hnlt p hp)
+      rw [hd] at hfw
+      exact hfw
+    | cons hd2 rest =>
+      obtain ⟨k2, w⟩ := hd2
+      have hsd' : Sorted ((k2, w) :: rest) := hd ▸ hsdrop
+      have hk2 : ¬ lt k2 k := dropLt_head_ge hd
+      show (if k = k2 then (k, v, some w) :: zipLookup ps rest
+            else (k, v, none) :: zipLookup ps ((k2, w) :: rest))
+          = (k, v, lookup k l2) :: _
+      by_cases hkk : k = k2
+      · have hkw : lookup k l2 = some w := by
+          rw [← hfwd k (lt_irrefl k), hd, ← hkk, lookup_cons_self (k, w) rest]
+        rw [if_pos hkk, hkw]
+        refine congrArg _ (htail rest hsd'.2 (fun p hp => ?_))
+        have hfw := hfwd p.1 (hnlt p hp)
+        rw [hd] at hfw
+        have hpne : p.1 ≠ k2 := hkk ▸ Ne.symm (ne_of_lt (hlb p hp))
+        rw [lookup_cons_ne hpne] at hfw
+        exact hfw
+      · have hlt2 : lt k k2 := by
+          rcases trichotomy k k2 with h | h | h
+          · exact h
+          · exact absurd h hkk
+          · exact absurd h hk2
+        have hkn : lookup k l2 = none := by
+          rw [← hfwd k (lt_irrefl k), hd, lookup_cons_ne (ne_of_lt hlt2)]
+          exact lookup_eq_none_of_lbKey (lbKey_of_lt hlt2 hsd'.1)
+        rw [if_neg hkk, hkn]
+        refine congrArg _ (htail ((k2, w) :: rest) hsd' (fun p hp => ?_))
+        have hfw := hfwd p.1 (hnlt p hp)
+        rw [hd] at hfw
+        exact hfw
+
 /-- Filtering the keys of `insertWith f e0 v l` by a predicate that *rejects* `e0`
     yields the same list as filtering `l`'s keys: `insertWith` either merges into an
     existing `e0` entry (keys unchanged) or inserts `e0` (dropped by the filter),
