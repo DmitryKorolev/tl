@@ -537,6 +537,79 @@ theorem zipLookup_eq {W : Type w} :
         rw [hd] at hfw
         exact hfw
 
+/-- `List.any` respects a per-member predicate agreement. -/
+theorem any_congr_mem {γ : Type _} (p q : γ → Bool) :
+    (l : List γ) → (∀ a ∈ l, p a = q a) → l.any p = l.any q
+  | [], _ => rfl
+  | a :: as, h => by
+    rw [List.any_cons, List.any_cons, h a (List.mem_cons_self ..),
+      any_congr_mem p q as (fun x hx => h x (List.mem_cons_of_mem a hx))]
+
+/-- Merge-join membership test: does `l1` have a key absent from `l2`'s keys?
+    Both key-ascending, so one co-traversal advancing the `l2` pointer past keys
+    below the current `l1` key (`dropLt`, its remainder forwarded) — O(|l1|+|l2|),
+    not the O(|l1|·|l2|) a `lookup` per `l1` key costs. Short-circuits at the
+    first `l1` key that lands below the forwarded `l2` head (that key is absent).
+    `anyNotIn_eq` bridges it to the per-entry-`lookup` reference form. -/
+def anyNotIn {W : Type w} : List (K × V) → List (K × W) → Bool
+  | [], _ => false
+  | (t, _) :: ts, l2 =>
+    match dropLt t l2 with
+    | [] => true
+    | (r, _) :: rs => if t = r then anyNotIn ts rs else true
+
+/-- **The bridge.** `anyNotIn l1 l2` (both sorted) equals "some `l1` key is not a
+    key of `l2`" phrased over the per-entry `lookup` — so every statement over
+    the reference form transfers. At each `l1` head `t`, the forwarded `l2`
+    (`dropLt`'d past keys `< t`) has the same `lookup` at `t` and at every later
+    `l1` key (all `> t`) as the original `l2` (`lookup_dropLt`). -/
+theorem anyNotIn_eq {W : Type w} :
+    (l1 : List (K × V)) → (l2 : List (K × W)) → Sorted l1 → Sorted l2 →
+    anyNotIn l1 l2 = l1.any (fun q => decide (lookup q.1 l2 = none))
+  | [], _, _, _ => rfl
+  | (t, v) :: ts, l2, ⟨hlb, hsp⟩, hs2 => by
+    have hnlt : ∀ p ∈ ts, ¬ lt p.1 t := fun p hp h => lt_irrefl t (lt_trans (hlb p hp) h)
+    have htail : ∀ (l2' : List (K × W)), Sorted l2' →
+        (∀ p ∈ ts, lookup p.1 l2' = lookup p.1 l2) →
+        anyNotIn ts l2' = ts.any (fun q => decide (lookup q.1 l2 = none)) := by
+      intro l2' hs2' hagree
+      rw [anyNotIn_eq ts l2' hsp hs2']
+      exact any_congr_mem _ _ ts (fun p hp => by rw [hagree p hp])
+    have hsdrop : Sorted (dropLt t l2) := sorted_dropLt t hs2
+    show anyNotIn ((t, v) :: ts) l2 = _
+    rw [List.any_cons]
+    unfold anyNotIn
+    cases hd : dropLt t l2 with
+    | nil =>
+      have hkn : lookup t l2 = none := by rw [← lookup_dropLt (lt_irrefl t) l2, hd]; rfl
+      show true = _
+      rw [hkn]; rfl
+    | cons hd2 rest =>
+      obtain ⟨r, w⟩ := hd2
+      show (if t = r then anyNotIn ts rest else true) = _
+      have hsd' : Sorted ((r, w) :: rest) := hd ▸ hsdrop
+      have hr : ¬ lt r t := dropLt_head_ge hd
+      by_cases hkk : t = r
+      · have hkw : lookup t l2 ≠ none := by
+          rw [← lookup_dropLt (lt_irrefl t) l2, hd, hkk, lookup_cons_eq r w rest]
+          exact fun h => nomatch h
+        rw [if_pos hkk, decide_eq_false hkw, Bool.false_or]
+        refine htail rest hsd'.2 (fun p hp => ?_)
+        have hfw := lookup_dropLt (hnlt p hp) l2
+        rw [hd] at hfw
+        have hpne : p.1 ≠ r := hkk ▸ Ne.symm (ne_of_lt (hlb p hp))
+        rw [lookup_cons_ne hpne] at hfw
+        exact hfw
+      · have hlt2 : lt t r := by
+          rcases trichotomy t r with h | h | h
+          · exact h
+          · exact absurd h hkk
+          · exact absurd h hr
+        have hkn : lookup t l2 = none := by
+          rw [← lookup_dropLt (lt_irrefl t) l2, hd, lookup_cons_ne (ne_of_lt hlt2)]
+          exact lookup_eq_none_of_lbKey (lbKey_of_lt hlt2 hsd'.1)
+        rw [if_neg hkk, hkn]; rfl
+
 /-- Filtering the keys of `insertWith f e0 v l` by a predicate that *rejects* `e0`
     yields the same list as filtering `l`'s keys: `insertWith` either merges into an
     existing `e0` entry (keys unchanged) or inserts `e0` (dropped by the filter),

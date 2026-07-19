@@ -621,6 +621,7 @@ theorem allEntries_eq_ref (j : Journal) : j.allEntries = j.allEntriesRef := by
         (fun pl => (e.1, pl,
           !(OrSet.entryLive (e.1, e.2, AssocList.lookup e.1 j.entries.removed.toList))))
      = (j.payloadOf e.1).map (fun pl => (e.1, pl, !(decide (j.Visible e.1))))
+  rw [OrSet.entryLive_eq_ref]
   show (AssocList.lookup e.1 j.payloads.toList).map
         (fun pl => (e.1, pl, !(e.2.toList.any (fun q =>
           decide (q.1 ∉ (AssocList.lookup e.1 j.entries.removed.toList).getD FinSet.empty)))))

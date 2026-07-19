@@ -96,9 +96,34 @@ def elements (s : OrSet α) : List α := s.adds.keys
     tag is not tombstoned at `e` (`remOpt` is `e`'s tombstone set, or `none`
     ⇒ empty). The filter predicate on `presentElements`'s merge-joined entries;
     reused by the journal's `--all` view so its removed-flag cannot diverge from
-    what `presentElements` reports present. -/
+    what `presentElements` reports present.
+
+    The tag set and the tombstone set are both canonically sorted, so the
+    "some tag not tombstoned" test is one within-element merge-join
+    (`AssocList.anyNotIn`) — O(#tags + #tombstones), not the O(#tags × #tombstones)
+    a `FinSet` membership (linear scan) per tag would cost when one element has
+    been re-added and removed many times. `entryLive_eq_ref` bridges it to that
+    per-tag reference form. -/
 def entryLive (p : α × FinSet Stamp × Option (FinSet Stamp)) : Bool :=
-  p.2.1.toList.any (fun q => decide (q.1 ∉ p.2.2.getD FinSet.empty))
+  AssocList.anyNotIn p.2.1.toList (p.2.2.getD FinSet.empty).toList
+
+omit [TotalOrd α] in
+/-- **The within-element bridge.** `entryLive` equals its reference form — some
+    observed tag whose stamp is not in the entry's tombstone set — so every
+    statement over that form (`presentElements`/journal liveness) transfers. The
+    merge-join and the per-tag `∉` scan agree because a `FinSet` membership is a
+    sorted-list `lookup` (`AMap.find`), which `anyNotIn_eq` matches key-for-key. -/
+theorem entryLive_eq_ref (p : α × FinSet Stamp × Option (FinSet Stamp)) :
+    entryLive p = p.2.1.toList.any (fun q => decide (q.1 ∉ p.2.2.getD FinSet.empty)) := by
+  unfold entryLive
+  rw [AssocList.anyNotIn_eq p.2.1.toList (p.2.2.getD FinSet.empty).toList
+      p.2.1.sorted (p.2.2.getD FinSet.empty).sorted]
+  refine AssocList.any_congr_mem _ _ p.2.1.toList (fun q _ => decide_eq_decide.mpr ?_)
+  show AssocList.lookup q.1 (p.2.2.getD FinSet.empty).toList = none ↔ q.1 ∉ p.2.2.getD FinSet.empty
+  show AMap.find (p.2.2.getD FinSet.empty) q.1 = none ↔ ¬ (AMap.find (p.2.2.getD FinSet.empty) q.1).isSome = true
+  cases AMap.find (p.2.2.getD FinSet.empty) q.1 with
+  | none => exact Iff.intro (fun _ => fun h => nomatch h) (fun _ => rfl)
+  | some u => exact Iff.intro (fun h => nomatch h) (fun h => absurd rfl h)
 
 /-- The reference form of `presentElements` — a filter over `adds.toList` with a
     per-entry `removedOf` probe (an `AMap.find`, a linear scan). Proof-only
@@ -135,10 +160,7 @@ private theorem filter_annot_map_fst (s : OrSet α) :
   | p :: ps => by
     have hlive : entryLive (p.1, p.2, AssocList.lookup p.1 s.removed.toList)
         = p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1)) := by
-      show p.2.toList.any (fun q =>
-            decide (q.1 ∉ (AssocList.lookup p.1 s.removed.toList).getD FinSet.empty))
-         = p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1))
-      rfl
+      rw [entryLive_eq_ref]; rfl
     rw [List.map_cons]
     by_cases hL : entryLive (p.1, p.2, AssocList.lookup p.1 s.removed.toList) = true
     · rw [List.filter_cons_of_pos hL, List.map_cons,

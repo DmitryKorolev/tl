@@ -151,6 +151,27 @@ private def tombstoneOps (n : Nat) : List ParsedOp :=
         (Tl.Crdt.FinSet.singleton (stampAt (addIdx (j + 1))))))
   creates ++ adds ++ removes
 
+/-- A *within-element* tombstone-heavy edge: ONE blocks edge re-added `n` times
+    (distinct stamps ⇒ `n` add-tags at one key) and removed `n` times (each
+    observing one distinct tag ⇒ `n` tombstones at that key). So the edge OR-Set
+    holds a single entry whose tag set and tombstone set are both size `n`, and
+    `entryLive` on it tests each tag against the tombstone set. The retired
+    per-tag `∉` FinSet scan is Θ(#tags × #tombstones) = Θ(n²); the within-element
+    merge-join (`anyNotIn`) is O(n). `tombstoneOps` (n edges, one tag each) pins
+    only the cross-element merge-join; this pins the within-element one. -/
+private def repeatReAddOps (n : Nat) : List ParsedOp :=
+  let replicaVal := (ofCrockford? stem).getD 0
+  let stampAt (idx : Nat) : Tl.Crdt.Stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
+  let mk (idx : Nat) (op : WireOp) : ParsedOp :=
+    { v := op.recordVersion, op, stamp := stampAt idx, actor := some "perf" }
+  let e : IssueId × IssueId × EdgeKind := (synthId 0, synthId 1, EdgeKind.Blocks)
+  let creates := [mk 0 (.create (synthId 0) { title := some "e0" }),
+                  mk 1 (.create (synthId 1) { title := some "e1" })]
+  let adds := (List.range n).map (fun j => mk (2 + j) (.depAdd e))
+  let removes := (List.range n).map (fun j =>
+    mk (2 + n + j) (.depRemove e (Tl.Crdt.FinSet.singleton (stampAt (2 + j)))))
+  creates ++ adds ++ removes
+
 private def segsOf (ops : List ParsedOp) : List SegmentData :=
   [{ replicaId := stem
      bytes := (ops.foldl (fun a p => a ++ renderLine p ++ "\n") "").toUTF8 }]
@@ -330,6 +351,17 @@ def perfTests : IO (List Outcome) := do
     let (tloaded, _) := materializeCached tsegs none false (some synthNow) (some stem)
     let tstate := tloaded.state
     let tomb ← bench 5000 (fun _ => tstate.presentEdges.length)
+    -- the *within-element* tombstone probe (the residual the cross-element
+    -- merge-join missed): one edge with n add-tags and n tombstones at a single
+    -- key. `entryLive` merge-joins the tag list against the tombstone set within
+    -- the element (O(n)); the retired per-tag `∉` FinSet scan was Θ(n²), so a
+    -- revert turns this row quadratic and the ratio jumps. Reps sized so the
+    -- small scale clears ratioRow's 30ms floor with margin (the enumeration over
+    -- a single element is a few µs/call); re-tune if hardware shifts.
+    let wtsegs := segsOf (repeatReAddOps n)
+    let (wtloaded, _) := materializeCached wtsegs none false (some synthNow) (some stem)
+    let wtstate := wtloaded.state
+    let wtomb ← bench 2500 (fun _ => wtstate.presentEdges.length)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
@@ -340,7 +372,8 @@ def perfTests : IO (List Outcome) := do
       ("cli tree canonical-parent per row", canon),
       ("dep-path blocksPath (wide graph)", wide),
       ("why blocker-cone (wide graph)", wwhy),
-      ("or-set tombstone-probe enumeration (presentEdges)", tomb)])]
+      ("or-set tombstone-probe enumeration (presentEdges)", tomb),
+      ("or-set within-element tombstone merge (presentEdges)", wtomb)])]
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
