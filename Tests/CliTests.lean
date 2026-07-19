@@ -2514,8 +2514,24 @@ def cliNoteTests : IO (List Outcome) := do
   o := o ++ [← expectData "a full canonical tag is accepted as <note-id> (noop on a removed entry)"
       ["note", "remove", "tl-" ++ a, tag, "--dir", dir, "--actor", "ann"]
     (fun j => jStr j "status" == some "noop"),
+    -- shape consistency (finding [2]): the noop's `note` field is the resolved
+    -- 16-char handle — the SAME shape a successful removal returns — never the
+    -- raw canonical tag or the typed token
+    ← expectData "note remove noop carries the 16-char handle, matching a successful removal's shape"
+      ["note", "remove", "tl-" ++ a, tag, "--dir", dir, "--actor", "ann"]
+    (fun j => jStr j "status" == some "noop"
+      && (jStr j "note").any (fun n => n.length == 16 && (n.splitOn ".").length == 1)
+      && jStr j "note" == some handle),
     ← expectErr "an unknown note id is not-found with teaching"
       ["note", "remove", "tl-" ++ a, "zzzzzzzz", "--dir", dir, "--actor", "t"] .notFound,
+    -- a mistyped canonical-tag token (2 dots, not a valid stamp) is a CLI usage
+    -- error that teaches note list — NOT the wire codec's malformed-line code
+    -- with its "repair / --skip-bad" advice (finding [1])
+    ← expectErr "a mistyped canonical-tag token is a teaching usage error, not a codec malformed-line"
+      ["note", "remove", "tl-" ++ a, "aa.bb.cc", "--dir", dir, "--actor", "t"] .usage
+      (fun e => (e.message.splitOn "note list").length > 1
+        && (e.message.splitOn "repair").length == 1
+        && (e.message.splitOn "skip-bad").length == 1),
     ← expectErr "note add without text is usage"
       ["note", "add", "tl-" ++ a, "", "--dir", dir, "--actor", "t"] .usage]
   -- collision refusal: a forged foreign segment carries two live entries with

@@ -286,9 +286,7 @@ def styledShow (st : Style) (v : View) (i : IssueId)
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
     ++ fence st "NOTES" (String.intercalate "\n"
-        (d.notes.visibleEntries.map (fun (tag, p) =>
-          let who := match p.actor with | some a => s!" · {sanitizeSingle a}" | none => ""
-          s!"[{sanitizeSingle p.handle}] {hlcIso tag.hlc}{who}\n" ++ sanitizeMulti p.text)))
+        (d.notes.visibleEntries.map (fun (tag, p) => noteHumanLine tag p)))
     ++ rel "blocked by" blockers ++ rel "blocks" deps ++ rel "related" related ++ parentLine
     ++ childrenBlock
   return String.intercalate "\n" body

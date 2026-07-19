@@ -90,7 +90,12 @@ abbrev Edge := IssueId × IssueId × EdgeKind
 /-! ## Per-issue data — a record of typed registers + label set + meta map -/
 
 /-- All of one issue's mergeable data (ADR-0002). Each scalar is an LWW register
-    of its tightest type; nullable scalars wrap `Option`. -/
+    of its tightest type; nullable scalars wrap `Option`.
+
+    NB: `updatedAtStamp` (below) hand-enumerates these scalar registers for the
+    `updatedAt` projection (ADR-0027). A new register added here that should
+    reflect activity must also be threaded into `updatedAtStamp`, or it will
+    silently not bump `updatedAt`. -/
 structure IssueData where
   title : Reg String
   status : Reg Status

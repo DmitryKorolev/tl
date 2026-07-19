@@ -1783,31 +1783,28 @@ def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : S
 private def noteRemovalDisclosure : String :=
   "hidden from views; the text remains in the replicated log history and in already-synced clones"
 
-/-- One journal entry as its `--json` object (ADR-0027):
-    `{id, tag, time, actor, text}`; a removed placeholder swaps `text` for
-    `removed: true`. -/
-private def noteEntryObj (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload)
-    (removed : Bool) : Json :=
-  Json.mkObj ([
-    ("id", Json.str (sanitizeSingle p.handle)),
-    ("tag", Json.str (tagOfStamp st)),
-    ("time", Json.str (hlcIso st.hlc)),
-    ("actor", match p.actor with
-      | some a => Json.str (sanitizeSingle a) | none => Json.null)]
-    ++ (if removed then [("removed", Json.bool true)]
-        else [("text", Json.str (sanitizeMulti p.text))]))
-
 /-- Resolve a `<note-id>` inside one issue's journal (ADR-0027): a full
     canonical tag string (`<hlc>.<replica>.<nonce>`, told apart by shape — its
-    dots) is the always-unique fallback; anything else is a handle prefix over
-    the *live* entries, ASCII-case-folded and Crockford-aliased like issue
+    two dots) is the always-unique fallback; anything else is a handle prefix
+    over the *live* entries, ASCII-case-folded and Crockford-aliased like issue
     ids. A collision refuses with the colliding entries' canonical tags.
     Returns the entry's tag, its stored handle, and whether it is already
-    removed. -/
+    removed.
+
+    A token that *looks* canonical (two dots) but is not a valid stamp — or
+    names no entry here — is a bad CLI argument, so it surfaces a `usage` /
+    `not-found` error that teaches `tl note list`; it never leaks the codec's
+    `malformed-line` code and its "repair the line / --skip-bad" advice, which
+    would misread a mistyped argument as log corruption. -/
 private def resolveNoteToken (jn : Tl.Crdt.Journal) (noteTok : String) :
     Except Tl.Error (Tl.Crdt.Stamp × String × Bool) := do
   if (noteTok.splitOn ".").length == 3 then
-    let tag ← stampOfTag noteTok
+    -- shaped like a canonical tag; parse it ourselves so a malformed one is a
+    -- CLI `usage` error, not the wire codec's `malformed-line`
+    let tag ← match stampOfTag noteTok with
+      | .ok st => pure st
+      | .error _ => throw (.mk' .usage
+          s!"'{noteTok}' is not a valid note id or canonical tag for this issue — run `tl note list <id>` (or `--all`) to see the note ids")
     match jn.payloadOf tag with
     | some pl => return (tag, pl.handle, !(decide (jn.Visible tag)))
     | none => throw (.mk' .notFound
@@ -1848,7 +1845,7 @@ def cmdNoteAdd (dirOverride : Option String) (tok text : String) (actor : String
   let some (handle, st) := parsed.head?.bind (fun pp =>
       match pp.op with | .noteAdd _ note _ => some (note, pp.stamp) | _ => none)
     | throw (.mk' .internal "note add wrote no record — this is a bug in tl; please report it")
-  let entry := noteEntryObj st ⟨handle, text, some actor⟩ false
+  let entry := noteEntryJson st ⟨handle, text, some actor⟩
   let data := Json.mkObj
     [("id", Json.str (displayId i)), ("note", entry), ("status", Json.str "added")]
   return { data, human := s!"Added note [{handle}] to {displayId i}"
@@ -1871,14 +1868,10 @@ def cmdNoteList (dirOverride : Option String) (tok : String) (all skipBad : Bool
       jn.visibleEntries.map (fun (st, pl) => (st, pl, false))
   let data := Json.mkObj
     [("id", Json.str (displayId i)), ("count", jnum rows.length),
-     ("notes", Json.arr (rows.map (fun (st, pl, rem) => noteEntryObj st pl rem)).toArray)]
+     ("notes", Json.arr (rows.map (fun (st, pl, rem) => noteEntryJson st pl rem)).toArray)]
   let human :=
     if rows.isEmpty then s!"{displayId i} has no notes"
-    else String.intercalate "\n" (rows.map (fun (st, pl, rem) =>
-      let who := match pl.actor with | some a => s!" · {sanitizeSingle a}" | none => ""
-      if rem then s!"[{sanitizeSingle pl.handle}] {hlcIso st.hlc}{who} (removed)"
-      else s!"[{sanitizeSingle pl.handle}] {hlcIso st.hlc}{who}\n  "
-        ++ sanitizeMulti pl.text))
+    else String.intercalate "\n" (rows.map (fun (st, pl, rem) => noteHumanLine st pl rem))
   return { data, human, notes }
 
 /-- `tl note remove <id> <note-id>`: tombstone one entry — exactly the entry
@@ -1895,14 +1888,20 @@ def cmdNoteRemove (dirOverride : Option String) (tok noteTok : String) (actor : 
     if alreadyRemoved then .ok []
     else .ok [.noteRemove i handle (jn.entries.tagsOf tag)])
   let i ← MonadExcept.ofExcept (resolveToken ctx.loaded.state tok)
+  -- Report the resolved 16-char handle in every outcome (removed / noop), so
+  -- the `note` field shape never depends on whether the write fired. The
+  -- noop path (an already-removed entry) carries no op to read it from, so
+  -- re-resolve against the folded state — the same resolution the build saw.
+  let handle ← MonadExcept.ofExcept (do
+    let jn := (ctx.loaded.state.issueData i).notes
+    let (_, h, _) ← resolveNoteToken jn noteTok
+    pure h)
   let status := if parsed.isEmpty then "noop" else "removed"
-  let handle := (parsed.head?.bind (fun pp =>
-      match pp.op with | .noteRemove _ n _ => some n | _ => none)).getD (sanitizeSingle noteTok)
   let data := Json.mkObj
-    [("id", Json.str (displayId i)), ("note", Json.str handle),
+    [("id", Json.str (displayId i)), ("note", Json.str (sanitizeSingle handle)),
      ("status", Json.str status), ("disclosure", Json.str noteRemovalDisclosure)]
   let human := (if parsed.isEmpty then
-      s!"note '{sanitizeSingle noteTok}' in {displayId i} is already removed — nothing to do"
+      s!"note [{handle}] in {displayId i} is already removed — nothing to do"
     else s!"Removed note [{handle}] from {displayId i}") ++ s!" ({noteRemovalDisclosure})"
   return { data, human
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }

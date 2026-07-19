@@ -480,17 +480,33 @@ def dependenciesJson (edges : List Edge) (i : IssueId) : Json :=
 private def labelsJson (d : IssueData) : Json :=
   Json.arr (d.labels.presentElements.map (Json.str ∘ sanitizeSingle)).toArray
 
-/-- One visible journal entry (ADR-0027): `{id, tag, time, actor, text}` — `id`
-    is the minted handle (bare, 16 chars), `tag` the always-unique canonical
-    add-tag string (the collision escape hatch), `time` the add op's HLC
-    physical time, `actor` the envelope actor or `null`. -/
-private def noteEntryJson (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload) : Json :=
-  Json.mkObj [
+/-- One journal entry as its `--json` object (ADR-0027): `{id, tag, time,
+    actor, text}` — `id` is the minted handle (bare, 16 chars), `tag` the
+    always-unique canonical add-tag string (the collision escape hatch),
+    `time` the add op's HLC physical time, `actor` the envelope actor or
+    `null`. A removed placeholder (`removed := true`) swaps `text` for
+    `"removed": true`. The single note-entry JSON builder — `show`, `note add`,
+    and `note list` all render through it (Commands reuses it via this module),
+    so the `{id,tag,time,actor,text}` shape lives in one place. -/
+def noteEntryJson (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload) (removed : Bool := false) :
+    Json :=
+  Json.mkObj ([
     ("id", Json.str (sanitizeSingle p.handle)),
     ("tag", Json.str (tagOfStamp st)),
     ("time", Json.str (hlcIso st.hlc)),
-    ("actor", match p.actor with | some a => Json.str (sanitizeSingle a) | none => Json.null),
-    ("text", Json.str (sanitizeMulti p.text))]
+    ("actor", match p.actor with | some a => Json.str (sanitizeSingle a) | none => Json.null)]
+    ++ (if removed then [("removed", Json.bool true)]
+        else [("text", Json.str (sanitizeMulti p.text))]))
+
+/-- One journal entry as a human line (ADR-0027): `[handle] time · actor`, then
+    the entry text on following lines — or ` (removed)` and no text for a
+    placeholder. The single note-entry human renderer — the `show` NOTES fence
+    and `note list` both render through it. -/
+def noteHumanLine (st : Tl.Crdt.Stamp) (p : Tl.Crdt.NotePayload) (removed : Bool := false) :
+    String :=
+  let who := match p.actor with | some a => s!" · {sanitizeSingle a}" | none => ""
+  let head := s!"[{sanitizeSingle p.handle}] {hlcIso st.hlc}{who}"
+  if removed then s!"{head} (removed)" else s!"{head}\n{sanitizeMulti p.text}"
 
 /-- The visible journal, oldest first (stamp-ascending — the kernel order). -/
 private def notesJson (d : IssueData) : Json :=
