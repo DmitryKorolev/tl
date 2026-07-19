@@ -129,6 +129,28 @@ private def wideOps (n : Nat) : List ParsedOp :=
        (.depAdd (synthId (i + 1), synthId (n + 1 + ((i + 1) % n)), EdgeKind.Blocks))])
   creates ++ aToX ++ xToY
 
+/-- A tombstone-heavy edge set: `n` blocks edges `0→k` added, then the first
+    `n/2` removed (each observing its own add-tag). So the edge OR-Set holds `n`
+    add entries and `n/2` tombstone entries, and `presentEdges` (=
+    `presentElements`) walks the two. The retired form probed `removedOf` (an
+    `AMap.find`) per add entry → Θ(#adds × #removed), quadratic; the merge-join
+    is O(#adds + #removed). No other fixture has removals, so this is the only
+    row that pins the load-bearing OR-Set fix. -/
+private def tombstoneOps (n : Nat) : List ParsedOp :=
+  let replicaVal := (ofCrockford? stem).getD 0
+  let stampAt (idx : Nat) : Tl.Crdt.Stamp := ⟨(synthNow - 100000 + idx) * 2 ^ 16, replicaVal, 10 ^ 9 + idx⟩
+  let mk (idx : Nat) (op : WireOp) : ParsedOp :=
+    { v := op.recordVersion, op, stamp := stampAt idx, actor := some "perf" }
+  let creates := (List.range (n + 1)).map (fun k => mk k (.create (synthId k) { title := some s!"e{k}" }))
+  let addIdx (k : Nat) : Nat := (n + 1) + k
+  let adds := (List.range n).map (fun j =>
+    mk (addIdx (j + 1)) (.depAdd (synthId 0, synthId (j + 1), EdgeKind.Blocks)))
+  let removes := (List.range (n / 2)).map (fun j =>
+    mk (addIdx (j + 1) + n)
+      (.depRemove (synthId 0, synthId (j + 1), EdgeKind.Blocks)
+        (Tl.Crdt.FinSet.singleton (stampAt (addIdx (j + 1))))))
+  creates ++ adds ++ removes
+
 private def segsOf (ops : List ParsedOp) : List SegmentData :=
   [{ replicaId := stem
      bytes := (ops.foldl (fun a p => a ++ renderLine p ++ "\n") "").toUTF8 }]
@@ -294,6 +316,16 @@ def perfTests : IO (List Outcome) := do
     let wmh := hashAssoc (ws.effStatusAll).toList
     let wwhy ← bench 250000 (fun _ =>
       (State.whyFastH wbtgt wpset wmh ws ws.presentIssues.length wa).length)
+    -- the OR-Set tombstone-probe enumeration (the load-bearing fix): the edge
+    -- set with n adds and n/2 tombstones. `presentEdges` = `presentElements`
+    -- now merge-joins the add map against the tombstone map (O(adds+removed));
+    -- the retired per-add `removedOf` probe was Θ(adds×removed), so a revert
+    -- turns this row quadratic and the ratio jumps. This is the only row that
+    -- exercises a tombstone-heavy OR-Set (every other fixture is add-only).
+    let tsegs := segsOf (tombstoneOps n)
+    let (tloaded, _) := materializeCached tsegs none false (some synthNow) (some stem)
+    let tstate := tloaded.state
+    let tomb ← bench 3000 (fun _ => tstate.presentEdges.length)
     results := results ++ [(n, [("cold batched fold", cold),
       ("warm cached materialize", warm),
       ("batched rollup", roll), ("fast ready queue", rdy),
@@ -303,7 +335,8 @@ def perfTests : IO (List Outcome) := do
       ("cli per-row projections (issueRow fields)", row),
       ("cli tree canonical-parent per row", canon),
       ("dep-path blocksPath (wide graph)", wide),
-      ("why blocker-cone (wide graph)", wwhy)])]
+      ("why blocker-cone (wide graph)", wwhy),
+      ("or-set tombstone-probe enumeration (presentEdges)", tomb)])]
   match results with
   | [(_, small), (_, big)] =>
     for ((name, tS), (_, tB)) in small.zip big do
