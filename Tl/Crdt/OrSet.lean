@@ -92,22 +92,65 @@ theorem isSome_of_present {s : OrSet α} {e : α} (h : Present s e) :
 /-- Every element ever added (present or not) — the keys of the add map. -/
 def elements (s : OrSet α) : List α := s.adds.keys
 
+/-- Liveness of one entry `(e, tags, remOpt)` from the merge-join: some observed
+    tag is not tombstoned at `e` (`remOpt` is `e`'s tombstone set, or `none`
+    ⇒ empty). The filter predicate on `presentElements`'s merge-joined entries. -/
+private def entryLive (p : α × FinSet Stamp × Option (FinSet Stamp)) : Bool :=
+  p.2.1.toList.any (fun q => decide (q.1 ∉ p.2.2.getD FinSet.empty))
+
+/-- The reference form of `presentElements` — a filter over `adds.toList` with a
+    per-entry `removedOf` probe (an `AMap.find`, a linear scan). Proof-only
+    (ADR-0024): the shipped `presentElements` is the merge-join below, proved
+    equal to this by `presentElements_eq_ref`. -/
+private def presentElementsRef (s : OrSet α) : List α :=
+  (s.adds.toList.filter (fun p =>
+    let rem := s.removedOf p.1
+    p.2.toList.any (fun q => decide (q.1 ∉ rem)))).map Prod.fst
+
 /-- The present (live) elements — the enumeration `ready`/`list` iterate, proved to
     coincide exactly with `Present` (`mem_presentElements`), so theorems stated over
     `Present` are about the very set the CLI walks.
 
-    One pass over `adds.toList`: each entry already carries its tag set, so
-    liveness is decided in-place — no `find` per key. The old form
-    (`elements.filter (Present)`) re-`find`-ed the tags for every key, an O(N)
-    lookup per element ⇒ Θ(N²) per enumeration (the dominant `list`/`ready`/
-    `stats`/`doctor` cost at scale). The per-entry tombstone lookup
-    (`removedOf`) is hoisted out of the tag loop (the `let`): one scan of the
-    *removed-element* map per entry — empty for add-only sets (issues) — and
-    each tag then probes only its own element's tombstone set. -/
+    One sorted merge-join of the add map and the tombstone map
+    (`AssocList.zipLookup`, ADR-0024): each add entry is annotated with its own
+    element's tombstone set in a single co-traversal, so the cost is
+    O(#adds + #removed) — not the O(#adds × #removed) a `removedOf` (`AMap.find`)
+    probe per entry would cost on a tombstone-heavy set. The reference form
+    (`presentElementsRef`, the per-entry-probe filter) is proof scaffolding;
+    `presentElements_eq_ref` bridges the two. -/
 def presentElements (s : OrSet α) : List α :=
-  (s.adds.toList.filter (fun p =>
-    let rem := s.removedOf p.1
-    p.2.toList.any (fun q => decide (q.1 ∉ rem)))).map Prod.fst
+  ((AssocList.zipLookup s.adds.toList s.removed.toList).filter entryLive).map Prod.fst
+
+/-- The merge-join annotation `(e, tags, lookup e removed)` runs `entryLive` as
+    the same liveness test the reference runs with `removedOf e`, so filtering
+    the annotated list and the raw `adds` list agree after `Prod.fst`. -/
+private theorem filter_annot_map_fst (s : OrSet α) :
+    (l : List (α × FinSet Stamp)) →
+    (((l.map (fun p => (p.1, p.2, AssocList.lookup p.1 s.removed.toList))).filter entryLive).map
+        Prod.fst)
+      = (l.filter (fun p => p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1)))).map Prod.fst
+  | [] => rfl
+  | p :: ps => by
+    have hlive : entryLive (p.1, p.2, AssocList.lookup p.1 s.removed.toList)
+        = p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1)) := by
+      show p.2.toList.any (fun q =>
+            decide (q.1 ∉ (AssocList.lookup p.1 s.removed.toList).getD FinSet.empty))
+         = p.2.toList.any (fun q => decide (q.1 ∉ s.removedOf p.1))
+      rfl
+    rw [List.map_cons]
+    by_cases hL : entryLive (p.1, p.2, AssocList.lookup p.1 s.removed.toList) = true
+    · rw [List.filter_cons_of_pos hL, List.map_cons,
+        List.filter_cons_of_pos (hlive ▸ hL), List.map_cons, filter_annot_map_fst s ps]
+    · rw [List.filter_cons_of_neg hL,
+        List.filter_cons_of_neg (hlive ▸ hL), filter_annot_map_fst s ps]
+
+/-- The shipped merge-join `presentElements` equals its reference form. The
+    `zipLookup` annotation `(e, tags, removed.find e)` makes `entryLive` on it
+    the same test the reference runs with `removedOf e = (removed.find e).getD ∅`. -/
+theorem presentElements_eq_ref (s : OrSet α) : s.presentElements = s.presentElementsRef := by
+  unfold presentElements presentElementsRef
+  rw [AssocList.zipLookup_eq s.adds.toList s.removed.toList s.adds.sorted s.removed.sorted]
+  exact filter_annot_map_fst s s.adds.toList
 
 /-- Filtering then projecting the first component equals projecting then
     filtering, when the entry predicate agrees with the key predicate per entry. -/
@@ -129,7 +172,8 @@ theorem map_fst_filter_comm {β : Type _} {γ : Type _} (P : β → Bool) (Q : �
     bridge that lets the `Present`-stated frame lemmas reuse their proofs. -/
 theorem presentElements_eq_keys_filter (s : OrSet α) :
     s.presentElements = s.elements.filter (fun e => decide (Present s e)) := by
-  unfold presentElements elements AMap.keys
+  rw [presentElements_eq_ref]
+  unfold presentElementsRef elements AMap.keys
   refine map_fst_filter_comm _ _ s.adds.toList (fun p hp => ?_)
   have hfind : s.adds.find p.1 = some p.2 := AMap.find_eq_some_of_mem hp
   have htag : s.tagsOf p.1 = p.2 := by unfold tagsOf; rw [hfind]; rfl
