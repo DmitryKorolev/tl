@@ -23,13 +23,11 @@ namespace Tl.Kernel
 open Tl.Crdt
 open Tl.Crdt.TotalOrd
 
-/-! ## The claim op and its write-set -/
+/-! ## The claim op -/
 
-/-- The write-set a `claim` lowers to (the codec's `claim → setFields` row). -/
-def claimWrites (actor : String) : ScalarWrites :=
-  { status := some Status.InProgress, assignee := some (some actor) }
-
-/-- The claim op: one `setFields` carrying both writes at one stamp. -/
+/-- The claim op: one `setFields` carrying both writes at one stamp. Its
+    write-set is `Tl.Kernel.claimWrites` (Tl/Kernel/Op.lean), shared with the
+    codec's `claim → setFields` lowering so the two cannot drift. -/
 def claimOp (i : IssueId) (st : Stamp) (actor : String) : Op :=
   Op.setFields i st (claimWrites actor)
 

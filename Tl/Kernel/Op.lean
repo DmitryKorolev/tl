@@ -36,6 +36,22 @@ def writeIf {V : Type _} (st : Stamp) : Option V → Reg V
   | some v => Reg.write st v
   | none => none
 
+/-- The write-set a `claim` lowers to: `status := InProgress` and
+    `assignee := actor`, both at the op's one stamp. Shared by the codec's
+    `claim → setFields` lowering (`Tl.Format.WireOp.toOp`) and the kernel's
+    claim-outcome proofs (`ClaimWon`/`claimWonB`, Tl/Kernel/Claim.lean), so the
+    lowering and the property proved about the resulting registers cannot drift.
+    Homed here — alongside `ScalarWrites`, which the codec already imports — so
+    the sharing pulls no proof module into the I/O shell.
+
+    This is a cache-keyed op projection: what a `claim` writes is part of the
+    ADR-0008 verb→delta table the fold cache is keyed on, so any change to the
+    written fields here must bump `Tl.Store.cacheVersion` (ADR-0022 §3) — the
+    obligation stated in `WireOp.toOp`'s header, carried to the definition the
+    codec now shares. -/
+def claimWrites (actor : String) : ScalarWrites :=
+  { status := some Status.InProgress, assignee := some (some actor) }
+
 /-- The nine kernel deltas (ADR-0004/0027). The `Stamp` is the op's `(hlc,
     replica, nonce)` (ADR-0007); on add-ops it is the OR-Set add-tag and the LWW
     write stamp; `observed` on remove-ops is the tombstoned add-tag set, scoped

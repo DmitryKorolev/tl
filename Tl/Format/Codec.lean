@@ -239,7 +239,13 @@ def toOp (w : WireOp) (st : Stamp) (actor : Option String := none) : Op :=
   | .create id writes => .create id st writes
   | .update id writes => .setFields id st (stripLifecycle writes)
   | .claim id assignee =>
-      .setFields id st { status := some .InProgress, assignee := some (some assignee) }
+      -- the claim write-set is shared with the kernel (`Tl.Kernel.claimWrites`,
+      -- Tl/Kernel/Op.lean) rather than re-spelled here, so this lowering and the
+      -- claim-outcome proofs (`ClaimWon`) that reason about the resulting
+      -- registers stay in lockstep. It lives in `Tl.Kernel.Op` — already imported
+      -- for `Op`/`ScalarWrites` — so no kernel proof module is pulled into the
+      -- codec. The produced `Op` is unchanged, so no `Tl.Store.cacheVersion` bump.
+      .setFields id st (Tl.Kernel.claimWrites assignee)
   | .close id res =>
       .setFields id st { status := some (statusOfResolution res),
                          closeResolution := some (some res) }
