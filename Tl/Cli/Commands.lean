@@ -559,6 +559,15 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
       -- If a new op writes `status` or `assignee` there, add its constructor
       -- here, or a foreign one of it will silently escape the contest scan and
       -- mask a lost race (mirrors the `updatedAtStamp` NB, Tl/Kernel/State.lean).
+      --
+      -- NB (compaction, deferred — ADR-0008 open point (c)): this scan sees the
+      -- race-masking foreign op only by its physical presence in `v.loaded.ops`.
+      -- Once `tl compact` can trim ops, dropping a dominated foreign
+      -- status/assignee write (any of the create/claim/close/reopen enumerated
+      -- above) while a later burying own reopen/close survives would flip this
+      -- `superseded` to a false `ended`. The frontier must retain such an op, or
+      -- this scan must gain a materialized last-foreign-contest high-water
+      -- fallback. Not reachable today (compaction unshipped).
       let contested := v.loaded.ops.any (fun p =>
         let touchesThis := match p.op with
           | .create ci _ | .claim ci _ | .close ci _ | .reopen ci => ci == i

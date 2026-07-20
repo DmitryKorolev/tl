@@ -556,7 +556,7 @@ The pinned destructive design (implementation deferred):
   high-water marks back both the snapshot frontier here and the change-feed cursor
   (ADR-0025) — distinct uses (global causal-stability vs per-consumer position),
   one primitive.
-- **Two named open points, resolved before implementation.** The pin above
+- **Three named open points, resolved before implementation.** The pin above
   deliberately leaves these undecided rather than guessing: (a) *reader
   selection and re-trim composition* — with both-survive union, several
   `snapshot` records can coexist; which one a reader seeds from, and what
@@ -566,8 +566,29 @@ The pinned destructive design (implementation deferred):
   can never seed an under-fold; (b) *snapshot-record supersession* — under
   both-survive union a superseded full-state record is never removed, so the
   reserved entry grows by one materialized state per compact; the
-  supersession or accepted-growth story needs its own decision. Both gate
-  the destructive implementation, not the transport rule above.
+  supersession or accepted-growth story needs its own decision; (c)
+  *contest-scan visibility of a buried lost race* — the `show` claim-block
+  contest scan (`claimVerdict`, Tl/Cli/Commands.lean) tells a not-won own
+  claim's `superseded` from `ended` by scanning the materialized op log for a
+  foreign status/assignee write above the surfaced own claim — any foreign
+  `create`, `claim`/steal, `close`, or `reopen` — and sees that race-masking op
+  only by its *physical presence* in the loaded ops. `stampAuthoredByOwn`
+  already resolves an absent (compacted) origin conservatively toward
+  `superseded` for the authorship checks, but the contest scan has no such
+  fallback — so trimming a dominated such op while a later burying own
+  reopen/close survives would flip a true `superseded` to a false `ended`,
+  masking a transient lost race (own claim `carol@t2` surfaced, foreign
+  `dave close@t3`, own `reopen carol@t4`: today `dave@t3` is seen ⇒
+  `superseded`; a compact that drops the dominated `dave@t3` while `carol@t4`
+  stays the own-authored winner leaves the scan blind ⇒ `ended`). The frontier
+  must therefore either retain any such foreign op a later burying own
+  reopen/close supersedes, or the contest scan must gain a materialized
+  per-issue high-water of the last foreign contest write, preserved across
+  compaction — a monotone high-water like the frontier's, but attributed by
+  envelope actor rather than replica (ADR-0013's shared-replica footgun, so not
+  the frontier's per-replica vector itself); a test reproducing the sequence
+  against a compacted log lands with that choice. All three gate the
+  destructive implementation, not the transport rule above.
 
 ## Consequences
 
