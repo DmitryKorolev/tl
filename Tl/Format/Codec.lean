@@ -27,6 +27,7 @@ import Tl.Format.Time
 import Tl.Format.Version
 import Tl.Clock.Hlc
 import Tl.Kernel.Op
+import Tl.Kernel.ClaimWrites
 import Tl.Hash.Sha256
 
 namespace Tl.Format
@@ -240,11 +241,11 @@ def toOp (w : WireOp) (st : Stamp) (actor : Option String := none) : Op :=
   | .update id writes => .setFields id st (stripLifecycle writes)
   | .claim id assignee =>
       -- the claim write-set is shared with the kernel (`Tl.Kernel.claimWrites`,
-      -- Tl/Kernel/Op.lean) rather than re-spelled here, so this lowering and the
-      -- claim-outcome proofs (`ClaimWon`) that reason about the resulting
-      -- registers stay in lockstep. It lives in `Tl.Kernel.Op` — already imported
-      -- for `Op`/`ScalarWrites` — so no kernel proof module is pulled into the
-      -- codec. The produced `Op` is unchanged, so no `Tl.Store.cacheVersion` bump.
+      -- Tl/Kernel/ClaimWrites.lean) rather than re-spelled here, so this lowering
+      -- and the claim-outcome proofs (`ClaimWon`) that reason about the resulting
+      -- registers stay in lockstep. That leaf imports only `Tl.Kernel.Op`, so
+      -- sharing it pulls no kernel proof module into the codec. The produced `Op`
+      -- is unchanged, so no `Tl.Store.cacheVersion` bump.
       .setFields id st (Tl.Kernel.claimWrites assignee)
   | .close id res =>
       .setFields id st { status := some (statusOfResolution res),

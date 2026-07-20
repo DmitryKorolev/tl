@@ -17,6 +17,7 @@ the shell can explain what happened; it never satisfies `ClaimWon`
 (`ClaimPartial.not_won`).
 -/
 import Tl.Kernel.CloseMono
+import Tl.Kernel.ClaimWrites
 
 namespace Tl.Kernel
 
@@ -26,8 +27,8 @@ open Tl.Crdt.TotalOrd
 /-! ## The claim op -/
 
 /-- The claim op: one `setFields` carrying both writes at one stamp. Its
-    write-set is `Tl.Kernel.claimWrites` (Tl/Kernel/Op.lean), shared with the
-    codec's `claim → setFields` lowering so the two cannot drift. -/
+    write-set is `Tl.Kernel.claimWrites` (Tl/Kernel/ClaimWrites.lean), shared
+    with the codec's `claim → setFields` lowering so the two cannot drift. -/
 def claimOp (i : IssueId) (st : Stamp) (actor : String) : Op :=
   Op.setFields i st (claimWrites actor)
 

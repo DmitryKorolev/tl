@@ -13,6 +13,7 @@ import Tl.Crdt.OrSet
 import Tl.Crdt.Journal
 import Tl.Kernel.State
 import Tl.Kernel.Op
+import Tl.Kernel.ClaimWrites
 import Tl.Kernel.Apply
 import Tl.Kernel.Invariant
 import Tl.Kernel.Rollup
