@@ -40,6 +40,7 @@ private def newStem : String := "2222222222222"
 private def idA : String := "a000000000000000"
 private def idB : String := "b000000000000000"
 private def idC : String := "c000000000000000"
+private def idD : String := "d000000000000000"
 private def markerId : String := "f000000000000000"
 
 private def now0 : Nat := 2000000000000
@@ -569,7 +570,7 @@ def cacheVersionGuardTests : List Outcome :=
   -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
   -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
-    (5, "9292294536409594962")
+    (5, "5947146394705743800")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
@@ -601,7 +602,16 @@ def cacheVersionGuardTests : List Outcome :=
       -- observed-tag remove at the wire→fold seam
       mkLine (.noteAdd idA (mintNoteId (stamp 20 ownStem)) "first progress note") 20 ownStem,
       mkLine (.noteAdd idA (mintNoteId (stamp 21 ownStem)) "second progress note") 21 ownStem,
-      mkLine (.noteRemove idA (mintNoteId (stamp 21 ownStem)) (FinSet.singleton (stamp 21 ownStem))) 22 ownStem ]
+      mkLine (.noteRemove idA (mintNoteId (stamp 21 ownStem)) (FinSet.singleton (stamp 21 ownStem))) 22 ownStem,
+      -- idD's claim is the highest-stamped writer of BOTH its status and assignee
+      -- registers (no later close/reopen), so the claim's `InProgress`/assignee
+      -- writes survive LWW into `stateFoldDigest`. Without it the guard is blind
+      -- to the `.claim` row of `WireOp.toOp`: idA is claimed at idx 3 then
+      -- close@5/reopen@6 outstamp both registers, so dropping the claim line
+      -- entirely leaves the digest unchanged. idD makes a non-defeq edit to the
+      -- claim write-set (Tl.Kernel.claimWrites) move the digest and trip the guard.
+      mkLine (.create idD { title := some "Delta" }) 25 ownStem,
+      mkLine (.claim idD "carol") 26 ownStem ]
   -- forStem segment: a higher-stamped title write wins the LWW on idA.title
   -- (cross-segment merge over the create at idx 0)
   let foreign : List String :=
