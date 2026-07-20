@@ -528,7 +528,10 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
     | .claim ci actor => if ci == i && p.stamp.replica == ownVal then some (p.stamp, actor) else none
     | _ => none)
   -- latest own claim by the full stamp order (the cross-op comparison rule,
-  -- Tl/Cli/Project.lean §provenance)
+  -- Tl/Cli/Project.lean §provenance). NB: like the contest scan below, this
+  -- surfaces the own claim only by its physical presence in `v.loaded.ops` —
+  -- once `tl compact` can trim ops, dropping it drops the whole claim block, so
+  -- the own claim must survive compaction too (ADR-0008 open point (c)).
   let (ownClaimStamp, actor) ← claims.foldl (fun acc c =>
     match acc with
     | none => some c
@@ -566,8 +569,9 @@ def claimVerdict (v : View) (i : IssueId) : Option (ClaimOutcome × Option Strin
       -- status/assignee write (any of the create/claim/close/reopen enumerated
       -- above) while a later burying own reopen/close survives would flip this
       -- `superseded` to a false `ended`. The frontier must retain such an op, or
-      -- this scan must gain a materialized last-foreign-contest high-water
-      -- fallback. Not reachable today (compaction unshipped).
+      -- this scan must gain a materialized contest backstop that survives
+      -- compaction; ADR-0008 open point (c) pins the required shape. Not
+      -- reachable today (compaction unshipped).
       let contested := v.loaded.ops.any (fun p =>
         let touchesThis := match p.op with
           | .create ci _ | .claim ci _ | .close ci _ | .reopen ci => ci == i

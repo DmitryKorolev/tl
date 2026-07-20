@@ -580,14 +580,20 @@ The pinned destructive design (implementation deferred):
   masking a transient lost race (own claim `carol@t2` surfaced, foreign
   `dave close@t3`, own `reopen carol@t4`: today `dave@t3` is seen ⇒
   `superseded`; a compact that drops the dominated `dave@t3` while `carol@t4`
-  stays the own-authored winner leaves the scan blind ⇒ `ended`). The frontier
-  must therefore either retain any such foreign op a later burying own
-  reopen/close supersedes, or the contest scan must gain a materialized
-  per-issue high-water of the last foreign contest write, preserved across
-  compaction — a monotone high-water like the frontier's, but attributed by
-  envelope actor rather than replica (ADR-0013's shared-replica footgun, so not
-  the frontier's per-replica vector itself); a test reproducing the sequence
-  against a compacted log lands with that choice. All three gate the
+  stays the own-authored winner leaves the scan blind ⇒ `ended`). Two things
+  must survive compaction for the block to stay correct: the surfaced own claim
+  itself — `claimVerdict` finds it only as a physical own `claim` op, so
+  dropping it makes the whole claim block vanish — and every foreign contest
+  write buried under a later own reopen/close. The frontier must therefore
+  either retain the latest own claim per (replica, issue) plus any such buried
+  foreign op, or the contest scan must gain a materialized backstop preserved
+  across compaction: that latest own claim, and — since foreignness is relative
+  to the surfaced claimant, not absolute — a per-(issue, envelope-actor) map of
+  the highest contest write (with an actorless bucket for the unattributable ops
+  of ADR-0013), from which the scan reads the highest write by anyone but the
+  claimant — the actorless bucket included, since an unattributable write is
+  never the claimant's own — never a single per-issue value. A test reproducing the
+  sequence against a compacted log lands with that choice. All three gate the
   destructive implementation, not the transport rule above.
 
 ## Consequences
