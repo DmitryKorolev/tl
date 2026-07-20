@@ -372,6 +372,30 @@ def cliDepTests : IO (List Outcome) := do
      ← expectData "second dep remove is a disclosed noop"
       ["dep", "remove", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
       (fun j => jStr j "status" == some "noop")]
+  -- the `no cycles` branch (rows.isEmpty): an acyclic graph with a *live* edge
+  -- (the ack is asserted, so this is not a trivially empty graph) reports
+  -- count 0 with the `cycles` key present and its array empty, and the human is
+  -- the bare `no cycles` — no repair hint, so neither the `dep` nor the
+  -- `parent` verb is named. The has-cycles hint arms below cover the non-empty
+  -- branch. The `cycles`-key presence check keeps the empty assertion from
+  -- passing vacuously were the payload key ever renamed (`jArr` reads a missing
+  -- key as `[]`).
+  let ndir ← freshDir
+  let na ← mkIssue ndir "NA"
+  let nb ← mkIssue ndir "NB"
+  o := o ++
+    [← expectData "acyclic fixture: dep add establishes one live edge"
+      ["dep", "add", "tl-" ++ na, "tl-" ++ nb, "--dir", ndir, "--actor", "t"]
+      (fun j => jStr j "status" == some "added"),
+     ← expectData "dep cycles reports count 0 with no rows on an acyclic graph"
+      ["dep", "cycles", "--dir", ndir]
+      (fun j => jNat j "count" == some 0
+        && (jKeys j).contains "cycles" && (jArr j "cycles").isEmpty),
+     ← (match ← run' ["dep", "cycles", "--dir", ndir] with
+       | .ok out => pure (check "dep cycles `no cycles` human names no repair verb"
+           (out.human == "no cycles") out.human)
+       | .error e => pure { name := "dep cycles no-cycles human", passed := false,
+                            msg := e.message })]
   -- a cycle: A blocked by B, B blocked by A
   let _ ← run' ["dep", "add", "tl-" ++ a, "tl-" ++ b, "--dir", dir, "--actor", "t"]
   let _ ← run' ["dep", "add", "tl-" ++ b, "tl-" ++ a, "--dir", dir, "--actor", "t"]
