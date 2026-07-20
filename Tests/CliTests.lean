@@ -33,6 +33,12 @@ private def jNat (j : Json) (k : String) : Option Nat :=
   (jGet j k).bind (fun v => v.getNat?.toOption)
 private def jArr (j : Json) (k : String) : List Json :=
   ((jGet j k).bind (fun v => v.getArr?.toOption)).map (·.toList) |>.getD []
+/-- Like `jArr`, but keeps the decode result as an `Option`: `some cs` only when
+    `k` is present AND its value decodes as a JSON array. Unlike `jArr` (which
+    collapses a missing key, `null`, `{}`, or `""` all to `[]`), this lets a test
+    tell a genuine empty array `[]` apart from an absent or wrongly-typed value. -/
+private def jArr? (j : Json) (k : String) : Option (List Json) :=
+  ((jGet j k).bind (fun v => v.getArr?.toOption)).map (·.toList)
 /-- A string field of a nested object: `jSub j "cursor" "since"` reads
     `j.cursor.since` (the dual-edge `tl log` cursor, ADR-0025). -/
 private def jSub (j : Json) (k sub : String) : Option String :=
@@ -374,12 +380,12 @@ def cliDepTests : IO (List Outcome) := do
       (fun j => jStr j "status" == some "noop")]
   -- the `no cycles` branch (rows.isEmpty): an acyclic graph with a *live* edge
   -- (the ack is asserted, so this is not a trivially empty graph) reports
-  -- count 0 with the `cycles` key present and its array empty, and the human is
+  -- count 0 with `cycles` decoding as a genuine empty array, and the human is
   -- the bare `no cycles` — no repair hint, so neither the `dep` nor the
   -- `parent` verb is named. The has-cycles hint arms below cover the non-empty
-  -- branch. The `cycles`-key presence check keeps the empty assertion from
-  -- passing vacuously were the payload key ever renamed (`jArr` reads a missing
-  -- key as `[]`).
+  -- branch. Asserting `jArr?` (not `jArr`) keeps the empty check from passing
+  -- vacuously: `jArr` collapses a missing/renamed key or a wrongly-typed value
+  -- (`null`/`{}`/`""`) to `[]`, whereas `some [] = jArr?` pins present-and-empty.
   let ndir ← freshDir
   let na ← mkIssue ndir "NA"
   let nb ← mkIssue ndir "NB"
@@ -390,7 +396,7 @@ def cliDepTests : IO (List Outcome) := do
      ← expectData "dep cycles reports count 0 with no rows on an acyclic graph"
       ["dep", "cycles", "--dir", ndir]
       (fun j => jNat j "count" == some 0
-        && (jKeys j).contains "cycles" && (jArr j "cycles").isEmpty),
+        && (match jArr? j "cycles" with | some cs => cs.isEmpty | none => false)),
      ← (match ← run' ["dep", "cycles", "--dir", ndir] with
        | .ok out => pure (check "dep cycles `no cycles` human names no repair verb"
            (out.human == "no cycles") out.human)
