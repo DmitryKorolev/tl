@@ -592,7 +592,16 @@ The pinned destructive design (implementation deferred):
   the highest contest write (with an actorless bucket for the unattributable ops
   of ADR-0013), from which the scan reads the highest write by anyone but the
   claimant — the actorless bucket included, since an unattributable write is
-  never the claimant's own — never a single per-issue value. A test reproducing the
+  never the claimant's own — never a single per-issue value. Both
+  summaries join pointwise-max — the own claim and each actor's contest stamp
+  keep the higher of the two — a monotone semilattice like the frontier, so
+  unioning two compactors' snapshots, a re-trim, or re-absorbing a retained
+  tail op can never drop an entry and recreate a false `ended`. Because actors
+  are free-form the per-actor map is unbounded in distinct actors; the bounded
+  equivalent keeps only the two highest contest stamps from distinct actors per
+  issue — enough for the claimant-relative read, since if the top stamp is the
+  claimant's own the second is necessarily a different actor and answers — and
+  which to adopt is part of the deferred choice. A test reproducing the
   sequence against a compacted log lands with that choice. All three gate the
   destructive implementation, not the transport rule above.
 
