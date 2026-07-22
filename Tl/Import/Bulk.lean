@@ -352,4 +352,207 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
   { segmentReplica := replicaId, lines, issueCount := ordered.length,
     opCount := lines.length, disclosures := parseDisc ++ edgeDiscs }
 
+/-! ### Granular resource bounds (ADR-0005 §two distinct safety gates)
+
+A hostile or accidentally-enormous source is bounded field-by-field *before any
+op is emitted* — a finer net than the coarse total-input bound the caller
+enforces from file metadata. Each granular bound is a fixed constant, never
+scaled by `--max` (that knob raises only the byte bounds: total input, and the
+derived seed size below); only `--allow-large` disarms the granular net. With the
+net armed, exceeding a bound fails closed (`force-required`, ADR-0008) after
+collecting *every* violation in one pass: the message names the first few plus
+the total, and `context.boundsViolations` carries the machine-readable list. With
+`--allow-large`, the record imports *verbatim* — tl stores fields uncapped, only
+rendering truncates (`Tl.Cli.Sanitize`) — with one disclosure per violation. The
+byte bounds mirror the render bounds (single-line 1 KiB, multi-line 64 KiB), so
+"over the import bound" is exactly "the value rendering would truncate". A parent
+*cycle* is never a bound violation (the kernel is total on cycles, ADR-0003): it
+is disclosed and its edges kept, matching native `dep add`. -/
+
+namespace Bounds
+
+/-- Title and every stored single-line field (assignee, the source id): the
+    `sanitizeSingle` render bound. -/
+def singleLineBytes : Nat := 1024
+/-- Description and notes: the `sanitizeMulti` render bound. -/
+def multiLineBytes : Nat := 65536
+/-- One label's bytes. -/
+def labelBytes : Nat := 1024
+/-- One meta key's bytes — checked on the *stored* key, so a derived `import:`
+    prefix counts. -/
+def metaKeyBytes : Nat := 1024
+/-- One meta value's bytes. -/
+def metaValueBytes : Nat := 4096
+/-- Labels per record. -/
+def labelsCount : Nat := 64
+/-- Meta entries per record, counted pre-dedup and including the ≤3 derived keys
+    (`ext:<tag>`, `import:source`, and `duplicate-of` when present). -/
+def metaCount : Nat := 64
+/-- Raw (pre-skip) outgoing edges per record: blockedBy + parent + related. -/
+def edgesCount : Nat := 128
+/-- Present-parent chain depth (ancestor levels above a record). -/
+def parentDepth : Nat := 64
+/-- The derived seed op-log's byte size is bounded at this multiple of the
+    (possibly `--max`-raised) total-input bound — the importer amplifies the
+    input into per-field ops. -/
+def seedMultiplier : Nat := 4
+/-- One raw input line's bytes, checked *before* JSON parsing so a pathological
+    line cannot drive the parser unbounded. Generous over the largest record the
+    granular net admits (~0.4 MiB). -/
+def rawLineBytes : Nat := 2 * 1024 * 1024
+
+end Bounds
+
+/-- One exceeded granular bound: the offending record's source id, a stable
+    machine `field` key, the measured `actual` and its `limit`, plus a
+    ready-phrased human `detail`. -/
+structure BoundViolation where
+  record : String
+  field : String
+  actual : Nat
+  limit : Nat
+  detail : String
+  deriving Repr
+
+private def jnumB (n : Nat) : Json := Json.num ⟨Int.ofNat n, 0⟩
+
+/-- The `context.boundsViolations` element (ADR-0020 machine-readable list). The
+    human `detail` stays in the message/disclosure, not the machine list. -/
+def BoundViolation.toJson (v : BoundViolation) : Json :=
+  Json.mkObj [("record", Json.str v.record), ("field", Json.str v.field),
+              ("actual", jnumB v.actual), ("limit", jnumB v.limit)]
+
+/-- The granular bounds one record violates (empty when clean). Byte sizes are
+    UTF-8; the meta count is pre-dedup incl. derived keys, the edge count is
+    pre-skip. Offending values are never inlined into a message (they may be the
+    very thing that is oversized) — fields are named positionally. -/
+private def recordViolations (r : ImportRecord) : List BoundViolation :=
+  let sid := r.sourceId
+  let bytesV (field noun : String) (limit : Nat) (s : String) : Option BoundViolation :=
+    let n := s.utf8ByteSize
+    if n > limit then
+      some { record := sid, field, actual := n, limit,
+             detail := s!"{noun} is {n} bytes (max {limit})" }
+    else none
+  let countV (field noun : String) (limit actual : Nat) : Option BoundViolation :=
+    if actual > limit then
+      some { record := sid, field, actual, limit,
+             detail := s!"{noun} count is {actual} (max {limit})" }
+    else none
+  let metaTotal := r.metaKv.length + 2 + (if r.duplicateOf.isSome then 1 else 0)
+  let edgesTotal := r.blockedBy.length + r.related.length + (if r.parent.isSome then 1 else 0)
+  let scalars : List (Option BoundViolation) :=
+    [ bytesV "title" "title" Bounds.singleLineBytes r.title,
+      r.assignee.bind (bytesV "assignee" "assignee" Bounds.singleLineBytes),
+      bytesV "sourceId" "source id" Bounds.singleLineBytes sid,
+      r.description.bind (bytesV "description" "description" Bounds.multiLineBytes),
+      r.notes.bind (bytesV "notes" "notes" Bounds.multiLineBytes) ]
+  let labelVs := r.labels.zipIdx.map (fun (l, i) =>
+    bytesV "label" s!"label #{i + 1}" Bounds.labelBytes l)
+  let metaKeyVs := r.metaKv.zipIdx.map (fun ((k, _), i) =>
+    bytesV "metaKey" s!"meta key #{i + 1}" Bounds.metaKeyBytes k)
+  let metaValVs := r.metaKv.zipIdx.map (fun ((_, v), i) =>
+    bytesV "metaValue" s!"meta value #{i + 1}" Bounds.metaValueBytes v)
+  let counts : List (Option BoundViolation) :=
+    [ countV "labelsCount" "labels" Bounds.labelsCount r.labels.length,
+      countV "metaCount" "meta entries" Bounds.metaCount metaTotal,
+      countV "edgesCount" "edges" Bounds.edgesCount edgesTotal ]
+  (scalars ++ labelVs ++ metaKeyVs ++ metaValVs ++ counts).filterMap id
+
+/-- One BFS level of the parent-depth pass: assign `d` to every record in the
+    frontier, then recurse on their present children at `d + 1`. `fuel` bounds the
+    level count — a chain longer than the record count must repeat (a cycle), and
+    a cycle's records never enter a frontier. Total work is O(n): each record sits
+    in exactly one frontier, since it has ≤1 parent. -/
+private def bfsDepth (childrenOf : Std.HashMap String (List String)) :
+    Nat → List String → Nat → Std.HashMap String Nat → Std.HashMap String Nat
+  | 0, _, _, acc => acc
+  | _ + 1, [], _, acc => acc
+  | fuel + 1, frontier, d, acc =>
+    let acc' := frontier.foldl (fun m n => m.insert n d) acc
+    let next := frontier.flatMap (fun n => childrenOf.getD n [])
+    bfsDepth childrenOf fuel next (d + 1) acc'
+
+/-- Ancestor depth for every record, plus the records on a parent cycle, in one
+    O(n) pass over the functional parent graph (each record has ≤1 present
+    parent). Roots — no parent, or a dangling one — get depth 0; a child is its
+    parent's depth + 1. A record left without a depth is exactly one whose parent
+    chain enters a cycle (it never reaches a root), reported separately. -/
+private def parentDepths (records : List ImportRecord) :
+    Std.HashMap String Nat × List String :=
+  let present : Std.HashSet String := records.foldl (fun s r => s.insert r.sourceId) ∅
+  let parentOf : Std.HashMap String String := records.foldl (fun m r =>
+    match r.parent with
+    | some p => if present.contains p then m.insert r.sourceId p else m
+    | none => m) ∅
+  let childrenOf : Std.HashMap String (List String) := records.foldl (fun m r =>
+    match parentOf.get? r.sourceId with
+    | some p => m.insert p (r.sourceId :: m.getD p [])
+    | none => m) ∅
+  let roots := records.filterMap (fun r =>
+    if (parentOf.get? r.sourceId).isNone then some r.sourceId else none)
+  let depths := bfsDepth childrenOf (records.length + 1) roots 0 ∅
+  let cyclic := records.filterMap (fun r =>
+    if (depths.get? r.sourceId).isNone then some r.sourceId else none)
+  (depths, cyclic)
+
+/-- Collect and adjudicate the granular bounds (ADR-0005). Fail-closed with the
+    full violation list when the net is armed; verbatim-with-disclosures under
+    `--allow-large`. Parent cycles are always disclosed, never a violation. The
+    machine `context` list is capped (the honest `violationCount` is not), so a
+    hostile input cannot balloon the error itself. -/
+def checkBounds (opts : ImportOptions) (records : List (String × ImportRecord)) :
+    Except Tl.Error (List String) :=
+  let recs := records.map (·.2)
+  let (depths, cyclic) := parentDepths recs
+  let depthVs := recs.filterMap (fun r =>
+    match depths.get? r.sourceId with
+    | some d =>
+      if d > Bounds.parentDepth then
+        some ({ record := r.sourceId, field := "parentDepth", actual := d,
+                limit := Bounds.parentDepth,
+                detail := s!"parent chain is {d} levels deep (max {Bounds.parentDepth})" } : BoundViolation)
+      else none
+    | none => none)
+  let violations := recs.flatMap recordViolations ++ depthVs
+  let cycleDisc : List String :=
+    if cyclic.isEmpty then []
+    else
+      let shown := String.intercalate ", " (cyclic.take 5)
+      let more := if cyclic.length > 5 then s!" and {cyclic.length - 5} more" else ""
+      [s!"import: {cyclic.length} record(s) sit on a parent cycle ({shown}{more}) — edges kept; a cycle is reported by `tl dep cycles`, never a size bound"]
+  if violations.isEmpty then
+    .ok cycleDisc
+  else if opts.allowLarge then
+    let indiv := (violations.take 200).map (fun v =>
+      s!"import record {v.record}: {v.detail} — imported verbatim (--allow-large); tl stores it uncapped, only rendering truncates")
+    let tail := if violations.length > 200 then
+        [s!"import: and {violations.length - 200} more field(s) over a bound, imported verbatim (--allow-large)"]
+      else []
+    .ok (cycleDisc ++ indiv ++ tail)
+  else
+    let shown := (violations.take 3).map (fun v => s!"record {v.record} {v.detail}")
+    let more := if violations.length > 3 then s!"; and {violations.length - 3} more" else ""
+    .error {
+      code := .forceRequired,
+      message := s!"import refused: {violations.length} field/resource bound(s) exceeded — {String.intercalate "; " shown}{more}. Pass --allow-large to import verbatim (tl stores fields uncapped; only rendering truncates), or split/trim the source.",
+      context := [("violationCount", jnumB violations.length),
+                  ("boundsViolations", Json.arr ((violations.take 100).map BoundViolation.toJson).toArray)] }
+
+/-- The derived-seed byte bound (ADR-0005): the seed op-log may amplify the
+    input, so its size is bounded at `seedMultiplier ×` the (possibly raised)
+    total-input bound — armed unless `--allow-large`. Newlines count (one per
+    line), matching what the caller writes. -/
+def checkSeedSize (opts : ImportOptions) (result : ImportResult) : Except Tl.Error (List String) :=
+  let seedBytes := result.lines.foldl (fun acc l => acc + l.utf8ByteSize + 1) 0
+  let limit := Bounds.seedMultiplier * opts.maxBytes
+  if seedBytes ≤ limit then .ok []
+  else if opts.allowLarge then
+    .ok [s!"import: the derived seed op-log is {seedBytes} bytes, over the {limit}-byte bound ({Bounds.seedMultiplier}× the {opts.maxBytes}-byte input bound) — written anyway (--allow-large)"]
+  else
+    .error {
+      code := .forceRequired,
+      message := s!"import refused: the derived seed op-log is {seedBytes} bytes, over the {limit}-byte bound ({Bounds.seedMultiplier}× the {opts.maxBytes}-byte input bound — import amplifies the input into per-field ops). Pass --allow-large to write it, or raise --max to lift both byte bounds together.",
+      context := [("seedBytes", jnumB seedBytes), ("limit", jnumB limit)] }
+
 end Tl.Import

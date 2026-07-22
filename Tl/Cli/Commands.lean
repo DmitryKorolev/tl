@@ -2655,12 +2655,23 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
   let mut parseDisc : List String := []
   let mut seen : Std.HashSet String := ∅
   for (f, line) in fileLines do
+    -- per-line size gate BEFORE parsing, so a pathological line cannot drive the
+    -- JSON parser unbounded (ADR-0005 granular bounds); shares the --allow-large arm
+    if line.utf8ByteSize > Tl.Import.Bounds.rawLineBytes && !allowLarge then
+      throw (.mk' .forceRequired s!"import line in {f} is {line.utf8ByteSize} bytes, over the {Tl.Import.Bounds.rawLineBytes}-byte per-line bound — one record should not be this large; split the source, or pass --allow-large for a trusted migration")
     let (r, dsc) ← MonadExcept.ofExcept (Tl.Import.parseRecord line)
     if seen.contains r.sourceId then
       throw (.mk' .malformedLine s!"import has two records with id '{r.sourceId}' — source ids map 1:1 to a tl id, so they must be unique")
     seen := seen.insert r.sourceId
     records := (f, r) :: records
     parseDisc := parseDisc ++ dsc
+  -- granular resource bounds + the derived-seed bound (ADR-0005): adjudicated on
+  -- the pure records/seed BEFORE any `.tl/` is created, so a bounds refusal never
+  -- leaves a freshly-initialized repo behind
+  let boundsDisc ← MonadExcept.ofExcept (Tl.Import.checkBounds opts records)
+  let result0 := Tl.Import.buildSeed opts records parseDisc
+  let seedDisc ← MonadExcept.ofExcept (Tl.Import.checkSeedSize opts result0)
+  let result := { result0 with disclosures := result0.disclosures ++ boundsDisc ++ seedDisc }
   -- resolve the target + implicit init (the documented exception to no-auto-init)
   let (target, initNotes) ← initTarget dirOverride
   let _ ← initAt target
@@ -2668,7 +2679,6 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
   -- the --force gate (distinct from the bounds gate): refuse to double-seed
   if (← logIsNonEmpty d) && !force then
     throw (.mk' .forceRequired "this repo already holds task state (a local segment or refs/tl/log) — `import` refuses to double-seed; pass --force to append the import as a fresh seed")
-  let result := Tl.Import.buildSeed opts records parseDisc
   let bytes := String.join (result.lines.map (· ++ "\n"))
   Tl.Sync.writeForeignSegment d result.segmentReplica bytes.toUTF8
   let notes := result.disclosures ++ initNotes
