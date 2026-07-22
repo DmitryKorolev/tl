@@ -520,7 +520,7 @@ def checkBounds (opts : ImportOptions) (records : List (String × ImportRecord))
     else
       let shown := String.intercalate ", " (cyclic.take 5)
       let more := if cyclic.length > 5 then s!" and {cyclic.length - 5} more" else ""
-      [s!"import: {cyclic.length} record(s) sit on a parent cycle ({shown}{more}) — edges kept; a cycle is reported by `tl dep cycles`, never a size bound"]
+      [s!"import: {cyclic.length} record(s) have a parent chain that enters a cycle ({shown}{more}) — edges kept; a cycle is reported by `tl dep cycles`, never a size bound"]
   if violations.isEmpty then
     .ok cycleDisc
   else if opts.allowLarge then

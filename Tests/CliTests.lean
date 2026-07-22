@@ -4734,6 +4734,119 @@ def cliImportTests : IO (List Outcome) := do
        ["import", (← writeBad "d.jsonl" "{\"id\":\"X\",\"title\":\"a\"}\n{\"id\":\"X\",\"title\":\"b\"}\n"), "--dir", (badDir / "d").toString] .malformedLine]
   return o
 
+/-- `tl import` granular resource bounds (ADR-0005 §two distinct safety gates,
+    Tl/Import/Bulk.lean `checkBounds`/`checkSeedSize`): each per-field byte/count
+    bound, the parent-chain depth pass, the collect-all fail-closed contract with
+    its machine `context`, the `--allow-large` verbatim arm (differential: the
+    over-bound value survives storage uncapped), the `--max`-raises-bytes /
+    granular-stays-armed split, the derived-seed and pre-parse per-line
+    backstops, the cycle-is-a-disclosure rule, and the no-`.tl/`-on-refusal
+    ordering. Records are built through the JSON API and `compress`d, so no
+    hand-escaping. -/
+def cliImportBoundsTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- write JSONL records to a fresh temp file; return (inputPath, dirArg)
+  let writeJsonl (recs : List Json) : IO (String × String) := do
+    let root ← IO.FS.createTempDir
+    IO.FS.writeFile (root / "in.jsonl") (String.join (recs.map (fun r => r.compress ++ "\n")))
+    return ((root / "in.jsonl").toString, (root / ".tl").toString)
+  let rep (n : Nat) : String := String.ofList (List.replicate n 'x')
+  let idOf (src : String) : String := "tl-" ++ Tl.Import.importIssueId "import" src
+  let ctxNat (e : Tl.Error) (k : String) : Option Nat :=
+    (e.context.lookup k).bind (fun v => v.getNat?.toOption)
+  let ctxHas (e : Tl.Error) (k : String) : Bool := (e.context.lookup k).isSome
+  let discSays (needle : String) : Json → Bool := fun j =>
+    (jArr j "disclosures").any (fun d => ((d.getStr?.toOption.getD "").splitOn needle).length > 1)
+  -- 1. exactly at the byte bound passes; one over fails, naming the bound + record
+  let (fp, dir) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str (rep 1024))]]
+  o := o ++ [← expectData "import: a title exactly at the 1024-byte bound passes"
+    ["import", fp, "--dir", dir] (fun j => jNat j "issues" == some 1)]
+  let (fp2, dir2) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str (rep 1025))]]
+  o := o ++ [← expectErr "import: a 1025-byte title fails force-required, naming the bound + record, with a machine context list"
+    ["import", fp2, "--dir", dir2] .forceRequired
+    (fun e => (e.message.splitOn "title").length > 1 && (e.message.splitOn "record A").length > 1
+      && ctxNat e "violationCount" == some 1 && ctxHas e "boundsViolations")]
+  -- 2. no .tl/ is left behind by a bounds refusal (checks run before init)
+  o := o ++ [check "import: a bounds refusal leaves no freshly-created .tl/"
+    (!(← (System.FilePath.mk dir2).pathExists)) s!"{dir2} exists after a refused import"]
+  -- 3. --allow-large imports verbatim with a disclosure; the over-bound value
+  --    survives storage uncapped (the label COUNT, which rendering never caps)
+  let labelRec := Json.mkObj [("id", Json.str "B"), ("title", Json.str "ok"),
+    ("labels", Json.arr ((List.range 70).map (fun i => Json.str s!"L{i}")).toArray)]
+  let (fp3, dir3) ← writeJsonl [labelRec]
+  o := o ++ [← expectData "import --allow-large: 70 labels (over the 64 count bound) import verbatim with a disclosure"
+    ["import", fp3, "--dir", dir3, "--allow-large"]
+    (fun j => jNat j "issues" == some 1 && discSays "imported verbatim" j)]
+  o := o ++ [← expectData "import --allow-large: the over-bound label set survives storage uncapped (differential show)"
+    ["show", idOf "B", "--dir", dir3] (fun j => (jArr j "labels").length == 70)]
+  -- 4. collect-all: every violation reported in one pass (title + description + label count)
+  let (fp4, dir4) ← writeJsonl [
+    Json.mkObj [("id", Json.str "A"), ("title", Json.str (rep 1025))],
+    Json.mkObj [("id", Json.str "B"), ("title", Json.str "ok"),
+      ("description", Json.str (rep 70000)),
+      ("labels", Json.arr ((List.range 70).map (fun i => Json.str s!"L{i}")).toArray)]]
+  o := o ++ [← expectErr "import: collect-all reports every violation in one pass (3: title, description, label count)"
+    ["import", fp4, "--dir", dir4] .forceRequired (fun e => ctxNat e "violationCount" == some 3)]
+  -- 5. --max raises the byte bounds but the granular field net stays armed
+  let (fp5, dir5) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str (rep 1025))]]
+  o := o ++ [← expectErr "import --max raises the byte bounds but keeps the granular field net armed"
+    ["import", fp5, "--dir", dir5, "--max", "100000000"] .forceRequired
+    (fun e => (e.message.splitOn "title").length > 1)]
+  -- 6. meta value byte bound, meta count (incl. derived keys), edge count (pre-skip)
+  let (fp6, dir6) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("meta", Json.mkObj [("k", Json.str (rep 5000))])]]
+  o := o ++ [← expectErr "import: a meta value over 4096 bytes fails naming the meta value"
+    ["import", fp6, "--dir", dir6] .forceRequired (fun e => (e.message.splitOn "meta value").length > 1)]
+  let (fp7, dir7) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("meta", Json.mkObj ((List.range 63).map (fun i => (s!"k{i}", Json.str "v"))))]]
+  o := o ++ [← expectErr "import: over 64 meta entries (incl. the 2 derived keys) fails naming the meta count"
+    ["import", fp7, "--dir", dir7] .forceRequired (fun e => (e.message.splitOn "meta entries").length > 1)]
+  let (fp8, dir8) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("blockedBy", Json.arr ((List.range 130).map (fun i => Json.str s!"x{i}")).toArray)]]
+  o := o ++ [← expectErr "import: over 128 raw (pre-skip) edges fails naming the edge count"
+    ["import", fp8, "--dir", dir8] .forceRequired (fun e => (e.message.splitOn "edges").length > 1)]
+  -- 7. parent-chain depth: a chain deeper than 64 fails; a cycle is a disclosure only
+  let depthRecs := (List.range 67).map (fun i =>
+    if i == 0 then Json.mkObj [("id", Json.str "n0"), ("title", Json.str "t0")]
+    else Json.mkObj [("id", Json.str s!"n{i}"), ("title", Json.str s!"t{i}"), ("parent", Json.str s!"n{i-1}")])
+  let (fp9, dir9) ← writeJsonl depthRecs
+  o := o ++ [← expectErr "import: a parent chain deeper than 64 fails, naming parent depth in the context"
+    ["import", fp9, "--dir", dir9] .forceRequired
+    (fun e => (e.message.splitOn "parent chain").length > 1
+      && ((e.context.lookup "boundsViolations").bind (·.getArr?.toOption)).any (fun a =>
+           a.toList.any (fun v => (v.getObjVal? "field").toOption.bind (·.getStr?.toOption) == some "parentDepth")))]
+  let (fp10, dir10) ← writeJsonl [
+    Json.mkObj [("id", Json.str "a"), ("title", Json.str "A"), ("parent", Json.str "b")],
+    Json.mkObj [("id", Json.str "b"), ("title", Json.str "B"), ("parent", Json.str "a")],
+    Json.mkObj [("id", Json.str "c"), ("title", Json.str "C"), ("parent", Json.str "a")]]
+  o := o ++ [← expectData "import: a parent cycle is disclosed and proceeds (never a bounds violation)"
+    ["import", fp10, "--dir", dir10] (fun j => jNat j "issues" == some 3 && discSays "cycle" j)]
+  o := o ++ [← expectData "import: dep cycles sees the same parent cycle the import disclosed"
+    ["dep", "cycles", "--dir", dir10] (fun j => jNat j "count" == some 1)]
+  -- 8. derived-seed backstop: seed over 4x --max fails; --allow-large discloses;
+  --    raising --max lifts the seed bound too
+  let seedRecs := (List.range 6).map (fun i =>
+    Json.mkObj [("id", Json.str s!"r{i}"), ("title", Json.str s!"title number {i}")])
+  let (fp11, dir11) ← writeJsonl seedRecs
+  o := o ++ [← expectErr "import: the derived seed exceeding 4x --max fails (amplification backstop)"
+    ["import", fp11, "--dir", dir11, "--max", "400"] .forceRequired
+    (fun e => (e.message.splitOn "seed op-log").length > 1 && ctxHas e "seedBytes")]
+  let (fp12, dir12) ← writeJsonl seedRecs
+  o := o ++ [← expectData "import --allow-large: the over-seed import proceeds with a disclosure"
+    ["import", fp12, "--dir", dir12, "--max", "400", "--allow-large"]
+    (fun j => jNat j "issues" == some 6 && discSays "seed op-log" j)]
+  let (fp13, dir13) ← writeJsonl seedRecs
+  o := o ++ [← expectData "import: raising --max lifts the seed bound too (both byte bounds move together)"
+    ["import", fp13, "--dir", dir13, "--max", "100000"] (fun j => jNat j "issues" == some 6)]
+  -- 9. pre-parse per-line backstop (armed unless --allow-large)
+  let (fp14, dir14) ← writeJsonl [Json.mkObj [("id", Json.str "A"),
+    ("title", Json.str (rep (Tl.Import.Bounds.rawLineBytes + 100)))]]
+  o := o ++ [← expectErr "import: a raw line over the pre-parse per-line bound fails before parsing"
+    ["import", fp14, "--dir", dir14] .forceRequired (fun e => (e.message.splitOn "per-line bound").length > 1)]
+  o := o ++ [← expectData "import --allow-large: the over-long line imports (per-line bound disarmed)"
+    ["import", fp14, "--dir", dir14, "--allow-large"] (fun j => jNat j "issues" == some 1)]
+  return o
+
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,
     the ready exclusion + auto-resume on a past instant, idempotent re-defer and
     undefer, and the teaching usage errors on bad input. The offset-timestamp row
@@ -5136,6 +5249,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
     ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
-    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests) ++ (← cliGitEnvTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliImportBoundsTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests) ++ (← cliGitEnvTests)
 
 end Tl.Tests
