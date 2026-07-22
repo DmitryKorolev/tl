@@ -40,6 +40,10 @@ Tl/Kernel/              -- the verified core (no I/O)
                         --   metaSet, edgeAdd, edgeRemove, labelAdd, labelRemove,
                         --   noteAdd, noteRemove) — readable CLI verbs map onto
                         --   these in the shell (ADR-0008/0027)
+  ClaimWrites.lean      --   the write-set a `claim` lowers to (status:=InProgress,
+                        --   assignee:=actor); its own leaf (imports only Op) so the
+                        --   codec's claim lowering and the kernel claim-outcome
+                        --   proofs share one definition with no proof-module import
   NotesInvariant.lean   --   fold-level discharge of the journal's SelfTagged /
                         --   PayloadTotal invariants for every materialized state
   Apply.lean            --   apply : State → Op → State  (total reducer + fold)
