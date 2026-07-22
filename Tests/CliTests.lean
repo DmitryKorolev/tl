@@ -4774,6 +4774,13 @@ def cliImportBoundsTests : IO (List Outcome) := do
   let vioHasField (e : Tl.Error) (field : String) : Bool :=
     ((e.context.lookup "boundsViolations").bind (·.getArr?.toOption)).any (fun a =>
       a.toList.any (fun v => (v.getObjVal? "field").toOption.bind (·.getStr?.toOption) == some field))
+  -- a violation matching BOTH field and limit — tells two same-field branches
+  -- apart (e.g. the two --source bounds share field "sourceTag" but differ in limit)
+  let vioHasFieldLimit (e : Tl.Error) (field : String) (limit : Nat) : Bool :=
+    ((e.context.lookup "boundsViolations").bind (·.getArr?.toOption)).any (fun a =>
+      a.toList.any (fun v =>
+        (v.getObjVal? "field").toOption.bind (·.getStr?.toOption) == some field
+        && (v.getObjVal? "limit").toOption.bind (·.getNat?.toOption) == some limit))
   let discSays (needle : String) : Json → Bool := fun j =>
     (jArr j "disclosures").any (fun d => ((d.getStr?.toOption.getD "").splitOn needle).length > 1)
   -- 1. exactly at the byte bound passes; one over fails, naming the bound + record
@@ -4885,10 +4892,20 @@ def cliImportBoundsTests : IO (List Outcome) := do
     ("notes", Json.str (rep 65537))]]
   o := o ++ [← expectErr "import: notes over 65536 bytes fails (multi-line Option-bind arm)"
     ["import", fp19, "--dir", dir19] .forceRequired (fun e => vioHasField e "notes")]
-  -- 11. the operator-supplied --source tag is bounded (as the derived ext:<tag> key)
+  -- 11. the operator-supplied --source tag is bounded on BOTH derived forms: the
+  --     ext:<tag> key (1024, fires alone at 1025 bytes) and the import:source
+  --     value (4096, its own branch — fires at 4097, distinguished by limit)
   let (fp20, dir20) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t")]]
-  o := o ++ [← expectErr "import: an over-long --source tag fails, bounded as the derived meta key"
-    ["import", fp20, "--dir", dir20, "--source", rep 1025] .forceRequired (fun e => vioHasField e "sourceTag")]
+  o := o ++ [← expectErr "import: a --source tag over 1024 bytes fails on the derived ext:<source> key bound (limit 1024)"
+    ["import", fp20, "--dir", dir20, "--source", rep 1025] .forceRequired
+    (fun e => vioHasFieldLimit e "sourceTag" 1024)]
+  let (fp20b, dir20b) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t")]]
+  o := o ++ [← expectErr "import: a --source tag over 4096 bytes also fails the import:source VALUE bound (limit 4096), a distinct branch"
+    ["import", fp20b, "--dir", dir20b, "--source", rep 4097] .forceRequired
+    (fun e => vioHasFieldLimit e "sourceTag" 4096)]
+  o := o ++ [← expectData "import --allow-large: the over-4096 --source tag imports verbatim with the import:source value disclosure"
+    ["import", fp20b, "--dir", dir20b, "--source", rep 4097, "--allow-large"]
+    (fun j => jNat j "issues" == some 1 && discSays "import:source" j)]
   -- 12. the DoS cap tails: >100 violations keeps violationCount honest while the
   --     machine list is capped at 100; >200 under --allow-large emits the aggregate
   --     tail; a >5-record cycle basin emits the "and N more" disclosure
