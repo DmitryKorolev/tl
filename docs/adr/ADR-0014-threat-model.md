@@ -211,17 +211,22 @@ cannot be deleted.
 A hostile import file the user *chooses* to import can resource-bomb (deep
 parent chains, huge fields, excess edges) or bulk-seed injection payloads.
 
-Stance: mitigate — partially done (ADR-0005). The importer bounds the total
+Stance: mitigate — done (ADR-0005). The importer bounds the total
 input size (a fail-closed `force-required` refusal; `--allow-large`/`--max`
 is the loud bounds override, distinct from `--force`, the
 clobber-existing-state gate — the two are never conflated, ADR-0005),
 skips-and-discloses dangling edge endpoints rather than fabricating
 placeholders, and tags imported issues `source: "imported"` so
 the read commands surface lower trust. The granular bounds ADR-0005 specs —
-per-field size, label count, parent-chain depth, edge count, derived seed
-size — are not yet enforced; that residual is open, tracked work. Injection content is handled by T1's render-layer
-defenses. Document that import adopts opaque content from a possibly-untrusted
-source.
+per-field byte size, label/meta key+value size, label/meta/edge counts,
+parent-chain depth, and the derived seed size — are enforced (fixed constants
+that `--max` does not scale; only `--allow-large` disarms them), collecting
+every violation in one fail-closed pass with a machine-readable `context` list.
+One residual stays open: a single line under the per-line byte cap can nest JSON
+brackets deeply enough to stress the parser before any field bound is measured
+(a carried limitation, docs/overview.md). Injection content is handled by T1's
+render-layer defenses. Document that import adopts opaque content from a
+possibly-untrusted source.
 
 ### T7. Cross-repository routing via inherited git environment
 

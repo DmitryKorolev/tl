@@ -125,15 +125,43 @@ Two separate explicit gates, never conflated — one flag must not bypass both:
   rather than double-seed live state. `--force` proceeds, appending the seed ops
   as a fresh import. Same explicit-over-silent stance as `init` (ADR-0012).
 - **`--allow-large` / `--max <bytes>` — bounds override.** A hostile or
-  accidentally-enormous source is bounded before any op is emitted: per-field
-  byte size, label/key size, parent-chain depth, edge count, total input/seed
-  size. Exceeding a bound fails `force-required` with a summary naming the bound;
-  `--allow-large` (or a raised `--max`) proceeds for a trusted local migration,
-  every truncation/skip disclosed. `--force` and the bounds override are
-  separate gates, never conflated (ADR-0014 T6).
+  accidentally-enormous source is bounded before any op is emitted, along two
+  independent axes:
+  - **The byte bounds**, sized by `--max` (default 5 MB): the *total input*
+    (from file metadata, before any content is read) and the *derived seed
+    op-log* (bounded at 4× the total-input bound — the importer amplifies the
+    input into per-field ops), plus a pre-parse *per-line* cap so a pathological
+    line cannot drive the JSON parser unbounded. Raising `--max` lifts these
+    together.
+  - **The granular per-field net**, sized by *fixed constants* independent of
+    `--max`: title / single-line 1 KiB, description / notes 64 KiB, per-label
+    1 KiB, per-meta-key 1 KiB (checked on the stored key, derived `import:`
+    prefix included), per-meta-value 4 KiB, ≤ 64 labels, ≤ 64 meta entries
+    (pre-dedup, counting the ≤ 3 derived keys), ≤ 128 raw (pre-skip) edges, and
+    a parent-chain depth ≤ 64 (one O(n) pass over the functional parent graph).
+    The byte bounds mirror the render bounds (ADR-0014 T1), so "over the import
+    bound" is exactly "the value rendering would truncate".
+
+  With the net armed, exceeding any bound fails `force-required` after
+  collecting *every* violation in one pass — the message names the first few
+  plus the total, and the `--json` `error.context` carries the machine-readable
+  `boundsViolations` list (ADR-0020). `--max` raises only the byte bounds and
+  leaves the granular net armed (the raise-total-keep-granular-armed middle
+  setting); **only `--allow-large`** disarms the granular net *and* the byte
+  bounds, importing the source **verbatim** — tl's write path is cap-free, so
+  nothing is truncated; only later rendering truncates — with one disclosure per
+  violation. A parent *cycle* is never a bounds violation: the kernel is total
+  on cycles (ADR-0003) and the native `dep add` path permits them, so a cycle is
+  disclosed (and reported by `tl dep cycles`), its edges kept. All granular
+  checks run *before* the implicit `init`, so a bounds refusal never leaves a
+  freshly-created `.tl/` behind. `--force` and the bounds override are separate
+  gates, never conflated (ADR-0014 T6).
 
 The render-layer protections from ADR-0014 T1 still apply after import: imported
-free-form content is untrusted data.
+free-form content is untrusted data. One residual, below the granular net: a
+single line *under* the per-line byte cap can still nest JSON brackets deeply
+enough to stress the parser's recursion before any field bound is measured —
+a carried limitation recorded in [docs/overview.md](../overview.md).
 
 ### Priority and status
 

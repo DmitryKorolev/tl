@@ -327,7 +327,12 @@ Tl/Import/              -- I/O shell: one-shot bulk import (tested, ADR-0005)
                         --   (ids/nonces/fallback timestamps source-derived, so
                         --   re-import is byte-stable); dangling edge endpoints
                         --   skipped + disclosed; two safety gates (--force
-                        --   clobber, --allow-large/--max bounds)
+                        --   clobber, --allow-large/--max bounds). checkBounds =
+                        --   the granular net (fixed per-field byte/count bounds +
+                        --   an O(n) parent-depth pass over the functional parent
+                        --   graph), collect-all fail-closed / --allow-large
+                        --   verbatim; checkSeedSize = the 4x-input derived-seed
+                        --   backstop; cycles disclosed, never a violation
 
 Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
   Envelope.lean         --   the --json envelope (schemaVersion/ok/data|error) in
