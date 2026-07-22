@@ -699,6 +699,22 @@ def cliBinaryTests : IO (List Outcome) := do
       (bad.stdout.startsWith "{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"usage\"")
       bad.stdout,
      check "usage exits 2" (bad.exitCode == 2)]
+  -- ADR-0005/0014: a bounds-refusal --json context sanitizes the untrusted
+  -- record id. This is the first nested context object carrying import-file
+  -- content, so `sanitizeJson` must recurse into objects (not pass them
+  -- through); exercised only across the process boundary (the sanitizer runs in
+  -- `Main.run`, not `runVerb`). A right-to-left override (U+202E, ≥ 0x20 so the
+  -- JSON printer emits it raw) must be stripped from the context record id.
+  let bidi : Char := Char.ofNat 0x202E
+  let impRoot ← IO.FS.createTempDir
+  let impRec := (Json.mkObj [("id", Json.str ("X" ++ String.singleton bidi ++ "Y")),
+    ("title", Json.str (String.ofList (List.replicate 1100 'x')))]).compress
+  IO.FS.writeFile (impRoot / "in.jsonl") (impRec ++ "\n")
+  let imp ← spawn ["import", (impRoot / "in.jsonl").toString,
+    "--dir", (impRoot / ".tl").toString, "--json"]
+  o := o ++ [check "import bounds-refusal --json strips control bytes from the record id in context (ADR-0014)"
+    (imp.exitCode == 6 && (imp.stdout.splitOn (String.singleton bidi)).length == 1)
+    s!"raw bidi override leaked into the envelope, or wrong exit: exit {imp.exitCode}, stdout {imp.stdout}"]
   -- no-project exit 3
   let root ← IO.FS.createTempDir
   let np ← spawn ["ready", "--json"] [] (some root)
@@ -4755,6 +4771,9 @@ def cliImportBoundsTests : IO (List Outcome) := do
   let ctxNat (e : Tl.Error) (k : String) : Option Nat :=
     (e.context.lookup k).bind (fun v => v.getNat?.toOption)
   let ctxHas (e : Tl.Error) (k : String) : Bool := (e.context.lookup k).isSome
+  let vioHasField (e : Tl.Error) (field : String) : Bool :=
+    ((e.context.lookup "boundsViolations").bind (·.getArr?.toOption)).any (fun a =>
+      a.toList.any (fun v => (v.getObjVal? "field").toOption.bind (·.getStr?.toOption) == some field))
   let discSays (needle : String) : Json → Bool := fun j =>
     (jArr j "disclosures").any (fun d => ((d.getStr?.toOption.getD "").splitOn needle).length > 1)
   -- 1. exactly at the byte bound passes; one over fails, naming the bound + record
@@ -4845,6 +4864,50 @@ def cliImportBoundsTests : IO (List Outcome) := do
     ["import", fp14, "--dir", dir14] .forceRequired (fun e => (e.message.splitOn "per-line bound").length > 1)]
   o := o ++ [← expectData "import --allow-large: the over-long line imports (per-line bound disarmed)"
     ["import", fp14, "--dir", dir14, "--allow-large"] (fun j => jNat j "issues" == some 1)]
+  -- 10. each remaining per-field byte branch fires in isolation, naming its field
+  --     (tier-2: every branch of recordViolations, incl. the Option-bind arms)
+  let (fp15, dir15) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("meta", Json.mkObj [(rep 1025, Json.str "v")])]]
+  o := o ++ [← expectErr "import: a meta key over 1024 bytes fails naming metaKey"
+    ["import", fp15, "--dir", dir15] .forceRequired (fun e => vioHasField e "metaKey")]
+  let (fp16, dir16) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("labels", Json.arr #[Json.str (rep 1025)])]]
+  o := o ++ [← expectErr "import: a single label over 1024 bytes fails naming label (count within bound)"
+    ["import", fp16, "--dir", dir16] .forceRequired (fun e => vioHasField e "label")]
+  let (fp17, dir17) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("assignee", Json.str (rep 1025))]]
+  o := o ++ [← expectErr "import: an assignee over 1024 bytes fails (single-line Option-bind arm)"
+    ["import", fp17, "--dir", dir17] .forceRequired (fun e => vioHasField e "assignee")]
+  let (fp18, dir18) ← writeJsonl [Json.mkObj [("id", Json.str (rep 1025)), ("title", Json.str "t")]]
+  o := o ++ [← expectErr "import: a source id over 1024 bytes fails naming sourceId"
+    ["import", fp18, "--dir", dir18] .forceRequired (fun e => vioHasField e "sourceId")]
+  let (fp19, dir19) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("notes", Json.str (rep 65537))]]
+  o := o ++ [← expectErr "import: notes over 65536 bytes fails (multi-line Option-bind arm)"
+    ["import", fp19, "--dir", dir19] .forceRequired (fun e => vioHasField e "notes")]
+  -- 11. the operator-supplied --source tag is bounded (as the derived ext:<tag> key)
+  let (fp20, dir20) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t")]]
+  o := o ++ [← expectErr "import: an over-long --source tag fails, bounded as the derived meta key"
+    ["import", fp20, "--dir", dir20, "--source", rep 1025] .forceRequired (fun e => vioHasField e "sourceTag")]
+  -- 12. the DoS cap tails: >100 violations keeps violationCount honest while the
+  --     machine list is capped at 100; >200 under --allow-large emits the aggregate
+  --     tail; a >5-record cycle basin emits the "and N more" disclosure
+  let (fp21, dir21) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("labels", Json.arr ((List.range 150).map (fun _ => Json.str (rep 1025))).toArray)]]
+  o := o ++ [← expectErr "import: >100 violations — violationCount is the honest total while the context list caps at 100"
+    ["import", fp21, "--dir", dir21] .forceRequired
+    (fun e => (ctxNat e "violationCount").any (· > 100)
+      && ((e.context.lookup "boundsViolations").bind (·.getArr?.toOption)).any (fun a => a.size == 100))]
+  let (fp22, dir22) ← writeJsonl [Json.mkObj [("id", Json.str "A"), ("title", Json.str "t"),
+    ("labels", Json.arr ((List.range 250).map (fun _ => Json.str (rep 1025))).toArray)]]
+  o := o ++ [← expectData "import --allow-large: >200 violations disclose 200 individually + an aggregate tail"
+    ["import", fp22, "--dir", dir22, "--allow-large"]
+    (fun j => jNat j "issues" == some 1 && discSays "more field(s) over a bound" j)]
+  let ring := (List.range 6).map (fun i =>
+    Json.mkObj [("id", Json.str s!"m{i}"), ("title", Json.str s!"t{i}"), ("parent", Json.str s!"m{(i+1) % 6}")])
+  let (fp23, dir23) ← writeJsonl ring
+  o := o ++ [← expectData "import: a >5-record parent cycle basin (pure ring, no root) discloses with an 'and N more' tail"
+    ["import", fp23, "--dir", dir23] (fun j => jNat j "issues" == some 6 && discSays "and 1 more" j)]
   return o
 
 /-- `tl defer` / `tl undefer` (ADR-0010): the `--for`/`--until` value grammar,

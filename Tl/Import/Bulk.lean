@@ -364,9 +364,12 @@ collecting *every* violation in one pass: the message names the first few plus
 the total, and `context.boundsViolations` carries the machine-readable list. With
 `--allow-large`, the record imports *verbatim* — tl stores fields uncapped, only
 rendering truncates (`Tl.Cli.Sanitize`) — with one disclosure per violation. The
-byte bounds mirror the render bounds (single-line 1 KiB, multi-line 64 KiB), so
-"over the import bound" is exactly "the value rendering would truncate". A parent
-*cycle* is never a bound violation (the kernel is total on cycles, ADR-0003): it
+byte bounds track the render bounds (single-line 1 KiB, multi-line 64 KiB); the
+meta value is the one deliberate exception (4 KiB stored / 1 KiB rendered, since
+the opaque channel may hold more than it displays). They measure the *raw stored*
+bytes a resource bound must cap, so relative to the render sanitizer (which also
+strips control bytes before truncating) they over-refuse, never under-refuse. A
+parent *cycle* is never a bound violation (the kernel is total on cycles, ADR-0003): it
 is disclosed and its edges kept, matching native `dep add`. -/
 
 namespace Bounds
@@ -378,8 +381,8 @@ def singleLineBytes : Nat := 1024
 def multiLineBytes : Nat := 65536
 /-- One label's bytes. -/
 def labelBytes : Nat := 1024
-/-- One meta key's bytes — checked on the *stored* key, so a derived `import:`
-    prefix counts. -/
+/-- One meta key's bytes — checked on the *stored* key, so the derived
+    `import:<k>` and `ext:<source>` forms count. -/
 def metaKeyBytes : Nat := 1024
 /-- One meta value's bytes. -/
 def metaValueBytes : Nat := 4096
@@ -514,7 +517,22 @@ def checkBounds (opts : ImportOptions) (records : List (String × ImportRecord))
                 detail := s!"parent chain is {d} levels deep (max {Bounds.parentDepth})" } : BoundViolation)
       else none
     | none => none)
-  let violations := recs.flatMap recordViolations ++ depthVs
+  -- the operator-supplied `--source` tag is byte-invisible to the input/line
+  -- bounds (it is a CLI flag, not file content) yet lands on every record as the
+  -- derived `ext:<tag>` meta key and the `import:source` meta value — check both
+  let tagKey := s!"ext:{opts.sourceTag}"
+  let tagVs : List BoundViolation :=
+    (if tagKey.utf8ByteSize > Bounds.metaKeyBytes then
+       [{ record := "(--source)", field := "sourceTag", actual := tagKey.utf8ByteSize,
+          limit := Bounds.metaKeyBytes,
+          detail := s!"the derived meta key 'ext:<source>' is {tagKey.utf8ByteSize} bytes (max {Bounds.metaKeyBytes})" }]
+     else []) ++
+    (if opts.sourceTag.utf8ByteSize > Bounds.metaValueBytes then
+       [{ record := "(--source)", field := "sourceTag", actual := opts.sourceTag.utf8ByteSize,
+          limit := Bounds.metaValueBytes,
+          detail := s!"the --source tag (stored as the 'import:source' value) is {opts.sourceTag.utf8ByteSize} bytes (max {Bounds.metaValueBytes})" }]
+     else [])
+  let violations := recs.flatMap recordViolations ++ depthVs ++ tagVs
   let cycleDisc : List String :=
     if cyclic.isEmpty then []
     else

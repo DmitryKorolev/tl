@@ -415,12 +415,14 @@ def runVerb : List String → TlM CmdOut
         throw (usageErr s!"unknown command '{other}' — {hint}")
 
 /-- Sanitize a JSON tree's string leaves (error-context values can embed raw
-    log bytes). Strings and array elements are sanitized; nested objects in
-    error context carry only code-built ids/bools (e.g. `reasons`), so they
-    pass through. -/
+    log bytes). Strings, array elements, *and object values* are sanitized
+    recursively — a nested context object can carry an untrusted string (e.g.
+    the import bounds violation list's per-record source id, ADR-0005), so it
+    must not pass through unsanitized. Keys are code-built, left as-is. -/
 private partial def sanitizeJson : Json → Json
   | .str s => .str (sanitizeSingle s)
   | .arr a => .arr (a.map sanitizeJson)
+  | .obj kvs => Json.mkObj ((kvs.toArray.map (fun (k, v) => (k, sanitizeJson v))).toList)
   | other => other
 
 /-- An error surfaced to a human/agent passes through the ADR-0014 sanitizer:

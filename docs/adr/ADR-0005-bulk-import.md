@@ -135,12 +135,15 @@ Two separate explicit gates, never conflated — one flag must not bypass both:
     together.
   - **The granular per-field net**, sized by *fixed constants* independent of
     `--max`: title / single-line 1 KiB, description / notes 64 KiB, per-label
-    1 KiB, per-meta-key 1 KiB (checked on the stored key, derived `import:`
-    prefix included), per-meta-value 4 KiB, ≤ 64 labels, ≤ 64 meta entries
+    1 KiB, per-meta-key 1 KiB (checked on the stored key — the derived
+    `import:<k>` and `ext:<source>` forms included, so an over-long `--source`
+    tag is caught), per-meta-value 4 KiB, ≤ 64 labels, ≤ 64 meta entries
     (pre-dedup, counting the ≤ 3 derived keys), ≤ 128 raw (pre-skip) edges, and
     a parent-chain depth ≤ 64 (one O(n) pass over the functional parent graph).
-    The byte bounds mirror the render bounds (ADR-0014 T1), so "over the import
-    bound" is exactly "the value rendering would truncate".
+    The byte bounds track the render bounds (ADR-0014 T1) — meta value is the one
+    deliberate exception (4 KiB stored / 1 KiB rendered, since the opaque channel
+    may hold more than it displays). They cap the *raw stored* bytes, so relative
+    to the render sanitizer they over-refuse, never under-refuse.
 
   With the net armed, exceeding any bound fails `force-required` after
   collecting *every* violation in one pass — the message names the first few
