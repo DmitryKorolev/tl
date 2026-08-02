@@ -103,77 +103,132 @@ def GateEvidence.errors (evidence : GateEvidence) : Array String :=
   | none => errors
   | some error => errors.push error
 
-def analyze (cfg : Config) (o : Observation) : Report := Id.run do
-  let mut errors := o.evidence.importErrors
-  if let some replayError := o.evidence.replayError? then
-    errors := errors.push s!"trust verification ({o.scope}): {replayError}"
+/-
+`analyze` is the whole verdict: one named arm per audited condition, each
+returning the findings it reports and nothing else. The arms are separate
+definitions rather than pushes into one mutable accumulator so that each
+condition is stated — and proved equivalent to its finding being absent — in
+`Verify.Proofs` without restating any message text.
+-/
+
+def replayFindings (o : Observation) : Array String :=
+  match o.evidence.replayError? with
+  | none => #[]
+  | some replayError => #[s!"trust verification ({o.scope}): {replayError}"]
+
+/-- Expected source modules the inspected environment did not import. -/
+def missingModules (o : Observation) : Array Name :=
   let localSet := o.localModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
-  let missing := o.expectedModules.filter fun name => !localSet.contains name
-  if !missing.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): {missing.size} source module(s) are absent from the imported environment:\n\
+  o.expectedModules.filter fun name => !localSet.contains name
+
+def missingModuleFindings (o : Observation) : Array String :=
+  let missing := missingModules o
+  if missing.isEmpty then #[] else
+    #[s!"trust verification ({o.scope}): {missing.size} source module(s) are absent from the imported environment:\n\
       {summarize (missing.map fun name => s!"  {name}")}\n\
-      {o.moduleRemedy}"
+      {o.moduleRemedy}"]
+
+/-- Imported first-party modules the scope never declared. -/
+def unexpectedModules (o : Observation) : Array Name :=
   let expectedSet := o.expectedModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
-  let unexpected := o.localModules.filter fun name => !expectedSet.contains name
-  if !unexpected.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): {unexpected.size} imported first-party module(s) are outside the declared scope:\n\
+  o.localModules.filter fun name => !expectedSet.contains name
+
+def unexpectedModuleFindings (o : Observation) : Array String :=
+  let unexpected := unexpectedModules o
+  if unexpected.isEmpty then #[] else
+    #[s!"trust verification ({o.scope}): {unexpected.size} imported first-party module(s) are outside the declared scope:\n\
       {summarize (unexpected.map fun name => s!"  {name}")}\n\
-      {o.moduleRemedy}"
+      {o.moduleRemedy}"]
 
-  -- Every semantic arm below is silent when nothing was selected. All six
-  -- named scopes are mandatory, so an empty module set is itself vacuous;
-  -- otherwise declarations, replay validation, and import traversal must each
-  -- have observable evidence.
+/-- Why a nonempty scope's findings would be vacuous. -/
+def vacuityReasons (o : Observation) : List String :=
+  (if o.decls.isEmpty then ["no declarations were selected from them"] else []) ++
+  (if o.evidence.replayedConstants == 0 then ["nothing reached independent replay validation"] else []) ++
+  (if o.evidence.importEdges == 0 then ["no direct import edges were read"] else [])
+
+/-- Every semantic arm is silent when nothing was selected. All six named
+    scopes are mandatory, so an empty module set is itself vacuous; otherwise
+    declarations, replay validation, and import traversal must each have
+    observable evidence. -/
+def vacuityFindings (o : Observation) : Array String :=
   if o.localModules.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): the named scope imported no first-party modules. Restore its registered roots and source inventory before trusting this run."
+    #[s!"trust verification ({o.scope}): the named scope imported no first-party modules. Restore its registered roots and source inventory before trusting this run."]
   else
-    let vacuous :=
-      (if o.decls.isEmpty then ["no declarations were selected from them"] else []) ++
-      (if o.evidence.replayedConstants == 0 then ["nothing reached independent replay validation"] else []) ++
-      (if o.evidence.importEdges == 0 then ["no direct import edges were read"] else [])
-    if !vacuous.isEmpty then
-      errors := errors.push s!"trust verification ({o.scope}): {o.localModules.size} module(s) were inspected but {String.intercalate ", and " vacuous}. Declaration ownership, the replay cone, or the stored import traversal has regressed, so the axiom and kernel-replay findings below are vacuous. Restore the selection before trusting this run."
+    let vacuous := vacuityReasons o
+    if vacuous.isEmpty then #[] else
+      #[s!"trust verification ({o.scope}): {o.localModules.size} module(s) were inspected but {String.intercalate ", and " vacuous}. Declaration ownership, the replay cone, or the stored import traversal has regressed, so the axiom and kernel-replay findings below are vacuous. Restore the selection before trusting this run."]
 
+def landmarkPolicyFindings (o : Observation) : Array String :=
   if o.landmarks.map (·.name) != o.expectedLandmarks then
-    errors := errors.push s!"trust verification ({o.scope}): landmark observation did not preserve the policy list. Restore the one-for-one landmark lookup before trusting this run."
+    #[s!"trust verification ({o.scope}): landmark observation did not preserve the policy list. Restore the one-for-one landmark lookup before trusting this run."]
+  else #[]
 
-  for landmark in o.landmarks do
+def landmarkKindFindings (o : Observation) : Array String :=
+  o.landmarks.filterMap fun landmark =>
     match landmark.kind? with
-    | some .theoremDecl => pure ()
+    | some .theoremDecl => none
     | some kind =>
-      errors := errors.push s!"trust verification ({o.scope}): landmark {landmark.name} is {declKindName kind}, not a theorem. Restore the theorem, or retire the proved claim and its landmark together."
+      some s!"trust verification ({o.scope}): landmark {landmark.name} is {declKindName kind}, not a theorem. Restore the theorem, or retire the proved claim and its landmark together."
     | none =>
-      errors := errors.push s!"trust verification ({o.scope}): landmark theorem {landmark.name} is absent. Restore it, or retire the proved claim and its landmark together."
+      some s!"trust verification ({o.scope}): landmark theorem {landmark.name} is absent. Restore it, or retire the proved claim and its landmark together."
 
-  let mut seen : Std.HashSet Name := ∅
-  let mut repeated : Array Name := #[]
-  for landmark in o.landmarks do
-    if seen.contains landmark.name then
-      repeated := repeated.push landmark.name
-    else
-      seen := seen.insert landmark.name
-  if !repeated.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): duplicate landmark(s):\n\
+/-- One pass of the duplicate-landmark scan: the names seen so far, and the
+    names seen more than once. -/
+def repeatedLandmarkStep (state : Std.HashSet Name × Array Name)
+    (landmark : Landmark) : Std.HashSet Name × Array Name :=
+  let (seen, repeated) := state
+  if seen.contains landmark.name then (seen, repeated.push landmark.name)
+  else (seen.insert landmark.name, repeated)
+
+def repeatedLandmarks (landmarks : Array Landmark) : Array Name :=
+  (landmarks.foldl repeatedLandmarkStep (∅, #[])).2
+
+def duplicateLandmarkFindings (o : Observation) : Array String :=
+  let repeated := repeatedLandmarks o.landmarks
+  if repeated.isEmpty then #[] else
+    #[s!"trust verification ({o.scope}): duplicate landmark(s):\n\
       {summarize (repeated.map fun name => s!"  {name}")}\n\
-      Give each documented proved claim its own landmark exactly once."
+      Give each documented proved claim its own landmark exactly once."]
 
-  let axiomDecls := o.decls.filter (·.kind == .axiomDecl)
-  if !axiomDecls.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): {axiomDecls.size} first-party axiom declaration(s):\n\
+def axiomDeclarations (o : Observation) : Array Decl :=
+  o.decls.filter (·.kind == .axiomDecl)
+
+def axiomDeclarationFindings (o : Observation) : Array String :=
+  let axiomDecls := axiomDeclarations o
+  if axiomDecls.isEmpty then #[] else
+    #[s!"trust verification ({o.scope}): {axiomDecls.size} first-party axiom declaration(s):\n\
       {summarize (axiomDecls.map fun decl => s!"  {decl.name}  ({decl.module})")}\n\
-      Prove the claim or record the residual as an explicit carried assumption; do not extend the kernel trust boundary locally."
+      Prove the claim or record the residual as an explicit carried assumption; do not extend the kernel trust boundary locally."]
 
-  let offenders := o.decls.filterMap fun decl =>
+/-- Inspected declarations whose stored axiom dependencies leave the allowance.
+    A first-party axiom is reported by its own arm, never also as depending on
+    itself. -/
+def axiomDependencyOffenders (cfg : Config) (o : Observation) : Array String :=
+  o.decls.filterMap fun decl =>
     if decl.kind == .axiomDecl then none
     else
       let bad := decl.axioms.filter fun name => !cfg.allowedAxioms.contains name
       if bad.isEmpty then none
       else some s!"  {decl.name}  ({decl.module})  depends on: {String.intercalate ", " (bad.toList.map toString)}"
-  if !offenders.isEmpty then
-    errors := errors.push s!"trust verification ({o.scope}): {offenders.size} declaration(s) depend on axioms outside {cfg.allowedAxioms.toList}:\n\
-      {summarize offenders}\n\
-      Finish the proof without `sorry` or native evaluation. If a residual is genuinely unprovable, decompose it and document the carried assumption."
 
-  return { errors }
+def axiomDependencyFindings (cfg : Config) (o : Observation) : Array String :=
+  let offenders := axiomDependencyOffenders cfg o
+  if offenders.isEmpty then #[] else
+    #[s!"trust verification ({o.scope}): {offenders.size} declaration(s) depend on axioms outside {cfg.allowedAxioms.toList}:\n\
+      {summarize offenders}\n\
+      Finish the proof without `sorry` or native evaluation. If a residual is genuinely unprovable, decompose it and document the carried assumption."]
+
+def analyze (cfg : Config) (o : Observation) : Report :=
+  { errors :=
+      o.evidence.importErrors
+        ++ replayFindings o
+        ++ missingModuleFindings o
+        ++ unexpectedModuleFindings o
+        ++ vacuityFindings o
+        ++ landmarkPolicyFindings o
+        ++ landmarkKindFindings o
+        ++ duplicateLandmarkFindings o
+        ++ axiomDeclarationFindings o
+        ++ axiomDependencyFindings cfg o }
 
 end Tl.Verify
