@@ -108,6 +108,10 @@ is nothing to advise: the view is current, *or* no remote resolves to
 compare against (the pinned `|null` convention above). `tl list` does not
 emit it.
 
+Both verbs take filter facets (`--label`/`--assignee` on `ready`, those plus
+`--status`/`--priority`/`--blocked`/`--deferred`/`--stale` on `list`) — see
+*filter facets* below; they narrow `items`/`count`, never the shape.
+
 **`tl show <id> --json`** — the full ADR-0003 issue object (all scalar fields
 present-if-valued, `labels`, `meta`, `dependencies` + `parent`, provenance
 projections, derived booleans), plus `claim: { outcome, currentAssignee }`
@@ -153,9 +157,8 @@ close outcome:
 ```
 
 `unblocked` is the kernel's `unblocks` set (ADR-0004 thm 10) — what an agent
-wants in hand immediately after closing. `--cascade` echoes the root epic and
-lists every closed id in an additional `closed: [ids]` array. The `close`
-block mirrors `claim`'s `{outcome, currentAssignee}` (the close-side outcome
+wants in hand immediately after closing. The `close` block mirrors `claim`'s
+`{outcome, currentAssignee}` (the close-side outcome
 contract, ADR-0008 §close reporting): `outcome` is `won` when the issue is
 terminal *as requested*, else `superseded` (a concurrent write took it to a
 different terminal, reopened it, or — for `--as duplicate` — closed it against
@@ -533,11 +536,46 @@ context, same additive-only discipline): `not-claimable` → `id`, `reasons`
 (`"unreadable"` | `"saturated"` — the two need different fixes, ADR-0007).
 Every `message` teaches the fix (ADR-0008).
 
-### `tl list` filter facets
+### `tl list` / `tl ready` filter facets
 
 `tl list` takes filter facets that narrow which issues appear. **Rows stay the
 pinned `list` item shape above and `count` reports the post-filter total** — the
 filters change the membership of `items`, never the JSON shape.
+
+`tl ready` takes the `--label` and `--assignee` facets from the same table, with
+the same semantics and the same shape rule: `count` is the post-filter total,
+`items` the `--limit` head of it in ranked order (filtering preserves the rank),
+and `staleness` is unaffected — it describes the *view*, not the result set. The
+predicates and the human `[filtered by …]` echo are literally shared code
+(`Tl.Cli.Commands.labelFacet` / `assigneeFacet` / `filterSuffix`), so the two
+surfaces cannot drift. Neither `ready` facet can widen the result: `ready` is the
+proved workable set (open, unblocked, non-epic, not deferred), so the
+closed-gate bypass that `--status`/`--stale`/`--deferred` carry on `list` has no
+counterpart there.
+
+The other five `list` facets are deliberately **not** on `ready`:
+`--status open` would be redundant because every ready issue is open, while its
+other values, `--stale`, `--deferred`, and `--blocked` select for states that
+`ready` excludes by definition and would therefore return nothing. `--priority`
+is the one exclusion that is *not* forced — `ready` is
+priority-ranked, so the ranking already answers "the important ones first", and a
+priority *filter* would hide work rather than order it; it is left out until a
+real need appears, and adding it later is additive.
+
+`ready --assignee` is narrow by construction, and knowingly so: a claim writes
+`assignee` together with `status := in_progress`, which `ready` excludes, and the
+importer refuses to carry an assignee onto an open record — so there is no way to
+pre-assign open work. What it matches is an open issue that still carries an
+assignee, which only a merge can produce (a claim whose status write lost the LWW
+to a concurrent `create`/`reopen` while its assignee write survived — ADR-0013).
+That residue is exactly the state worth surfacing on a work queue: an item that
+looks unclaimed but is spoken for. The facet is on `ready` because ADR-0013 and
+the destination surface promised `ready --assignee me`, and it stays honest about
+what it can match.
+
+Neither verb echoes the active filters as a `data` field: the caller passed
+them, and the human summary already names them. That is a deliberate omission,
+additively fixable if a consumer ever needs it.
 
 | Flag | Match |
 |---|---|
@@ -563,7 +601,18 @@ Composition:
   set those produce.
 - The human summary names the active filters (`[filtered by …]`), with every
   echoed value sanitized so untrusted assignee/label text never reaches the
-  terminal raw (the ADR-0017 render contract).
+  terminal raw (the ADR-0017 render contract) and the assembled clause bounded
+  like any other rendered field. The **zero-result** line names them too (`no
+  issues [filtered by label nope]` / `nothing is ready [filtered by …]`): a
+  typo'd value must not read as an empty backlog.
+- Facet values use the complete stored string domain. Even an empty or
+  control-only value remains exact-match queryable after a merge/import or an
+  older write; when sanitization removes the whole value, the human echo uses
+  `(empty after sanitization)` instead of a dangling clause. A *missing* value,
+  an unknown facet, or a facet given to the wrong verb is still the uniform
+  parser's `usage` error; the unknown-flag message names the command that *does*
+  take the flag (`tl ready --status` → "`tl list` takes it"), derived from the
+  grammar table so the hint cannot drift.
 
 Deliberately **not** in this surface:
 

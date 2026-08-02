@@ -312,8 +312,8 @@ with `Tl.Cli.Grammar.commandSpecs` by a build-gate test (`Tests.DocGrammarTests`
 adding or removing a verb or flag without updating the fenced block below fails
 the suite, so these docs cannot silently over-promise — or under-document — the
 grammar again. The narrative tables above are the *destination* surface and
-intentionally name not-yet-built verbs (`edit`, `ready
---assignee`); the block below is only what is wired today. It is machine-checked
+intentionally name not-yet-built verbs (`edit`); the block below is only what
+is wired today. It is machine-checked
 — edit it by hand only to mirror a real grammar change. Each line is a command
 key followed by its long flags; positionals and the global flags
 (`--json`/`--dir`/`--skip-bad`/`--color`/`--glyphs`/`--plain`, pinned separately
@@ -324,7 +324,7 @@ in `Tests.GrammarTests`) are omitted.
 init --stealth
 import --source --force --allow-large --max
 create --priority --blocked-by --blocks --parent --related --description --slug --actor
-ready --limit --sync
+ready --limit --sync --label --assignee
 claim --actor --sync --verify --steal --stale
 close --as --of --actor
 update --title --priority --description --slug --actor

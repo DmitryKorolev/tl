@@ -56,6 +56,25 @@ private def jKeys (j : Json) : List String :=
 private def run' (args : List String) : IO (Except Tl.Error CmdOut) :=
   (runVerb args).run
 
+private def parsedListFacetTests : List Outcome :=
+  match parseListFacets ["frontend"] ["me"] ["open"] ["2"] (some "1h") with
+  | .error error => [{
+      name := "parsed list facets retain their accepted raw values"
+      passed := false
+      msg := error.message }]
+  | .ok parsed =>
+    [ checkEq "parsed list facets retain labels" parsed.labels ["frontend"],
+      checkEq "parsed list facets retain assignees" parsed.assignees ["me"],
+      checkEq "parsed list facets retain status spellings" parsed.statusArgs ["open"],
+      checkEq "parsed list facets retain priority spellings" parsed.priorityArgs ["2"],
+      checkEq "parsed list facets retain the stale spelling" parsed.staleArg (some "1h"),
+      checkEq "parsed list facets pair status spellings with parsed statuses"
+        parsed.statuses [.Open],
+      checkEq "parsed list facets pair priority spellings with parsed priorities"
+        parsed.priorities [2],
+      checkEq "parsed list facets pair stale spelling with its duration"
+        parsed.staleWindow (some 3600000) ]
+
 private def expectData (name : String) (args : List String) (f : Json → Bool)
     (detail : Json → String := fun j => j.compress) : IO Outcome := do
   match ← run' args with
@@ -4609,6 +4628,27 @@ def cliListBlockedTests : IO (List Outcome) := do
         ((out.human.splitOn "filtered by blocked").length > 1) out.human)
     | .error e => pure { name := "list --blocked human", passed := false, msg := e.message })
   o := o ++ [humanRow]
+  -- a zero-result gate-bypassing facet must not read as an empty backlog: with
+  -- issues present but none deferred/stale, the empty line names the facet
+  let dir3 ← freshDir
+  let _ ← mkIssue dir3 "plain"
+  let deferredEmpty ← (match ← run' ["list", "--deferred", "--flat", "--dir", dir3] with
+    | .ok out => pure (check "list --deferred with no matches names the facet"
+        ((out.human.splitOn "filtered by deferred").length > 1) out.human)
+    | .error e => pure { name := "list --deferred human", passed := false, msg := e.message })
+  let staleEmpty ← (match ← run' ["list", "--stale", "1h", "--flat", "--dir", dir3] with
+    | .ok out => pure (check "list --stale with no matches names the facet and window"
+        ((out.human.splitOn "filtered by stale 1h").length > 1) out.human)
+    | .error e => pure { name := "list --stale human", passed := false, msg := e.message })
+  -- and a facet that DID match keeps its distinctive headline unduplicated
+  let dfr ← mkIssue dir3 "deferred one"
+  let _ ← run' ["defer", "tl-" ++ dfr, "--until", "2099-01-01", "--dir", dir3, "--actor", "t"]
+  let deferredHit ← (match ← run' ["list", "--deferred", "--flat", "--dir", dir3] with
+    | .ok out => pure (check "a matching --deferred headline does not repeat the facet"
+        ((out.human.splitOn "deferred until a future time").length > 1
+          && (out.human.splitOn "filtered by deferred").length == 1) out.human)
+    | .error e => pure { name := "list --deferred hit human", passed := false, msg := e.message })
+  o := o ++ [deferredEmpty, staleEmpty, deferredHit]
   return o
 
 /-- Cross-facet composition (ADR-0020: different facets compose with
@@ -4640,6 +4680,295 @@ def cliListFacetComposeTests : IO (List Outcome) := do
     (fun j => jNat j "count" == some 1
       && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ld))
       && !(jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ ud)))]
+  return o
+
+/-- `tl ready --label` / `--assignee` (ADR-0020): the same two facets `list`
+    takes, over the ranked workable set — shared predicates (`labelFacet` /
+    `assigneeFacet`), shared `[filtered by …]` echo, `count` the post-filter
+    total, and no facet able to widen past `readyFast`'s workable set. -/
+def cliReadyFacetTests : IO (List Outcome) := do
+  let mut o : List Outcome := []
+  -- --label: filters to carriers, AND across repeats, and leaves the ranking
+  let dir ← freshDir
+  let dirEmpty ← freshDir   -- an initialized project with no issues at all
+  let a ← mkIssue dir "alpha" ["-p", "0"]
+  let b ← mkIssue dir "beta"
+  let _ ← mkIssue dir "gamma"
+  let _ ← run' ["label", "add", "tl-" ++ a, "feature", "--dir", dir, "--actor", "t"]
+  let _ ← run' ["label", "add", "tl-" ++ a, "parser", "--dir", dir, "--actor", "t"]
+  let _ ← run' ["label", "add", "tl-" ++ b, "feature", "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "ready --label filters to carriers"
+    ["ready", "--label", "feature", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2
+      && (jArr j "items").all (fun r =>
+            jStr r "id" == some ("tl-" ++ a) || jStr r "id" == some ("tl-" ++ b)))]
+  o := o ++ [← expectData "ready --label is AND across repeats"
+    ["ready", "--label", "feature", "--label", "parser", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ a)))]
+  o := o ++ [← expectData "ready --label keeps the ranked order (p0 first)"
+    ["ready", "--label", "feature", "--dir", dir, "--json"]
+    (fun j => ((jArr j "items").head?.bind (fun r => jStr r "id")) == some ("tl-" ++ a))]
+  -- `count` is the post-filter total and `--limit` caps only `items` (the
+  -- list-payload discipline: truncation is disclosed, never silent)
+  o := o ++ [← expectData "ready --label count is the post-filter total; --limit caps items only"
+    ["ready", "--label", "feature", "--limit", "1", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2 && (jArr j "items").length == 1)]
+  -- `staleness` describes the view, not the result set: still present under a facet
+  o := o ++ [← expectData "ready --label still carries the staleness field"
+    ["ready", "--label", "feature", "--dir", dir, "--json"]
+    (fun j => (jGet j "staleness").isSome)]
+  -- the human summary names the active filters, and a no-match run says so
+  -- rather than a bare "nothing is ready" (the filter, not the backlog, is empty)
+  o := o ++ [← (match ← run' ["ready", "--label", "feature", "--dir", dir] with
+    | .ok out => pure (check "ready --label human summary names the facet"
+        ((out.human.splitOn "filtered by label feature").length > 1) out.human)
+    | .error e => pure { name := "ready --label human", passed := false, msg := e.message })]
+  o := o ++ [← (match ← run' ["ready", "--label", "nosuch", "--dir", dir] with
+    | .ok out => pure (check "ready with no facet match names the filter in the empty line"
+        ((out.human.splitOn "nothing is ready [filtered by label nosuch]").length > 1) out.human)
+    | .error e => pure { name := "ready empty facet human", passed := false, msg := e.message })]
+  o := o ++ [← expectData "ready with no facet match is count 0, not the unfiltered set"
+    ["ready", "--label", "nosuch", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 0 && (jArr j "items").isEmpty)]
+  -- a facet cannot widen the workable set: a labeled issue that is blocked,
+  -- deferred, an epic, or in-progress stays out (readyFast's conjuncts hold first)
+  let dirW ← freshDir
+  let blocker ← mkIssue dirW "the blocker"
+  let blockedI ← mkIssue dirW "blocked carrier" ["--blocked-by", "tl-" ++ blocker]
+  let defI ← mkIssue dirW "deferred carrier"
+  let kid ← mkIssue dirW "the child"
+  let epic ← mkIssue dirW "epic carrier"
+  let progI ← mkIssue dirW "in-progress carrier"
+  for i in [blockedI, defI, epic, progI] do
+    let _ ← run' ["label", "add", "tl-" ++ i, "w", "--dir", dirW, "--actor", "t"]
+  let _ ← run' ["label", "add", "tl-" ++ blocker, "w", "--dir", dirW, "--actor", "t"]
+  let _ ← run' ["defer", "tl-" ++ defI, "--until", "2099-01-01", "--dir", dirW, "--actor", "t"]
+  let _ ← run' ["parent", "set", "tl-" ++ kid, "tl-" ++ epic, "--dir", dirW, "--actor", "t"]
+  let _ ← run' ["claim", "tl-" ++ progI, "--dir", dirW, "--actor", "t"]
+  o := o ++ [← expectData "ready --label cannot widen past readyFast (only the workable carrier)"
+    ["ready", "--label", "w", "--dir", dirW, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ blocker)))]
+  -- --assignee over the workable set. A claim sets in_progress (which `ready`
+  -- excludes), so the honest scenario is an OPEN issue that still carries an
+  -- assignee: seed a foreign `create` dated ahead (within the skew window), then
+  -- claim — the claim's lower-stamped status write loses while its assignee write
+  -- survives (the ADR-0013 partial win), leaving open + assigned = ready.
+  let dirA ← freshDir
+  let _ ← mkIssue dirA "warm the clock"    -- seeds the persisted HLC at wall-clock now
+  let paId := "aaaabbbbccccdd11"
+  let paHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirA / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create paId { title := some "SeededAhead" }) paHlc "2zzzzzzzzzzzz" "eve" ++ "\n")
+  let _ ← run' ["claim", "tl-" ++ paId, "--dir", dirA, "--actor", "carol"]
+  o := o ++ [← expectData "the partial-win target is open, assigned, and ready (test premise)"
+    ["show", "tl-" ++ paId, "--dir", dirA]
+    (fun j => jStr j "status" == some "open" && jStr j "assignee" == some "carol"
+      && jBool j "ready" == some true)]
+  o := o ++ [← expectData "ready --assignee keeps only the assigned workable issue"
+    ["ready", "--assignee", "carol", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ paId)))]
+  o := o ++ [← expectData "ready --assignee is exact and case-sensitive (Carol ≠ carol)"
+    ["ready", "--assignee", "Carol", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  o := o ++ [← expectData "ready --assignee is OR across repeats"
+    ["ready", "--assignee", "carol", "--assignee", "eve", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ paId)))]
+  o := o ++ [← expectData "ready --assignee skips the unassigned workable issue"
+    ["ready", "--assignee", "nobody", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  -- --label AND --assignee compose (different facets ⇒ AND)
+  let _ ← run' ["label", "add", "tl-" ++ paId, "z", "--dir", dirA, "--actor", "t"]
+  o := o ++ [← expectData "ready --label --assignee composes as AND (both hold)"
+    ["ready", "--label", "z", "--assignee", "carol", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 1)]
+  o := o ++ [← expectData "ready --label --assignee composes as AND (one fails ⇒ empty)"
+    ["ready", "--label", "z", "--assignee", "eve", "--dir", dirA, "--json"]
+    (fun j => jNat j "count" == some 0)]
+  -- `me` resolves through the same ambient actor chain the claim used (no
+  -- --actor on either side), and the human echo keeps the raw `me` token so no
+  -- identity/email reaches the headline
+  let dirM ← freshDir
+  let _ ← mkIssue dirM "warm the clock"
+  let meId := "aaaabbbbccccdd22"
+  let meHlc := ((← nowMs) + 60000) * 2 ^ 16
+  IO.FS.writeFile (System.FilePath.mk dirM / "log" / "2zzzzzzzzzzzz.jsonl")
+    (foreignLine (.create meId { title := some "SeededAhead" }) meHlc "2zzzzzzzzzzzz" "eve" ++ "\n")
+  let _ ← run' ["claim", "tl-" ++ meId, "--dir", dirM]
+  o := o ++ [← expectData "ready --assignee me resolves to the current actor"
+    ["ready", "--assignee", "me", "--dir", dirM, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ meId)))]
+  o := o ++ [← (match ← run' ["ready", "--assignee", "me", "--dir", dirM] with
+    | .ok out => pure (check "ready --assignee me echoes `me`, not the resolved actor"
+        ((out.human.splitOn "filtered by assignee me").length > 1) out.human)
+    | .error e => pure { name := "ready --assignee me human", passed := false, msg := e.message })]
+  -- the echoed values are untrusted free text: a control byte in a matched
+  -- assignee (and in a label) is stripped from the footer (Sanitize.lean contract)
+  let esc := Char.ofNat 27
+  let evil := String.ofList [esc, 'r', 'e', 'd']
+  o := o ++ [← (match ← run' ["ready", "--assignee", evil, "--label", evil, "--dir", dirM] with
+    | .ok out => pure (check "ready strips control bytes from the echoed facet values"
+        (!out.human.toList.contains esc) out.human)
+    | .error e => pure { name := "ready facet sanitize", passed := false, msg := e.message })]
+  -- the grammar scopes the facets: `ready` takes these two and no more, and the
+  -- refusal TEACHES where the withheld facet lives (`tl list` takes it) rather
+  -- than only reporting an unknown flag — the hint is derived from the grammar
+  -- table (`commandsWithFlag`), so it cannot drift from the real surface
+  let facetElsewhere := fun (e : Tl.Error) =>
+    (e.message.splitOn "`tl list`").length > 1 && (e.message.splitOn "ready").length > 1
+  o := o ++ [← expectErr "ready rejects a list-only facet (--status), naming tl list"
+    ["ready", "--status", "open", "--dir", dir] .usage facetElsewhere]
+  o := o ++ [← expectErr "ready rejects a list-only facet (--priority), naming tl list"
+    ["ready", "--priority", "0", "--dir", dir] .usage facetElsewhere]
+  o := o ++ [← expectErr "ready rejects a list-only facet (--blocked), naming tl list"
+    ["ready", "--blocked", "--dir", dir] .usage facetElsewhere]
+  -- `--all` is shared by two other commands, so this pins the plural hint arm
+  -- (`take it`, not the single-destination `takes it`).
+  o := o ++ [← expectErr "an unknown flag shared by multiple commands names every destination"
+    ["ready", "--all", "--dir", dir] .usage
+    (fun e => e.message.contains "`tl list` / `tl note list` take it")]
+  o := o ++ [← expectErr "a widely shared unknown flag bounds its destination hint"
+    ["ready", "--actor", "alice", "--dir", dir] .usage
+    (fun e => e.message.contains "more commands" && e.message.length < 300)]
+  -- a flag no command takes falls back to `tl help <verb>`, still naming the verb
+  o := o ++ [← expectErr "an entirely unknown flag names the verb and its help"
+    ["ready", "--nosuchflag", "--dir", dir] .usage
+    (fun e => (e.message.splitOn "tl help ready").length > 1)]
+  -- on a two-token verb the hint must name the help TOPIC: `help` takes at most
+  -- one name, so `tl help dep add` would itself be a usage error
+  o := o ++ [← expectErr "an unknown flag on a two-token verb names a help command that works"
+    ["dep", "add", "tl-aaaaaaaaaaaaaaaa", "tl-bbbbbbbbbbbbbbbb", "--nosuchflag", "--dir", dir]
+    .usage (fun e => (e.message.splitOn "tl help dep`").length > 1)]
+  o := o ++ [← expectData "the help command that hint names is itself valid"
+    ["help", "dep", "--json"] (fun _ => true)]
+  -- a boolean flag given a value is its own usage arm, distinct from unknown
+  o := o ++ [← expectErr "a boolean flag given as --flag=value says to pass it bare"
+    ["ready", "--json=true", "--dir", dir] .usage
+    (fun e => (e.message.splitOn "pass it bare").length > 1
+      && (e.message.splitOn "--json=true").length > 1)]
+  -- a missing facet value is the uniform parser's usage error, not a silent skip
+  o := o ++ [← expectErr "ready --label with no value is usage"
+    ["ready", "--dir", dir, "--label"] .usage]
+  o := o ++ [← expectErr "ready --assignee with no value is usage"
+    ["ready", "--dir", dir, "--assignee"] .usage]
+  -- Facets query the complete stored string domain. Values that sanitize to an
+  -- empty display remain exact-match filterable, and the human echo uses an
+  -- explicit placeholder rather than an ambiguous dangling clause.
+  let controlOnly := String.ofList [Char.ofNat 1]
+  let _ ← run' ["label", "add", "tl-" ++ a, controlOnly, "--dir", dir, "--actor", "t"]
+  o := o ++ [← expectData "a control-only label accepted by label add remains filterable"
+    ["ready", "--label", controlOnly, "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ a)))]
+  o := o ++ [← (match ← run' ["ready", "--label", controlOnly, "--dir", dir] with
+    | .ok out => pure (check "a sanitizer-empty label has a visible filter placeholder"
+        (out.human.contains "filtered by label (empty after sanitization)") out.human)
+    | .error e => pure { name := "sanitizer-empty label placeholder", passed := false, msg := e.message })]
+  o := o ++ [← (match ← run' ["ready", "--label", "", "--dir", dir] with
+    | .ok out => pure (check "an empty exact-match facet is accepted and visibly echoed"
+        (jNat out.data "count" == some 0
+          && out.human.contains "filtered by label (empty after sanitization)") out.human)
+    | .error e => pure { name := "empty exact-match facet", passed := false, msg := e.message })]
+
+  -- The actor write path accepts the same domain. Pin both write→filter
+  -- reachability and the nested claim.currentAssignee sanitizer on the claim and
+  -- show success payloads (the sibling issue.assignee was already sanitized).
+  let dirS ← freshDir
+  let controlId ← mkIssue dirS "control actor"
+  o := o ++ [← expectData "claim sanitizes a control-only currentAssignee"
+    ["claim", "tl-" ++ controlId, "--actor", controlOnly, "--dir", dirS, "--json"]
+    (fun j => ((jGet j "claim").bind (fun c => jStr c "currentAssignee")) == some "")]
+  o := o ++ [← expectData "show sanitizes a control-only currentAssignee"
+    ["show", "tl-" ++ controlId, "--dir", dirS, "--json"]
+    (fun j => ((jGet j "claim").bind (fun c => jStr c "currentAssignee")) == some "")]
+  o := o ++ [← expectData "a control-only actor accepted by claim remains filterable"
+    ["list", "--assignee", controlOnly, "--flat", "--dir", dirS, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ controlId)))]
+  o := o ++ [← (match ← run' ["list", "--assignee", controlOnly, "--flat", "--dir", dirS] with
+    | .ok out => pure (check "a sanitizer-empty assignee has a visible filter placeholder"
+        (out.human.contains "filtered by assignee (empty after sanitization)") out.human)
+    | .error e => pure { name := "sanitizer-empty assignee placeholder", passed := false, msg := e.message })]
+  let emptyActorId ← mkIssue dirS "empty actor"
+  let _ ← run' ["claim", "tl-" ++ emptyActorId, "--actor", "", "--dir", dirS]
+  o := o ++ [← expectData "an empty actor accepted by claim remains exact-match filterable"
+    ["list", "--assignee", "", "--flat", "--dir", dirS, "--json"]
+    (fun j => jNat j "count" == some 1
+      && (jArr j "items").any (fun r => jStr r "id" == some ("tl-" ++ emptyActorId)))]
+  let oversizedActor := String.ofList (List.replicate 2048 'a')
+  let oversizedId ← mkIssue dirS "oversized actor"
+  let boundedCurrent := fun (j : Json) =>
+    match (jGet j "claim").bind (fun c => jStr c "currentAssignee") with
+    | some value => value.utf8ByteSize < 1100 && value.contains "[truncated]"
+    | none => false
+  o := o ++ [← expectData "claim bounds an oversized currentAssignee"
+    ["claim", "tl-" ++ oversizedId, "--actor", oversizedActor, "--dir", dirS, "--json"]
+    boundedCurrent]
+  o := o ++ [← expectData "show bounds an oversized currentAssignee"
+    ["show", "tl-" ++ oversizedId, "--dir", dirS, "--json"] boundedCurrent]
+
+  -- Parsed list syntax still precedes `me` resolution and project discovery.
+  o := o ++ [← expectErr "list parses --stale before `me` resolution and project discovery"
+    ["list", "--assignee", "me", "--stale", "soon", "--dir", "/nonexistent/tl/dir"]
+    .usage (fun e => (e.message.splitOn "valid duration").length > 1)]
+  -- `--limit 0` means "all rows" under a facet too (the other arm of the cap)
+  o := o ++ [← expectData "ready --limit 0 with a facet returns every match"
+    ["ready", "--label", "feature", "--limit", "0", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2 && (jArr j "items").length == 2)]
+  -- the `--json` payload shape is exactly the pinned ready keys under a facet:
+  -- the filters are deliberately NOT echoed as a data field (ADR-0020), which
+  -- only an exact key-set pin can catch
+  o := o ++ [← expectData "ready --json keys under a facet are exactly count/items/staleness"
+    ["ready", "--label", "feature", "--dir", dir, "--json"]
+    (fun j => jKeys j == ["count", "items", "staleness"])]
+  -- `staleness` describes the VIEW, not the result set: it is byte-identical to
+  -- the unfiltered run's value, including when the facet empties the list
+  let stalenessOf := fun (args : List String) => do
+    match ← run' args with
+    | .ok out => pure (some ((jGet out.data "staleness").getD Json.null).compress)
+    | .error _ => pure none
+  let bare ← stalenessOf ["ready", "--dir", dir, "--json"]
+  let filtered ← stalenessOf ["ready", "--label", "feature", "--dir", dir, "--json"]
+  let emptied ← stalenessOf ["ready", "--label", "nosuch", "--dir", dir, "--json"]
+  o := o ++ [check "ready's staleness is unchanged by a facet (and by an empty result)"
+    (bare.isSome && bare == filtered && bare == emptied)
+    s!"bare={bare} filtered={filtered} emptied={emptied}"]
+  -- --sync composes with a facet: the advisory line still precedes the suffixed
+  -- summary, and a remote-less repo degrades to a note rather than failing
+  o := o ++ [← expectData "ready --sync with a facet still filters (best-effort sync)"
+    ["ready", "--sync", "--label", "feature", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2)]
+  -- `list`'s zero-result line names the filter too (parity with ready's empty
+  -- line): a typo'd value must not read as an empty backlog
+  o := o ++ [← (match ← run' ["list", "--label", "nosuch", "--flat", "--dir", dir] with
+    | .ok out => pure (check "list's no-match line names the filter (parity with ready)"
+        ((out.human.splitOn "no issues [filtered by label nosuch]").length > 1) out.human)
+    | .error e => pure { name := "list empty facet human", passed := false, msg := e.message })]
+  o := o ++ [← (match ← run' ["list", "--label", "nosuch", "--dir", dir] with
+    | .ok out => pure (check "the tree render's no-match line names the filter too"
+        ((out.human.splitOn "no issues [filtered by label nosuch]").length > 1) out.human)
+    | .error e => pure { name := "list tree empty facet human", passed := false, msg := e.message })]
+  o := o ++ [← (match ← run' ["list", "--flat", "--dir", dirEmpty] with
+    | .ok out => pure (check "an unfiltered empty list still says a bare `no issues`"
+        (out.human.trimAscii.toString == "no issues") out.human)
+    | .error e => pure { name := "list bare empty human", passed := false, msg := e.message })]
+  -- the assembled footer clause is bounded like every other rendered field: many
+  -- long repeats cannot compose an unbounded one-line summary (ADR-0014 bounds)
+  let long := String.ofList (List.replicate 900 'x')
+  let manyArgs := (List.replicate 40 ["--label", long]).flatten
+  o := o ++ [← (match ← run' (["ready", "--dir", dir] ++ manyArgs) with
+    | .ok out => pure (check "the [filtered by …] clause is byte-bounded, with the cut disclosed"
+        (out.human.utf8ByteSize < 4096 && (out.human.splitOn "truncated").length > 1)
+        s!"{out.human.utf8ByteSize} bytes")
+    | .error e => pure { name := "facet echo bound", passed := false, msg := e.message })]
+  -- the `--flag=value` form reaches the facets (the uniform parser, ADR-0020)
+  o := o ++ [← expectData "ready --label=value (the = form) works"
+    ["ready", "--label=feature", "--dir", dir, "--json"]
+    (fun j => jNat j "count" == some 2)]
   return o
 
 /-- `tl import` (ADR-0005) — the differential test: import the committed
@@ -5316,7 +5645,7 @@ def cliInitBoundaryTests : IO (List Outcome) := do
     IO.Process.setCurrentDir prev
 
 def cliTests : IO (List Outcome) := do
-  return (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
+  return parsedListFacetTests ++ (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
@@ -5329,6 +5658,6 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)
     ++ (← cliSyncFalseCleanTests) ++ (← cliLogSinceTests) ++ (← cliLogUntilTests) ++ (← cliLogTitleTests) ++ (← cliLogTimeTests) ++ (← cliDeferTests) ++ (← cliStealthTests) ++ (← cliListDeferredTests)
-    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliImportTests) ++ (← cliImportBoundsTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests) ++ (← cliGitEnvTests)
+    ++ (← cliListStatusTests) ++ (← cliListAssigneeTests) ++ (← cliListPriorityTests) ++ (← cliListBlockedTests) ++ (← cliListFacetComposeTests) ++ (← cliReadyFacetTests) ++ (← cliImportTests) ++ (← cliImportBoundsTests) ++ (← cliInitBoundaryTests) ++ (← cliShapePinTests) ++ (← cliBinaryTests) ++ (← cliGitEnvTests)
 
 end Tl.Tests

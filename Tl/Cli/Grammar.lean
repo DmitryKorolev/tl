@@ -53,6 +53,17 @@ private def actorFlag : FlagSpec :=
   { name := "actor", value := true,
     summary := "record this actor (else TL_ACTOR, then git user.email, then user@host)" }
 
+/-- `--label` / `--assignee`, shared verbatim by `list` and `ready` — the two
+    read surfaces take the same facets with the same semantics (ADR-0020), so
+    their help text comes from one place. -/
+private def labelFacetFlag : FlagSpec :=
+  { name := "label", value := true, repeatable := true,
+    summary := "only issues carrying this label (repeatable ⇒ all of them)" }
+
+private def assigneeFacetFlag : FlagSpec :=
+  { name := "assignee", value := true, repeatable := true,
+    summary := "only issues assigned to this actor (repeatable ⇒ OR); `me` is the current actor" }
+
 private def limitFlag : FlagSpec :=
   { name := "limit", value := true, summary := "max rows shown (default 50; 0 = all)" }
 
@@ -113,7 +124,8 @@ def commandSpecs : List CommandSpec :=
           { name := "slug", value := true, summary := "optional display handle (kebab-case, digits ok; not identity)" },
           actorFlag ] },
     { command := "ready", positionals := "",
-      summary := "ranked workable items: open, unblocked, non-epic, not deferred", flags := [limitFlag, syncFlag] },
+      summary := "ranked workable items: open, unblocked, non-epic, not deferred",
+      flags := [limitFlag, syncFlag, labelFacetFlag, assigneeFacetFlag] },
     { command := "claim", positionals := "<id>",
       summary := "take a ready item (refused with structured reasons otherwise); --steal takes over a stale claim",
       flags := [actorFlag, syncFlag, verifyFlag, stealFlag, staleFlag] },
@@ -169,16 +181,14 @@ def commandSpecs : List CommandSpec :=
                 { name := "all", value := false, summary := "include closed (done/cancelled) issues, not just open" },
                 { name := "flat", value := false,
                   summary := "one-line rows, oldest first, instead of the default hierarchy tree" },
-                { name := "label", value := true, repeatable := true,
-                  summary := "only issues carrying this label (repeatable ⇒ all of them)" },
+                labelFacetFlag,
                 { name := "stale", value := true,
                   summary := "only stale claims: in-progress, claimed longer ago than this window (e.g. 45m, 1h, 24h); no default" },
                 { name := "deferred", value := false,
                   summary := "only deferred issues: open with a deferUntil still in the future (ADR-0010)" },
                 { name := "status", value := true, repeatable := true,
                   summary := "only issues with this status: open | in_progress | done | cancelled (repeatable ⇒ OR; a named closed status self-includes)" },
-                { name := "assignee", value := true, repeatable := true,
-                  summary := "only issues assigned to this actor (repeatable ⇒ OR); `me` is the current actor" },
+                assigneeFacetFlag,
                 { name := "priority", value := true, repeatable := true,
                   summary := "only issues at this priority, 0–4 (repeatable ⇒ OR)" },
                 { name := "blocked", value := false,
@@ -231,6 +241,13 @@ def specOf (cmd : String) : Option CommandSpec := commandSpecs.find? (·.command
     subcommands of a group (`"dep"` → `dep add`/`dep remove`/`dep cycles`). -/
 def commandsMatching (name : String) : List CommandSpec :=
   commandSpecs.filter (fun c => c.command == name || c.command.startsWith (name ++ " "))
+
+/-- The commands that DO accept `flag` — the material for an unknown-flag
+    message that teaches where the flag lives instead of only saying it is
+    unknown (e.g. `--status` on `ready` → "`tl list` takes it"). Global flags are
+    accepted everywhere, so they never reach this. -/
+def commandsWithFlag (flag : String) : List String :=
+  (commandSpecs.filter (fun c => c.flags.any (·.name == flag))).map (·.command)
 
 /-- The value-flag names a command accepts (for the parser). -/
 def valFlagsOf (cmd : String) : List String :=

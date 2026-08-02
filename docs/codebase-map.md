@@ -361,8 +361,12 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   `--json` help schema (root-imported; GrammarTests covers it)
   Commands.lean         --   the stage-1 verbs + the agent-surface/ergonomics
                         --   verbs (reopen/stats/log, sync, label add/remove/list,
-                        --   parent set/remove reparenting, list --label facet);
-                        --   write guards run inside the
+                        --   parent set/remove reparenting); the read filter facets
+                        --   are shared between `ready` (--label/--assignee) and
+                        --   `list` (those plus --status/--priority/--blocked/
+                        --   --deferred/--stale) via labelFacet/assigneeFacet/
+                        --   applyFacets/filterSuffix, so the two surfaces cannot
+                        --   drift (ADR-0020); write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows. Each
                         --   write verb brackets transact via Sync.AutoSync

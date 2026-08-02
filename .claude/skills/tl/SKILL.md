@@ -49,7 +49,13 @@ tl help <command>  # one command (human)
 1. `tl ready --json` — the ranked queue of workable items (open, unblocked,
    non-epic, not deferred; epics and blocked items are excluded by
    construction). Take the top one. Use `--limit 0` to see all; the default
-   caps at 50 and discloses the total in `count`.
+   caps at 50 and discloses the total in `count`. `--label <l>` (repeatable ⇒
+   AND) narrows the queue to a lane; use an `owner:*` label to earmark open work.
+   `--assignee <name>` (repeatable ⇒ OR; `me` = the current actor) is narrower:
+   normal claims are already `in_progress` and therefore absent from `ready`, so
+   this finds only the rare open-but-assigned residue a merge can produce. Use
+   `tl list --assignee <name>` to find live claims. `count` reports the
+   post-filter total.
 2. `tl claim <id> --json` — take it. It succeeds only if the item is *still*
    ready; otherwise `not-claimable` with `reasons` (blockers / already claimed /
    epic / deferred / closed). On `not-claimable`, skip to the next ready item.
@@ -177,7 +183,8 @@ There is no `tl edit` yet. The
 **remote** sync leg is still explicit (`tl sync`); only the local-ref publish
 auto-runs (see Sharing). `tl defer <id> --until <date>/--for <dur>` and
 `tl undefer` (timed postponement, ADR-0010), `tl dep path`/`dep critical`,
-`tl label add/remove/list`, `tl list --label <l>`
-(repeatable ⇒ AND), `tl parent set/remove` (reparenting), and on-write
+`tl label add/remove/list`, `tl list`/`tl ready --label <l>`
+(repeatable ⇒ AND) and `--assignee <name>` (repeatable ⇒ OR),
+`tl parent set/remove` (reparenting), and on-write
 auto-sync of the local ref **are** available. `tl help --json` is always the
 authoritative list of what this binary actually supports.

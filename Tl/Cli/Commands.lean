@@ -256,7 +256,94 @@ def stalenessMsg (p : SyncPosture) (now : Nat) : Option String :=
       else if now - ms > syncStaleWindowMs then some s!"view may be stale — last synced {(now - ms) / 60000}m ago; run `tl sync`"
       else none
 
-def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync : Bool) : TlM CmdOut := do
+/-! ### Shared read filter facets (ADR-0020)
+
+`ready` and `list` take the same `--label`/`--assignee` facets with the same
+semantics, so the predicates and the echoed human clause live here once and
+both verbs call them — the two surfaces cannot drift. -/
+
+/-- One read filter facet (`--label`/`--deferred`/`--stale`/`--status`/
+    `--assignee`/`--priority`/`--blocked`): a predicate over the sorted set,
+    gated by whether the facet is even in play (`active` — an absent/empty
+    flag is a no-op, not a false-matching filter), plus whether a match on it
+    already licenses showing a closed/rolled-up issue. `applyFacets`/
+    `facetsBypassGate` fold a `List ListFacet` in place of what used to be one
+    hand-threaded `let sorted := if active then sorted.filter pred else
+    sorted` reassignment per facet, plus a separately-maintained gate
+    condition (`showAll || staleArg.isSome || deferred || …`) — a new facet is
+    one list entry, not two edits kept in sync only by a comment. -/
+structure ListFacet where
+  active : Bool
+  pred : IssueId → Bool
+  /-- `--deferred`/`--stale`/`--status` all select *into* the closed/rolled-up
+      set on purpose, so an active match there licenses standing down the
+      default effClosed gate; `--label`/`--assignee`/`--priority`/`--blocked`
+      only ever refine the existing open set, so they leave the gate standing
+      (`false`, the default). `ready` never consults this — its set is
+      workable-only by construction, so nothing there can bypass a gate. -/
+  bypassClosedGate : Bool := false
+
+/-- Every active facet's predicate, ANDed onto `sorted` (fold order doesn't
+    change the result, only which predicate runs first). -/
+def applyFacets (facets : List ListFacet) (sorted : List IssueId) : List IssueId :=
+  facets.foldl (fun acc f => if f.active then acc.filter f.pred else acc) sorted
+
+/-- Whether any active facet in the list licenses bypassing the default
+    effClosed gate. -/
+def facetsBypassGate (facets : List ListFacet) : Bool :=
+  facets.any (fun f => f.active && f.bypassClosedGate)
+
+/-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
+    labels — ADR-0020). Shared by `ready` and `list`. -/
+def labelFacet (v : View) (labels : List String) : ListFacet :=
+  { active := !labels.isEmpty
+    pred := fun i => labels.all (v.issueData i).labels.presentElements.contains }
+
+/-- `--assignee` (repeatable ⇒ **OR**, exact/case-sensitive: an identity is
+    discrete, not free text, and an issue holds one — ADR-0020). `targets` are
+    the already-`me`-resolved names. Shared by `ready` and `list`. -/
+def assigneeFacet (v : View) (targets : List String) : ListFacet :=
+  { active := !targets.isEmpty
+    pred := fun i => match (v.issueData i).assignee.value.getD none with
+      | some a => targets.contains a
+      | none => false }
+
+/-- `--assignee me` resolves to the ambient actor for the *filter*; the raw
+    tokens (including `me`) stay for the human echo (ADR-0013/ADR-0020). -/
+def resolveAssigneeTargets (assignees : List String) (meActor : Option String) : List String :=
+  assignees.map (fun t => if t == "me" then meActor.getD t else t)
+
+/-- The one representation used to echo a facet value. A raw value may be
+    entirely removed by the render sanitizer while still being a legitimate,
+    exact-match stored value (for example a control-only imported label or an
+    explicit actor). Keep that value filterable, but render a visible placeholder
+    rather than the ambiguous dangling `label ` / `assignee ` clause. -/
+def facetDisplayValue (value : String) : String :=
+  let shown := sanitizeSingle value
+  if shown.trimAscii.isEmpty then "(empty after sanitization)" else shown
+
+/-- The `[filtered by …]` clause appended to a read verb's human summary: a
+    stable clause order, each echoed value sanitized (the values are untrusted
+    free text — Tl/Cli/Sanitize.lean), and `me` echoed verbatim rather than
+    resolved. Empty when no filter is active. Shared by `ready` and `list` so
+    the two footers read alike.
+
+    The assembled clause runs through `sanitizeSingle` a second time: the
+    per-value pass bounds each value at 1 KiB, but a caller repeating a facet a
+    few hundred times would still compose a multi-hundred-KB one-line footer, so
+    the whole suffix carries the same 1 KiB bound (with the same inline
+    truncation disclosure) that every other rendered field and error message
+    does. The separators are plain ASCII, so re-sanitizing changes nothing else. -/
+def filterSuffix (clauses : List (String × List String)) (extras : List String) : String :=
+  let named := clauses.flatMap (fun (k, vs) =>
+    if vs.isEmpty then [] else
+      [s!"{k} {String.intercalate ", " (vs.map facetDisplayValue)}"])
+  let all := named ++ extras
+  if all.isEmpty then ""
+  else s!" [filtered by {sanitizeSingle (String.intercalate "; " all)}]"
+
+def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync : Bool)
+    (labels assignees : List String) (meActor : Option String) : TlM CmdOut := do
   let d ← discover dirOverride
   -- --sync reconciles first, best-effort: a read must not fail on a remote
   -- hiccup, so a sync error degrades to a note and the (still-useful) listing.
@@ -266,8 +353,16 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
     else pure []
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
-  let ranked := State.readyFast v.rollup v.state v.now
+  -- the proved workable set, then the read facets narrow it (ADR-0020: facets
+  -- change membership, never the shape). The ranking is preserved — `filter`
+  -- keeps order — so `count` stays the post-filter total and `items` the
+  -- ranked head of it. No facet here can bypass a closed gate: `readyFast`
+  -- already excludes closed/rolled-up issues, so `bypassClosedGate` is moot.
+  let facets : List ListFacet :=
+    [ labelFacet v labels, assigneeFacet v (resolveAssigneeTargets assignees meActor) ]
+  let ranked := applyFacets facets (State.readyFast v.rollup v.state v.now)
   let capped := if limit == 0 then ranked else ranked.take limit
+  let suffix := filterSuffix [("label", labels), ("assignee", assignees)] []
   -- staleness advisory (ADR-0011 §2): always derived from the posture after any
   -- --sync. A successful sync makes it clean (ahead 0, lastSync now ⇒ none); a
   -- failed --sync leaves genuine staleness, so it must still surface in
@@ -276,7 +371,9 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
   let r : Style → String := fun st =>
     (match advisory with | some a => st.paint "33" s!"({a})" ++ "\n" | none => "")
       ++ (listRender v capped ranked.length
-            s!"Ready: {ranked.length} issue(s) with no active blockers" "nothing is ready") st
+            s!"Ready: {ranked.length} issue(s) with no active blockers{suffix}"
+            (if suffix.isEmpty then "nothing is ready"
+             else s!"nothing is ready{suffix}")) st
   let data := (listPayload "items" ranked.length (capped.map (issueRow v))).setObjVal!
                 "staleness" (advisory.elim Json.null Json.str)
   return { data, human := r Style.plain, render := some r, notes := notes ++ syncNotes }
@@ -298,51 +395,49 @@ def parsePriorityValue (v : String) : Except Tl.Error Nat :=
       else .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
   | none => .error (.mk' .usage s!"--priority must be 0-4 (got '{sanitizeSingle v}')")
 
-/-- One `tl list` facet (`--label`/`--deferred`/`--stale`/`--status`/
-    `--assignee`/`--priority`/`--blocked`): a predicate over the sorted set,
-    gated by whether the facet is even in play (`active` — an absent/empty
-    flag is a no-op, not a false-matching filter), plus whether a match on it
-    already licenses showing a closed/rolled-up issue. `applyFacets`/
-    `facetsBypassGate` fold a `List ListFacet` in place of what used to be one
-    hand-threaded `let sorted := if active then sorted.filter pred else
-    sorted` reassignment per facet, plus a separately-maintained gate
-    condition (`showAll || staleArg.isSome || deferred || …`) — a new facet is
-    one list entry, not two edits kept in sync only by a comment. -/
-structure ListFacet where
-  active : Bool
-  pred : IssueId → Bool
-  /-- `--deferred`/`--stale`/`--status` all select *into* the closed/rolled-up
-      set on purpose, so an active match there licenses standing down the
-      default effClosed gate; `--label`/`--assignee`/`--priority`/`--blocked`
-      only ever refine the existing open set, so they leave the gate standing
-      (`false`, the default). -/
-  bypassClosedGate : Bool := false
+/-- The raw and parsed `list` facet values as one unfalsifiable pair. Construct
+    this before resolving `--assignee me` or discovering/loading a project, so
+    every malformed value is a `usage` error with zero actor, filesystem, or
+    log I/O while human rendering retains the exact accepted spellings. -/
+structure ParsedListFacets where
+  private mk ::
+  labels : List String
+  assignees : List String
+  statusArgs : List String
+  priorityArgs : List String
+  staleArg : Option String
+  statuses : List Status
+  priorities : List Nat
+  staleWindow : Option Nat
 
-/-- Every active facet's predicate, ANDed onto `sorted` (fold order doesn't
-    change the result, only which predicate runs first). -/
-def applyFacets (facets : List ListFacet) (sorted : List IssueId) : List IssueId :=
-  facets.foldl (fun acc f => if f.active then acc.filter f.pred else acc) sorted
-
-/-- Whether any active facet in the list licenses bypassing the default
-    effClosed gate. -/
-def facetsBypassGate (facets : List ListFacet) : Bool :=
-  facets.any (fun f => f.active && f.bypassClosedGate)
+def parseListFacets (labels assignees statuses priorities : List String)
+    (staleArg : Option String) : Except Tl.Error ParsedListFacets := do
+  let parsedStatuses ← statuses.mapM fun s => match statusOfWire? s with
+    | some st => pure st
+    | none => .error (.mk' .usage
+        s!"--status: '{sanitizeSingle s}' is not a status — use open, in_progress, done, or cancelled")
+  let parsedPriorities ← priorities.mapM parsePriorityValue
+  let staleWindow ← match staleArg with
+    | none => pure none
+    | some raw => match Time.parseDurationMs? raw with
+      | some window => pure (some window)
+      | none => .error (.mk' .usage
+          s!"--stale: '{sanitizeSingle raw}' is not a valid duration — use e.g. 45m, 1h, 24h")
+  return {
+    labels, assignees, statusArgs := statuses, priorityArgs := priorities,
+    staleArg, statuses := parsedStatuses, priorities := parsedPriorities, staleWindow }
 
 def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : Bool)
-    (labels : List String) (staleArg : Option String) (deferred : Bool)
-    (statuses assignees : List String) (meActor : Option String)
-    (priorities : List String) (blocked : Bool) : TlM CmdOut := do
-  -- validate the `--status`/`--priority` spellings BEFORE the (potentially large)
-  -- log fold, so a typo is rejected with zero I/O. The parsed forms feed the
-  -- filters and the closed-gate decision below.
-  let wantStatuses : List Status ← statuses.mapM (fun s => match statusOfWire? s with
-    | some st => pure st
-    | none => throw (.mk' .usage
-        s!"--status: '{sanitizeSingle s}' is not a status — use open, in_progress, done, or cancelled"))
-  let wantPriorities : List Nat ← priorities.mapM (fun p => MonadExcept.ofExcept (parsePriorityValue p))
+    (deferred : Bool) (meActor : Option String) (blocked : Bool)
+    (parsed : ParsedListFacets) : TlM CmdOut := do
+  -- `runVerb` parsed every facet before resolving `me`; this command therefore
+  -- begins its I/O only after the complete value grammar has succeeded.
+  let wantStatuses := parsed.statuses
+  let wantPriorities := parsed.priorities
+  let staleWindow := parsed.staleWindow
   -- `--assignee me` matches the resolved current actor; other names match verbatim.
   -- The raw `assignees` (incl. `me`) are kept for the human summary.
-  let assigneeTargets := assignees.map (fun t => if t == "me" then meActor.getD t else t)
+  let assigneeTargets := resolveAssigneeTargets parsed.assignees meActor
   let v ← loadView dirOverride skipBad
   let notes ← cleanReadNotes v
   -- every issue, oldest first; then by default hide effectively-closed
@@ -358,13 +453,6 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   let sorted := (v.present.map (fun i => (createdAt i, i)))
     |>.mergeSort (fun a b => decide (a.1 < b.1) || (a.1 == b.1 && decide (a.2 ≤ b.2)))
     |>.map (·.2)
-  -- `--stale <duration>` (mandatory arg, no default — ADR-0011): parse
-  -- the window up front, so the facet below need only read it.
-  let staleWindow : Option Nat ← match staleArg with
-    | none => pure none
-    | some raw => match Time.parseDurationMs? raw with
-      | some w => pure (some w)
-      | none => throw (.mk' .usage s!"--stale: '{sanitizeSingle raw}' is not a valid duration — use e.g. 45m, 1h, 24h")
   -- The seven `list` facets — `--label` (repeatable ⇒ AND), `--deferred`
   -- (ADR-0010: open with a still-future `deferUntil`, the `v.deferred` derived
   -- view — the exact complement of `ready`'s defer conjunct), `--stale`
@@ -383,8 +471,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- status, no effClosed gate) also lists, keeping the two surfaces in
   -- agreement (ADR-0013).
   let facets : List ListFacet :=
-    [ { active := !labels.isEmpty
-        pred := fun i => labels.all (v.issueData i).labels.presentElements.contains },
+    [ labelFacet v parsed.labels,
       { active := deferred, pred := v.deferred, bypassClosedGate := true },
       { active := staleWindow.isSome, bypassClosedGate := true
         pred := fun i => match staleWindow with
@@ -395,10 +482,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
                  | none => false },
       { active := !wantStatuses.isEmpty, bypassClosedGate := true
         pred := fun i => wantStatuses.contains (v.effStatus i) },
-      { active := !assigneeTargets.isEmpty
-        pred := fun i => match (v.issueData i).assignee.value.getD none with
-          | some a => assigneeTargets.contains a
-          | none => false },
+      assigneeFacet v assigneeTargets,
       { active := !wantPriorities.isEmpty
         pred := fun i => wantPriorities.contains (v.issueData i).priorityOf.val },
       { active := blocked, pred := v.blocked } ]
@@ -413,21 +497,29 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
   -- are preserved, with the filter clause appended to each.
   -- the values are untrusted (assignee/label are free text); sanitize every echoed
   -- token so no control/ANSI byte reaches the footer (Tl/Cli/Sanitize.lean contract)
-  let clause := fun (k : String) (vs : List String) =>
-    if vs.isEmpty then [] else [s!"{k} {String.intercalate ", " (vs.map sanitizeSingle)}"]
-  let filterClauses :=
-    clause "status" statuses ++ clause "label" labels ++ clause "assignee" assignees
-      ++ clause "priority" priorities ++ (if blocked then ["blocked"] else [])
-  let filterSuffix := if filterClauses.isEmpty then ""
-    else s!" [filtered by {String.intercalate "; " filterClauses}]"
+  let facets :=
+    [("status", parsed.statusArgs), ("label", parsed.labels),
+     ("assignee", parsed.assignees), ("priority", parsed.priorityArgs)]
+  let extras := if blocked then ["blocked"] else []
+  let suffix := filterSuffix facets extras
+  let anyFilter := !suffix.isEmpty
+  -- the zero-result line names the filter too (parity with `ready`): with a
+  -- typo'd facet value a bare "no issues" cannot be told apart from an empty
+  -- backlog, so the empty line says which filter produced nothing. It also
+  -- carries `--deferred`/`--stale`, which name themselves in the headlines
+  -- below but have no headline to appear in when nothing matched.
+  let emptySuffix := filterSuffix facets (extras ++
+    (if deferred then ["deferred"] else []) ++
+    parsed.staleArg.elim [] (fun window => [s!"stale {window}"]))
+  let emptyLine := if emptySuffix.isEmpty then "no issues" else s!"no issues{emptySuffix}"
   let summary :=
     if deferred then
-      s!"{visible.length} deferred issue(s) (open, deferred until a future time){filterSuffix}"
-    else if staleArg.isSome then
-      s!"{visible.length} stale claim(s) (in progress, older than the --stale window){filterSuffix}"
-    else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress){filterSuffix}"
-    else if !statuses.isEmpty then s!"{visible.length} issue(s){filterSuffix}"
-    else if !filterClauses.isEmpty then s!"{visible.length} open issue(s) ({inProg} in progress){filterSuffix}"
+      s!"{visible.length} deferred issue(s) (open, deferred until a future time){suffix}"
+    else if parsed.staleArg.isSome then
+      s!"{visible.length} stale claim(s) (in progress, older than the --stale window){suffix}"
+    else if showAll then s!"Total: {sorted.length} issues ({openN} open, {inProg} in progress){suffix}"
+    else if !parsed.statusArgs.isEmpty then s!"{visible.length} issue(s){suffix}"
+    else if anyFilter then s!"{visible.length} open issue(s) ({inProg} in progress){suffix}"
     else s!"{visible.length} open issues ({inProg} in progress) — --all includes closed"
   -- the --json data is the flat items array (the tree is a human browse mode
   -- only — ADR-0017 §2; a recursive JSON shape isn't pinned)
@@ -451,7 +543,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
       -- hides a non-matching child of a matching parent (review).
       let keep : IssueId → Bool := visSet.contains
       fun st =>
-        if roots.isEmpty then (if visible.isEmpty then "no issues" else "(no top-level issues)")
+        if roots.isEmpty then (if visible.isEmpty then emptyLine else "(no top-level issues)")
         else
           -- cap the rendered ROWS (issues, top-to-bottom), not the roots: a human
           -- asked for `limit` issues, not `limit` whole subtrees (capping roots
@@ -463,7 +555,7 @@ def cmdList (dirOverride : Option String) (limit : Nat) (tree showAll skipBad : 
           let shown := if limit == 0 then allLines else allLines.take limit
           String.intercalate "\n" shown
             ++ "\n" ++ footer st summary shown.length allLines.length
-    else listRender v capped visible.length summary "no issues"
+    else listRender v capped visible.length summary emptyLine
   return { data := listPayload "items" visible.length (capped.map (issueRow v))
            human := r Style.plain, render := some r, notes }
 
@@ -597,7 +689,7 @@ def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM 
   let data := match verdict with
     | some (outcome, current) => base.setObjVal! "claim" (Json.mkObj
         [("outcome", Json.str outcome.wire),
-         ("currentAssignee", current.elim Json.null Json.str)])
+         ("currentAssignee", current.elim Json.null (Json.str ∘ sanitizeSingle))])
     | none => base
   let r : Style → String := fun st => styledShow st v i (verdict.map (·.1))
   return { data, human := r Style.plain, render := some r, notes }
@@ -1274,7 +1366,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let echoOutcome : ClaimOutcome := if won then .won else .superseded
   let data := (issueObj vFinal i).setObjVal! "claim" (Json.mkObj
     [("outcome", Json.str echoOutcome.wire),
-     ("currentAssignee", current.elim Json.null Json.str)])
+     ("currentAssignee", current.elim Json.null (Json.str ∘ sanitizeSingle))])
   -- a takeover: --steal won an item that was *in progress* under a different
   -- holder (read from ctx.loaded, the pre-fold state). Gating on the pre-state
   -- being InProgress keeps the disclosure honest — a plain claim of a ready

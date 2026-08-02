@@ -36,10 +36,41 @@ end Argv
 private def usageErr (msg : String) : Tl.Error :=
   .mk' .usage (msg ++ " — see `tl help`")
 
+/-- Render a bounded list of commands that accept a flag. -/
+private def commandDestinations (commands : List String) (limit : Nat := 4) : String :=
+  let shown := commands.take limit
+  let remaining := commands.length - shown.length
+  let rendered := String.intercalate " / " (shown.map fun command => s!"`tl {command}`")
+  if remaining == 0 then rendered else s!"{rendered} / … and {remaining} more commands"
+
+/-- An unknown-flag `usage` error that teaches where the flag *does* live: the
+    verb it was given to, the commands that accept it (from the grammar table, so
+    the hint cannot drift), and `tl help <verb>` for the rest. This path matters
+    most for the read facets, which are deliberately split across `ready` and
+    `list` — `tl ready --status open` should name `tl list --status`, not just
+    report an unknown flag (ADR-0008: a message says what to do next). The help
+    command it names is the *topic* — `help` takes at most one name, so
+    a two-token verb like `dep add` must be offered as `tl help dep`, which
+    already lists every `dep *` subcommand's flags. -/
+private def unknownFlagErr (verb name : String) : Tl.Error :=
+  let where? := (commandsWithFlag name).filter (fun c => c != verb)
+  let topic := (verb.splitOn " ").headD verb
+  let onVerb := s!" on `tl {verb}`"
+  let hint := match where? with
+    | [] => s!"run `tl help {topic}` for the flags it takes"
+    | cs => s!"{commandDestinations cs} take" ++
+        (if cs.length == 1 then "s it" else " it") ++
+        s!"; `tl help {topic}` lists {topic}'s own flags"
+  -- `.mk'` directly, not `usageErr`: the hint already names the precise help
+  -- command, so the generic "see `tl help`" tail would just repeat it
+  .mk' .usage s!"unknown flag --{name}{onVerb} — {hint}"
+
 /-- Parse flags: `--name value`, `--name=value`, bare `--name` for booleans,
     `-p` as `--priority`. Unknown flags, and a repeated single-value flag,
-    are `usage` errors. -/
-def parseArgs (valFlags boolFlags repeatable : List String) : List String → Except Tl.Error Argv
+    are `usage` errors. `verb` only shapes those messages (it is the command the
+    flags were given to); the accepted-flag lists are the caller's. -/
+def parseArgs (valFlags boolFlags repeatable : List String) (verb : String) :
+    List String → Except Tl.Error Argv
   | args => go args {}
 where
   addVal (acc : Argv) (name value : String) : Except Tl.Error Argv :=
@@ -57,7 +88,9 @@ where
         | name :: rest1 :: restN =>
           let value := String.intercalate "=" (rest1 :: restN)
           if valFlags.contains name then do go rest (← addVal acc name value)
-          else .error (usageErr s!"unknown or non-value flag --{name}")
+          else if boolFlags.contains name then
+            .error (usageErr s!"--{name} is a boolean flag on `tl {verb}` — pass it bare (`--{name}`), not `--{name}={value}`")
+          else .error (unknownFlagErr verb name)
         | _ =>
           if valFlags.contains body then
             match rest with
@@ -67,7 +100,7 @@ where
             | [] => .error (usageErr s!"--{body} needs a value")
           else if boolFlags.contains body then
             go rest { acc with bools := acc.bools ++ [body] }
-          else .error (usageErr s!"unknown flag --{body}")
+          else .error (unknownFlagErr verb body)
       else
         go rest { acc with positionals := acc.positionals ++ [arg] }
 
@@ -114,6 +147,15 @@ private def noPositionals (a : Argv) (verb : String) : Except Tl.Error Unit :=
   if a.positionals.isEmpty then .ok ()
   else .error (usageErr s!"{verb} takes no positional arguments — got {a.positionals.length}")
 
+/-- The actor `--assignee me` resolves to on a read command, or `none` when no
+    `me` token was given. Resolution runs only when `me` is actually present, so
+    the other facets never touch git/env (ADR-0013): for a read filter `me` is the
+    *ambient* actor (`TL_ACTOR` → git config → `user@host`) — there is no
+    `--actor` write-provenance override on a read command. The raw tokens (incl.
+    `me`) stay with the caller for the human echo. Shared by `ready` and `list`. -/
+private def resolveMeActor (a : Argv) (assignees : List String) : TlM (Option String) :=
+  if assignees.contains "me" then (do let m ← actorOf a; pure (some m)) else pure none
+
 /-- Build the command outcome for an argv (the verb is the first token).
     Each arm's accepted flags come from the `Grammar` table via `parse`, so
     the parser, the human help, and the `--json` schema never drift. -/
@@ -124,7 +166,7 @@ def runVerb : List String → TlM CmdOut
     -- not hardcoded here (single source of truth, Tl/Cli/Grammar.lean)
     let parse (cmd : String) : TlM Argv :=
       MonadExcept.ofExcept (parseArgs (valFlagsOf cmd ++ globalVal) (boolFlagsOf cmd ++ globalBool)
-        (repeatableFlagsOf cmd) rest)
+        (repeatableFlagsOf cmd) cmd rest)
     match verb with
     | "help" | "--help" | "-h" => do
       let a ← parse "help"
@@ -184,21 +226,26 @@ def runVerb : List String → TlM CmdOut
       let a ← parse "ready"
       MonadExcept.ofExcept (noPositionals a "ready")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
+      let assignees := a.getAll "assignee"
+      let meActor ← resolveMeActor a assignees
       cmdReady (a.get? "dir") limit (a.has "skip-bad") (a.has "sync")
+        (a.getAll "label") assignees meActor
     | "list" => do
       let a ← parse "list"
       MonadExcept.ofExcept (noPositionals a "list")
       let limit ← MonadExcept.ofExcept (natFlag a "limit" 50)
-      -- `--assignee me` resolves to the current actor for the FILTER (ADR-0013),
-      -- while the raw tokens (incl. `me`) are kept for the human summary. Resolve
-      -- only when `me` is present, so the other facets never touch git/env. For a
-      -- read filter `me` is the ambient actor (TL_ACTOR / git / user@host) — there
-      -- is no `--actor` write-provenance override on a read command.
+      let labels := a.getAll "label"
+      let staleArg := a.get? "stale"
+      let statuses := a.getAll "status"
       let assignees := a.getAll "assignee"
-      let meActor ← if assignees.contains "me" then (do let m ← actorOf a; pure (some m)) else pure none
+      let priorities := a.getAll "priority"
+      -- Parse every facet before `me` consults git/env and before `cmdList`
+      -- discovers or folds the project. Syntax errors must remain zero-I/O.
+      let parsed ← MonadExcept.ofExcept
+        (parseListFacets labels assignees statuses priorities staleArg)
+      let meActor ← resolveMeActor a parsed.assignees
       cmdList (a.get? "dir") limit (!a.has "flat") (a.has "all") (a.has "skip-bad")
-        (a.getAll "label") (a.get? "stale") (a.has "deferred")
-        (a.getAll "status") assignees meActor (a.getAll "priority") (a.has "blocked")
+        (a.has "deferred") meActor (a.has "blocked") parsed
     | "log" => do
       let a ← parse "log"
       let idTok ← match a.positionals with
@@ -268,7 +315,7 @@ def runVerb : List String → TlM CmdOut
       -- usage errors can teach `tl note add` (ADR-0027)
       let a ← MonadExcept.ofExcept (parseArgs
         (valFlagsOf "update" ++ ["notes", "append-notes"] ++ globalVal)
-        (boolFlagsOf "update" ++ globalBool) (repeatableFlagsOf "update") rest)
+        (boolFlagsOf "update" ++ globalBool) (repeatableFlagsOf "update") "update" rest)
       let tok ← MonadExcept.ofExcept (onePositional a "update" "an issue id")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
@@ -277,12 +324,12 @@ def runVerb : List String → TlM CmdOut
     | "parent" => do
       match rest with
       | "set" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent set" ++ globalVal) (boolFlagsOf "parent set" ++ globalBool) (repeatableFlagsOf "parent set") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent set" ++ globalVal) (boolFlagsOf "parent set" ++ globalBool) (repeatableFlagsOf "parent set") "parent set" rest')
         match a.positionals with
         | [x, y] => cmdParentSet (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "parent set takes <id> <new-parent>")
       | "remove" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent remove" ++ globalVal) (boolFlagsOf "parent remove" ++ globalBool) (repeatableFlagsOf "parent remove") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "parent remove" ++ globalVal) (boolFlagsOf "parent remove" ++ globalBool) (repeatableFlagsOf "parent remove") "parent remove" rest')
         match a.positionals with
         | [x, y] => cmdParentRemove (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "parent remove takes <id> <parent>")
@@ -290,35 +337,35 @@ def runVerb : List String → TlM CmdOut
     | "dep" => do
       match rest with
       | "add" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep add" ++ globalVal) (boolFlagsOf "dep add" ++ globalBool) (repeatableFlagsOf "dep add") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep add" ++ globalVal) (boolFlagsOf "dep add" ++ globalBool) (repeatableFlagsOf "dep add") "dep add" rest')
         match a.positionals with
         | [x, y] => cmdDepAdd (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep add takes <id> <blocked-by>")
       | "remove" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep remove" ++ globalVal) (boolFlagsOf "dep remove" ++ globalBool) (repeatableFlagsOf "dep remove") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep remove" ++ globalVal) (boolFlagsOf "dep remove" ++ globalBool) (repeatableFlagsOf "dep remove") "dep remove" rest')
         match a.positionals with
         | [x, y] => cmdDepRemove (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep remove takes <id> <blocked-by>")
       | "cycles" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep cycles" ++ globalVal) (boolFlagsOf "dep cycles" ++ globalBool) (repeatableFlagsOf "dep cycles") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep cycles" ++ globalVal) (boolFlagsOf "dep cycles" ++ globalBool) (repeatableFlagsOf "dep cycles") "dep cycles" rest')
         MonadExcept.ofExcept (noPositionals a "dep cycles")
         cmdDepCycles (a.get? "dir") (a.has "skip-bad")
       | "critical" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep critical" ++ globalVal) (boolFlagsOf "dep critical" ++ globalBool) (repeatableFlagsOf "dep critical") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep critical" ++ globalVal) (boolFlagsOf "dep critical" ++ globalBool) (repeatableFlagsOf "dep critical") "dep critical" rest')
         MonadExcept.ofExcept (noPositionals a "dep critical")
         cmdDepCritical (a.get? "dir") (a.has "skip-bad")
       | "path" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep path" ++ globalVal) (boolFlagsOf "dep path" ++ globalBool) (repeatableFlagsOf "dep path") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep path" ++ globalVal) (boolFlagsOf "dep path" ++ globalBool) (repeatableFlagsOf "dep path") "dep path" rest')
         match a.positionals with
         | [x, y] => cmdDepPath (a.get? "dir") x y (a.has "skip-bad")
         | _ => throw (usageErr "dep path takes <id> <id>")
       | "relate" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep relate" ++ globalVal) (boolFlagsOf "dep relate" ++ globalBool) (repeatableFlagsOf "dep relate") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep relate" ++ globalVal) (boolFlagsOf "dep relate" ++ globalBool) (repeatableFlagsOf "dep relate") "dep relate" rest')
         match a.positionals with
         | [x, y] => cmdDepRelate (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep relate takes <id> <id>")
       | "unrelate" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep unrelate" ++ globalVal) (boolFlagsOf "dep unrelate" ++ globalBool) (repeatableFlagsOf "dep unrelate") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "dep unrelate" ++ globalVal) (boolFlagsOf "dep unrelate" ++ globalBool) (repeatableFlagsOf "dep unrelate") "dep unrelate" rest')
         match a.positionals with
         | [x, y] => cmdDepUnrelate (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "dep unrelate takes <id> <id>")
@@ -326,24 +373,24 @@ def runVerb : List String → TlM CmdOut
     | "label" => do
       match rest with
       | "add" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label add" ++ globalVal) (boolFlagsOf "label add" ++ globalBool) (repeatableFlagsOf "label add") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label add" ++ globalVal) (boolFlagsOf "label add" ++ globalBool) (repeatableFlagsOf "label add") "label add" rest')
         match a.positionals with
         | [x, y] => cmdLabelAdd (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "label add takes <id> <label>")
       | "remove" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label remove" ++ globalVal) (boolFlagsOf "label remove" ++ globalBool) (repeatableFlagsOf "label remove") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label remove" ++ globalVal) (boolFlagsOf "label remove" ++ globalBool) (repeatableFlagsOf "label remove") "label remove" rest')
         match a.positionals with
         | [x, y] => cmdLabelRemove (a.get? "dir") x y (← actorOf a)
         | _ => throw (usageErr "label remove takes <id> <label>")
       | "list" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label list" ++ globalVal) (boolFlagsOf "label list" ++ globalBool) (repeatableFlagsOf "label list") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "label list" ++ globalVal) (boolFlagsOf "label list" ++ globalBool) (repeatableFlagsOf "label list") "label list" rest')
         MonadExcept.ofExcept (noPositionals a "label list")
         cmdLabelList (a.get? "dir") (a.has "skip-bad")
       | _ => throw (usageErr "label takes add|remove|list")
     | "note" => do
       match rest with
       | "add" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note add" ++ globalVal) (boolFlagsOf "note add" ++ globalBool) (repeatableFlagsOf "note add") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note add" ++ globalVal) (boolFlagsOf "note add" ++ globalBool) (repeatableFlagsOf "note add") "note add" rest')
         match a.positionals with
         | [x, t] => do
           -- `-` reads the entry text from stdin (the `create` body convention);
@@ -357,12 +404,12 @@ def runVerb : List String → TlM CmdOut
           cmdNoteAdd (a.get? "dir") x text (← actorOf a)
         | _ => throw (usageErr "note add takes <id> <text> ('-' reads the text from stdin)")
       | "list" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note list" ++ globalVal) (boolFlagsOf "note list" ++ globalBool) (repeatableFlagsOf "note list") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note list" ++ globalVal) (boolFlagsOf "note list" ++ globalBool) (repeatableFlagsOf "note list") "note list" rest')
         match a.positionals with
         | [x] => cmdNoteList (a.get? "dir") x (a.has "all") (a.has "skip-bad")
         | _ => throw (usageErr "note list takes <id>")
       | "remove" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note remove" ++ globalVal) (boolFlagsOf "note remove" ++ globalBool) (repeatableFlagsOf "note remove") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note remove" ++ globalVal) (boolFlagsOf "note remove" ++ globalBool) (repeatableFlagsOf "note remove") "note remove" rest')
         match a.positionals with
         | [x, n] => cmdNoteRemove (a.get? "dir") x n (← actorOf a)
         | _ => throw (usageErr "note remove takes <id> <note-id>")
@@ -370,23 +417,23 @@ def runVerb : List String → TlM CmdOut
     | "meta" => do
       match rest with
       | "set" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta set" ++ globalVal) (boolFlagsOf "meta set" ++ globalBool) (repeatableFlagsOf "meta set") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta set" ++ globalVal) (boolFlagsOf "meta set" ++ globalBool) (repeatableFlagsOf "meta set") "meta set" rest')
         match a.positionals with
         | [x, k, val] => cmdMetaSet (a.get? "dir") x k val (← actorOf a)
         | _ => throw (usageErr "meta set takes <id> <key> <value>")
       | "get" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta get" ++ globalVal) (boolFlagsOf "meta get" ++ globalBool) (repeatableFlagsOf "meta get") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta get" ++ globalVal) (boolFlagsOf "meta get" ++ globalBool) (repeatableFlagsOf "meta get") "meta get" rest')
         match a.positionals with
         | [x] => cmdMetaGet (a.get? "dir") x none (a.has "skip-bad")
         | [x, k] => cmdMetaGet (a.get? "dir") x (some k) (a.has "skip-bad")
         | _ => throw (usageErr "meta get takes <id> [<key>]")
       | "clear" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta clear" ++ globalVal) (boolFlagsOf "meta clear" ++ globalBool) (repeatableFlagsOf "meta clear") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta clear" ++ globalVal) (boolFlagsOf "meta clear" ++ globalBool) (repeatableFlagsOf "meta clear") "meta clear" rest')
         match a.positionals with
         | [x, k] => cmdMetaClear (a.get? "dir") x k (← actorOf a)
         | _ => throw (usageErr "meta clear takes <id> <key>")
       | "list" :: rest' => do
-        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta list" ++ globalVal) (boolFlagsOf "meta list" ++ globalBool) (repeatableFlagsOf "meta list") rest')
+        let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "meta list" ++ globalVal) (boolFlagsOf "meta list" ++ globalBool) (repeatableFlagsOf "meta list") "meta list" rest')
         match a.positionals with
         | [] => cmdMetaList (a.get? "dir") none (a.has "skip-bad")
         | [x] => cmdMetaList (a.get? "dir") (some x) (a.has "skip-bad")
