@@ -212,6 +212,13 @@ distribution matrix is
 - **Sharing is sync-bounded.** A teammate on another clone sees your tasks
   after you sync and they sync (same-machine worktrees are absorbed on
   read, without an explicit sync).
+- **`.tl/` belongs on a local disk.** The write path needs working advisory
+  locks and atomic appends, and needs to be the only thing touching those
+  files. A network share (NFS/SMB, or a Windows drive from WSL), a FUSE mount,
+  or a folder driven by Dropbox/iCloud/OneDrive gives up one or both — you can
+  lose a recent write or duplicate a replica identity. `tl` does not check for
+  this; share by pushing to a remote instead, or point `--dir`/`TL_DIR` at a
+  local path.
 - **Acyclicity is reported, not enforced.** A CRDT merge cannot reject a
   write, so two locally-legal edits can form a dependency cycle. `ready`
   stays total and correct on cyclic graphs, and `tl dep cycles` reports the

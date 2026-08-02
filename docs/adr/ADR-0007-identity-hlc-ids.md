@@ -304,7 +304,8 @@ bound sits on every read. Its pinned form:
   (their OR-Set keys differ).
 - Replica-id uniqueness assumes a working copy is not byte-copied below git.
   A filesystem copy (`cp -r`, an image snapshot, a CI cache restoring
-  `.tl/local/`) duplicates the id into two live replicas. Convergence still
+  `.tl/local/`, a file-sync agent replicating the directory to a second machine
+  — ADR-0015 §8) duplicates the id into two live replicas. Convergence still
   holds (the per-op nonce keeps LWW total, and `tl`'s segment-union on sync
   absorbs same-named-segment appends, ADR-0001), so this is not a
   correctness break; it violates the single-writer-append *ownership* model and

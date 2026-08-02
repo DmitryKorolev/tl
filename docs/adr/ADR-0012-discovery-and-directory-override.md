@@ -20,7 +20,10 @@ an explicit `.tl` state directory and skips discovery. It is not the
 project root; callers that want a temp isolated state pass the temp `.tl` path
 itself. This is what isolated test harnesses and ephemeral/CI runs want — a temp
 dir, no repo, no walk-up. It composes with `--stealth` (override *and*
-unshared, ADR-0001) or stands alone.
+unshared, ADR-0001) or stands alone. It is also the escape hatch for a
+repository that lives somewhere the write path is unsafe — a network share, a
+FUSE mount, a sync-agent folder: point the override at a local disk path
+(ADR-0015 §8).
 
 If the override path does not exist, or exists but is not an initialized `.tl`
 state directory, ordinary commands fail with `no-project` (exit 3); they do

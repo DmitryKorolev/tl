@@ -421,9 +421,17 @@ still large), so it is not unbounded; the residual is the parser's recursion
 depth within a bounded line — a carried limitation, not a discharged property.
 
 Local filesystem (ADR-0015). `O_APPEND` / `FILE_APPEND_DATA` write-atomicity
-and working advisory locks are assumed on the local filesystem; a `.tl/`
-shared over a network FS (NFS/SMB) is documented-unsupported — convergence still
-holds via the per-op nonce, but ownership and HLC monotonicity do not. The Win32
+and working advisory locks are assumed on the local filesystem, and `tl` assumes
+the operator places `.tl/` where they hold. Three placements are
+documented-unsupported and deliberately *not* detected (ADR-0015 §8): a network
+filesystem (NFS/SMB/AFP/WebDAV/9p), where neither primitive is guaranteed; a
+FUSE mount, where both are delegated to a userspace process; and a directory
+driven by a file-sync agent (Dropbox, iCloud Drive, OneDrive), where the
+filesystem is local but another process rewrites files between invocations —
+including `.tl/local/replica`, which duplicates a replica id and breaks the
+ADR-0007 uniqueness assumption. In all three, convergence still holds via the
+per-op nonce; ownership, HLC monotonicity, and recent-write durability do not.
+The remedy is a local clone plus `git push`, or `--dir` / `TL_DIR`. The Win32
 bindings of these primitives (ADR-0015 §7) are best-effort on native Windows
 (our Tier-2, ADR-0006); WSL is the Supported Windows path.
 

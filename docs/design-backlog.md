@@ -29,12 +29,6 @@ forever-contract surface that freezes on first implementation.
   `GIT_DIR`/`GIT_WORK_TREE` is undefined; delegate to `git rev-parse
   --show-toplevel`/`--git-dir` and state the bare-repo policy. (ADR-0012 handles
   linked worktrees/submodules — each its own boundary.)
-- Network-FS behavior is undecided [low] — a `.tl/` on NFS/SMB is
-  "documented-unsupported" (convergence holds via the nonce; ownership + HLC
-  monotonicity do not), but no doc decides detect-and-warn vs silent-proceed.
-  Decide; if detect, give `doctor` (and optionally `init`) a best-effort FS-type
-  probe that *warns* (not a hard error, since convergence is unaffected) —
-  ADR-0015 + ADR-0011/doctor.
 
 ## Build & proof infra
 

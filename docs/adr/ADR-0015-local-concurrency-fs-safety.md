@@ -126,6 +126,43 @@ All log and local-file I/O is binary mode (no CRLF translation) on every
 platform, so the byte stream — and thus the round-trip and the HLC/id encodings
 (ADR-0008/0007) — is identical cross-platform.
 
+### 8. Storage placement is documented, not probed
+The primitives in §1–§2 hold on a local disk filesystem. `tl` states where
+`.tl/` may live and proceeds without checking: no filesystem-type probe, no
+warning row, no refusal. A supported `.tl/` sits on a local disk filesystem
+(APFS, HFS+, ext4, xfs, btrfs, NTFS via the native Windows path) that only this
+machine's processes write.
+
+Three placements are unsupported, for one reason each:
+
+- **A network filesystem** (NFS, SMB/CIFS, AFP, WebDAV, 9p — including a
+  Windows drive reached from WSL). Advisory locks may be absent or advisory in
+  name only, and `O_APPEND` is not atomic across the protocol, so §1 and §2
+  both lapse.
+- **A FUSE mount** (sshfs, rclone, gocryptfs, ntfs-3g). Whether locks and
+  atomic appends work is delegated to a userspace process: `flock` reaches the
+  filesystem only if it opts in, and append atomicity depends on its write
+  path. The mount may be backed by local disk, so this is not a network
+  question — the guarantees are simply unknown, which for a durability
+  primitive is the same as absent.
+- **A directory synchronized by a file-sync agent** (Dropbox, iCloud Drive,
+  OneDrive, Google Drive, and the like). The filesystem underneath is local and
+  the primitives hold, but a second process rewrites files between `tl`
+  invocations. It can revert an appended record, resurrect a compacted one, or
+  copy `.tl/local/replica` to another machine — which duplicates a replica id
+  and breaks the ADR-0007 uniqueness assumption that HLC ordering rests on.
+
+In every case convergence survives: the per-op nonce keeps LWW a function no
+matter how writes interleave (ADR-0007), so a damaged replica reconciles rather
+than poisoning the tracker. What lapses is local: claim ownership, HLC
+monotonicity, and durability of the most recent writes.
+
+The remedy is the same for all three — keep `.tl/` on a local disk clone and
+share through `git push` (ADR-0001), which is the designed transport and works
+across exactly the boundaries these placements attempt to shortcut. Where the
+repository itself must live on such a path, put the state directory elsewhere
+with `--dir` / `TL_DIR` (ADR-0012).
+
 ## Consequences
 
 - No lost or torn writes, no clock regression, and lock-free fast reads — the
@@ -134,11 +171,12 @@ platform, so the byte stream — and thus the round-trip and the HLC/id encoding
   replica's view, never a tracker-wide stall (ADR-0008 §corruption / ADR-0014
   T2).
 - Carried assumptions (overview.md Trusted): `O_APPEND`/`FILE_APPEND_DATA`
-  write-atomicity and working advisory locks on the local filesystem.
-  Network filesystems (NFS/SMB) may guarantee neither, so a `.tl/` shared over a
-  network FS is documented-unsupported (convergence still holds via the
-  nonce; ownership/monotonicity do not). Tier-3: tested where testable, trusted
-  at the boundary.
+  write-atomicity and working advisory locks on the local filesystem, and that
+  the operator honors the §8 placement rule. Unsupported placements are
+  documented-unsupported, not detected: a `.tl/` on a network filesystem, on
+  FUSE, or inside a sync-agent directory degrades silently (convergence still
+  holds via the nonce; ownership, HLC monotonicity, and recent-write durability
+  do not). Tier-3: tested where testable, trusted at the boundary.
 - Tier-2 shell, tested comprehensively: every branch — lock contention,
   crash-fragment close, torn-trailing-line skip, atomic-rename-under-read,
   push-window re-snapshot, symlink refusal — ships with per-platform tests
@@ -146,6 +184,31 @@ platform, so the byte stream — and thus the round-trip and the HLC/id encoding
 
 ## Alternatives considered
 
+- Detect the filesystem type and warn (`fstatfs` behind the ADR-0019 shim,
+  classified in pure Lean, surfaced as a `doctor` row and an `init` note).
+  Rejected for §8's silent-proceed. Three reasons, none of them the cost of the
+  code, which is small:
+  - **The classification table is unverifiable.** Linux reports `f_type` as a
+    magic number and Darwin reports an `f_fstypename` string that a FUSE mount
+    can override per-mount (`-o fstypename=`). No CI runner mounts NFS, SMB, 9p,
+    or vboxsf, so the table would ship as hand-copied constants that no gate can
+    check — a new tier-3 assumption bought in exchange for a warning, which
+    inverts the ADR-0004 trade.
+  - **It reports `ok` on the likeliest failure.** A sync-agent directory is
+    local disk and classifies clean; on current macOS a Dropbox path under
+    `~/Library/CloudStorage` resolves to the local APFS data volume and is
+    indistinguishable from any other local path. The check would clear the
+    placement most users actually reach for.
+  - **The honest verdict is mostly "unknown".** FUSE covers both remote and
+    local-disk backings, so it can only warn about uncertainty, and an unknown
+    type must default to warning or the table's gaps read as approval. A check
+    whose common answer is "cannot tell, move it anyway" is the §8 sentence with
+    a probe attached.
+
+  If it is ever built, §8 fixes the classes it must report and their messages:
+  the remedy is identical across all three, so the difference is confidence, not
+  advice. It would remain a `doctor` warning — never a refusal, since
+  convergence is unaffected and the operator may have accepted the trade.
 - A global lock around reads too. Rejected: needlessly serializes the hot
   read path; atomic append + atomic rename already give readers a consistent
   snapshot.
