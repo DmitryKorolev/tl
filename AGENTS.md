@@ -110,12 +110,13 @@ CI gates (mirror these locally before declaring done):
   tests for each documented branch/error path touched by the change, including
   each error code it can emit; do not rely on an unspecified
   coverage percentage.
-- Lints (e.g. no task-ID leakage; see "Artifacts" below).
-
-`.github/workflows/ci.yml` mechanizes these gates
-([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). One gap stays
-manual: the task-ID pattern and exclusions are not yet a pinned contract, so
-treat leakage as a review obligation rather than CI-enforced policy.
+`.github/workflows/ci.yml` mechanizes every gate above
+([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). One rule is **not**
+mechanized at all: no-task-ID-leakage in code and comments (see "Artifacts"
+below) has no CI step, not even an advisory one, because its pattern and
+exclusion set are not yet a pinned contract. It is a review obligation, and
+this list does not claim otherwise — a gate named here that CI does not run
+would be exactly the decay the trust verifier exists to prevent.
 
 If a change adds a proved claim to the docs/overview.md table, add a landmark
 theorem for it to `Tl.Verify.landmarkTheorems` in the same change; that list is
@@ -194,12 +195,20 @@ duplicating them here; this file is process, not spec.
 
 ## Artifacts must be human-readable
 
-Code, comments, and commit messages stand on their own for readers who
-don't have any tracker open. **Do not reference task-tracker IDs** in code,
-comments, or commit messages — describe the substance. (tl is *itself* a
-tracker; the temptation to cross-reference its own issue IDs into its own
-source is exactly the thing to resist.) Cross-references between
-code/docs/ADR anchors are fine; references into a tracker are not.
+Code and comments stand on their own for readers who don't have any tracker
+open. **Do not reference task-tracker IDs** in code or comments — describe the
+substance. (tl is *itself* a tracker; the temptation to cross-reference its own
+issue IDs into its own source is exactly the thing to resist.) Cross-references
+between code/docs/ADR anchors are fine; references into a tracker are not.
+
+**Commit messages are the exception, and task IDs there are welcome.** A commit
+message is metadata *about* a change rather than part of the artifact, it is
+already scoped to the repository's own history, and the traceability is useful:
+it is the one place a reader can cheaply ask "what was this for". A commit
+message must still explain its substance on its own — an ID is a supplement to
+that explanation, never a replacement for it. What stays out of commit messages
+is bookkeeping that decays: test counts, session or attribution trailers, and
+review-round narration.
 
 ## Commit incrementally
 

@@ -29,9 +29,14 @@ The graph is:
 1. `build-and-test` on Ubuntu and macOS;
 2. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
-The task-ID leakage check remains a manual review obligation until its pattern
-and legitimate examples have a recorded contract. It is not conflated with the
-trust boundary.
+There is no `lint` job. The earlier one existed to carry the source greps this
+ADR replaces, plus an advisory task-ID-leakage warning; removing the greps left
+nothing for it to run that a gate does not already cover. The task-ID leakage
+check is therefore not mechanized at all — not even advisory — until its pattern
+and legitimate examples have a recorded contract, and it applies to code and
+comments only: task IDs in commit messages are permitted and useful for
+traceability (AGENTS.md, "Artifacts must be human-readable"). It is a review
+obligation and is not conflated with the trust boundary.
 
 ### Warning-free build
 
