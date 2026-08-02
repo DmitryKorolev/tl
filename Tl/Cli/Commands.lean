@@ -293,6 +293,57 @@ def applyFacets (facets : List ListFacet) (sorted : List IssueId) : List IssueId
 def facetsBypassGate (facets : List ListFacet) : Bool :=
   facets.any (fun f => f.active && f.bypassClosedGate)
 
+/-! #### The facet algebra, proved
+
+The three claims the read verbs make about `applyFacets` — ADR-0020's "different
+facets compose with AND", the `ListFacet` docstring's "an absent/empty flag is a
+no-op, not a false-matching filter", and `cmdReady`'s "filter keeps order, so
+`count` stays the post-filter total and `items` the ranked head of it" — are
+properties of a pure total fold, so they are theorems here rather than sampled
+rows in the CLI suite (ADR-0004 tiering: prove what is provable). The cross-layer
+consequence follows: no facet can widen `ready`'s workable set. -/
+
+theorem applyFacets_nil (sorted : List IssueId) : applyFacets [] sorted = sorted := rfl
+
+theorem applyFacets_cons (f : ListFacet) (facets : List ListFacet) (sorted : List IssueId) :
+    applyFacets (f :: facets) sorted
+      = applyFacets facets (if f.active then sorted.filter f.pred else sorted) := rfl
+
+/-- **AND-composition, and no-op inactivity.** Membership after the fold is
+    membership before it conjoined with every *active* facet's predicate: the
+    facets compose with AND regardless of order, and an inactive facet
+    contributes nothing (rather than filtering everything out). -/
+theorem mem_applyFacets_iff (facets : List ListFacet) (sorted : List IssueId) (i : IssueId) :
+    i ∈ applyFacets facets sorted
+      ↔ i ∈ sorted ∧ ∀ f ∈ facets, f.active = true → f.pred i = true := by
+  induction facets generalizing sorted with
+  | nil =>
+    exact ⟨fun h => ⟨h, fun _ hf => nomatch hf⟩, fun h => h.1⟩
+  | cons f fs ih =>
+    rw [applyFacets_cons, ih]
+    by_cases hf : f.active = true
+    · rw [if_pos hf, List.mem_filter]
+      constructor
+      · intro h
+        obtain ⟨⟨hs, hp⟩, hrest⟩ := h
+        refine ⟨hs, fun g hg hga => ?_⟩
+        rcases List.mem_cons.mp hg with rfl | hg'
+        · exact hp
+        · exact hrest g hg' hga
+      · intro h
+        obtain ⟨hs, hall⟩ := h
+        exact ⟨⟨hs, hall f (List.mem_cons.mpr (Or.inl rfl)) hf⟩,
+          fun g hg hga => hall g (List.mem_cons.mpr (Or.inr hg)) hga⟩
+    · rw [if_neg hf]
+      constructor
+      · intro h
+        refine ⟨h.1, fun g hg hga => ?_⟩
+        rcases List.mem_cons.mp hg with rfl | hg'
+        · exact absurd hga hf
+        · exact h.2 g hg' hga
+      · intro h
+        exact ⟨h.1, fun g hg hga => h.2 g (List.mem_cons.mpr (Or.inr hg)) hga⟩
+
 /-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
     labels — ADR-0020). Shared by `ready` and `list`. -/
 def labelFacet (v : View) (labels : List String) : ListFacet :=
