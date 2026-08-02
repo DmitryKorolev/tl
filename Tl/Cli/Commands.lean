@@ -344,6 +344,30 @@ theorem mem_applyFacets_iff (facets : List ListFacet) (sorted : List IssueId) (i
       · intro h
         exact ⟨h.1, fun g hg hga => h.2 g (List.mem_cons.mpr (Or.inr hg)) hga⟩
 
+/-- **Order preservation.** The filtered list is a sublist of the input: facets
+    change membership only, never the order or the multiplicity of what
+    survives. This is what makes a read verb's post-filter list still the
+    *ranked* list — `cmdReady` reports `ranked.length` as the total and
+    `ranked.take limit` as its ranked head, both of which need the ranking to
+    survive the fold. -/
+theorem applyFacets_sublist (facets : List ListFacet) (sorted : List IssueId) :
+    (applyFacets facets sorted).Sublist sorted := by
+  induction facets generalizing sorted with
+  | nil => exact List.Sublist.refl sorted
+  | cons f fs ih =>
+    rw [applyFacets_cons]
+    by_cases hf : f.active = true
+    · rw [if_pos hf]
+      exact (ih (sorted.filter f.pred)).trans List.filter_sublist
+    · rw [if_neg hf]
+      exact ih sorted
+
+/-- Order preservation, in prefix form: the first `n` survivors are a sublist of
+    the input, so `--limit` returns the ranked head of the filtered set. -/
+theorem applyFacets_take_sublist (facets : List ListFacet) (sorted : List IssueId) (n : Nat) :
+    ((applyFacets facets sorted).take n).Sublist sorted :=
+  (List.take_sublist n _).trans (applyFacets_sublist facets sorted)
+
 /-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
     labels — ADR-0020). Shared by `ready` and `list`. -/
 def labelFacet (v : View) (labels : List String) : ListFacet :=
