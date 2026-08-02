@@ -368,6 +368,37 @@ theorem applyFacets_take_sublist (facets : List ListFacet) (sorted : List IssueI
     ((applyFacets facets sorted).take n).Sublist sorted :=
   (List.take_sublist n _).trans (applyFacets_sublist facets sorted)
 
+/-- The closed-gate bypass is exactly "some active facet selects into the closed
+    set" — the condition `cmdList` stands the default effClosed gate down on. An
+    inactive facet cannot license it, so an unused `--status`/`--stale`/
+    `--deferred` flag never widens the default open-set view. -/
+theorem facetsBypassGate_eq_true_iff (facets : List ListFacet) :
+    facetsBypassGate facets = true
+      ↔ ∃ f ∈ facets, f.active = true ∧ f.bypassClosedGate = true := by
+  simp only [facetsBypassGate, List.any_eq_true, Bool.and_eq_true]
+
+/-- **No facet can widen `ready`.** `cmdReady` folds its facets over the fast
+    workable queue; every survivor is still in the proved `ready` set. Composes
+    the AND-law above (a facet only ever removes) with the kernel's refinement
+    bridge `State.readyFast_eq`; `hrollup` is `loadView`'s construction of
+    `v.rollup` (`= v.state.effStatusAll`). -/
+theorem readyFacets_cannot_widen (facets : List ListFacet) (rollup : AMap IssueId Status)
+    (s : State) (now : Instant) (i : IssueId) (hrollup : rollup = s.effStatusAll)
+    (h : i ∈ applyFacets facets (State.readyFast rollup s now)) : i ∈ s.ready now := by
+  subst hrollup
+  rw [← State.readyFast_eq s now]
+  exact ((mem_applyFacets_iff facets _ i).mp h).1
+
+/-- The same bound read through `mem_ready_iff`: a facet survivor is a
+    materialized issue satisfying the full readiness predicate (open, non-epic,
+    non-deferred, every blocker discharged). A filtered `tl ready` row is never
+    a row `tl ready` could not have shown unfiltered. -/
+theorem readyFacets_isReady (facets : List ListFacet) (rollup : AMap IssueId Status)
+    (s : State) (now : Instant) (i : IssueId) (hrollup : rollup = s.effStatusAll)
+    (h : i ∈ applyFacets facets (State.readyFast rollup s now)) :
+    i ∈ s.presentIssues ∧ s.isReady now i = true :=
+  (mem_ready_iff s now i).mp (readyFacets_cannot_widen facets rollup s now i hrollup h)
+
 /-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
     labels — ADR-0020). Shared by `ready` and `list`. -/
 def labelFacet (v : View) (labels : List String) : ListFacet :=
