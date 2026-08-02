@@ -212,9 +212,7 @@ Tracker layer (over materialized state):
 7. Close-monotonicity. A single `close` (one `setFields` to a terminal
    status) only unblocks:
    `ready (apply s (close i)) now ⊇ ready s now \ {i}`. Forward progress is
-   structural. (`--cascade` epic-cancel, ADR-0003, is *several* such ops — each
-   individually monotonic, so the whole command is too; the theorem is about
-   the single op, not the cascade command.) Through the rollup channel:
+   structural. Through the rollup channel:
    closing `i` can change an ancestor epic `E`'s `effectiveStatus`, so the proof
    carries a lemma — *closing is monotone on every ancestor's `effectiveStatus`*:
    a child going closed moves `E` only toward `done` (a not-all-closed epic stays
@@ -337,6 +335,16 @@ proof:
 
 The TCB is therefore: the Lean kernel (and its checker), the file/JSONL
 I/O, git, and the system clock. Nothing else is trusted.
+
+That this boundary still holds is checked mechanically rather than
+remembered: `lake exe tlverify` inspects the compiled environments and fails if
+any first-party declaration is an axiom or reaches one beyond `propext` /
+`Classical.choice` / `Quot.sound`; it also independently replays stored
+declarations and their complete cross-package dependency cones from an empty
+environment through the kernel to detect unchecked insertion. Audited module
+initializers are not executed
+([ADR-0026](ADR-0026-continuous-integration.md)). Widening that allowance is
+the same decision as widening this section, and has to be made in both.
 
 ## Consequences
 

@@ -8,7 +8,7 @@
 > separate, tested shell.
 
 ```
-Tl.lean                 -- root module; imports everything below
+Tl.lean                 -- root module; imports everything under Tl/
 
 Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
                         -- assoc/idem — are proved per structure in each file,
@@ -422,13 +422,44 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class
   ImportsTests.lean     --   structural: every `.lean` under Tl/ is imported by the
                         --   root module (guards the "invisible to lake build" class)
+  VerifyTests.lean      --   trust-verifier report branches, exact source
+                        --   inventory/symlink/checkout boundaries, typed verdict
+                        --   evidence, import/supervisor policy, stored-body axiom
+                        --   propagation, and semantic replay
+  VerifyLoadedTests.lean --  real loaded-environment module/declaration selection,
+                        --   provenance, direct-import rows, replay closure, injected
+                        --   audit evidence, landmarks, and axiom observation wiring
   Main.lean             --   tltest entry point
+
+Verify/                 -- Lean-native trust gate: `lake exe tlverify`
+  Report.lean           --   typed semantic/gate evidence and pure policy decisions
+  Policy.lean           --   axiom allowance, ADR-0009 direct-import allowlist,
+                        --   and proved-claim landmarks
+  Environment.lean      --   typed audit layout (source paths carry their owning
+                        --   scope and derive both claims + expected modules),
+                        --   classified inventory, symlink boundaries,
+                        --   import/axiom inspection, kernel replay
+  Main.lean             --   dynamically loads production, tests, itself, and
+                        --   Lean tooling without initializers; worker verdict
+  Supervise.lean        --   the completion-marker protocol and the supervision
+                        --   decision applied to a spawned worker
+  Launcher.lean         --   minimal supervisor requiring the worker's final marker
+  TestLauncher.lean     --   distinct minimal launcher for the test-worker marker
+
+VerifyFixture/          -- compiled hostile-initializer fixture; never executed
+scripts/GenLicenses.lean -- executable Lean tooling, audited as a separate root
 ```
 
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Error`,
 `Tl/Format`, `Tl/Hash`, `Tl/Store` (+ `ffi/tlsys.c`), `Tl/Clock`, `Tl/Sync`,
-`Tl/Import`, `Tl/Cli` are the tested shell outside it. The efficiency tiering
+`Tl/Import`, `Tl/Cli` are the tested shell outside it. `Verify/` is the
+build-time mechanism that checks the proved tier's trust boundary and is
+itself inspected as a separate scope. It remains in the *tested* tier:
+`Verify/Report.lean` is pure decision logic, `Verify/Environment.lean` uses
+Lean's stored module and declaration data and replays declarations through the
+kernel, and `Tests/VerifyTests.lean` covers the policy branches and adversarial
+composition paths described above. The efficiency tiering
 that backs the proved tier (the `*Fast` refinements, `HashMapView`, and the
 ratio-asserted regression net) is recorded in
 [ADR-0023](adr/ADR-0023-efficiency-tiering-and-prevention.md) and

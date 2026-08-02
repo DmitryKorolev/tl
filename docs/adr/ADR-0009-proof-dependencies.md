@@ -60,14 +60,15 @@ already-proved convergence/frame/close theorems (`State`/`Op`/`Apply`/`Rollup`/
 to build fast off `batteries`; only the reachability/cardinality proof modules
 `import Mathlib` — `Reach.lean` and its dependents, which include the O(V+E)
 frontier engines `ReachBFS.lean` (`reachBFS`, the closure behind a `Std.HashSet`
-view) and `Path.lean` (the `dep path` parent-recording BFS). CI's lint gate
-enforces the *direct-import* face of this scope as an allowlist
+view) and `Path.lean` (the `dep path` parent-recording BFS). The Lean-native
+trust verifier enforces the *direct-import* face of this scope as an allowlist
 ([ADR-0026](ADR-0026-continuous-integration.md)): only `Reach.lean`,
 `ReachBFS.lean`, and `Path.lean` may write `import Mathlib` themselves — the
 other dependents receive Mathlib transitively through them and need no direct
-import. Adding a direct import elsewhere fails CI until the widening is both
-recorded here and added to the workflow's allowlist, in the same change. The tactic
-discipline (explicit `calc`/`cases`/named lemmas;
+import. Adding a direct import elsewhere fails `lake exe tlverify` until the
+widening is both recorded here and added to `importPolicy.mathlibModules` in
+`Verify/Policy.lean`, in the same change. The tactic discipline (explicit
+`calc`/`cases`/named lemmas;
 avoid `omega`/`decide`/`aesop`/bare-`simp` closers) still applies — Mathlib is
 used for its *lemmas*, not to license heavy automation. (One adjacent note:
 the Lake config is `lakefile.lean` (the ADR-0019 native shim needs custom
@@ -82,7 +83,7 @@ inside this ADR's recorded scope (a `Reach.lean` dependent). So the shipped
 fast definitions, and through them the CLI build cone, transitively import
 Mathlib. This is a build-structure widening only — Mathlib is used exclusively
 by the bridge proofs, the runtime semantics are pinned by the `*_eq` agreement
-theorems, and the axiom probes stay clean. Recorded here per the "do not widen
+theorems, and the Lean-native trust verifier stays clean. Recorded here per the "do not widen
 without recording" rule; if build times ever make it bite, the mechanical fix
 is splitting each fast module into a definition file (batteries-only) and a
 proof file (Mathlib zone), at the cost of some duplication of private helpers.

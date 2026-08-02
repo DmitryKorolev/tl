@@ -1,0 +1,556 @@
+/- Failure-path coverage for the Lean-native trust verifier. -/
+import Tests.Harness
+import Verify.Environment
+import Verify.Report
+import Verify.Supervise
+
+namespace Tl.Tests
+
+open Lean
+open Tl.Verify
+
+private def cfg : Config :=
+  { allowedAxioms := #[`propext, `Classical.choice, `Quot.sound] }
+
+private def okDecl (name : Name) (kind := DeclKind.other) : Decl :=
+  { name, «module» := `Tl.Kernel.Op, kind, axioms := #[`propext] }
+
+private def clean : Observation :=
+  { scope := "fixture"
+    localModules := #[`Tl, `Tl.Kernel.Op, `Main]
+    expectedModules := #[`Tl, `Tl.Kernel.Op, `Main]
+    decls := #[okDecl `a .theoremDecl, okDecl `b]
+    expectedLandmarks := #[`claimA]
+    landmarks := #[{ name := `claimA, kind? := some .theoremDecl }]
+    evidence := {
+      importErrors := #[]
+      replayError? := none
+      replayedConstants := 2
+      importEdges := 3 } }
+
+private def mentions (report : Report) (needle : String) : Bool :=
+  report.errors.any fun error => error.contains needle
+
+private def reportTests : List Outcome :=
+  let cleanReport := analyze cfg clean
+  let environmentFailure := analyze cfg {
+    clean with evidence := { clean.evidence with
+      replayError? := some "kernel replay rejected Bad.proof" } }
+  let missing := analyze cfg {
+    clean with expectedModules := clean.expectedModules.push `Tl.Kernel.Missing }
+  let unexpected := analyze cfg {
+    clean with localModules := clean.localModules.push `Tests.Accidental }
+  let absentLandmark := analyze cfg {
+    clean with landmarks := #[{ name := `claimA, kind? := none }] }
+  let changedLandmark := analyze cfg {
+    clean with landmarks := #[{ name := `claimA, kind? := some .other }] }
+  let duplicateLandmark := analyze cfg {
+    clean with
+      expectedLandmarks := clean.expectedLandmarks ++ clean.expectedLandmarks
+      landmarks := clean.landmarks ++ clean.landmarks }
+  let localAxiom := analyze cfg {
+    clean with decls := clean.decls.push {
+      name := `unproved
+      «module» := `Tl.Kernel.Op
+      kind := .axiomDecl
+      axioms := #[`unproved]
+    } }
+  let sorryDependency := analyze cfg {
+    clean with decls := clean.decls.push {
+      name := `unfinished
+      «module» := `Tl.Kernel.Op
+      kind := .theoremDecl
+      axioms := #[`propext, `sorryAx]
+    } }
+  let noDecls := analyze cfg { clean with decls := #[] }
+  let noReplay := analyze cfg { clean with evidence := { clean.evidence with
+    replayedConstants := 0 } }
+  let noImportEdges := analyze cfg { clean with evidence := { clean.evidence with
+    importEdges := 0 } }
+  let emptyScope := analyze cfg {
+    clean with localModules := #[], expectedModules := #[], decls := #[],
+               expectedLandmarks := #[], landmarks := #[],
+               evidence := { clean.evidence with replayedConstants := 0, importEdges := 0 } }
+  let truncated := analyze cfg {
+    clean with expectedModules := clean.expectedModules ++
+      (Array.range 25).map fun index => Name.mkSimple s!"Absent{index}" }
+  let axiomLandmark := analyze cfg {
+    clean with landmarks := #[{ name := `claimA, kind? := some .axiomDecl }] }
+  let droppedLandmarks := analyze cfg { clean with landmarks := #[] }
+  let customRemedy := analyze cfg {
+    clean with
+      localModules := clean.localModules.push `Verify.Helper
+      moduleRemedy := "edit the typed scope registry" }
+  let sentinelReports : AuditedReports := {
+    production := { errors := #["production sentinel"] }
+    tests := { errors := #["tests sentinel"] }
+    verifier := { errors := #["verifier sentinel"] }
+    supervisor := { errors := #["supervisor sentinel"] }
+    testSupervisor := { errors := #["test supervisor sentinel"] }
+    tooling := { errors := #["tooling sentinel"] } }
+  let gateErrors := ({ reports := sentinelReports
+                       inventoryErrors := #["inventory sentinel"]
+                       unclaimedSources := #["Bench"] } : GateEvidence).errors
+  [ checkEq "a clean observation has no findings" cleanReport.errors.size 0,
+    check "a scope that selected no declarations is not silently vacuous"
+      (mentions noDecls "no declarations were selected"),
+    check "a scope whose replay cone is empty is not silently vacuous"
+      (mentions noReplay "nothing reached independent replay validation"),
+    check "a scope whose stored import traversal read nothing is rejected"
+      (mentions noImportEdges "no direct import edges were read"),
+    check "vacuity guidance says the findings below cannot be trusted"
+      (mentions noDecls "vacuous"),
+    check "a named scope with no modules at all is rejected as vacuous"
+      (mentions emptyScope "imported no first-party modules"),
+    check "a long finding list keeps its first entries"
+      (mentions truncated "Absent0"),
+    check "a long finding list discloses the count it elided"
+      (mentions truncated "… and 5 more"),
+    check "a landmark degraded into an axiom is named as one"
+      (mentions axiomLandmark "is an axiom"),
+    check "dropping landmark observations cannot create an empty successful loop"
+      (mentions droppedLandmarks "did not preserve the policy list"),
+    check "a scope mismatch uses its scope-specific repair instruction"
+      (mentions customRemedy "edit the typed scope registry"),
+    checkEq "typed gate evidence retains all scope, inventory, and claim findings"
+      gateErrors.size 8,
+    check "typed gate evidence retains every named scope"
+      (["production", "tests", "verifier", "supervisor", "test supervisor", "tooling"].all fun scope =>
+        gateErrors.any (·.contains s!"{scope} sentinel")),
+    check "typed gate evidence retains inventory and unclaimed-source findings"
+      (gateErrors.any (·.contains "inventory sentinel") &&
+       gateErrors.any (·.contains "Bench")),
+    check "an environment/replay failure is retained"
+      (mentions environmentFailure "kernel replay rejected Bad.proof"),
+    check "an unimported source module is named" (mentions missing "Tl.Kernel.Missing"),
+    check "missing-source guidance says how to fix it" (mentions missing "Import every source"),
+    check "an unexpected cross-scope module is named"
+      (mentions unexpected "Tests.Accidental"),
+    check "an absent landmark is named" (mentions absentLandmark "claimA is absent"),
+    check "a changed landmark reports its actual kind"
+      (mentions changedLandmark "non-theorem declaration"),
+    check "a repeated landmark is rejected" (mentions duplicateLandmark "duplicate landmark"),
+    check "a first-party axiom is named" (mentions localAxiom "unproved"),
+    checkEq "an axiom is not also reported as depending on itself"
+      localAxiom.errors.size 1,
+    check "a transitive forbidden axiom is named" (mentions sorryDependency "sorryAx"),
+    check "a transitive forbidden axiom teaches the fix"
+      (mentions sorryDependency "Finish the proof") ]
+
+private def project : Std.HashSet Name :=
+  (#[`Tl.Kernel.Op, `Tl.Kernel.Reach, `Tl.Kernel.Ready] : Array Name).foldl (·.insert ·) ∅
+
+private def importTests : List Outcome :=
+  let violation := importViolations importPolicy "fixture" project
+    #[(`Tl.Kernel.Ready, #[`Init.Data.List, `Mathlib.Data.Finset.Card, `Tl.Kernel.Op])]
+  let allowlisted := importViolations importPolicy "fixture" project
+    #[(`Tl.Kernel.Reach, #[`Mathlib.Data.Finset.Card])]
+  let repackaged := importViolations importPolicy "fixture" project
+    #[(`Tl.Kernel.Ready, #[`Aesop.Frontend])]
+  let severalRows := importViolations importPolicy "fixture" project
+    #[(`Tl.Kernel.Ready, #[`Mathlib.Tactic]), (`Tl.Kernel.Op, #[`Qq.Macro])]
+  [ checkEq "a disallowed direct import yields exactly one finding" violation.size 1,
+    check "an ADR-0009 finding carries its audited scope"
+      (violation.any fun error => error.startsWith "trust verification (fixture):"),
+    check "the finding names both the importing and the imported module"
+      (violation.any fun error =>
+        error.contains "Tl.Kernel.Ready" && error.contains "Mathlib.Data.Finset.Card"),
+    check "the finding teaches the ADR-0009 fix"
+      (violation.any fun error => error.contains "amend ADR-0009"),
+    check "an allowlisted module's Mathlib import yields nothing" allowlisted.isEmpty,
+    checkEq "a Mathlib dependency package is a finding too" repackaged.size 1,
+    checkEq "every row is traversed, not just the first" severalRows.size 2,
+    check "no rows means no findings"
+      (importViolations importPolicy "fixture" project #[]).isEmpty ]
+
+private def policyTests : List Outcome :=
+  [ check "ordinary dependencies are unrestricted"
+      (directImportAllowed importPolicy `Tests.Main `Batteries.Data.List),
+    check "first-party dependencies are unrestricted"
+      (directImportAllowed importPolicy `Tests.Main `Tl.Kernel.Op true),
+    check "the three ADR-0009 modules may import Mathlib"
+      (directImportAllowed importPolicy `Tl.Kernel.Reach `Mathlib.Data.Finset.Card),
+    check "a direct Mathlib import elsewhere is rejected"
+      (!directImportAllowed importPolicy `Tl.Kernel.Ready `Mathlib.Data.Finset.Card),
+    check "a Mathlib dependency package cannot evade the package policy"
+      (!directImportAllowed importPolicy `Tl.Kernel.Ready `Aesop),
+    checkEq "the actual axiom allowance is pinned"
+      allowedAxioms #[`propext, `Classical.choice, `Quot.sound],
+    checkEq "the actual Mathlib-module allowance is pinned"
+      importPolicy.mathlibModules
+        #[`Tl.Kernel.Path, `Tl.Kernel.Reach, `Tl.Kernel.ReachBFS],
+    -- The landmark list is what stops the proved-claim set from quietly
+    -- shrinking, so retiring one must be a deliberate two-file edit rather
+    -- than a single deletion that leaves every gate green.
+    checkEq "the landmark set is pinned against a silent deletion"
+      landmarkTheorems #[
+        `Tl.Kernel.State.merge_comm,
+        `Tl.Kernel.State.merge_assoc,
+        `Tl.Kernel.State.merge_idem,
+        `Tl.Kernel.fold_eq_of_mem_iff,
+        `Tl.Kernel.fold_perm,
+        `Tl.Kernel.fold_append,
+        `Tl.Kernel.fold_append_self,
+        `Tl.Kernel.mem_ready_iff,
+        `Tl.Kernel.State.readyLe_total,
+        `Tl.Kernel.State.ready_sorted,
+        `Tl.Kernel.liveness,
+        `Tl.Kernel.deadlock_exists,
+        `Tl.Kernel.onCycle_kindSucc_iff,
+        `Tl.Kernel.onCycle_precSucc_iff,
+        `Tl.Kernel.State.sccWitnesses_same_witness_iff,
+        `Tl.Kernel.effectiveStatus_epic,
+        `Tl.Kernel.State.effStatusAux_epic_zero_ne_done,
+        `Tl.Kernel.invariant_apply,
+        `Tl.Kernel.close_cancel_monotone,
+        `Tl.Kernel.effectiveStatus_metaSet,
+        `Tl.Kernel.effectiveStatus_labelAdd,
+        `Tl.Kernel.le_apply,
+        `Tl.Kernel.fold_le_of_subset,
+        `Tl.Kernel.apply_idem,
+        `Tl.Kernel.ready_time_mono,
+        `Tl.Kernel.mem_why_iff,
+        `Tl.Kernel.State.mem_unblocks_iff,
+        `Tl.Kernel.claimWonB_iff,
+        `Tl.Kernel.claimWon_merge_iff,
+        `Tl.Clock.Skew.skew_converges,
+        `Tl.Kernel.foldFast_eq_fold,
+        `Tl.Kernel.State.readyFast_eq,
+        `Tl.Crdt.OrSet.presentElements_eq_ref,
+        `Tl.Crdt.OrSet.entryLive_eq_ref,
+        `Tl.Crdt.AssocList.ascending_of_sorted ] ]
+
+private def supervisorTests : List Outcome :=
+  [ check "status zero without the final marker is rejected"
+      (!completedSuccessfully verifierCompletionProtocol 0 ""),
+    check "the exact final marker with status zero is accepted"
+      (completedSuccessfully verifierCompletionProtocol 0
+        s!"diagnostic\n{verifierCompletionProtocol.marker}\n"),
+    check "a marker followed by later output is not final"
+      (!completedSuccessfully verifierCompletionProtocol 0
+        s!"{verifierCompletionProtocol.marker}\nlater work\n"),
+    check "a final marker cannot hide worker failure"
+      (!completedSuccessfully verifierCompletionProtocol 1
+        s!"{verifierCompletionProtocol.marker}\n"),
+    check "the test worker has a distinct accepted completion marker"
+      (completedSuccessfully testCompletionProtocol 0
+        s!"{testCompletionProtocol.marker}\n" &&
+       !completedSuccessfully verifierCompletionProtocol 0
+        s!"{testCompletionProtocol.marker}\n") ]
+
+/-- Run a supervision, capturing the streams it forwards so a passing test does
+    not print the gate's own failure diagnostics into the suite's output. -/
+private def superviseCapturedWith
+    (runWorker : System.FilePath → IO IO.Process.Output)
+    (protocol : CompletionProtocol)
+    (worker : System.FilePath) : IO (UInt32 × String × String) := do
+  let out ← IO.mkRef { : IO.FS.Stream.Buffer }
+  let err ← IO.mkRef { : IO.FS.Stream.Buffer }
+  let status ← IO.withStdout (IO.FS.Stream.ofBuffer out) <|
+    IO.withStderr (IO.FS.Stream.ofBuffer err) <|
+      superviseWorkerWith runWorker protocol worker
+  let stdout := String.fromUTF8! (← out.get).data
+  let stderr := String.fromUTF8! (← err.get).data
+  return (status, stdout, stderr)
+
+private def superviseCaptured (worker : System.FilePath) :
+    IO (UInt32 × String × String) :=
+  superviseCapturedWith (fun path => IO.Process.output { cmd := path.toString })
+    verifierCompletionProtocol worker
+
+/-- Drive the supervision decision against real worker processes, plus an
+    injected runner exception for the OS-error branch: the predicate above is
+    only load-bearing if it is still applied to a worker's exit code/stdout and
+    the worker's two diagnostic streams still reach the caller. -/
+private def superviseTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let stub (name body : String) : IO System.FilePath := do
+    let path := base / name
+    IO.FS.writeFile path s!"#!/bin/sh\n{body}\n"
+    let _ ← IO.Process.output { cmd := "chmod", args := #["+x", path.toString] }
+    return path
+  let (completed, completedOut, completedErr) ← superviseCaptured
+    (← stub "completed"
+      s!"echo worker-completed-stdout; echo worker-completed-stderr >&2; echo {verifierCompletionProtocol.marker}")
+  let (trailingOutput, _, trailingErr) ← superviseCaptured
+    (← stub "trailing"
+      s!"echo {verifierCompletionProtocol.marker}; echo later-work; exit 0")
+  let testCompletedWorker ← stub "test-completed" s!"echo {testCompletionProtocol.marker}"
+  let (testCompleted, _, _) ← superviseCapturedWith
+    (fun path => IO.Process.output { cmd := path.toString })
+    testCompletionProtocol testCompletedWorker
+  let (earlyExit, _, earlyErr) ←
+    superviseCaptured (← stub "early" "echo working; exit 0")
+  let (failedWithMarker, failedOut, failedErr) ← superviseCaptured
+    (← stub "failed"
+      s!"echo worker-failed-stdout; echo worker-failed-stderr >&2; echo {verifierCompletionProtocol.marker}; exit 1")
+  let (missing, _, missingErr) ← superviseCaptured (base / "absent-worker")
+  let nonExecutable := base / "not-executable"
+  IO.FS.writeFile nonExecutable "not a process\n"
+  let (execFailure, _, execFailureErr) ← superviseCaptured nonExecutable
+  let spawnErrorWorker ← stub "spawn-error" "exit 0"
+  let (spawnError, _, spawnErrorText) ← superviseCapturedWith
+    (fun _ => throw (IO.userError "injected spawn failure"))
+    verifierCompletionProtocol spawnErrorWorker
+  IO.FS.removeDirAll base
+  return [
+    checkEq "a worker that completes and marks its verdict passes the gate" completed 0,
+    check "the supervisor forwards a successful worker's stdout"
+      (completedOut.contains "worker-completed-stdout"),
+    check "the supervisor forwards a successful worker's stderr"
+      (completedErr.contains "worker-completed-stderr"),
+    checkEq "a worker with output after its marker fails the gate" trailingOutput 1,
+    check "trailing work is diagnosed as an incomplete final verdict"
+      (trailingErr.contains "last nonempty stdout line"),
+    checkEq "the test completion protocol accepts a marked real worker" testCompleted 0,
+    checkEq "a worker that exits zero without the marker fails the gate" earlyExit 1,
+    check "an early exit is diagnosed as one" (earlyErr.contains "early-exit"),
+    checkEq "a marker cannot rescue a worker that failed" failedWithMarker 1,
+    check "the supervisor forwards a failed worker's stdout"
+      (failedOut.contains "worker-failed-stdout"),
+    check "the supervisor forwards a failed worker's stderr"
+      (failedErr.contains "worker-failed-stderr"),
+    check "a worker that exited non-zero is not diagnosed as an early exit"
+      (failedErr.contains "exited with status 1" && !failedErr.contains "early-exit"),
+    checkEq "a missing worker fails the gate" missing 1,
+    check "a missing worker names the path and how to build it"
+      (missingErr.contains "absent-worker" && missingErr.contains "lake build tlverify"),
+    checkEq "an existing but unexecutable worker fails the gate" execFailure 1,
+    check "a real exec failure teaches permissions and rebuild remedies"
+      (execFailureErr.contains "could not execute" &&
+       execFailureErr.contains "executable permission" &&
+       execFailureErr.contains "lake build tlverify"),
+    checkEq "a process-spawn exception fails the gate" spawnError 1,
+    check "a process-spawn exception names the path, cause, and rebuild action"
+      (spawnErrorText.contains "spawn-error" &&
+       spawnErrorText.contains "injected spawn failure" &&
+       spawnErrorText.contains "lake build tlverify")
+  ]
+
+private def inventoryScopeTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let targets ← IO.FS.createTempDir
+  let layout := { auditLayout with
+    sourceDirectories := #[
+      { scope := .production, path := "Tl", modulePrefix := `Tl },
+      { scope := .tests, path := "Tests", modulePrefix := `Tests }
+    ]
+    rootSources := #[
+      { scope := .production, path := "Tl.lean", module := `Tl },
+      { scope := .production, path := "Root.lean", module := `Root }
+    ] }
+  IO.FS.createDirAll (base / "Tl")
+  IO.FS.createDirAll (base / "docs")
+  IO.FS.createDirAll (base / "prose")
+  IO.FS.writeFile (base / "Tl" / "Op.lean") "def x := 1\n"
+  IO.FS.writeFile (base / "Tl.lean") "import Tl.Op\n"
+  IO.FS.writeFile (base / "lakefile.lean") "import Lake\n"
+  IO.FS.writeFile (base / "docs" / "notes.md") "prose, not a module\n"
+  let claimed ← unclaimedSources base layout
+  IO.FS.createDirAll (base / "Bench")
+  IO.FS.writeFile (base / "Bench" / "Sneaky.lean") "def y := 2\n"
+  IO.FS.writeFile (base / "Loose.lean") "def z := 3\n"
+  IO.FS.createDirAll (targets / "linked-directory")
+  IO.FS.writeFile (targets / "Linked.lean") "def linked := 4\n"
+  IO.FS.writeFile (targets / "notes.md") "not a Lean module\n"
+  let link (target path : System.FilePath) : IO Bool := do
+    let result ← IO.Process.output {
+      cmd := "ln", args := #["-s", target.toString, path.toString] }
+    return result.exitCode == 0
+  let directoryLink ← link (targets / "linked-directory") (base / "LinkedDirectory")
+  let leanLink ← link (targets / "Linked.lean") (base / "Linked.lean")
+  let danglingLeanLink ← link (targets / "absent.lean") (base / "Dangling.lean")
+  let danglingUnknownLink ← link (targets / "absent") (base / "DanglingUnknown")
+  let nonLeanLink ← link (targets / "notes.md") (base / "NOTES-link")
+  let nestedNonLeanLink ← link (targets / "notes.md") (base / "docs" / "NOTES-link")
+  let nestedDirectoryLink ← link (targets / "linked-directory") (base / "prose" / "vendor")
+  let claimedRootLink ← link (targets / "Linked.lean") (base / "Root.lean")
+  IO.FS.createDirAll (base / ".claude" / "worktrees" / "nested")
+  IO.FS.writeFile (base / ".claude" / "worktrees" / "nested" / ".git")
+    "gitdir: /tmp/example\n"
+  IO.FS.writeFile (base / ".claude" / "worktrees" / "nested" / "Foreign.lean")
+    "axiom foreign : False\n"
+  let unclaimed ← unclaimedSources base layout
+  let scopedLayout := { layout with
+    sourceDirectories := layout.sourceDirectories.push
+      { scope := .production, path := "Bench", modulePrefix := `Bench }
+    rootSources := layout.rootSources.push
+      { scope := .production, path := "Loose.lean", module := `Loose }
+      |>.push { scope := .verifier, path := "VerifierRoot.lean", module := `VerifierRoot } }
+  IO.FS.writeFile (base / "VerifierRoot.lean") "def verifierRoot := 5\n"
+  let scopedInventories ← collectSourceInventories base scopedLayout
+  let scopedExpected := scopedLayout.expectedSourceModules .production scopedInventories
+  let verifierExpected := scopedLayout.expectedSourceModules .verifier scopedInventories
+  let scopedUnclaimed ← unclaimedSources base scopedLayout
+  IO.FS.removeDirAll base
+  IO.FS.removeDirAll targets
+  return [
+    check "an all-claimed checkout reports nothing" claimed.isEmpty,
+    check "a new top-level directory of Lean sources is reported"
+      (unclaimed.contains "Bench"),
+    check "a new root-level Lean module is reported" (unclaimed.contains "Loose.lean"),
+    check "an unclaimed symlink to a directory is reported fail-closed"
+      (directoryLink && unclaimed.contains "LinkedDirectory"),
+    check "an unclaimed symlink named .lean is reported"
+      (leanLink && unclaimed.contains "Linked.lean"),
+    check "a dangling unclaimed .lean symlink is still reported"
+      (danglingLeanLink && unclaimed.contains "Dangling.lean"),
+    check "an unclassifiable dangling symlink is reported fail-closed"
+      (danglingUnknownLink && unclaimed.contains "DanglingUnknown"),
+    check "an unclaimed regular non-Lean symlink is ignored"
+      (nonLeanLink && !unclaimed.contains "NOTES-link"),
+    check "a nested regular non-Lean symlink does not abort source inventory"
+      (nestedNonLeanLink && !unclaimed.contains "docs"),
+    check "a nested directory symlink becomes a diagnosed source-location finding"
+      (nestedDirectoryLink && unclaimed.contains "prose"),
+    check "a claimed root Lean source must still be a regular file"
+      (claimedRootLink && unclaimed.contains "Root.lean"),
+    check "a nested checkout boundary is not inventoried as this package's source"
+      (!unclaimed.contains ".claude"),
+    check "a typed directory claim feeds its scope's expected module set"
+      (scopedExpected.contains `Bench.Sneaky),
+    check "a typed root-source claim feeds its scope's expected module set"
+      (scopedExpected.contains `Loose),
+    check "a verifier root-source claim feeds the verifier expected module set"
+      (verifierExpected.contains `VerifierRoot),
+    check "typed source entries derive the corresponding top-level claims"
+      (!scopedUnclaimed.contains "Bench" && !scopedUnclaimed.contains "Loose.lean" &&
+       !scopedUnclaimed.contains "VerifierRoot.lean"),
+    check "Lake configuration is exempt without masquerading as an audited root module"
+      (!layout.rootSources.any fun source => source.path == lakeConfigurationSource),
+    checkEq "nothing else is reported" unclaimed.size 8,
+    check "a directory carrying no Lean sources is not reported"
+      (!unclaimed.contains "docs")
+  ]
+
+private def inventoryTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let root := base / "inventory"
+  IO.FS.createDirAll (root / "Tl" / "Kernel")
+  IO.FS.createDirAll (root / ".hidden")
+  IO.FS.writeFile (root / "Tl" / "Kernel" / "Op.lean") "def x := 1\n"
+  IO.FS.writeFile (root / "Tl.lean") "import Tl.Kernel.Op\n"
+  IO.FS.writeFile (root / "lakefile.lean") "import Lake\n"
+  IO.FS.writeFile (root / "notes.txt") "not a Lean module\n"
+  IO.FS.writeFile (root / ".hidden" / "Canary.lean") "axiom hidden : False\n"
+  let inventory ← modulesUnder root
+  let foundRoot ← packageRoot? (root / "Tl" / "Kernel")
+  let noRoot ← packageRoot? (base / "no-package" / "nested")
+  let missingInventory ← modulesUnder (root / "missing")
+  let linkPath := root / "cycle"
+  let link ← IO.Process.output {
+    cmd := "ln", args := #["-s", root.toString, linkPath.toString] }
+  let danglingRootPath := root / "dangling-root"
+  let danglingRootLink ← IO.Process.output {
+    cmd := "ln", args := #["-s", (base / "absent-root").toString,
+      danglingRootPath.toString] }
+  let inventoryWithLink ← modulesUnder root
+  let symlinkRootInventory ← modulesUnder linkPath
+  let danglingRootInventory ← modulesUnder danglingRootPath
+  IO.FS.removeDirAll base
+  return [
+    check "inventory finds a nested module" (inventory.modules.contains `Tl.Kernel.Op),
+    check "inventory finds a root module" (inventory.modules.contains `Tl),
+    check "generic inventory includes Lake's Lean configuration"
+      (inventory.modules.contains `lakefile),
+    check "inventory does not hide dot-prefixed Lean sources"
+      (inventory.modules.any fun name => name.toString.contains "Canary"),
+    checkEq "inventory contains exactly the fixture Lean files" inventory.modules.size 4,
+    check "inventory classifies directory symlinks instead of throwing operationally"
+      (link.exitCode == 0 && inventoryWithLink.refusedSymlinks.contains linkPath.toString),
+    check "inventory classifies a symlinked root without following it"
+      (link.exitCode == 0 && symlinkRootInventory.refusedSymlinks.contains linkPath.toString),
+    check "inventory refuses a dangling symlink at the scope root"
+      (danglingRootLink.exitCode == 0 &&
+        danglingRootInventory.refusedSymlinks.contains danglingRootPath.toString),
+    checkEq "package root is found from a nested working directory" foundRoot (some root),
+    checkEq "package-root search reaches the filesystem root and fails closed" noRoot none,
+    check "a missing source directory yields an empty inventory"
+      (missingInventory.modules.isEmpty && missingInventory.refusedSymlinks.isEmpty),
+    check "path containment compares components, not string prefixes"
+      (!pathWithin "/repo/build" "/repo/build-other/Canary.olean"),
+    check "a nested olean is within its project library root"
+      (pathWithin "/repo/build" "/repo/build/Verify/Main.olean"),
+    checkEq "the verifier scope excludes every registered supervisor root"
+      (({ auditLayout with supervisorRoots :=
+          #[`Verify.Launcher, `Verify.SecondSupervisor] }).verifierScopeModules
+        #[`Verify.Main, `Verify.Launcher, `Verify.SecondSupervisor,
+          `Verify.TestLauncher, `Verify.Supervise])
+      #[`Verify.Main, `Verify.Supervise]
+  ]
+
+private def theoremInfo (name : Name) (type value : Expr) : ConstantInfo :=
+  .thmInfo { name := name, levelParams := [], type := type, value := value }
+
+private def axiomInfo (name : Name) (type : Expr) (isUnsafe := false) : ConstantInfo :=
+  .axiomInfo { name := name, levelParams := [], type, isUnsafe }
+
+private def mutualInductiveInfo : ConstantInfo :=
+  .inductInfo {
+    name := `VerifyFixture.Left
+    levelParams := []
+    type := .sort .zero
+    numParams := 0
+    numIndices := 0
+    all := [`VerifyFixture.Left, `VerifyFixture.Right]
+    ctors := []
+    numNested := 0
+    isRec := false
+    isUnsafe := false
+    isReflexive := false
+  }
+
+private def identityType : Expr :=
+  .forallE `p (.sort .zero)
+    (.forallE `h (.bvar 0) (.bvar 1) .default) .default
+
+private def validIdentity : Expr :=
+  .lam `p (.sort .zero) (.lam `h (.bvar 0) (.bvar 0) .default) .default
+
+private def invalidIdentity : Expr :=
+  .lam `p (.sort .zero) (.lam `h (.bvar 0) (.bvar 1) .default) .default
+
+private def replayTests : IO (List Outcome) := do
+  let base ← mkEmptyEnvironment
+  let valid := ({} : Std.HashMap Name ConstantInfo).insert `VerifyFixture.good
+    (theoremInfo `VerifyFixture.good identityType validIdentity)
+  let invalid := ({} : Std.HashMap Name ConstantInfo).insert `VerifyFixture.bad
+    (theoremInfo `VerifyFixture.bad identityType invalidIdentity)
+  let uncheckedDependency := invalid.insert `VerifyFixture.consumer
+    (theoremInfo `VerifyFixture.consumer identityType (.const `VerifyFixture.bad []))
+  let axiomDependency :=
+    (({} : Std.HashMap Name ConstantInfo).insert `External.assumption
+      (axiomInfo `External.assumption identityType)).insert `VerifyFixture.usesAssumption
+      (theoremInfo `VerifyFixture.usesAssumption identityType
+        (.const `External.assumption []))
+  let replayCountFixture :=
+    (({} : Std.HashMap Name ConstantInfo).insert `VerifyFixture.good
+      (theoremInfo `VerifyFixture.good identityType validIdentity)).insert
+      `VerifyFixture.unsafe (axiomInfo `VerifyFixture.unsafe identityType true)
+  let validError ← replayConstantsError? base valid
+  let invalidError ← replayConstantsError? base invalid
+  let dependencyError ← replayConstantsError? base uncheckedDependency
+  let propagated := propagatedAxioms axiomDependency
+  return [
+    check "kernel replay accepts a valid stored theorem" validError.isNone,
+    check "kernel replay rejects an unchecked ill-typed proof" invalidError.isSome
+      "the semantic replay must close the unchecked-insertion class",
+    check "kernel replay failure teaches the fix"
+      (invalidError.any fun error => error.contains "Remove any kernel-checking bypass"),
+    check "kernel replay rejects an unchecked external dependency artifact"
+      dependencyError.isSome,
+    check "replay dependencies include every mutual-inductive sibling"
+      ((replayDependencies mutualInductiveInfo).contains `VerifyFixture.Right),
+    checkEq "the replay count excludes constants the kernel replay skips"
+      (replayedConstantCount replayCountFixture) 1,
+    check "stored-body traversal finds a transitive external axiom"
+      ((propagated[`VerifyFixture.usesAssumption]?).any fun axioms =>
+        axioms.contains `External.assumption)
+  ]
+
+def verifyTests : IO (List Outcome) := do
+  return reportTests ++ importTests ++ policyTests ++ supervisorTests ++
+    (← superviseTests) ++ (← inventoryTests) ++ (← inventoryScopeTests) ++
+    (← replayTests)
+
+end Tl.Tests

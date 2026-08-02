@@ -20,10 +20,14 @@ import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
 import Tests.ImportsTests
+import Tests.VerifyTests
+import Tests.VerifyLoadedTests
+import Verify.Supervise
 
 open Tl.Tests
+open Tl.Verify
 
-def main : IO UInt32 := do
+unsafe def main : IO UInt32 := do
   -- the suite drives `performSync` in-process against temp remotes; the default
   -- sink would spray "syncing with remote 'origin'…" onto the runner's stderr.
   -- Silence it — the sink's wiring is asserted with a recording sink in
@@ -40,8 +44,12 @@ def main : IO UInt32 := do
   let perfPrim ← perfPrimitiveTests
   let perfBin ← perfBinaryTests
   let imports ← importsTests
-  runAll [
+  let verify ← verifyTests
+  let verifyLoaded ← verifyLoadedTests
+  let status ← runAll [
     ("Root module imports every Tl/ source (AGENTS.md)", imports),
+    ("Lean-native trust verification: policy, inventory, kernel replay", verify),
+    ("Lean-native trust verification: loaded environment selection", verifyLoaded),
     ("HLC update rules & encoding", hlcUnitTests),
     ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
     ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp),
@@ -69,3 +77,5 @@ def main : IO UInt32 := do
     ("Perf: native-primitive fast paths (String compare, content hash)", perfPrim),
     ("Perf: end-to-end compiled-binary latency on a scaled repo", perfBin)
   ]
+  if status == 0 then IO.println testCompletionProtocol.marker
+  return status

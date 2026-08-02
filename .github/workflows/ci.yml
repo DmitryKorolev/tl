@@ -23,68 +23,10 @@ defaults:
     shell: bash
 
 jobs:
-  # Fast source-level gates. These run in seconds, before any toolchain
-  # install, so a violation fails minutes — not tens of minutes — early.
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Mathlib import scope (ADR-0009 allowlist)
-        run: |
-          allowed='Tl/Kernel/Path.lean
-          Tl/Kernel/Reach.lean
-          Tl/Kernel/ReachBFS.lean'
-          hits=$(git grep -l '^import Mathlib' -- '*.lean' || true)
-          bad=$(comm -23 <(sort -u <<<"$hits") <(sort <<<"$allowed") | sed '/^$/d')
-          if [ -n "$bad" ]; then
-            echo "$bad"
-            echo "::error::direct 'import Mathlib' outside the ADR-0009 allowlist. Move the proof into the reachability/cardinality modules, prove it over batteries instead, or — for a genuine scope widening — record it in docs/adr/ADR-0009-proof-dependencies.md and add the file to this workflow's allowlist in the same change."
-            exit 1
-          fi
-
-      # `lake build --wfail` is the authority for sorry/admit (both warn);
-      # this grep only fails the same defect before the build starts.
-      - name: no sorry/admit under Tl/
-        run: |
-          if git grep -nE '(^|[^[:alnum:]_])(sorry|admit)($|[^[:alnum:]_])' -- 'Tl/*.lean' Tl.lean Main.lean; then
-            echo "::error::sorry/admit found in the verified cone. Finish the proof, or decompose it and record the residual as a carried assumption in docs/overview.md (never ship a hole). If this hit is prose in a comment, reword the comment."
-            exit 1
-          fi
-
-      # Axioms and kernel-bypassing evaluation compile without any warning, so
-      # --wfail cannot catch them: until a checked-in `#print axioms` probe
-      # closes the remaining holes (same-line attribute forms), this grep is
-      # the only CI net for the "no new axiom" gate. Hard by necessity.
-      - name: no new axiom / native_decide under Tl/
-        run: |
-          if git grep -nE '^[[:space:]]*(@\[[^]]*\][[:space:]]*)?((private|protected|noncomputable|unsafe)[[:space:]]+)*axiom([[:space:]]|$)' -- 'Tl/*.lean' Tl.lean Main.lean; then
-            echo "::error::axiom declaration found. The trust boundary is fixed by docs/overview.md; expanding it is a deliberate, recorded decision — state the residual as a carried assumption there instead of adding an axiom."
-            exit 1
-          fi
-          if git grep -nE '(^|[^[:alnum:]_])(native_decide|ofReduceBool|ofReduceNat)($|[^[:alnum:]_])|decide[[:space:]]+\+[[:space:]]*native' -- 'Tl/*.lean' Tl.lean Main.lean; then
-            echo "::error::native evaluation (native_decide / decide +native / the ofReduce* axioms) bypasses the Lean kernel and trusts the compiler instead. Use decide or an explicit proof term."
-            exit 1
-          fi
-
-      # Advisory until the regex and exclusion set are pinned by their own
-      # decision; the exclusions below are the files that legitimately
-      # embed full example ids today (test fixtures, schema examples, and
-      # the README's captured demo session).
-      - name: task-id leakage (advisory)
-        continue-on-error: true
-        run: |
-          if git grep -nE '(^|[^0-9a-zA-Z-])tl-[0-9a-z]{16}($|[^0-9a-z])' -- . ':(exclude)Tests/CliTests.lean' ':(exclude)docs/adr/ADR-0020-json-data-shapes.md' ':(exclude)README.md'; then
-            echo "::warning::possible task-tracker id in tracked sources — artifacts must stand on their own; describe the substance instead (AGENTS.md, 'Artifacts must be human-readable')."
-            exit 1
-          fi
-
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including
   # cache-replayed ones) into failure — this is the warning-free-build gate.
   build-and-test:
-    needs: lint
     strategy:
       fail-fast: false
       matrix:
@@ -94,42 +36,38 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # Cache strategy (ADR-0026): four caches, each keyed by what actually
-      # invalidates it. Never cache .lake/packages/*/.lake (the unpacked
+      # Cache strategy (ADR-0026): reusable caches are restored on every run,
+      # but only protected main may save them. A PR can therefore consume a
+      # trusted cache but cannot plant executable or mutable source bytes for a
+      # later commit of the same PR. Never cache .lake/packages/*/.lake (the unpacked
       # mathlib oleans, multi-GB — `lake exe cache get` restores them from
       # ~/.cache/mathlib in seconds) and never cache .tl/local/ (a byte-copy
       # of a replica id would violate a carried assumption; docs/overview.md).
       # The sources cache uses an explicit restore/save split because
       # actions/cache path exclusions cannot carve the build dirs out of a
       # bare directory pattern: the save step below prunes them first.
-      - name: cache elan + toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: restore elan + toolchain
+        id: elan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
+          key: trusted-main-v1-elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
 
-      - name: cache mathlib olean archives
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: restore mathlib olean archives
+        id: mathlib-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/mathlib
           # Deliberately OS-agnostic: the .ltar archives are
           # platform-independent, so both runners share one entry.
-          key: mathlib-cache-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
+          key: trusted-main-v1-mathlib-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
 
       - name: restore dependency sources
         id: deps-src
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .lake/packages
-          key: lake-packages-src-${{ hashFiles('lake-manifest.json') }}
-
-      - name: cache tl build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .lake/build
-          key: tl-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}-${{ github.sha }}
-          restore-keys: |
-            tl-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}-
+          key: trusted-main-v1-lake-packages-src-${{ hashFiles('lake-manifest.json') }}
 
       # lean-action installs elan, runs `lake exe cache get` (a full hit while
       # every dep rev byte-matches mathlib's manifest — the ADR-0009 pin-bump
@@ -147,8 +85,34 @@ jobs:
           use-mathlib-cache: "true"
           use-github-cache: "false"
 
+      - name: build trust verifier warning-free
+        run: lake build tlverify --wfail
+
+      # Exact source/module inventory, transitive axiom inspection, direct
+      # dependency policy, and independent kernel replay of the safe, total
+      # dependency cones. It reads source inventory on every
+      # invocation, so a restored cache cannot hide an unimported source file.
+      - name: trust boundary (lake exe tlverify)
+        run: lake exe tlverify
+      # The public test executable supervises tltestWorker and requires its
+      # post-harness marker, so an imported initializer cannot exit zero before
+      # any assertion runs.
       - name: test (lake exe tltest)
         run: lake exe tltest
+
+      - name: save elan + toolchain from protected main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.elan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.elan
+          key: trusted-main-v1-elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}
+
+      - name: save mathlib olean archives from protected main
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mathlib-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/mathlib
+          key: trusted-main-v1-mathlib-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
 
       - name: upload binaries for the git-floor job
         if: matrix.os == 'ubuntu-latest'
@@ -158,6 +122,7 @@ jobs:
           path: |
             .lake/build/bin/tl
             .lake/build/bin/tltest
+            .lake/build/bin/tltestWorker
           if-no-files-found: error
           retention-days: 1
 
@@ -165,15 +130,15 @@ jobs:
       # build dirs (the unpacked oleans) before saving. Saved from one leg —
       # the clones are platform-independent.
       - name: prune dependency build dirs before caching sources
-        if: matrix.os == 'ubuntu-latest' && steps.deps-src.outputs.cache-hit != 'true'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.deps-src.outputs.cache-hit != 'true'
         run: rm -rf .lake/packages/*/.lake
 
       - name: save dependency sources
-        if: matrix.os == 'ubuntu-latest' && steps.deps-src.outputs.cache-hit != 'true'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.deps-src.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .lake/packages
-          key: lake-packages-src-${{ hashFiles('lake-manifest.json') }}
+          key: trusted-main-v1-lake-packages-src-${{ hashFiles('lake-manifest.json') }}
 
   # ADR-0006 pins a runtime floor of git >= 2.17; this job proves the suite
   # still passes at exactly that floor, so a plumbing dependency above it
@@ -237,12 +202,15 @@ jobs:
           name: tl-binaries-linux
           path: .lake/build/bin
 
-      # tltest expects the tl binary at <cwd>/.lake/build/bin/tl and the repo
-      # sources/fixtures at cwd, so it runs from the checkout root against the
-      # artifact binaries — no toolchain needed in this job.
+      # The supervised tltest worker expects the tl binary at
+      # <cwd>/.lake/build/bin/tl and the repo sources/fixtures at cwd, so the
+      # launcher runs from the checkout root against the artifact binaries —
+      # no toolchain needed in this job. The loaded-environment group skips
+      # itself here on the observed absence of a Lean sysroot; this job passes
+      # no opt-out variable, so no environment can fake that skip elsewhere.
       - name: run the suite under git 2.17
         run: |
-          chmod +x .lake/build/bin/tl .lake/build/bin/tltest
+          chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker
           export PATH="$HOME/git-floor/bin:$PATH"
           v=$(git --version)
           if [ "$v" != "git version ${GIT_FLOOR_VERSION}" ]; then

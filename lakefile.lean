@@ -47,7 +47,42 @@ target tlsys.o pkg : System.FilePath := do
   root := `Main
   moreLinkObjs := #[`@/tlsys.o]
 
-/-- In-repo test runner for the tested I/O shell (ADR-0009): `lake exe tltest`. -/
-@[default_target] lean_exe tltest where
+/-- A hostile initializer fixture. It is compiled but only ever imported by
+    the verifier worker with extension loading disabled. -/
+lean_lib VerifyFixtures where
+  roots := #[`VerifyFixture.EarlyExit]
+
+/-- In-repo test worker for the tested I/O shell. The public `tltest` target is
+    a minimal supervisor so an initializer cannot exit zero before the harness. -/
+lean_exe tltestWorker where
   root := `Tests.Main
   moreLinkObjs := #[`@/tlsys.o]
+
+/-- Lean-native trust-boundary verifier. The audited roots are dynamic imports
+    because separately compiled roots can share declaration names. `needs`
+    makes every audited olean part of the build graph before the verifier runs.
+    Run the gate with `lake exe tlverify`; it reads source inventory on every
+    invocation and independently replays stored declarations through Lean's
+    kernel. -/
+lean_lib VerifyCore where
+  roots := #[`Verify.Report, `Verify.Policy, `Verify.Environment, `Verify.Supervise]
+
+/-- Executable Lean build tooling is semantically audited as a separate root. -/
+lean_lib Tooling where
+  roots := #[`scripts.GenLicenses]
+
+/-- Minimal test supervisor: status zero is insufficient unless the worker
+    reaches the assertion harness's final completion marker. -/
+@[default_target] lean_exe tltest where
+  root := `Verify.TestLauncher
+  needs := #[tltestWorker]
+
+lean_exe tlverifyWorker where
+  root := `Verify.Main
+  needs := #[Tl, Tests, VerifyCore, VerifyFixtures, Tooling, tl, tltest]
+
+/-- Minimal supervisor: status zero is insufficient unless the audited worker
+    reaches and emits its final structured completion marker. -/
+lean_exe tlverify where
+  root := `Verify.Launcher
+  needs := #[tlverifyWorker]

@@ -58,6 +58,33 @@ for the decisions and their rationale, read the ADRs in
 
 - `lake build` — compiles and verifies all proofs. A green build proves the
   *stated* theorems.
+- `lake exe tlverify` — a minimal supervisor for the Lean-native
+  `tlverifyWorker` trust-boundary gate; status zero is accepted only with the
+  worker's fixed end-of-run marker. The marker detects unmarked accidental
+  early exits; it is not an authentication boundary against code in the worker
+  deliberately forging its own verdict, so `Verify/Main.lean`,
+  `Verify/Launcher.lean`, and the workflow remain protected-review bootstrap.
+  The worker loads raw compiled production,
+  test, verifier, and Lean-tooling environments without
+  executing their initializers; matches their modules exactly against the current source inventory;
+  rejects first-party axioms and transitive axiom dependencies outside
+  `propext` / `Classical.choice` / `Quot.sound`; enforces the ADR-0009 direct
+  dependency allowlist from Lean's stored import graph; and independently
+  replays every safe, total inspected declaration and its complete stored
+  dependency cone from an empty environment through Lean's kernel
+  (`Environment.replay` deliberately skips unsafe/partial executable code,
+  which cannot justify safe theorems). It also refuses a top-level Lean source
+  no scope claims, and reports a scope that selected no declarations, replayed
+  nothing, or read no import edges — arms that are silent when empty must not
+  read as success. The inventory is
+  read on every invocation, so a stale local build cache cannot hide a new
+  unimported source. CI does not cache `.lake/build`; PR jobs may restore
+  reusable toolchain/dependency caches but only protected `main` may save them.
+  Its failure paths, the supervision decision against real
+  worker processes, loaded-environment selection/traversal, and an unchecked
+  ill-typed theorem are covered in `Tests/VerifyTests.lean` and
+  `Tests/VerifyLoadedTests.lean`; the live gate also imports a hostile exit
+  initializer as a composed no-execution/supervision canary.
 - Tests (outside the TCB) validate the compiled binary: round-trip
   serialization (`parse ∘ render = id`), the differential import check
   (`Tl/Import/Bulk` against the committed `Tests/fixtures/import-sample.jsonl`),
@@ -65,12 +92,18 @@ for the decisions and their rationale, read the ADRs in
   *compiled* kernel agrees with its proved spec — a regression net over the
   executable (does compilation preserve the theorems?), **never a substitute
   for the `Tl/Kernel` + `Tl/Crdt` theorems** themselves (ADR-0004).
+  `lake exe tltest` is a minimal supervisor around `tltestWorker`: status zero
+  is accepted only when the worker reaches the harness's final marker, so an
+  imported initializer cannot silently exit successfully before assertions run.
 
 CI gates (mirror these locally before declaring done):
-- Warning-free `lake build`.
-- No `sorry`, `admit`, or new `axiom` under `Tl/`; theorem completion reports
-  must include a `#print axioms` check for new theorem names, with only the
-  standard Lean allowances already accepted by the project.
+- Warning-free `lake build --wfail` and `lake build tlverify --wfail`.
+- No `sorry`, `admit`, or new `axiom`. `lake build --wfail` rejects unfinished
+  proof warnings; `lake exe tlverify` rejects first-party axioms, forbidden
+  transitive dependencies, unimported scoped sources, and declarations that
+  fail independent kernel replay. Run both before declaring a theorem done; a
+  completion report quoting `#print axioms` for new names is a courtesy, not
+  the gate.
 - Round-trip + ref-sync (fetch/union/push, push-rejection, no-upstream) +
   differential-import + property tests pass.
   For shell code, "covered" means discrete
@@ -80,11 +113,15 @@ CI gates (mirror these locally before declaring done):
 - Lints (e.g. no task-ID leakage; see "Artifacts" below).
 
 `.github/workflows/ci.yml` mechanizes these gates
-([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)), with two gaps that
-stay manual for now: the `#print axioms` completion check (CI's axiom grep has
-known false-negative forms), and the task-ID lint (advisory in CI until its
-regex and exclusions are pinned). Treat both as review obligations, not
-CI-enforced.
+([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). One gap stays
+manual: the task-ID pattern and exclusions are not yet a pinned contract, so
+treat leakage as a review obligation rather than CI-enforced policy.
+
+If a change adds a proved claim to the docs/overview.md table, add a landmark
+theorem for it to `Tl.Verify.landmarkTheorems` in the same change; that list is
+what keeps the verifier from passing over a theorem set that quietly shrank. If a
+change retires a claim, remove its landmark in the same change — the verifier
+fails otherwise, and the message says so.
 
 ## Proof guidance
 
@@ -118,8 +155,10 @@ duplicating them here; this file is process, not spec.
 
 ## Code rules
 
-- **Add every new `.lean` file to the root module (`Tl.lean`).** Files not
-  imported by the root are invisible to `lake build`.
+- **Add every new `.lean` file under `Tl/` to the root module (`Tl.lean`).**
+  Files not imported by the root are invisible to `lake build`; `tlverify`
+  independently compares the current source inventory with that import closure.
+  `Tests/ImportsTests.lean` enforces this for the whole class.
 - **Never introduce `sorry`** in completed work, and **no new `axiom`** —
   the trust boundary is fixed by [docs/overview.md](docs/overview.md);
   expanding it is a deliberate decision, not a local one.
@@ -175,11 +214,12 @@ See [docs/codebase-map.md](docs/codebase-map.md). In short: `Tl/Kernel/`
 (verified core, no I/O), `Tl/Crdt/` (OR-Set, LWW, join laws), and the tested
 shell — `Tl/Format/`, `Tl/Hash/` (pure, tested), `Tl/Store/`, `Tl/Clock/`,
 `Tl/Sync/`, `Tl/Import/`, `Tl/Cli/` — with
-`Tl.lean` as the root and `Tests/` alongside.
+`Tl.lean` as the root and `Tests/` alongside. `Verify/` holds the separately
+built Lean-native trust verifier and its policy/reporting modules.
 
 ## Definition of done
 
-1. `lake build` passes warning-free.
+1. `lake build --wfail` passes, and `lake exe tlverify` is green.
 2. No new `sorry`; no new `axiom`.
 3. New theorems listed in the completion report, one line each.
 4. **Every outside-TCB change ships with its tests in the same change** —

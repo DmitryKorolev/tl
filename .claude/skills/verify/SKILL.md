@@ -7,8 +7,11 @@ description: Build and drive the tl binary end-to-end to verify a change against
 
 Build and locate the binary (from the repo/worktree root):
 
-    lake exe cache get   # mathlib oleans; fast when the pin is cached
-    lake build           # must be warning-free
+    lake exe cache get        # mathlib oleans; fast when the pin is cached
+    lake build --wfail        # must be warning-free
+    lake build tlverify --wfail   # the gate is a non-default target
+    lake exe tlverify         # trust boundary: axioms, scopes, kernel replay
+    lake exe tltest           # the outside-TCB suite, incl. the gate's own tests
     TL=$PWD/.lake/build/bin/tl
 
 Drive it only in throwaway repos — never against this repo's real `.tl/`

@@ -1,177 +1,256 @@
-# ADR-0026 — Continuous integration: platform, job graph, gates, and caches
+# ADR-0026 — Continuous integration: platform, gates, and caches
 
-- Status: Accepted
+- Status: Accepted (trust gate revised 2026-08-01)
 - Date: 2026-07-01
 
 ## Context
 
-The coverage mandate (ADR-0004) and the gate list in the contributor guide
-(AGENTS.md, "CI gates") had no mechanized enforcement point: nothing ran the
-proofs, the test suite, or the lints on every change. ADR-0006 additionally
-requires a job pinned to the git ≥ 2.17 runtime floor — the floor's *runtime*
-check (doctor/init) shipped, but no job proved the suite actually passes at
-exactly the floor version. This ADR pins the CI platform, the job graph, the
-mechanism behind each gate, and the cache strategy.
+The coverage mandate in ADR-0004 needs a mechanized enforcement point. A
+warning-free Lean build checks every elaborated proof, but it does not reject a
+new `axiom`, and stored `.olean` files are trusted when imported. ADR-0006 also
+requires the test suite to run at the git 2.17 runtime floor.
+
+The first implementation of the trust gate grew into a source-text scanner, a
+custom probe command, a verdict parser, a cache-deletion wrapper, and a
+checkout-mutating test script. Repeated review found lexical holes and stale
+cache/wiring hazards. The implementation duplicated parts of Lean's grammar
+and used count floors as approximations for facts Lean and the filesystem can
+report exactly.
 
 ## Decision
 
-### Platform
+### Platform and job graph
 
-GitHub Actions on hosted runners. This matches where ADR-0006 already points:
-the release build matrix presumes GitHub-hosted targets, and the provenance
-plan (Sigstore signatures over GitHub OIDC) requires its workflow identity.
-Every third-party action is pinned to a full commit SHA, consistent with the
-ADR-0014 stance of pinning external inputs to immutable revisions.
+CI uses GitHub Actions hosted Ubuntu and macOS runners. Third-party actions are
+pinned to full commit hashes.
 
-### Job graph: `lint` → `build-and-test` (ubuntu, macos) → `git-floor`
+The graph is:
 
-The workflow lives at `.github/workflows/ci.yml`.
+1. `build-and-test` on Ubuntu and macOS;
+2. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
-**`lint`** — source-level greps that run in seconds, before any toolchain
-install, so a violation fails early:
+The task-ID leakage check remains a manual review obligation until its pattern
+and legitimate examples have a recorded contract. It is not conflated with the
+trust boundary.
 
-- *Hard gate — Mathlib import scope.* Direct `import Mathlib` is allowed only
-  in the ADR-0009 allowlist (`Tl/Kernel/Path.lean`, `Tl/Kernel/Reach.lean`,
-  `Tl/Kernel/ReachBFS.lean`); every other module in the ADR-0009 scope gets
-  Mathlib transitively through these and needs no direct import. Widening the
-  scope means amending ADR-0009 *and* the workflow's allowlist in the same
-  change.
-- *Hard gate — no `sorry`/`admit` in the verified cone.* This duplicates the
-  build gate (`sorry` emits a warning, so `--wfail` is the authority); the
-  grep exists to fail the same defect before the build starts.
-- *Hard gate — no `axiom` and no native evaluation (`native_decide`,
-  `decide +native`, the `ofReduce*` axioms) in the verified cone.* These
-  compile **without warnings**, so the build gate cannot catch them; until a
-  checked-in `#print axioms` probe closes the remaining false-negative holes
-  (e.g. exotic same-line forms), this grep is the only CI net for the fixed
-  trust boundary. Once the probe lands, the grep can demote to an advisory
-  fast-fail.
-- *Advisory — task-tracker-id leakage.* Warns on full display-form ids in
-  tracked sources (excluding the two files that legitimately embed example
-  ids). It stays advisory until the pattern and exclusion set are pinned by
-  their own recorded decision — the realistic leakage vector is *truncated*
-  ids in commit messages, which this pattern deliberately does not attempt
-  yet.
+### Warning-free build
 
-**`build-and-test`** — a matrix over `ubuntu-latest` and `macos-latest`, the
-two development platforms:
+`lake build --wfail` is the ordinary build gate. It compiles every module in
+the default `Tl` and `Tests` libraries and both shipped/test executables.
+Warnings, including `sorry`/`admit`, are errors. Because the verifier is a
+deliberately separate, non-default target, CI also runs
+`lake build tlverify --wfail` before executing it.
 
-- `lake build --wfail` is the warning-free-build gate: it exits nonzero on
-  any warning, **including warnings replayed from the build cache**
-  (verified empirically on the pinned toolchain). A log-grep was considered
-  and rejected — the assumed `./`-prefixed diagnostic format does not match
-  real output, so a grep gate would silently pass everything.
-- `lake exe tltest` then runs the full outside-TCB suite from the repo root
-  (the harness expects the `tl` binary at `.lake/build/bin/tl` and the repo
-  sources/fixtures at the working directory). The suite needs no network, no
-  git identity, and no ambient environment variables.
-- The build runs through `leanprover/lean-action` (SHA-pinned), which
-  installs elan and runs `lake exe cache get` first; the suite step is *not*
-  part of the action — it is a plain workflow step that uses the toolchain
-  the action put on PATH, because the package declares no Lake test_driver
-  for the action's `lake test` to drive. The action's bundled `.lake` GitHub
-  cache is also deliberately disabled (see Caches).
-- The ubuntu leg uploads the built `tl` and `tltest` binaries as a
-  short-lived artifact for the floor job.
+### Lean-native trust verification
 
-**`git-floor`** — proves the suite passes at exactly the ADR-0006 floor:
+`lake exe tlverify` is a separate CI step and the authority for the compiled
+trust boundary. Its executable is under `Verify/` and does the following:
 
-- git 2.17.1 is built from a source tarball pinned by SHA-256
-  (`79136e7aa83abae4d8a25c8111f113d3c5a63aeb5fd93cc72c26d49c6d5ba65e`, which
-  matches the upstream-signed `sha256sums.asc`). kernel.org no longer serves
-  historical release tarballs, so two independent mirrors are tried in
-  order; the pinned hash keeps the download trustworthy regardless of which
-  mirror answers.
-- The build is minimal (`NO_CURL`, `NO_OPENSSL`, `NO_EXPAT`, `NO_GETTEXT`,
-  `NO_PERL`, `NO_PYTHON`, `NO_TCLTK`) — the transport tl exercises is local
-  plumbing only — and the installed prefix is cached across runs.
-- The `PATH` override onto the floor git is scoped to the test steps only;
-  checkout and the action steps keep the runner's modern git. Each test step
-  first asserts `git --version` is exactly the floor version.
-- The job runs the full suite against the uploaded artifact binaries (no
-  toolchain install), then a floor smoke: `tl init` in a scratch repo must
-  emit no below-floor note, and `tl doctor --json` must report the
-  `gitVersion` check row with `status == "ok"` and `version == "2.17"`. The
-  assertion targets the row itself because that row can only ever warn — it
-  never flips doctor's `healthy` flag or exit code.
+1. dynamically imports raw `.olean` data for the production roots (`Tl`,
+   `Main`), test roots (`Tests` plus an adversarial fixture), its own root
+   (`Verify.Main`), and executable Lean tooling (`scripts.GenLicenses`) into
+   separate environments, with extension/initializer execution disabled;
+2. enumerates current importable `.lean` sources from the repository and
+   compares each scoped inventory with Lean's actual imported-module graph;
+3. classifies imported first-party modules by actual artifact provenance—their
+   resolved `.olean` is under the same project build-library root as the
+   verifier—and uses Lean's declaration-to-module ownership data to inspect
+   all their declarations;
+4. walks stored constant bodies itself and rejects any first-party axiom
+   declaration or transitive axiom dependency outside `propext`,
+   `Classical.choice`, and `Quot.sound`; serialized axiom-summary extensions
+   are not trusted;
+5. reads each module's stored direct imports and permits only first-party
+   modules, Lean/Std/Batteries, and direct Mathlib imports from the ADR-0009
+   allowlist (`Tl.Kernel.Path`, `Tl.Kernel.Reach`, `Tl.Kernel.ReachBFS`);
+   spelling a Mathlib dependency as `Aesop`, `Qq`, etc. is not an escape;
+6. computes each inspected scope's complete stored constant dependency cone
+   across package boundaries and calls `Lean.Environment.replay` from an empty
+   environment, independently sending every safe, total declaration through
+   Lean's kernel. Lean deliberately skips unsafe/partial executable
+   definitions, which cannot justify safe theorems.
+
+The replay is stronger than scanning for known bypass APIs. If a declaration
+was placed in an `.olean` through an unchecked insertion path or with kernel
+checking disabled, the replayed declaration must still type-check. The policy
+therefore targets the semantic result rather than an open-ended list of spellings.
+
+That skip is sound for a specific reason, recorded here because the conclusion
+is not self-evident from the code. `Lean.Environment.replay` skips a constant
+when `isUnsafe || isPartial`, and neither can hold of a theorem:
+`ConstantInfo.isUnsafe` is `false` for every `.thmInfo` by construction, and
+`ConstantInfo.isPartial` matches only `.defnInfo` carrying `safety == .partial`
+(`Lean/Declaration.lean`). `unsafe theorem` is rejected by the grammar, and the
+kernel refuses any safe declaration that references an unsafe one, so a proof
+cannot reach the skipped set through a dependency either. `partial def f`
+stores the referenceable `f` as an `opaque` constant — replayed and checked —
+and marks only the compiled `f._unsafe_rec` partial. The skipped set is
+therefore the executable implementation layer, never a proof-relevant one.
+Measured on this repository, the skip is 52 of 14996 constants in the
+production cone with no theorem depending on any of them.
+
+`Tests/VerifyLoadedTests.lean` pins the rejection against Lean's *real* bypass:
+it calls `Kernel.Environment.addDecl` under `debug.skipKernelTC`, which routes
+to `addDeclWithoutChecking`, and asserts both that the bypass still succeeds
+(otherwise the regression would test nothing) and that replay then rejects the
+resulting artifact by name. Such a fixture cannot be a checked-in module: any
+audited scope holding it would fail the gate, which is the intended behavior.
+A forged `theorem : False := True.intro` passes `lake build --wfail` without a
+warning and reports no axioms under `#print axioms`; `lake exe tlverify` is the
+only gate that rejects it.
+
+Source inventory is read every time the executable runs. A new unimported
+source is visible even with stale local build artifacts; no artifact-deletion
+wrapper is necessary. Nested git checkouts are separate source authorities and
+are not descended into. Symbolic-link source locations and unclassifiable links
+are returned as typed inventory findings rather than thrown as operational IO
+failures. Module coverage is an exact set comparison, not
+a count threshold. Landmark names in `Verify/Policy.lean` ensure every proved
+claim documented in `docs/overview.md` still resolves to a theorem.
+
+Directory and root-source registrations are typed with their owning semantic
+scope. The verifier consumes the same entries to collect filesystem inventory,
+derive that scope's expected modules, and derive the top-level claimed paths;
+there is no independent claimed-path list that can suppress the unclaimed scan
+without also making a missing module a scope finding. `lakefile.lean` is a
+separate fixed configuration exemption, not an audited root-source entry.
+
+The verifier also covers tests, its own implementation, and the executable
+license generator. Because the scopes enumerate named directories, the gate
+additionally refuses any top-level Lean source that no scope claims: a new
+directory or root module has to join an audited scope before it can be built
+and inspected by nothing. `lakefile.lean` necessarily runs before target
+construction and cannot audit its own wiring; changes to it and to the CI
+invocation remain review/protected-branch obligations, just like removing the
+build gate itself.
+
+Two of the gate's own failure modes are self-checks rather than tests. A scope
+that imports modules yet selects no declarations, replays no constants, or
+reads no import edges is reported: every semantic arm is silent on an empty
+selection, so a regressed selection layer would otherwise read as success.
+
+`Tests/VerifyTests.lean` covers the report branches — including list truncation
+and a landmark degraded into an axiom — exact inventory and symlink-refusal
+rules (entry and root), typed scope claims feeding their expected-module sets,
+the pinned dependency, landmark
+and supervision policies, the ADR-0009 violation findings themselves, the
+vacuity self-check, stored-body axiom propagation, and kernel replay. Import
+audit, replay, expected-landmark, six named scope-report, source-inventory, and
+unclaimed-source evidence are required structure fields; tests inject negative
+sentinels through the composed observation/verdict paths, so clean checked-in
+environments cannot make their wiring mutation-silent. The
+replay regression constructs an ill-typed theorem value—representing
+the result of unchecked insertion—and asserts that replay rejects it. The
+supervision decision is driven against real worker processes (completed,
+early exit, non-zero exit, missing), with stdout/stderr forwarding canaries and
+an injected runner failure for the process-spawn exception path, rather than
+only as a predicate.
+`Tests/VerifyLoadedTests.lean` runs where the project `.olean`s are
+present (the ordinary Ubuntu/macOS legs, not the binary-only git-floor leg) and
+loads the real verifier environment without initializers. It checks module
+selection, declaration ownership, project-artifact provenance, stored direct
+imports, a cross-package replay closure, and the composed replay-closure →
+transitive-axiom → declaration-report wiring; the mutual-inductive sibling arm
+has a separate pure fixture. A compiled fixture contains an initializer that
+exits the process; every live verifier run
+must inspect that fixture without running it, exercising the composed loader,
+provenance, ownership, observation, and supervisor path. This integration
+canary is kept out of `tltest`, whose git-floor artifact runs without Lean or
+`.olean` files. That leg skips the group on an observed fact — `findSysroot`
+resolves no toolchain — rather than on an opt-out variable the caller supplies.
+An opt-out would let any environment turn the group into a green row whose
+stated reason is false, and would need its own assertion that the ordinary legs
+left it unset; a fact cannot be asserted from outside the process, so the
+input is removed instead of guarded. The harness rejects every accidental
+empty test group, so a failed setup cannot erase its own assertion count.
+
+`tlverify` is a minimal Lean supervisor around the audited `tlverifyWorker`.
+Status zero alone is insufficient: the worker must emit a fixed completion
+marker after every semantic check and verdict. This catches accidental or
+regressed early exits that do not emit the verdict. It cannot authenticate the
+worker against an initializer deliberately printing the public marker: code in
+a process cannot prove to its parent which earlier code in that same process
+produced an in-band string. The worker root, launcher, and CI invocation are
+therefore an explicit review/protected-branch bootstrap obligation, just like
+the workflow's decision to invoke `lake build` at all. The supervision decision
+still lives in `Verify/Supervise.lean` and is exercised against real processes.
+
+The gate reads the `.olean` files and runs the worker binary that Lake just
+built. CI does not cache `.lake/build`: an earlier commit's project outputs
+cannot enter a later commit's build at all. Reusable caches are restored
+explicitly, while cache saves are restricted to protected `main`; a PR cannot
+plant a toolchain executable or mutable dependency tree for its next commit.
+Runtime source inventory independently closes the unimported-source case. The
+old source/verdict parser duplicated semantic policy; this supervisor checks
+only process completion and contains no trust policy.
+
+### Outside-TCB tests
+
+`lake exe tltest` runs after the verifier. Like `tlverify`, it is a minimal
+launcher around a worker and accepts status zero only when `tltestWorker`
+emits its fixed marker after `runAll` completes. This prevents an imported
+initializer from exiting zero before any assertion runs. The suite covers
+serialization, git and filesystem behavior, clocks, imports, CLI contracts,
+compiled-kernel/spec cross-checks, and performance regressions. These tests
+remain a regression net over the executable, never a substitute for theorems
+about provable kernel properties.
+
+### Git runtime floor
+
+The Ubuntu build uploads `tl`, the `tltest` supervisor, and `tltestWorker`. The `git-floor` job builds git
+2.17.1 from a hash-pinned tarball with optional subsystems disabled, puts only
+that binary on `PATH` for the tests, runs the complete suite, and checks that
+`tl init` and the `doctor --json` `gitVersion` row accept exactly the floor.
 
 ### Caches
 
-Four caches, each keyed by exactly what invalidates it:
+Three reusable caches are keyed by what invalidates them. Every job may restore
+them from a versioned `trusted-main` namespace, but only a successful
+protected-`main` push may save them. Versioning prevents this transition from
+restoring an older PR-written entry with the same dependency inputs:
 
-| path | key | note |
+| Path | Key basis | Purpose |
 | --- | --- | --- |
-| `~/.elan` | OS + arch + `lean-toolchain` hash | toolchain download |
-| `~/.cache/mathlib` | `lake-manifest.json` + `lean-toolchain` hash | deliberately OS-agnostic — the `.ltar` archives are platform-independent, so one entry serves both runners |
-| `.lake/packages` | `lake-manifest.json` hash | dependency *sources* only: an explicit restore/save split, with the per-package `.lake` build dirs pruned before the save (actions/cache path exclusions cannot carve subtrees out of a bare directory pattern — a directory path is archived recursively, so the exclusion must happen by pruning). Saved from one matrix leg; the clones are platform-independent |
-| `.lake/build` | OS + arch + manifest/toolchain hash + commit, with a restore-key falling back to the newest prior commit | tl's own incremental build |
+| `~/.elan` | OS, architecture, `lean-toolchain` | toolchain |
+| `~/.cache/mathlib` | manifest and toolchain | platform-independent Mathlib archives |
+| `.lake/packages` | manifest | dependency sources only; nested build dirs are pruned before save |
 
-Two prohibitions:
+`.lake/build` is deliberately not cached. A commit-keyed entry had no
+cross-commit reuse, while any reusable project-output key would trust bytes Lake
+validates by input traces rather than by output content.
 
-- **Never cache the unpacked dependency oleans** (`.lake/packages/*/.lake`).
-  A cache entry that includes them is multi-gigabyte, re-uploaded per
-  commit, and evicts everything else in the repository's shared cache
-  budget — while `lake exe cache get` restores the identical content from
-  the `~/.cache/mathlib` archives in seconds.
-- **Never let any cache path include `.tl/local/`.** Restoring a byte-copied
-  replica directory into a fresh environment is exactly the sub-git copy
-  that the replica-id-uniqueness carried assumption excludes
-  (docs/overview.md, Trusted).
+`.tl/local/` is never cached because copying a replica id would violate the
+uniqueness assumption in `docs/overview.md`.
 
-The mathlib cache is a *full* hit only while every dependency rev in
-`lake-manifest.json` byte-matches mathlib's own manifest at the pinned
-mathlib rev; keeping that alignment on any pin bump is part of the ADR-0009
-bump procedure.
+## Rejected alternatives
 
-### Operational points
-
-- Concurrency: superseded runs are cancelled on PRs and feature refs, never
-  on `main` — main runs populate the shared caches that PR runs restore.
-- `git-floor` starts only after the whole build matrix (GitHub Actions
-  cannot depend on a single matrix leg), although it consumes only the
-  ubuntu artifact. This is an accepted latency cost: splitting the matrix
-  into per-OS jobs would let the floor job start as soon as the ubuntu
-  binaries exist, and is the move if time-to-green starts to matter.
-- Branch protection requires all four checks: `lint`,
-  `build-and-test (ubuntu-latest)`, `build-and-test (macos-latest)`,
-  `git-floor`. No merge queue — a single-contributor repository does not
-  need one.
-- Warm-cache runs are dominated by the Lean build and the suite; the lint
-  job keeps trivially-detectable defects from paying that cost.
+- **Regex/AWK source scanning.** It must approximate Lean comments, strings,
+  raw strings, Unicode identifiers, command wrappers, scoped syntax, and future
+  grammar changes. Fixing one missed spelling does not close the class.
+- **A custom elaborator command in a non-default probe module.** Lake can replay
+  its cached result while the command reads a newer filesystem tree; wrappers
+  that delete artifacts and parse printed verdicts compensate for the wrong
+  execution model rather than removing it.
+- **Mutation tests that rewrite the checkout.** They are slow, require complex
+  restoration logic, and still sample spellings. Pure failure fixtures plus an
+  actual kernel-replay regression cover the semantic branches without risking
+  developer files.
+- **Count floors.** Exact source/module sets and named landmarks are available;
+  approximate counts add policy knobs without proving coverage.
+- **Making `tlverify` a default target.** The ordinary build and the trust audit
+  are distinct evidence and should remain separately visible in CI and local
+  completion reports.
 
 ## Consequences
 
-- A green run now enforces, on every push to `main` and every PR: proofs
-  compile warning-free on both platforms, the full suite passes on both
-  platforms *and* at the git floor, the Mathlib scope is confined, and the
-  trust boundary carries no new axiom or kernel bypass.
-- The performance regression net (`Tests/PerfTests.lean`) genuinely runs in
-  CI, as docs/overview.md already stated. Its assertions are growth ratios
-  rather than absolute times, so runner noise is tolerated by design; a
-  pathologically noisy runner can still flake a run, which re-running
-  resolves.
-- The axiom/native_decide grep carries known false-negative holes; the
-  durable closure is a checked-in `#print axioms` probe, which is its own
-  planned change.
-- The floor job's git build recipe is exercised only in CI (macOS
-  development machines cannot rehearse an Ubuntu gcc build); a recipe
-  breakage therefore surfaces as a loud `git-floor` failure, never as a
-  silently skipped gate.
-
-## Alternatives considered
-
-- **ubuntu:18.04 container for the floor job** — rejected: current
-  node-based actions require glibc ≥ 2.28 (18.04 ships 2.27 and the node16
-  fallback is sunset), its apt archive is end-of-life, and it would force a
-  second toolchain install. Building the floor git on a supported runner
-  keeps the job on maintained infrastructure.
-- **Grep the build log for warnings instead of `--wfail`** — rejected as
-  disproven: the assumed diagnostic format does not occur in real output,
-  so the gate would pass vacuously.
-- **lean-action's built-in `.lake` cache** — rejected: it keys the entire
-  `.lake` tree per commit, which re-ships the unpacked mathlib oleans on
-  every save (the first prohibition above).
-- **Hand-rolling elan install and mathlib cache retrieval** — rejected:
-  the SHA-pinned action performs both with maintained scripts; the pieces
-  that did not fit (its cache, `lake test`) are disabled rather than
-  re-implemented.
+- The trust gate is Lean code and uses Lean's parser-independent semantic data.
+- No Bash trust scripts or source lexer remain.
+- A clean `lake build --wfail` is necessary but not sufficient; contributors
+  also run `lake exe tlverify` and `lake exe tltest`.
+- Adding a source under `Tl/`, `Tests/`, `Verify/`, `VerifyFixture/`, or
+  `scripts/` requires including it in the corresponding audited scope in the
+  same change.
+- Adding or retiring a proved claim updates `Verify/Policy.lean` and
+  `docs/overview.md` together.
+- Widening the axiom allowance or Mathlib scope remains an explicit ADR-level
+  trust decision.

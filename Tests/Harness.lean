@@ -52,6 +52,14 @@ def runAll (groups : List (String × List Outcome)) : IO UInt32 := do
   let mut total := 0
   let mut failed := 0
   for (label, outcomes) in groups do
+    -- A conditional suite returning `[]` used to erase its own coverage while
+    -- the harness printed all-green. Skips must now be explicit passing rows;
+    -- every accidental empty group is one visible failure.
+    let outcomes := if outcomes.isEmpty then [{
+      name := "test group is nonempty"
+      passed := false
+      msg := "the group produced no assertions; emit an explicit skip row or restore its setup"
+    }] else outcomes
     total := total + outcomes.length
     failed := failed + (← runGroup label outcomes)
   if failed = 0 then

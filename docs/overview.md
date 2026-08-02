@@ -42,7 +42,7 @@ carried assumption (the Trusted section below) — never a vibe.
 | Cycle diagnostic correctness | `cycles s kind` = one **node-set** witness per cyclic SCC of that kind (the SCC's members, sorted — *not* a single simple-cycle path), proved exactly one witness per SCC (`sccWitnesses_same_witness_iff`); `cycles s` also reports readiness-deadlock `≺`-cycles (mixed blocks+parent) so a stuck live set is never undiagnosed (exactly the cyclic SCCs + `≺`-cycles; polynomial, total) | 0003, 0004 |
 | Epic rollup | unless manually cancelled, `effectiveStatus e = done ↔ all children closed`; cancel takes precedence; total incl. parent-cycles — a cycle-trapped epic falls back *conservatively* to not-done (`Open`, never its stored status / merge-injected `Done`; `effStatusAux_epic_zero_ne_done`), matching ADR-0003 | 0003 |
 | Invariant preservation | one `apply` preserves valid-status; inherited by every `Op` (endpoint-existence & acyclicity deliberately not invariants — tolerated at read time) | 0004 |
-| Close-monotonicity | a single `close` op only unblocks: `ready (close s i) ⊇ ready s \ {i}`; `--cascade` is several such ops, each monotonic, so the composition is too | 0004 |
+| Close-monotonicity | a `close` op only unblocks: `ready (close s i) ⊇ ready s \ {i}` | 0004 |
 | Ready ordering is total | rank ends in the unique `id` ⇒ the `ready` order is unique and deterministic given the same state and `now` (a stable ranked queue to choose from; no atomic take-the-top); the critical-path-weight key is a total function on cyclic graphs | 0004 |
 | frame lemma | `relate`/`unrelate`, any `meta` write, any `labels` write, and the per-op `actor` provenance field change neither `ready` nor rollup (the side-channels stay out of the verified core) | 0003, 0008, 0013 |
 | CvRDT inflation / monotonicity | `s ≤ apply s o` (each op only moves up the lattice) ⇒ `ops ⊆ ops' → fold ops ≤ fold ops'` (a merge never loses information); with fold-dup-insensitivity, the full state-CvRDT pair. Op-granular: `apply (apply s o) o = apply s o` (at-least-once delivery safe) | 0002, 0004 |
@@ -52,8 +52,67 @@ carried assumption (the Trusted section below) — never a vibe.
 
 ### Proof status (current)
 
-What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files), checked
-`#print axioms`-clean (only `propext` / `Classical.choice` / `Quot.sound`):
+What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files). The
+`#print axioms`-clean claim below (only `propext` / `Classical.choice` /
+`Quot.sound`) is not a remembered spot-check: the Lean executable
+`lake exe tlverify` re-derives it from compiled environments on every CI run
+and fails otherwise ([ADR-0026](adr/ADR-0026-continuous-integration.md)). It
+checks production (`Tl` + `Main`), tests (including a hostile initializer
+fixture), its own verifier modules, and executable Lean tooling. For each scope
+it compares the current filesystem inventory exactly with Lean's actual
+imported-module graph, classifies additional first-party imports by their
+resolved project-build `.olean` provenance, examines declaration ownership and transitive axioms,
+and independently replays each stored safe, total declaration plus its complete
+cross-package dependency cone from an empty environment through Lean's kernel.
+Audited module initializers are never executed. Lean deliberately excludes
+unsafe/partial executable definitions from replay; those cannot justify a safe theorem.
+Replay is the semantic backstop for unchecked insertion or a disabled kernel
+check: a declaration that was accepted only by bypassing the compiler's normal
+check is rejected when replayed. Because inventory is read at runtime, a
+stale local `.lake` artifacts cannot hide a newly unimported source file. A source in
+a top-level location no scope claims is refused outright. Directory and root
+source entries carry their owning scope, and those same typed entries derive
+both the top-level claims and that scope's expected-module set, so naming a new
+location as claimed cannot hide it from inspection. `lakefile.lean` remains a
+distinct fixed configuration exemption because Lake elaborates it before the
+gate exists.
+
+The verifier is outside the TCB, so its decisions are *tested*, not claimed as
+proved. Required evidence is typed rather than accumulated in optional clean
+arrays: import audit, replay, expected landmarks, six named scope reports,
+inventory findings, typed source-scope ownership, and unclaimed sources must all
+reach the verdict.
+`Tests/VerifyTests.lean` covers each report branch, source inventory
+and symlink refusal, the pinned direct-dependency policy and its violation
+findings, the scope-claim check, stored-body axiom propagation, an ill-typed
+theorem that kernel replay must reject, and the supervision decision driven
+against real worker processes. `Tests/VerifyLoadedTests.lean`, on the ordinary
+toolchain CI legs, loads the real environment without initializers and covers
+module/declaration selection, artifact provenance, stored import rows, a
+cross-package replay closure, transitive-axiom observation wiring, and injected
+import/replay findings. Empty test groups fail globally; the binary-only
+git-floor job produces one skip row, decided by the group itself from the
+observed absence of a Lean sysroot rather than from a caller-supplied flag. A
+scope
+that imports modules but selects no declarations, replays nothing, or reads no
+import edges is itself a finding:
+the semantic arms are silent when empty, so the gate must not read that as
+success. Every live verifier run also loads a hostile exit initializer as
+an end-to-end no-execution/provenance/ownership canary. CI
+invokes a minimal Lean supervisor, which requires the audited worker's fixed
+end-of-run marker as well as status zero. This catches unmarked accidental early
+exits; it does not authenticate the worker against code deliberately forging its
+own public marker. The worker root, launcher, and workflow are therefore an
+explicit review and branch-protection bootstrap, as for every CI gate.
+
+The verifier also pins a landmark theorem for every row of the table above
+(except totality, which is definitional and has no named theorem) and for the
+named proved anchors of the tested tier below — the `*Fast`/reference bridges,
+skew convergence, and `ascending_of_sorted`. That guards the *names*: a claim
+here cannot be silently renamed away or downgraded to a non-theorem. It does
+not read what a theorem states, nor check the definitions it quantifies over.
+The list is itself pinned by `Tests/VerifyTests.lean`, so retiring a claim
+takes a deliberate edit in both places rather than one deletion.
 
 - **Thm 1 — join-semilattice.** `State.merge_comm/assoc/idem` over the whole
   product, composed from the per-layer laws (`AMap`, `FinSet`, `Reg`/`MetaMap`,
@@ -336,7 +395,12 @@ serviceable (ADR-0025).
 This section is the home for carried assumptions — properties relied on
 but neither proved in-kernel nor fully testable (AGENTS.md tier 3). Any such
 property must be listed here explicitly, never relied on silently. Current
-entries: replica-id uniqueness (scoped: holds absent a sub-git byte-copy
+entries: verifier-bootstrap integrity — protected review ensures
+`Verify/Main.lean`, `Verify/Launcher.lean`, and the CI invocation execute the
+reviewed checks and do not deliberately forge the public completion marker; a
+process cannot authenticate which of its own initializers printed an in-band
+string, so the marker detects accidental unmarked early exits rather than
+self-authenticating the gate (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
 total even then, so this guards segment-ownership, not convergence, ADR-0007;
 minting draws from the ADR-0019 shim's OS CSPRNG — the earlier `IO.rand`
@@ -373,7 +437,7 @@ an *accidental* corruption colliding the hash is negligible; adversarially
 it is moot inside `.tl/` (anyone who can rewrite a segment is already a
 trusted writer, and the cache is a discardable rot-check, not a security
 surface, ADR-0014); worst case is bounded — a wrong *cache*, never wrong
-log bytes, discarded by any later rebuild; and
+log bytes, discarded by any later rebuild;
 clocks/IDs/actor entering as data — each discharged by a test or trusted by
 construction when implementation begins.
 

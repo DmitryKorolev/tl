@@ -192,12 +192,17 @@ build time and at runtime).
 ```sh
 git clone https://github.com/DmitryKorolev/tl && cd tl
 lake exe cache get   # prefetch the Mathlib proof cache (used by a few proof modules)
-lake build           # builds the binary and re-verifies every theorem
+lake build --wfail   # builds the binary and checks every stated theorem warning-free
+lake build tlverify --wfail
+lake exe tlverify    # checks the compiled trust boundary and source inventory
+lake exe tltest      # exercises the outside-TCB shell
 .lake/build/bin/tl help
 ```
 
-`lake build` succeeding is the verification: a broken theorem is a build
-failure. The shell test suite runs with `lake exe tltest`. `tl` builds
+`lake build --wfail` verifies the stated theorems; `tlverify` additionally
+rejects new axioms, forbidden transitive dependencies, incomplete source
+scopes, and failed independent kernel replay. Both are required evidence.
+`tl` builds
 where the Lean toolchain runs (macOS, Linux, WSL2 on Windows); the intended
 distribution matrix is
 [ADR-0006](docs/adr/ADR-0006-distribution-and-platforms.md).

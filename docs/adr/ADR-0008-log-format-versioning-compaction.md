@@ -208,8 +208,7 @@ Stability rules follow from the verb/delta split:
   record-op enum (each enum row is one record; these commands compose several):
   - `update --parent E` → `depRemove` of every currently-observed `parent` edge of `id` (each carrying its observed add-tags) + one `depAdd` (`kind=parent`, `from=E`, `to=id`), normalizing to a single local parent; a concurrent *unobserved* parent add can still re-create `multiParent` (add-wins, ADR-0003 §4), surfaced by the diagnostic;
   - `create … --blocked-by`/`--blocks`/`--related`/`--parent` → one `create` + one `depAdd` per wired edge;
-  - `close --as duplicate --of <id>` → one `close` + one `metaSet` (`duplicate-of` → `<id>`);
-  - `close --cascade` (epic cancel) → one `close` per affected issue.
+  - `close --as duplicate --of <id>` → one `close` + one `metaSet` (`duplicate-of` → `<id>`).
 
   "Exactly one mutation path" (ADR-0004) is about the single kernel reducer,
   not one-record-per-command.
