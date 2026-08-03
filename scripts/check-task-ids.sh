@@ -14,21 +14,25 @@ cd "$root"
 registry=scripts/task-id-placeholders.txt
 affix='tl-'
 
+# One pathspec, shared by the scan, the selftest and the file count, so the
+# three cannot drift apart when an exclusion is added.
+pathspec=(':(exclude)docs/' ':(exclude)README.md' ":(exclude)$registry")
+
 # The display affix (ADR-0007) followed by at least shortIdFloor = 4 Crockford
 # base32 digits (`0-9 a-z` minus `i l o u`). The leading class is a token
 # boundary, so a hyphenated compound cannot hide a match.
+#
+# Matched case-insensitively, because the id surface is: `Tl/Cli/Resolve`
+# lowercases a token before testing the affix and applies the Crockford aliases,
+# so `TL-…`, `Tl-…` and `tl-…` all resolve to the same issue and all three are
+# equally a leak. Registry lookups fold case for the same reason.
+pattern="(^|[^0-9A-Za-z_])${affix}[0-9a-hjkmnp-tv-z]{4,}"
+token="${affix}[0-9a-hjkmnp-tv-z]{4,}"
+
 if [ ! -s "$registry" ]; then
   echo "::error::$registry is missing or empty — the placeholder registry is part of this gate's pinned contract (ADR-0026); restore it rather than deleting the gate's exclusion set."
   exit 1
 fi
-
-pattern="(^|[^0-9A-Za-z_])${affix}[0-9a-hjkmnp-tv-z]{4,}"
-token="${affix}[0-9a-hjkmnp-tv-z]{4,}"
-
-scan() {
-  git grep -InE "$pattern" -- \
-    ':(exclude)docs/' ':(exclude)README.md' ":(exclude)$registry" || true
-}
 
 # Every token on a hit line is checked, not just the first: a leak sharing a
 # line with a registered placeholder must still be reported.
@@ -36,8 +40,8 @@ classify() {
   local leaks=0 line tok
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    for tok in $(printf '%s\n' "$line" | grep -oE "$token"); do
-      if ! grep -qxF "$tok" "$registry"; then
+    for tok in $(printf '%s\n' "$line" | grep -oEi "$token"); do
+      if ! grep -qxF "$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')" "$registry"; then
         printf '%s\n' "$line"
         leaks=$((leaks + 1))
         break
@@ -48,32 +52,90 @@ classify() {
   [ "$leaks" -eq 0 ]
 }
 
+# `git grep` exits 1 for "no matches" and 128 for a fatal error — a bad regex, a
+# mistyped pathspec magic word, an unreadable object. Collapsing both to "clean"
+# would make a scan that *cannot run* indistinguishable from one that found
+# nothing, which is the failure mode AGENTS.md names for the trust verifier: an
+# arm that is silent when broken must not read as success.
+run_scan() {
+  local out rc
+  set +e
+  out=$(git grep -InEi "$pattern" -- "${pathspec[@]}")
+  rc=$?
+  set -e
+  if [ "$rc" -gt 1 ]; then
+    echo "::error::the task-id scan could not run (git grep exit $rc) — repair the pattern or the pathspec in scripts/check-task-ids.sh. A scan that cannot run must not report clean." >&2
+    return 2
+  fi
+  printf '%s' "$out"
+}
+
+# Same fail-closed rule as the scan: if the pathspec cannot even be listed, say
+# so in the gate's own words rather than dying on git's fatal alone.
+scope_size() {
+  local out rc
+  set +e
+  out=$(git ls-files -- "${pathspec[@]}")
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    echo "::error::the task-id scope could not be listed (git ls-files exit $rc) — repair the pathspec in scripts/check-task-ids.sh. A scope that cannot be read must not report clean." >&2
+    return 2
+  fi
+  printf '%s' "$out" | grep -c '' || true
+}
+
 if [ "${1:-}" = "--selftest" ]; then
-  probe() { printf '%s\n' "$1" | grep -qE "$pattern" && echo match || echo miss; }
+  probe() { printf '%s\n' "$1" | grep -qEi "$pattern" && echo match || echo miss; }
   fail=0
+  # The pattern still detects the shapes a leak actually takes, including the
+  # uppercase rendering the CLI resolves just as readily …
   for leak in "see ${affix}8wmb for context" "fixed in ${affix}pyvg." \
               "-- ${affix}f01vn6s6n79wmqa8 is the epic" "(${affix}d1zh)" \
-              "url/${affix}8wmb" "x-${affix}8wmb"; do
+              "url/${affix}8wmb" "x-${affix}8wmb" \
+              "$(printf '%s' "${affix}8wmb" | tr '[:lower:]' '[:upper:]')"; do
     [ "$(probe "$leak")" = match ] || { echo "selftest: missed '$leak'"; fail=1; }
   done
-  for clean in "nothing ${affix}related needs ignoring" "actor is ${affix}dev" \
-               "the ${affix} prefix is reserved" "TL-8WMB"; do
+  # … and still rejects what is not an id.
+  for clean in "the ${affix} prefix is reserved" "a ${affix}x short form"; do
     [ "$(probe "$clean")" = miss ] || { echo "selftest: false hit '$clean'"; fail=1; }
   done
-  files=$(git ls-files -- ':(exclude)docs/' ':(exclude)README.md' | wc -l | tr -d ' ')
+  # The registry arm and the reporting arm, end to end: an unregistered token is
+  # reported, a registered one is not. Without this the selftest would certify
+  # the regex alone while `classify` went blind.
+  registered=$(head -n 1 "$registry")
+  if printf 'a.lean:1:%s\n' "${affix}f01vn6s6n79wmqa8" | classify >/dev/null; then
+    echo "selftest: classify passed an unregistered token"; fail=1
+  fi
+  if ! printf 'a.lean:1:%s\n' "$registered" | classify >/dev/null; then
+    echo "selftest: classify rejected the registered token '$registered'"; fail=1
+  fi
+  # A leak sharing a line with a registered placeholder must still be reported.
+  if printf 'a.lean:1:%s and %s\n' "$registered" "${affix}f01vn6s6n79wmqa8" | classify >/dev/null; then
+    echo "selftest: classify stopped at the registered token on a mixed line"; fail=1
+  fi
+  files=$(scope_size)
   [ "$files" -gt 0 ] || { echo "selftest: the scan pathspec selected no files"; fail=1; }
-  [ -s "$registry" ] || { echo "selftest: $registry is missing or empty"; fail=1; }
   if [ "$fail" -ne 0 ]; then
-    echo "::error::the task-id lint no longer detects what it claims to — repair the pattern in scripts/check-task-ids.sh before trusting this gate."
+    echo "::error::the task-id lint no longer detects what it claims to — repair scripts/check-task-ids.sh before trusting this gate."
     exit 1
   fi
   echo "task-id lint selftest ok ($files files in scope)"
   exit 0
 fi
 
-if ! hits=$(scan | classify); then
-  printf '%s\n' "$hits"
+files=$(scope_size)
+if [ "$files" -eq 0 ]; then
+  echo "::error::the task-id scan selected no files — an empty scope must not report clean; repair the pathspec in scripts/check-task-ids.sh."
+  exit 1
+fi
+
+# `printf '%s\n'`, not `%s`: command substitution already stripped the trailing
+# newline, and `read` drops a final line that has none — which would silently
+# lose the last hit.
+hits=$(run_scan)
+if ! printf '%s\n' "$hits" | classify; then
   echo "::error::task-tracker id in a tracked artifact. Code and comments must stand on their own — describe the substance instead (AGENTS.md, 'Artifacts must be human-readable'). If this token is a test or example placeholder rather than a tracker reference, register it in $registry in this same change."
   exit 1
 fi
-echo "task-id lint clean"
+echo "task-id lint clean ($files files in scope)"

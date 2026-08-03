@@ -41,7 +41,10 @@ pinned contract rather than a preference:
 - Pattern `(^|[^0-9A-Za-z_])tl-[0-9a-hjkmnp-tv-z]{4,}` — the ADR-0007 display
   affix followed by at least `shortIdFloor` = 4 Crockford base32 digits. The
   leading class is a token boundary that still admits a preceding hyphen, so a
-  compound cannot hide a match.
+  compound cannot hide a match. Matched case-insensitively, because the id
+  surface is: `Tl/Cli/Resolve` lowercases a token before testing the affix and
+  applies the Crockford aliases, so `TL-…` and `tl-…` resolve to the same issue
+  and are equally a leak.
 - Scope: every tracked file, minus exactly three pathspecs — `docs/`,
   `README.md`, and the registry itself. Fail-closed: a new top-level file is in
   scope automatically, and `git grep` reads tracked content only.
@@ -60,11 +63,17 @@ conflated with the trust boundary: it reads tracked source, never the log, and
 `tlverify` is untouched. Task IDs in commit messages remain permitted and useful
 for traceability (AGENTS.md, "Artifacts must be human-readable").
 
-Two residuals are recorded rather than papered over. A bare stored id written
+Three residuals are recorded rather than papered over. A bare stored id written
 without its `tl-` affix is indistinguishable from any other sixteen-digit token
-and is not detected. And `docs/` and `README.md` are out of scope because the
+and is not detected. `docs/` and `README.md` are out of scope because the
 prohibition binds code and comments; prose that renders sample CLI output would
-otherwise fail on its own examples.
+otherwise fail on its own examples. And the affix is not distinguishable from a
+hyphenated English compound — the Crockford class still covers most letters, so
+`tl-managed`, `tl-aware`, `tl-cache` and their like all match. The sanctioned
+remedy is to reword the prose, not to register it: the registry means "tokens
+that are synthetic ids", and filling it with English would erode the assertion
+registering a token is supposed to make. This change reworded one such comment
+for exactly that reason.
 
 ### Warning-free build
 

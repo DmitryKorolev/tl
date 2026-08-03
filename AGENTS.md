@@ -135,10 +135,15 @@ CI gates (mirror these locally before declaring done):
 lexical rather than semantic: the prohibited thing *is* a token, so a text scan
 states the rule instead of approximating it — unlike the source greps the trust
 verifier replaced — and it stays outside the trust boundary, reading tracked
-content only and never the log. Two limits are recorded rather than papered
-over: a bare stored id written without its `tl-` affix is indistinguishable
-from any other sixteen-digit token and is not detected, and `docs/` and
-`README.md` are out of scope because the prohibition binds code and comments.
+content only and never the log. Three limits are recorded rather than
+papered over: a bare stored id written without its `tl-` affix is
+indistinguishable from any other sixteen-digit token and is not detected;
+`docs/` and `README.md` are out of scope because the prohibition binds code and
+comments; and the affix is not distinguishable from a hyphenated English
+compound — the affix followed by an ordinary word (`managed`, `aware`) matches,
+because the Crockford class still covers most letters. Such prose is reworded
+rather than registered: the registry means "synthetic ids", and filling it with
+English would erode what registering a token asserts.
 
 If a change adds a proved claim to the docs/overview.md table, add a landmark
 theorem for it to `Tl.Verify.landmarkTheorems` in the same change; that list is
