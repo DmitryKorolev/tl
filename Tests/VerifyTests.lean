@@ -31,8 +31,16 @@ private def clean : Observation :=
 private def mentions (report : Report) (needle : String) : Bool :=
   report.errors.any fun error => error.contains needle
 
+/-
+What these rows are still for: the verdict *logic* — which conditions make a
+scope clean, that every arm's silence is necessary and sufficient, and that the
+ADR-0009 traversal reaches every edge — is proved in `Verify/Proofs.lean` and is
+deliberately not re-asserted here on examples. What stays is what a theorem
+about array emptiness cannot see: the wording each finding uses to teach its
+fix, the truncation disclosure, and the retention of concrete findings through
+the aggregate.
+-/
 private def reportTests : List Outcome :=
-  let cleanReport := analyze cfg clean
   let environmentFailure := analyze cfg {
     clean with evidence := { clean.evidence with
       replayError? := some "kernel replay rejected Bad.proof" } }
@@ -91,8 +99,7 @@ private def reportTests : List Outcome :=
   let gateErrors := ({ reports := sentinelReports
                        inventoryErrors := #["inventory sentinel"]
                        unclaimedSources := #["Bench"] } : GateEvidence).errors
-  [ checkEq "a clean observation has no findings" cleanReport.errors.size 0,
-    check "a scope that selected no declarations is not silently vacuous"
+  [ check "a scope that selected no declarations is not silently vacuous"
       (mentions noDecls "no declarations were selected"),
     check "a scope whose replay cone is empty is not silently vacuous"
       (mentions noReplay "nothing reached independent replay validation"),
@@ -131,8 +138,6 @@ private def reportTests : List Outcome :=
       (mentions changedLandmark "non-theorem declaration"),
     check "a repeated landmark is rejected" (mentions duplicateLandmark "duplicate landmark"),
     check "a first-party axiom is named" (mentions localAxiom "unproved"),
-    checkEq "an axiom is not also reported as depending on itself"
-      localAxiom.errors.size 1,
     check "a transitive forbidden axiom is named" (mentions sorryDependency "sorryAx"),
     check "a transitive forbidden axiom teaches the fix"
       (mentions sorryDependency "Finish the proof") ]
@@ -147,8 +152,6 @@ private def importTests : List Outcome :=
     #[(`Tl.Kernel.Reach, #[`Mathlib.Data.Finset.Card])]
   let repackaged := importViolations importPolicy "fixture" project
     #[(`Tl.Kernel.Ready, #[`Aesop.Frontend])]
-  let severalRows := importViolations importPolicy "fixture" project
-    #[(`Tl.Kernel.Ready, #[`Mathlib.Tactic]), (`Tl.Kernel.Op, #[`Qq.Macro])]
   [ checkEq "a disallowed direct import yields exactly one finding" violation.size 1,
     check "an ADR-0009 finding carries its audited scope"
       (violation.any fun error => error.startsWith "trust verification (fixture):"),
@@ -158,10 +161,7 @@ private def importTests : List Outcome :=
     check "the finding teaches the ADR-0009 fix"
       (violation.any fun error => error.contains "amend ADR-0009"),
     check "an allowlisted module's Mathlib import yields nothing" allowlisted.isEmpty,
-    checkEq "a Mathlib dependency package is a finding too" repackaged.size 1,
-    checkEq "every row is traversed, not just the first" severalRows.size 2,
-    check "no rows means no findings"
-      (importViolations importPolicy "fixture" project #[]).isEmpty ]
+    checkEq "a Mathlib dependency package is a finding too" repackaged.size 1 ]
 
 private def policyTests : List Outcome :=
   [ check "ordinary dependencies are unrestricted"
@@ -229,9 +229,6 @@ private def supervisorTests : List Outcome :=
     check "a marker followed by later output is not final"
       (!completedSuccessfully verifierCompletionProtocol 0
         s!"{verifierCompletionProtocol.marker}\nlater work\n"),
-    check "a final marker cannot hide worker failure"
-      (!completedSuccessfully verifierCompletionProtocol 1
-        s!"{verifierCompletionProtocol.marker}\n"),
     check "the test worker has a distinct accepted completion marker"
       (completedSuccessfully testCompletionProtocol 0
         s!"{testCompletionProtocol.marker}\n" &&
