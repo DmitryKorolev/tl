@@ -386,10 +386,14 @@ def drainWorklist (reverse : Std.HashMap Name (Array Name)) :
   | 0, _, _, _ => none
   | fuel + 1, cursor, axiomsByName, pending =>
     if h : cursor < pending.size then
-      let (dependency, axiomName) := pending[cursor]
-      let (axiomsByName, pending) :=
-        (reverse[dependency]?.getD #[]).foldl (propagateStep axiomName) (axiomsByName, pending)
-      drainWorklist reverse fuel (cursor + 1) axiomsByName pending
+      -- Plain `let`s, not a destructuring one: a pattern `let` elaborates to a
+      -- `match`, which makes the recursive step opaque to `split` and puts the
+      -- proofs in `Verify.Proofs` out of reach. The pair is read by `.1`/`.2`
+      -- for the same reason.
+      let entry := pending[cursor]'h
+      let stepped :=
+        (reverse[entry.1]?.getD #[]).foldl (propagateStep entry.2) (axiomsByName, pending)
+      drainWorklist reverse fuel (cursor + 1) stepped.1 stepped.2
     else some axiomsByName
 
 /-- Every enqueued pair is a distinct `(dependent, axiom)` whose dependent is a
