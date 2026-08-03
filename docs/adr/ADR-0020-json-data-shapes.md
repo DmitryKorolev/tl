@@ -552,10 +552,14 @@ surfaces cannot drift. Neither `ready` facet can widen the result: `ready` is th
 proved workable set (open, unblocked, non-epic, not deferred), so the
 closed-gate bypass that `--status`/`--stale`/`--deferred` carry on `list` has no
 counterpart there. Both halves of that shape rule are proved rather than
-sampled: filtering is a sublist of its input, so the rank survives it
-(`Tl.Cli.applyFacets_sublist`, and `applyFacets_take_sublist` for the `--limit`
-head), and every survivor of the facet fold is still in the kernel's `ready` set
-(`Tl.Cli.readyFacets_cannot_widen`, over the `State.readyFast_eq` bridge).
+sampled, of the named expression `ready` evaluates (`Tl.Cli.readyRanked`):
+filtering is a sublist of its input and a sublist of a ranked list is still
+ranked, so `count` is the post-filter total of the same queue and the rank
+survives it (`applyFacets_sublist`, `readyRanked_sorted`, with
+`readyRanked_take_prefix` making `items` a *prefix* of that filtered ranked
+list); and every survivor of the facet fold is still in the kernel's `ready` set
+(`readyRanked_cannot_widen`, over the `State.readyFast_eq` bridge — its
+view-construction hypothesis discharged by `readyRanked_cannot_widen_ofLoaded`).
 
 The other five `list` facets are deliberately **not** on `ready`:
 `--status open` would be redundant because every ready issue is open, while its
@@ -595,19 +599,30 @@ Composition:
 - **Different facets compose with AND** (each narrows). **Repeats within one
   facet are OR where an issue holds a single value (status / assignee /
   priority) and AND where it holds many (`--label`)** — an issue cannot be two
-  statuses but can carry two labels. Both halves of that rule are proved of the
-  implementation, not just sampled. Cross-facet: the fold's membership is
-  exactly pre-filter membership conjoined with every *active* facet's predicate
-  (`Tl.Cli.mem_applyFacets_iff`), which also settles the reading of an absent or
-  empty flag — inactive facets contribute nothing rather than matching nothing,
-  and `applyFacets_eq_self_of_inactive` sharpens that to list identity, so an
-  unused flag cannot reorder or dedupe the result either. Within one facet:
-  `labelFacet_pred_eq_true_iff` is the AND over exact label membership and
-  `assigneeFacet_pred_eq_true_iff` the OR over the single held assignee (an
-  unassigned issue matching neither — `assigneeFacet_pred_unassigned`). The two
-  shared facets also provably leave the closed gate standing
+  statuses but can carry two labels. **Cross-facet composition is proved of the
+  implementation; within one facet it is proved for the two facets `ready` and
+  `list` share (`--label` AND, `--assignee` OR) and sampled for
+  `--status`/`--priority`, whose facets are anonymous inline literals in
+  `cmdList` with no name to state a theorem about.** Cross-facet: the fold is
+  exactly a `List.filter` by the conjunction of every *active* facet's predicate
+  (`Tl.Cli.applyFacets_eq_filter`) — one statement pinning which rows survive
+  (`mem_applyFacets_iff`), in what order and with what multiplicity
+  (`applyFacets_sublist`; a deduplicating fold satisfies the sublist law but not
+  the characterization), and independently of the facet list's order
+  (`applyFacets_of_perm`). It also settles the reading of an absent or empty
+  flag — inactive facets contribute nothing rather than matching nothing, with
+  `applyFacets_eq_self_of_inactive` at list-identity strength — and its dual,
+  that a *supplied* flag is genuinely in play (`labelFacet_active_iff` /
+  `assigneeFacet_active_iff`), which rules out a silently ignored facet. Within
+  one facet: `labelFacet_pred_eq_true_iff` is the AND over exact label
+  membership and `assigneeFacet_pred_eq_true_iff` the OR over the single held
+  assignee (an unassigned issue matching neither —
+  `assigneeFacet_pred_unassigned`); `mem_readyFacets_iff` composes the pair into
+  the single statement `ready` and `list` both instantiate. The two shared
+  facets also provably leave the closed gate standing
   (`readyFacets_bypassGate_false`), the condition `facetsBypassGate_eq_true_iff`
-  characterizes.
+  characterizes — the gate `cmdList` consults, so sharing these facets with
+  `ready` cannot introduce a bypass into `list`'s default view.
 - A flag value is the next token or `--flag=value`; repeat the flag to add (no
   comma-lists). The facets inherit the uniform `tl` parser and add no parsing
   rules of their own — including no new short aliases, though the global `-p` ⇒

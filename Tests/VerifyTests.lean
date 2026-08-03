@@ -297,9 +297,11 @@ private def policyTests : List Outcome :=
         `Tl.Crdt.OrSet.presentElements_eq_ref,
         `Tl.Crdt.OrSet.entryLive_eq_ref,
         `Tl.Crdt.AssocList.ascending_of_sorted,
+        `Tl.Cli.applyFacets_eq_filter,
         `Tl.Cli.mem_applyFacets_iff,
         `Tl.Cli.applyFacets_sublist,
         `Tl.Cli.readyFacets_cannot_widen,
+        `Tl.Cli.readyRanked_cannot_widen,
         `Tl.Cli.labelFacet_pred_eq_true_iff,
         `Tl.Cli.assigneeFacet_pred_eq_true_iff ] ]
 

@@ -345,12 +345,17 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   bare HLC), dependencies +
                         --   canonical parent, the provenance trust block
                         --   (ADR-0003/0020). View.ofLoaded is the sole View
-                        --   constructor — the read path, the post-write echo,
-                        --   and doctor all derive the hoisted collections and
-                        --   their ViewIndex copies through it, so the fields
-                        --   cannot drift from the state they summarize and that
-                        --   relationship is proved once
-                        --   (View.rollup_ofLoaded/present_ofLoaded/edges_ofLoaded)
+                        --   constructor in production — the read path, the
+                        --   post-write echo, and doctor all derive the hoisted
+                        --   collections and their ViewIndex copies through it,
+                        --   so the fields cannot drift from the state they
+                        --   summarize and that relationship is proved once
+                        --   (View.rollup_ofLoaded/present_ofLoaded/edges_ofLoaded
+                        --   /issueData_ofLoaded, the last being the indexed field
+                        --   the read facets read). The structure constructor
+                        --   stays public: the test suite builds views field-by-
+                        --   field, so the "one constructor" rule is a property
+                        --   of the production call graph, not of the type
   Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-
                         --   width/bidi stripping; 1 KiB / 64 KiB bounds with
                         --   disclosed truncation) — applied on both render paths
@@ -373,20 +378,35 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   --deferred/--stale) via labelFacet/assigneeFacet/
                         --   applyFacets/filterSuffix, so the two surfaces cannot
                         --   drift (ADR-0020). That facet algebra is pure and
-                        --   total, so it is proved here rather than sampled:
-                        --   cross-facet AND-composition with inactive facets as
-                        --   no-ops (mem_applyFacets_iff, sharpened to list
-                        --   identity by applyFacets_eq_self_of_inactive),
-                        --   within-facet AND for --label and OR for --assignee
+                        --   total, so it is proved here rather than sampled,
+                        --   from one characterization: the fold is exactly a
+                        --   List.filter by the conjunction of every active
+                        --   facet's predicate (applyFacets_eq_filter), which
+                        --   pins membership (mem_applyFacets_iff), order and
+                        --   multiplicity (applyFacets_sublist), facet-list-order
+                        --   independence (applyFacets_of_perm), and the no-op
+                        --   reading of an absent flag at list-identity strength
+                        --   (applyFacets_eq_self_of_inactive) with its dual that
+                        --   a supplied flag is in play (labelFacet_active_iff /
+                        --   assigneeFacet_active_iff). Within-facet AND for
+                        --   --label and OR for --assignee
                         --   (labelFacet_pred_eq_true_iff /
-                        --   assigneeFacet_pred_eq_true_iff), order preservation
-                        --   (applyFacets_sublist), the gate stand-down condition
-                        --   (facetsBypassGate_eq_true_iff, discharged for
-                        --   `ready`'s pair by readyFacets_bypassGate_false), and
-                        --   the cross-layer bound that no facet widens `ready`
-                        --   (readyFacets_cannot_widen, via State.readyFast_eq;
-                        --   readyFacets_cannot_widen_ofLoaded discharges its
-                        --   rollup hypothesis from View.rollup_ofLoaded).
+                        --   assigneeFacet_pred_eq_true_iff, composed in
+                        --   mem_readyFacets_iff); the gate stand-down condition
+                        --   (facetsBypassGate_eq_true_iff, discharged for the
+                        --   shared pair by readyFacets_bypassGate_false — the
+                        --   gate is `list`'s, its only consumer). `ready`'s own
+                        --   post-facet queue is the named readyRanked, so the
+                        --   cross-layer bounds are about the expression cmdReady
+                        --   evaluates: no facet widens the proved ready set
+                        --   (readyRanked_cannot_widen, via State.readyFast_eq;
+                        --   readyRanked_cannot_widen_ofLoaded discharges its
+                        --   rollup hypothesis from View.rollup_ofLoaded), the
+                        --   survivors stay ranked (readyRanked_sorted, via
+                        --   ready_sorted) and --limit shows a prefix of them
+                        --   (readyRanked_take_prefix). The list-only --status/
+                        --   --priority facets are inline literals in cmdList and
+                        --   stay sampled by the CLI rows.
                         --   Write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows. Each
