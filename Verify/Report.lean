@@ -231,4 +231,22 @@ def analyze (cfg : Config) (o : Observation) : Report :=
         ++ axiomDeclarationFindings o
         ++ axiomDependencyFindings cfg o }
 
+/-- Assemble the whole run's evidence from the six scope observations and the
+    two inventory scans. The worker calls exactly this, so the verdict the
+    theorems in `Verify.Proofs` characterise is the verdict it ships: a scope
+    audited twice, or one left out, is a change to this function rather than an
+    invisible edit inside `runChecked`. -/
+def gateEvidenceOf (cfg : Config)
+    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (inventoryErrors unclaimedSources : Array String) : GateEvidence :=
+  { reports :=
+      { production := analyze cfg production
+        tests := analyze cfg tests
+        verifier := analyze cfg verifier
+        supervisor := analyze cfg supervisor
+        testSupervisor := analyze cfg testSupervisor
+        tooling := analyze cfg tooling }
+    inventoryErrors
+    unclaimedSources }
+
 end Tl.Verify

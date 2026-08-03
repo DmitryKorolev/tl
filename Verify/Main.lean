@@ -76,14 +76,6 @@ unsafe def runChecked : IO UInt32 := do
     (auditLayout.expectedSourceModules .tooling sourceInventories)
     toolingModules toolingModules (moduleRemedy := toolingModuleRemedy)
 
-  let reports : AuditedReports := {
-    production := analyze config productionObservation
-    tests := analyze config testObservation
-    verifier := analyze config verifierObservation
-    supervisor := analyze config launcherObservation
-    testSupervisor := analyze config testLauncherObservation
-    tooling := analyze config toolingObservation
-  }
   let unclaimed ← unclaimedSources root auditLayout
   let inventoryErrors :=
     productionInventory.errors "production"
@@ -94,7 +86,13 @@ unsafe def runChecked : IO UInt32 := do
       "Replace it with a regular in-tree directory or .lean file in the verifier source scope." ++
     toolingInventory.errors "tooling"
       "Replace it with a regular in-tree directory or .lean file in the tooling source scope."
-  let evidence : GateEvidence := { reports, inventoryErrors, unclaimedSources := unclaimed }
+  -- Named arguments: six same-typed observations are otherwise swappable, and a
+  -- scope audited twice would leave another entirely uninspected.
+  let evidence : GateEvidence := gateEvidenceOf config
+    (production := productionObservation) (tests := testObservation)
+    (verifier := verifierObservation) (supervisor := launcherObservation)
+    (testSupervisor := testLauncherObservation) (tooling := toolingObservation)
+    (inventoryErrors := inventoryErrors) (unclaimedSources := unclaimed)
   let errors := evidence.errors
   if !errors.isEmpty then
     for error in errors do IO.eprintln error
