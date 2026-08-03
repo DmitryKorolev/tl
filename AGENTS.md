@@ -144,7 +144,13 @@ comments; and the affix is not distinguishable from a hyphenated English
 compound — the affix followed by an ordinary word (`managed`, `aware`) matches,
 because the Crockford class still covers most letters. Such prose is reworded
 rather than registered: the registry means "synthetic ids", and filling it with
-English would erode what registering a token asserts.
+English would erode what registering a token asserts. And resolution applies
+the Crockford *symbol* aliases (`o`→`0`, `i`/`l`→`1`), so a hand-typed
+`tl-o231…` resolves while the canonical class does not match it; the class stays
+canonical because every id tl renders comes from an alphabet without those
+letters, so a copied id is always caught, while admitting them would match the
+project's own vocabulary and tax exactly the prose the previous limit says to
+reword.
 
 If a change adds a proved claim to the docs/overview.md table, add a landmark
 theorem for it to `Tl.Verify.landmarkTheorems` in the same change; that list is

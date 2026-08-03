@@ -134,17 +134,52 @@ if [ "${1:-}" = "--selftest" ]; then
   if printf 'a.lean:1:%s and %s\n' "$registered" "${affix}f01vn6s6n79wmqa8" | classify >/dev/null; then
     echo "selftest: classify stopped at the registered token on a mixed line"; fail=1
   fi
-  # The scan itself, against a tracked blob git would classify as binary: the
-  # arm that `-I` used to skip silently. Built through the same `scan` function
-  # the real run uses, so the two cannot drift.
-  probe_repo=$(mktemp -d)
+  # The scan itself, against tracked blobs git classifies as binary — the arm
+  # `-I` used to skip silently. Built through the same `scan` the real run uses,
+  # so the two cannot drift.
+  #
+  # `-C` sets the working directory, not the repository: an inherited GIT_DIR
+  # outranks it, so an un-scrubbed `git init`/`add` here would re-initialise and
+  # stage into the *caller's* repository. This gate only ever reads (ADR-0026),
+  # and the project already pins this variable set for its own git shell-outs.
+  # `core.excludesFile=/dev/null` keeps a personal global gitignore from
+  # excluding the probe and failing the gate on a clean tree.
+  pgit() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_NAMESPACE -u GIT_CEILING_DIRECTORIES \
+        git -c core.excludesFile=/dev/null -C "$probe_repo" "$@"
+  }
+  # Physical path: macOS `mktemp -d` hands back a symlinked /var/... while git
+  # reports the resolved /private/var/..., and the containment check below
+  # compares them literally.
+  probe_repo=$(cd "$(mktemp -d)" && pwd -P)
   trap 'rm -rf "$probe_repo"' EXIT
-  git -C "$probe_repo" init -q
-  printf 'lead\000 %sf01vn6s6n79wmqa8 trail\n' "$affix" > "$probe_repo/blob.bin"
-  git -C "$probe_repo" add -A
-  if ! scan "$probe_repo" . >/dev/null 2>&1; then
-    echo "selftest: the scan missed a token in a binary-classified tracked file"; fail=1
-  fi
+  pgit init -q
+  # Prove the probe is talking to itself before trusting anything it reports.
+  probe_gitdir=$(pgit rev-parse --absolute-git-dir 2>/dev/null || echo "")
+  case "$probe_gitdir" in
+    "$probe_repo"/*) ;;
+    *) echo "selftest: the probe repo resolved to '$probe_gitdir', not inside $probe_repo"; fail=1 ;;
+  esac
+  # A NUL byte and a high byte: the first is git's binary sniff, the second is
+  # what `LC_ALL=C` is for. Plus a `.gitattributes binary` marking, which is a
+  # different mechanism from the sniff and must not narrow this gate either.
+  printf 'lead\000\303\277 %sf01vn6s6n79wmqa8 trail\n' "$affix" > "$probe_repo/sniffed.bin"
+  printf 'marked %sf01vn6s6n79wmqa8\n' "$affix" > "$probe_repo/marked.dat"
+  printf '*.dat binary\n' > "$probe_repo/.gitattributes"
+  pgit add -A
+  # Through `classify`, not the exit status: plain `git grep` without `-a` still
+  # exits 0 on a binary hit, printing "Binary file X matches" — a line carrying
+  # no token, which `classify` would pass as clean. Testing the status alone
+  # would be blind to exactly that regression.
+  for probe_file in sniffed.bin marked.dat; do
+    probe_out=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+      git -c core.excludesFile=/dev/null -C "$probe_repo" grep -anEi "$pattern" -- "$probe_file" || true)
+    if printf '%s\n' "$probe_out" | classify >/dev/null; then
+      echo "selftest: the scan missed a token in $probe_file (binary-classified)"; fail=1
+    fi
+  done
   files=$(scope_size)
   [ "$files" -gt 0 ] || { echo "selftest: the scan pathspec selected no files"; fail=1; }
   if [ "$fail" -ne 0 ]; then
