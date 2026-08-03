@@ -118,15 +118,24 @@ private def optStrField (j : Json) (sid k : String) : Except Tl.Error (Option St
   | .ok (Json.str s) => .ok (some s)
   | .ok _ => .error (malformed s!"import record {sid}: \"{k}\" must be a string")
 
-/-- An optional ISO-8601 UTC instant field: absent ⇒ `none`; present-but-
-    unparseable ⇒ `none` with a disclosure (the caller assigns the fallback). -/
+/-- An optional ISO-8601 UTC instant field: absent or `null` ⇒ `none`, silently,
+    because most records carry no provenance at all and disclosing that would
+    bury the disclosures that matter; anything else *present* ⇒ `none` with a
+    disclosure (the caller assigns the fallback).
+
+    A present, ill-typed value discloses rather than throwing, unlike the other
+    optional fields: provenance is advisory metadata, so a bad one degrades to
+    the fallback instead of refusing the record. It must not degrade *silently* —
+    that is the one case where the importer would otherwise drop a value the
+    record actually carried without saying so. -/
 private def optInstantField (j : Json) (sid k : String) : Option Nat × List String :=
   match j.getObjVal? k with
+  | .error _ | .ok Json.null => (none, [])
   | .ok (Json.str s) =>
     match Time.epochMsOfIso? s with
     | some ms => (some ms, [])
     | none => (none, [s!"import record {sid}: \"{k}\" ('{s}') is not a canonical ISO-8601 UTC instant — assigned a deterministic fallback time"])
-  | _ => (none, [])
+  | .ok _ => (none, [s!"import record {sid}: \"{k}\" is not a string — assigned a deterministic fallback time"])
 
 /-- A `List String` field (labels / blockedBy / related): absent ⇒ `[]`; a
     non-array, or a non-string element, is malformed. -/

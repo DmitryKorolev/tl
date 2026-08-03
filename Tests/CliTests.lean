@@ -5210,6 +5210,34 @@ def cliImportTests : IO (List Outcome) := do
     o := o ++ [row,
       check s!"{name} — and leaves no freshly-created .tl/"
         (!(← (System.FilePath.mk dir).pathExists)) s!"{dir} exists after a refused import"]
+  -- Provenance timestamps are advisory, so a bad one degrades to the
+  -- deterministic fallback rather than refusing the record — but which input
+  -- classes degrade *silently* is a contract, not an accident. Absent and null
+  -- are silent on purpose (most records carry no provenance, and disclosing
+  -- that would bury the disclosures that matter); every other present value
+  -- discloses, because dropping a value the record actually carried without
+  -- saying so is the one case that would be a silent loss.
+  let discloses (needle : String) : Json → Bool := fun j =>
+    (jArr j "disclosures").any fun d =>
+      ((d.getStr?.toOption.getD "").splitOn needle).length > 1
+  let provDir (tag content : String) : IO (String × String) := do
+    let root ← IO.FS.createTempDir
+    IO.FS.writeFile (root / s!"{tag}.jsonl") content
+    pure ((root / s!"{tag}.jsonl").toString, (root / ".tl").toString)
+  for (tag, field, klass, value, shouldDisclose) in
+      [ ("pa", "createdAt", "absent", "", false),
+        ("pb", "createdAt", "null", ",\"createdAt\":null", false),
+        ("pc", "createdAt", "a number", ",\"createdAt\":5", true),
+        ("pd", "createdAt", "an unparseable string", ",\"createdAt\":\"not-a-date\"", true),
+        ("pe", "closedAt", "an array", ",\"status\":\"done\",\"closedAt\":[1]", true),
+        ("pf", "claimedAt", "a bool", ",\"status\":\"in_progress\",\"claimedAt\":true", true) ] do
+    let line := "{\"id\":\"P\",\"title\":\"t\"" ++ value ++ "}\n"
+    let (fp, dir) ← provDir tag line
+    o := o ++ [← expectData
+      s!"import: {field} as {klass} {if shouldDisclose then "is disclosed" else "stays silent"}"
+      ["import", fp, "--dir", dir]
+      (fun j => jNat j "issues" == some 1 &&
+        discloses field j == shouldDisclose)]
   return o
 
 /-- `tl import` granular resource bounds (ADR-0005 §two distinct safety gates,
