@@ -344,7 +344,13 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   compares the full Stamp — the LWW order — never the
                         --   bare HLC), dependencies +
                         --   canonical parent, the provenance trust block
-                        --   (ADR-0003/0020)
+                        --   (ADR-0003/0020). View.ofLoaded is the sole View
+                        --   constructor — the read path, the post-write echo,
+                        --   and doctor all derive the hoisted collections and
+                        --   their ViewIndex copies through it, so the fields
+                        --   cannot drift from the state they summarize and that
+                        --   relationship is proved once
+                        --   (View.rollup_ofLoaded/present_ofLoaded/edges_ofLoaded)
   Sanitize.lean         --   the ADR-0014 render sanitizer (ANSI/control/zero-
                         --   width/bidi stripping; 1 KiB / 64 KiB bounds with
                         --   disclosed truncation) — applied on both render paths
@@ -366,7 +372,22 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   `list` (those plus --status/--priority/--blocked/
                         --   --deferred/--stale) via labelFacet/assigneeFacet/
                         --   applyFacets/filterSuffix, so the two surfaces cannot
-                        --   drift (ADR-0020); write guards run inside the
+                        --   drift (ADR-0020). That facet algebra is pure and
+                        --   total, so it is proved here rather than sampled:
+                        --   cross-facet AND-composition with inactive facets as
+                        --   no-ops (mem_applyFacets_iff, sharpened to list
+                        --   identity by applyFacets_eq_self_of_inactive),
+                        --   within-facet AND for --label and OR for --assignee
+                        --   (labelFacet_pred_eq_true_iff /
+                        --   assigneeFacet_pred_eq_true_iff), order preservation
+                        --   (applyFacets_sublist), the gate stand-down condition
+                        --   (facetsBypassGate_eq_true_iff, discharged for
+                        --   `ready`'s pair by readyFacets_bypassGate_false), and
+                        --   the cross-layer bound that no facet widens `ready`
+                        --   (readyFacets_cannot_widen, via State.readyFast_eq;
+                        --   readyFacets_cannot_widen_ofLoaded discharges its
+                        --   rollup hypothesis from View.rollup_ofLoaded).
+                        --   Write guards run inside the
                         --   locked transact build (not-claimable, not-closeable,
                         --   the idempotent re-close); doctor's check rows. Each
                         --   write verb brackets transact via Sync.AutoSync

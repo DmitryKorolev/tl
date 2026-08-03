@@ -551,7 +551,11 @@ predicates and the human `[filtered by …]` echo are literally shared code
 surfaces cannot drift. Neither `ready` facet can widen the result: `ready` is the
 proved workable set (open, unblocked, non-epic, not deferred), so the
 closed-gate bypass that `--status`/`--stale`/`--deferred` carry on `list` has no
-counterpart there.
+counterpart there. Both halves of that shape rule are proved rather than
+sampled: filtering is a sublist of its input, so the rank survives it
+(`Tl.Cli.applyFacets_sublist`, and `applyFacets_take_sublist` for the `--limit`
+head), and every survivor of the facet fold is still in the kernel's `ready` set
+(`Tl.Cli.readyFacets_cannot_widen`, over the `State.readyFast_eq` bridge).
 
 The other five `list` facets are deliberately **not** on `ready`:
 `--status open` would be redundant because every ready issue is open, while its
@@ -591,7 +595,19 @@ Composition:
 - **Different facets compose with AND** (each narrows). **Repeats within one
   facet are OR where an issue holds a single value (status / assignee /
   priority) and AND where it holds many (`--label`)** — an issue cannot be two
-  statuses but can carry two labels.
+  statuses but can carry two labels. Both halves of that rule are proved of the
+  implementation, not just sampled. Cross-facet: the fold's membership is
+  exactly pre-filter membership conjoined with every *active* facet's predicate
+  (`Tl.Cli.mem_applyFacets_iff`), which also settles the reading of an absent or
+  empty flag — inactive facets contribute nothing rather than matching nothing,
+  and `applyFacets_eq_self_of_inactive` sharpens that to list identity, so an
+  unused flag cannot reorder or dedupe the result either. Within one facet:
+  `labelFacet_pred_eq_true_iff` is the AND over exact label membership and
+  `assigneeFacet_pred_eq_true_iff` the OR over the single held assignee (an
+  unassigned issue matching neither — `assigneeFacet_pred_unassigned`). The two
+  shared facets also provably leave the closed gate standing
+  (`readyFacets_bypassGate_false`), the condition `facetsBypassGate_eq_true_iff`
+  characterizes.
 - A flag value is the next token or `--flag=value`; repeat the flag to add (no
   comma-lists). The facets inherit the uniform `tl` parser and add no parsing
   rules of their own — including no new short aliases, though the global `-p` ⇒

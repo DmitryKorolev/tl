@@ -296,7 +296,12 @@ private def policyTests : List Outcome :=
         `Tl.Kernel.State.readyFast_eq,
         `Tl.Crdt.OrSet.presentElements_eq_ref,
         `Tl.Crdt.OrSet.entryLive_eq_ref,
-        `Tl.Crdt.AssocList.ascending_of_sorted ] ]
+        `Tl.Crdt.AssocList.ascending_of_sorted,
+        `Tl.Cli.mem_applyFacets_iff,
+        `Tl.Cli.applyFacets_sublist,
+        `Tl.Cli.readyFacets_cannot_widen,
+        `Tl.Cli.labelFacet_pred_eq_true_iff,
+        `Tl.Cli.assigneeFacet_pred_eq_true_iff ] ]
 
 private def supervisorTests : List Outcome :=
   [ check "status zero without the final marker is rejected"
