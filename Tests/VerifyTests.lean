@@ -112,16 +112,23 @@ private def reportTests : List Outcome :=
     clean with
       localModules := clean.localModules.push `Verify.Helper
       moduleRemedy := "edit the typed scope registry" }
-  let sentinelReports : AuditedReports := {
-    production := { errors := #["production sentinel"] }
-    tests := { errors := #["tests sentinel"] }
-    verifier := { errors := #["verifier sentinel"] }
-    supervisor := { errors := #["supervisor sentinel"] }
-    testSupervisor := { errors := #["test supervisor sentinel"] }
-    tooling := { errors := #["tooling sentinel"] } }
-  let gateErrors := ({ reports := sentinelReports
-                       inventoryErrors := #["inventory sentinel"]
-                       unclaimedSources := #["Bench"] } : GateEvidence).errors
+  -- Assembled through `gateEvidenceOf`, the function the worker calls, so the
+  -- rows exercise the shipped wiring and not a hand-built `GateEvidence`: which
+  -- observation lands in which named field, and which of the two same-typed
+  -- `Array String` arguments becomes the inventory arm rather than the
+  -- unclaimed-source arm. `analyzedGateEvidence_clean_iff` cannot see either —
+  -- it characterises only the empty verdict, and both arrays reach it as
+  -- `= #[]`.
+  let scopeFailure (scope : String) : Observation :=
+    { clean with scope, evidence := { clean.evidence with
+        replayError? := some s!"{scope} sentinel" } }
+  let gateErrors := (gateEvidenceOf cfg
+    (production := scopeFailure "production") (tests := scopeFailure "tests")
+    (verifier := scopeFailure "verifier") (supervisor := scopeFailure "supervisor")
+    (testSupervisor := scopeFailure "test supervisor")
+    (tooling := scopeFailure "tooling")
+    (inventoryErrors := #["inventory sentinel"])
+    (unclaimedSources := #["Bench"])).errors
   [ checkEq "the base fixture is clean, so every row below isolates its own defect"
       (analyze cfg clean).errors.size 0,
     check "a scope that selected no declarations is not silently vacuous"
@@ -132,26 +139,42 @@ private def reportTests : List Outcome :=
       (mentions noImportEdges "no direct import edges were read"),
     check "vacuity guidance says the findings below cannot be trusted"
       (mentions noDecls "vacuous"),
+    check "a vacuous scope says to restore the selection"
+      (mentions noDecls "Restore the selection before trusting this run"),
     check "a named scope with no modules at all is rejected as vacuous"
       (mentions emptyScope "imported no first-party modules"),
+    check "an empty scope says to restore its roots and inventory"
+      (mentions emptyScope "Restore its registered roots and source inventory"),
     check "a long finding list keeps its first entries"
       (mentions truncated "Absent0"),
     check "a long finding list discloses the count it elided"
       (mentions truncated "… and 5 more"),
     check "a landmark degraded into an axiom is named as one"
       (mentions axiomLandmark "is an axiom"),
+    check "a degraded landmark teaches the retire-together fix"
+      (mentions axiomLandmark "Restore the theorem, or retire the proved claim and its landmark together"),
     check "dropping landmark observations cannot create an empty successful loop"
       (mentions droppedLandmarks "did not preserve the policy list"),
+    check "a dropped landmark policy says to restore the one-for-one lookup"
+      (mentions droppedLandmarks "Restore the one-for-one landmark lookup"),
     check "a scope mismatch uses its scope-specific repair instruction"
       (mentions customRemedy "edit the typed scope registry"),
-    checkEq "typed gate evidence retains all scope, inventory, and claim findings"
+    checkEq "the shipped assembly retains all scope, inventory, and claim findings"
       gateErrors.size 8,
-    check "typed gate evidence retains every named scope"
+    check "the shipped assembly audits each observation under its own scope name"
       (["production", "tests", "verifier", "supervisor", "test supervisor", "tooling"].all fun scope =>
-        gateErrors.any (·.contains s!"{scope} sentinel")),
-    check "typed gate evidence retains inventory and unclaimed-source findings"
+        gateErrors.any fun error =>
+          error.contains s!"trust verification ({scope}): {scope} sentinel"),
+    check "the shipped assembly retains inventory and unclaimed-source findings"
       (gateErrors.any (·.contains "inventory sentinel") &&
        gateErrors.any (·.contains "Bench")),
+    check "the unclaimed-source arm, not the inventory arm, carries the sources"
+      (gateErrors.any fun error =>
+        error.contains "Bench" && error.contains "belong to no audited scope" &&
+          error.contains "Move regular sources under an audited directory"),
+    check "the inventory arm stays verbatim, unwrapped by the unclaimed-source message"
+      (gateErrors.any fun error =>
+        error == "inventory sentinel"),
     check "an environment/replay failure is retained"
       (mentions environmentFailure "kernel replay rejected Bad.proof"),
     check "an unimported source module is named" (mentions missing "Tl.Kernel.Missing"),
@@ -159,10 +182,16 @@ private def reportTests : List Outcome :=
     check "an unexpected cross-scope module is named"
       (mentions unexpected "Tests.Accidental"),
     check "an absent landmark is named" (mentions absentLandmark "claimA is absent"),
+    check "an absent landmark teaches the retire-together fix"
+      (mentions absentLandmark "Restore it, or retire the proved claim and its landmark together"),
     check "a changed landmark reports its actual kind"
       (mentions changedLandmark "non-theorem declaration"),
     check "a repeated landmark is rejected" (mentions duplicateLandmark "duplicate landmark"),
+    check "a repeated landmark teaches the one-landmark-per-claim rule"
+      (mentions duplicateLandmark "Give each documented proved claim its own landmark exactly once"),
     check "a first-party axiom is named" (mentions localAxiom "unproved"),
+    check "a first-party axiom teaches the carried-assumption fix"
+      (mentions localAxiom "record the residual as an explicit carried assumption"),
     check "a transitive forbidden axiom is named" (mentions sorryDependency "sorryAx"),
     check "a transitive forbidden axiom teaches the fix"
       (mentions sorryDependency "Finish the proof") ]
