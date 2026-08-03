@@ -77,12 +77,26 @@ location as claimed cannot hide it from inspection. `lakefile.lean` remains a
 distinct fixed configuration exemption because Lake elaborates it before the
 gate exists.
 
-The verifier is outside the TCB, so its decisions are *tested*, not claimed as
-proved. Required evidence is typed rather than accumulated in optional clean
+The verifier is outside the TCB, and its tier is split. Its *verdict logic* —
+the pure functions turning already-collected evidence into a pass/fail
+decision — is **proved** in `Verify/Proofs.lean`: `analyze` and the run-wide
+assembly above it are characterised as if-and-only-ifs against a `GateClean`
+structure that enumerates every condition a scope can be reported for, and the
+ADR-0009 import audit is characterised both for silence and for emitting one
+finding per rejected edge. The supervision status rule, the import-allowance
+case split, and the replay dependency step carry one-directional implications
+only. The *collection* of that evidence — declaration selection, the replay
+closure walk, filesystem inventory, process supervision — stays **tested**.
+Neither half is one of the product's proved claims, so neither appears in the
+table above and neither gets a landmark; that split and its reasoning are
+recorded in [ADR-0026](adr/ADR-0026-continuous-integration.md) and
+[the codebase map](codebase-map.md).
+Required evidence is typed rather than accumulated in optional clean
 arrays: import audit, replay, expected landmarks, six named scope reports,
 inventory findings, typed source-scope ownership, and unclaimed sources must all
 reach the verdict.
-`Tests/VerifyTests.lean` covers each report branch, source inventory
+`Tests/VerifyTests.lean` covers each report branch's message and remedy, the
+cleanliness of its own base fixture, source inventory
 and symlink refusal, the pinned direct-dependency policy and its violation
 findings, the scope-claim check, stored-body axiom propagation, an ill-typed
 theorem that kernel replay must reject, and the supervision decision driven

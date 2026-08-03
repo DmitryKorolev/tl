@@ -445,8 +445,8 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
                         --   decision applied to a spawned worker
   Proofs.lean           --   verdict-logic theorems: GateClean + analyze_clean_iff
                         --   per scope, the gate-wide evidence characterisation,
-                        --   ADR-0009 traversal completeness, the supervision
-                        --   status rule, the replay dependency cone
+                        --   ADR-0009 traversal completeness and per-edge count,
+                        --   the supervision status/marker rule, one replay step
   Launcher.lean         --   minimal supervisor requiring the worker's final marker
   TestLauncher.lean     --   distinct minimal launcher for the test-worker marker
 
@@ -462,28 +462,45 @@ build-time mechanism that checks the proved tier's trust boundary and is
 itself inspected as a separate scope. Its tier is split, deliberately:
 
 - The **verdict logic is proved**, in `Verify/Proofs.lean`. `analyze`,
-  `AuditedReports.errors`, `GateEvidence.errors`, `importViolations`,
-  `directImportAllowed`, `completedSuccessfully`, and `replayDependencies` are
-  total pure functions of already-collected evidence, so principle 1 applies to
-  them exactly as it applies to the kernel: a `GateClean` structure enumerates
-  every condition `analyze` can report, and `analyze_clean_iff` proves a
-  scope's finding array is empty if and only if all of them hold. Example rows
-  cannot establish that, because the risk being managed is an arm that stops
-  reporting.
+  `AuditedReports.errors`, `GateEvidence.errors`, `gateEvidenceOf`, and
+  `importViolations` are total pure functions of already-collected evidence, so
+  principle 1 applies to them exactly as it applies to the kernel: a
+  `GateClean` structure enumerates every condition `analyze` can report, and
+  `analyze_clean_iff` proves a scope's finding array is empty if and only if
+  all of them hold; `importViolations_isEmpty_iff` and
+  `importViolations_size_eq` characterise the ADR-0009 traversal's silence and
+  its one-finding-per-rejected-edge count. Example rows cannot establish that,
+  because the risk being managed is an arm that stops reporting.
+- Three further functions carry **one-directional** implications, not
+  characterisations, and the docs should not be read as claiming more:
+  `directImportAllowed_cases` (allowed without the first-party escape implies
+  one of the two recorded reasons), `completedSuccessfully_exitZero` plus
+  `completedSuccessfully_markerFinal` (an accepted run had status zero *and*
+  printed the marker as its last nonempty line), and
+  `replayDependencies_superset` with `replayDependencies_inductiveSiblings`
+  (one replay step enqueues every constant the stored body uses, plus an
+  inductive's mutual siblings — the fixed-point walk in the
+  `partial def replayClosure` is not proved).
 - The **collection of that evidence stays tested**. `Verify/Environment.lean`
   reads Lean's stored module and declaration data, walks the filesystem, and
-  replays declarations through the kernel; `Tests/VerifyTests.lean` and
+  replays declarations through the kernel; nothing in `Verify/Proofs.lean` says
+  that `o.decls` is a scope's *complete* declaration set or that
+  `replayClosure` reached a fixed point. `Tests/VerifyTests.lean` and
   `Tests/VerifyLoadedTests.lean` cover those branches and the adversarial
-  composition paths described above, together with what a theorem about array
-  emptiness cannot see — the wording each finding uses to teach its fix, the
-  truncation disclosure, and the summarize limit.
+  composition paths described above, together with what the theorems cannot
+  see — the wording each finding uses to teach its fix, the truncation
+  disclosure, the summarize limit, and that the test file's own base
+  observation is clean.
 
 These theorems get **no** entry in `Tl.Verify.landmarkTheorems` and **no** row
 in the [overview](overview.md) proved-claims table. Landmarks exist to stop the
 *product's* proved claims from silently shrinking; the gate's own internal
 correctness is not a product claim, and listing it there would make the
 landmark set mean two different things
-([ADR-0026](adr/ADR-0026-continuous-integration.md)). The efficiency tiering
+([ADR-0026](adr/ADR-0026-continuous-integration.md)). They are instead kept from
+being silently deleted by `pinnedVerdictLogicTheorems` in
+`Tests/VerifyTests.lean`, which names each one so that retiring a theorem is a
+compile error. The efficiency tiering
 that backs the proved tier (the `*Fast` refinements, `HashMapView`, and the
 ratio-asserted regression net) is recorded in
 [ADR-0023](adr/ADR-0023-efficiency-tiering-and-prevention.md) and

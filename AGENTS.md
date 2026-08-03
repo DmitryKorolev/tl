@@ -87,10 +87,13 @@ for the decisions and their rationale, read the ADRs in
   initializer as a composed no-execution/supervision canary.
   Its *verdict logic* — the pure functions deciding whether a scope, and then
   the whole run, passes — is **proved** in `Verify/Proofs.lean` under principle 1
-  rather than sampled with example rows. Those theorems deliberately get no
-  landmark and no docs/overview.md row: landmarks guard the *product's* proved
-  claims, not the gate's own internals. The split and its reasoning are recorded
-  in [docs/codebase-map.md](docs/codebase-map.md) and
+  rather than sampled with example rows; the evidence *collection* those
+  functions consume stays tested. Those theorems deliberately get no landmark
+  and no docs/overview.md row: landmarks guard the *product's* proved claims,
+  not the gate's own internals. They are instead kept from silent deletion by
+  `pinnedVerdictLogicTheorems` in `Tests/VerifyTests.lean`. The split, what is
+  characterised exactly, and what is only one-directional are recorded in
+  [docs/codebase-map.md](docs/codebase-map.md) and
   [ADR-0026](docs/adr/ADR-0026-continuous-integration.md).
 - Tests (outside the TCB) validate the compiled binary: round-trip
   serialization (`parse ∘ render = id`), the differential import check
