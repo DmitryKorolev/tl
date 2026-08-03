@@ -79,6 +79,19 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
   let reportNames := declarationNamesOf env #[`Verify.Report]
   let reportDecls ← declarationsOf env #[`Verify.Report] {}
   let reportRows := directImportRows env #[`Verify.Report]
+  -- Truncation and early exit are what the ADR-0009 proofs cannot see: they
+  -- characterise the traversal over the rows it is *handed*, so the collector
+  -- that produces those rows has to be pinned separately. A first-row-only
+  -- collector would still report a nonzero `importEdges`, so the vacuity arm
+  -- cannot catch it either.
+  let multiSel := #[`Verify.Report, `Verify.Policy, `Verify.Environment]
+  let multiRows := directImportRows env multiSel
+  -- Local to this test, never the shipped policy: it forbids everything the
+  -- first selected module happens not to import, so the violation is
+  -- contributed by a row that is not the first.
+  let laterRowPolicy : ImportPolicy := { ordinaryPrefixes := #[`Init, `Std], mathlibModules := #[] }
+  let laterRowFindings := importViolations laterRowPolicy "collector sentinel"
+    (#[`Verify.Report].foldl (·.insert ·) (∅ : Std.HashSet Name)) multiRows
   let analyzeClosure := replayClosure env #[`Tl.Verify.analyze]
   let projectRoot ← projectOLeanRoot
   let reportOLean ← realPathNormalized (← findOLean `Verify.Report)
@@ -121,6 +134,12 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
     check "loaded observation wires transitive axioms into declarations"
       (stateObservation.decls.any fun decl =>
         decl.name == `Tl.Kernel.State.merge_comm && decl.axioms.contains `propext),
+    checkEq "the stored import traversal returns one row per selected module"
+      multiRows.size multiSel.size,
+    check "every selected module contributes a row"
+      (multiSel.all fun name => multiRows.any fun (rowName, _) => rowName == name),
+    check "a forbidden edge after an allowed row is still reported"
+      (laterRowFindings.any fun error => (error.splitOn "Verify.Policy").length > 1),
     check "loaded observation retains the import-audit result"
       (stateObservation.evidence.importErrors.contains "injected import-audit finding"),
     check "loaded observation retains the replay-audit result"

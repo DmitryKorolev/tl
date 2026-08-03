@@ -93,14 +93,16 @@ unsafe def runChecked : IO UInt32 := do
     (verifier := verifierObservation) (supervisor := launcherObservation)
     (testSupervisor := testLauncherObservation) (tooling := toolingObservation)
     (inventoryErrors := inventoryErrors) (unclaimedSources := unclaimed)
-  let errors := evidence.errors
-  if !errors.isEmpty then
-    for error in errors do IO.eprintln error
-    return 1
-
-  IO.println s!"trust verification: ok; inspected production={productionObservation.decls.size}, tests={testObservation.decls.size}, verifier={verifierObservation.decls.size}, verifier-supervisor={launcherObservation.decls.size}, test-supervisor={testLauncherObservation.decls.size}, tooling={toolingObservation.decls.size} declarations; safe total dependency cones independently replay-validated; landmarks={productionObservation.landmarks.size}"
-  IO.println verifierCompletionProtocol.marker
-  return 0
+  -- No branch here on purpose: `workerVerdict` decides, and is characterised in
+  -- `Verify.Proofs`. Both outcomes then execute the same three lines, so the
+  -- emission path CI exercises on every clean run is the one that runs on a
+  -- failure too.
+  let verdict := workerVerdict
+    s!"trust verification: ok; inspected production={productionObservation.decls.size}, tests={testObservation.decls.size}, verifier={verifierObservation.decls.size}, verifier-supervisor={launcherObservation.decls.size}, test-supervisor={testLauncherObservation.decls.size}, tooling={toolingObservation.decls.size} declarations; safe total dependency cones independently replay-validated; landmarks={productionObservation.landmarks.size}"
+    verifierCompletionProtocol.marker evidence
+  for diagnostic in verdict.diagnostics do IO.eprintln diagnostic
+  for line in verdict.report do IO.println line
+  return verdict.status
 
 def operationalError (error : IO.Error) : String :=
   s!"trust verification: could not complete semantic inspection: {error}. Fix the named module/path or rebuild its .olean, then rerun `lake build tlverify --wfail` and `lake exe tlverify`."

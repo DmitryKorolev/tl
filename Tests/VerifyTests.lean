@@ -31,6 +31,11 @@ private def pinnedVerdictLogicTheorems : Unit :=
   let _ := @propagatedAxioms_complete
   let _ := @propagatedAxioms_closed
   let _ := @propagationFindings_eq_empty_iff
+  let _ := @workerVerdict_status_zero_iff
+  let _ := @workerVerdict_marker_iff
+  let _ := @workerVerdict_marker_last
+  let _ := @workerVerdict_diagnostics
+  let _ := @workerVerdict_marker_iff_clean
   ()
 
 private def cfg : Config :=

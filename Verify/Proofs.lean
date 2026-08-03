@@ -533,6 +533,62 @@ theorem analyzedGateEvidence_clean_iff (cfg : Config)
   rw [analyze_clean_iff, analyze_clean_iff, analyze_clean_iff, analyze_clean_iff,
     analyze_clean_iff, analyze_clean_iff]
 
+/-! ### The worker's verdict-to-exit decision
+
+`workerVerdict` is the last step of the gate that is not IO: findings in, and
+(what to print, where, and what to return) out. Characterising it here is what
+lets `runChecked` be branch-free, so the emission path a clean CI run exercises
+is the same one a failing run takes. -/
+
+/-- Status zero exactly when there is nothing to report. -/
+theorem workerVerdict_status_zero_iff (summary marker : String) (evidence : GateEvidence) :
+    (workerVerdict summary marker evidence).status = 0 ↔ evidence.errors = #[] := by
+  unfold workerVerdict
+  by_cases h : evidence.errors = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]; exact iff_of_false nofun h
+
+/-- The completion marker is emitted exactly when there is nothing to report, so
+    it cannot accompany a failing run — the supervisor's acceptance rule
+    (`completedSuccessfully_exitZero`) is only meaningful because of this. -/
+theorem workerVerdict_marker_iff (summary marker : String) (evidence : GateEvidence) :
+    marker ∈ (workerVerdict summary marker evidence).report ↔ evidence.errors = #[] := by
+  unfold workerVerdict
+  by_cases h : evidence.errors = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]
+    exact iff_of_true (List.mem_toArray.mpr (List.Mem.tail _ (List.Mem.head _))) h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+    exact iff_of_false (Array.not_mem_empty marker) h
+
+/-- Every finding reaches the diagnostic stream; none is dropped on the way out. -/
+theorem workerVerdict_diagnostics (summary marker : String) (evidence : GateEvidence)
+    (h : evidence.errors ≠ #[]) :
+    (workerVerdict summary marker evidence).diagnostics = evidence.errors := by
+  unfold workerVerdict
+  rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+
+/-- The marker is the *last* line, so a future edit cannot reorder the summary
+    after it — which is what `completedSuccessfully_markerFinal` requires of a
+    run the supervisor accepts. -/
+theorem workerVerdict_marker_last (summary marker : String) (evidence : GateEvidence)
+    (h : evidence.errors = #[]) :
+    (workerVerdict summary marker evidence).report = #[summary, marker] := by
+  unfold workerVerdict
+  rw [if_pos (Array.isEmpty_iff.mpr h)]
+
+/-- The payoff: the gate's whole decision, end to end in the pure tier. The
+    marker is printed exactly when all six scopes are `GateClean` and both
+    inventory scans are silent. -/
+theorem workerVerdict_marker_iff_clean (summary marker : String) (cfg : Config)
+    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (inventoryErrors unclaimedSources : Array String) :
+    marker ∈ (workerVerdict summary marker (gateEvidenceOf cfg production tests verifier
+        supervisor testSupervisor tooling inventoryErrors unclaimedSources)).report ↔
+      GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
+        ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor ∧ GateClean cfg tooling
+        ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
+  rw [workerVerdict_marker_iff, analyzedGateEvidence_clean_iff]
+
 /-! ### The ADR-0009 direct-import audit
 
 `importViolations` is a nested imperative loop, so its silence is only

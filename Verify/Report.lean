@@ -245,11 +245,38 @@ def analyze (cfg : Config) (o : Observation) : Report :=
         ++ axiomDeclarationFindings o
         ++ axiomDependencyFindings cfg o }
 
+/-- What the worker sends to each stream, and what it returns. -/
+structure WorkerVerdict where
+  diagnostics : Array String
+  report : Array String
+  status : UInt32
+  deriving DecidableEq
+
+/-- The whole verdict-to-exit decision, as a pure total function.
+
+    Naming it is what removes the last unproved branch from the worker: with
+    the decision here, `runChecked` emits `diagnostics`, emits `report`, and
+    returns `status` unconditionally, so the lines CI exercises on every clean
+    run are the same lines that run on a failure. A branch there would be the
+    one arm no test reaches, guarding the outcome the project can least afford
+    to get wrong — a silently green trust gate. -/
+def workerVerdict (summary marker : String) (evidence : GateEvidence) : WorkerVerdict :=
+  let errors := evidence.errors
+  if errors.isEmpty then { diagnostics := #[], report := #[summary, marker], status := 0 }
+  else { diagnostics := errors, report := #[], status := 1 }
+
 /-- Assemble the whole run's evidence from the six scope observations and the
     two inventory scans. The worker calls exactly this, so the verdict the
     theorems in `Verify.Proofs` characterise is the verdict it ships: a scope
-    audited twice, or one left out, is a change to this function rather than an
-    invisible edit inside `runChecked`. -/
+    audited twice, or one left out *of this function*, makes
+    `analyzedGateEvidence_clean_iff` false rather than merely unproved, so the
+    build cannot go green on it.
+
+    What that does not cover is the call site. The six parameters share a type,
+    so passing `testObservation` into `production` compiles, leaves a scope
+    unaudited, and no theorem or test sees it — named arguments at the call site
+    are the mitigation, and the residual is the recorded verifier-bootstrap
+    assumption in docs/overview.md, not something proved here. -/
 def gateEvidenceOf (cfg : Config)
     (production tests verifier supervisor testSupervisor tooling : Observation)
     (inventoryErrors unclaimedSources : Array String) : GateEvidence :=
