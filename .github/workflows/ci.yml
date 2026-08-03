@@ -23,6 +23,23 @@ defaults:
     shell: bash
 
 jobs:
+  # Lexical gate: no task-tracker id in a tracked artifact (AGENTS.md,
+  # "Artifacts must be human-readable"; ADR-0026). Needs no toolchain, so a
+  # violation fails in seconds instead of after the build matrix. Independent
+  # of build-and-test on purpose — a lint failure and a build failure should
+  # both be visible from one run.
+  task-id-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # A lint that quietly stopped matching would pass forever, so it proves
+      # it can still detect before its silence is believed.
+      - name: task-id lint selftest
+        run: ./scripts/check-task-ids.sh --selftest
+      - name: task-id leakage
+        run: ./scripts/check-task-ids.sh
+
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including
   # cache-replayed ones) into failure — this is the warning-free-build gate.

@@ -122,13 +122,23 @@ CI gates (mirror these locally before declaring done):
   tests for each documented branch/error path touched by the change, including
   each error code it can emit; do not rely on an unspecified
   coverage percentage.
+- No task-ID leakage in code and comments (see "Artifacts" below).
+  `scripts/check-task-ids.sh` rejects any `tl-`-affixed Crockford token — the
+  ADR-0007 display form, four digits or more — in a tracked file outside
+  `docs/` and `README.md`, unless it is registered in
+  `scripts/task-id-placeholders.txt`. That registry is the pinned exclusion
+  set, and registering a token is where a human asserts it is a placeholder and
+  not a tracker reference, so a new test id lands there in the same change.
+
 `.github/workflows/ci.yml` mechanizes every gate above
-([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). One rule is **not**
-mechanized at all: no-task-ID-leakage in code and comments (see "Artifacts"
-below) has no CI step, not even an advisory one, because its pattern and
-exclusion set are not yet a pinned contract. It is a review obligation, and
-this list does not claim otherwise — a gate named here that CI does not run
-would be exactly the decay the trust verifier exists to prevent.
+([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). The task-ID check is
+lexical rather than semantic: the prohibited thing *is* a token, so a text scan
+states the rule instead of approximating it — unlike the source greps the trust
+verifier replaced — and it stays outside the trust boundary, reading tracked
+content only and never the log. Two limits are recorded rather than papered
+over: a bare stored id written without its `tl-` affix is indistinguishable
+from any other sixteen-digit token and is not detected, and `docs/` and
+`README.md` are out of scope because the prohibition binds code and comments.
 
 If a change adds a proved claim to the docs/overview.md table, add a landmark
 theorem for it to `Tl.Verify.landmarkTheorems` in the same change; that list is
@@ -212,6 +222,9 @@ open. **Do not reference task-tracker IDs** in code or comments — describe the
 substance. (tl is *itself* a tracker; the temptation to cross-reference its own
 issue IDs into its own source is exactly the thing to resist.) Cross-references
 between code/docs/ADR anchors are fine; references into a tracker are not.
+`scripts/check-task-ids.sh` enforces this over tracked code, and
+`scripts/task-id-placeholders.txt` is the registry of tokens that only look
+like ids.
 
 **Commit messages are the exception, and task IDs there are welcome.** A commit
 message is metadata *about* a change rather than part of the artifact, it is

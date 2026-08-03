@@ -26,17 +26,45 @@ pinned to full commit hashes.
 
 The graph is:
 
-1. `build-and-test` on Ubuntu and macOS;
-2. `git-floor`, after the build matrix, using the Ubuntu artifacts.
+1. `task-id-lint`, needing no toolchain;
+2. `build-and-test` on Ubuntu and macOS;
+3. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
-There is no `lint` job. The earlier one existed to carry the source greps this
-ADR replaces, plus an advisory task-ID-leakage warning; removing the greps left
-nothing for it to run that a gate does not already cover. The task-ID leakage
-check is therefore not mechanized at all — not even advisory — until its pattern
-and legitimate examples have a recorded contract, and it applies to code and
-comments only: task IDs in commit messages are permitted and useful for
-traceability (AGENTS.md, "Artifacts must be human-readable"). It is a review
-obligation and is not conflated with the trust boundary.
+Only `git-floor` carries a `needs:`. The task-ID lint runs independently of the
+build so a lexical failure and a build failure are both visible from one run.
+
+The earlier `lint` job carried the source greps this ADR replaces, plus an
+advisory task-ID-leakage warning, and went away with them. The task-ID check
+returns as its own gating job now that its pattern and exclusion set are a
+pinned contract rather than a preference:
+
+- Pattern `(^|[^0-9A-Za-z_])tl-[0-9a-hjkmnp-tv-z]{4,}` — the ADR-0007 display
+  affix followed by at least `shortIdFloor` = 4 Crockford base32 digits. The
+  leading class is a token boundary that still admits a preceding hyphen, so a
+  compound cannot hide a match.
+- Scope: every tracked file, minus exactly three pathspecs — `docs/`,
+  `README.md`, and the registry itself. Fail-closed: a new top-level file is in
+  scope automatically, and `git grep` reads tracked content only.
+- `scripts/task-id-placeholders.txt` lists the tokens that only look like ids —
+  synthetic ids in the CLI test fixtures. Registering one is where a human
+  asserts it is a placeholder rather than a tracker reference.
+- `--selftest` runs first and asserts the pattern still matches known leak
+  shapes and still rejects known non-ids. A lint that quietly stopped matching
+  would pass forever, which is the failure mode a gate like this actually has.
+
+This is not a regression to the greps that were removed. Those approximated
+*semantic* properties — an axiom, a Mathlib dependency — with text, and missed
+cases the compiled environment sees. Here the prohibited thing *is* a token, so
+a text scan states the rule rather than approximating it. The check is still not
+conflated with the trust boundary: it reads tracked source, never the log, and
+`tlverify` is untouched. Task IDs in commit messages remain permitted and useful
+for traceability (AGENTS.md, "Artifacts must be human-readable").
+
+Two residuals are recorded rather than papered over. A bare stored id written
+without its `tl-` affix is indistinguishable from any other sixteen-digit token
+and is not detected. And `docs/` and `README.md` are out of scope because the
+prohibition binds code and comments; prose that renders sample CLI output would
+otherwise fail on its own examples.
 
 ### Warning-free build
 

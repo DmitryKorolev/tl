@@ -2810,7 +2810,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   -- read-refresh marker vs on-disk segments (ADR-0016 §3 boundary): the marker
   -- keys off the ref OID, so an externally deleted/truncated foreign cache file
   -- under .tl/log/ stays unfixed until the ref next moves. Warn on a mismatch (a
-  -- `tl sync` re-materializes unconditionally). Low-pri: .tl/ is tl-managed.
+  -- `tl sync` re-materializes unconditionally). Low-pri: .tl/ is managed by tl.
   let refMarkRow ← try
       match ← loadRefMark d with
       | none => pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "ok")], false)

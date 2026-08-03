@@ -39,9 +39,6 @@ forever-contract surface that freezes on first implementation.
   functions); the residual is recording that shape — corpus, seeds, sampled
   theorems — in an ADR so the gate is contractual rather than incidental
   (ADR-0004 / a test ADR).
-- "No task-ID leakage" lint pattern/scope [low] — pin the regex and excluded
-  paths (`docs/`, `Tests/.../fixtures/`, the importer's `ext:*` source refs) — AGENTS.md /
-  a lint spec.
 
 ## Distribution (before release)
 
