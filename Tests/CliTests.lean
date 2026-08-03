@@ -5230,7 +5230,12 @@ def cliImportTests : IO (List Outcome) := do
         ("pc", "createdAt", "a number", ",\"createdAt\":5", true),
         ("pd", "createdAt", "an unparseable string", ",\"createdAt\":\"not-a-date\"", true),
         ("pe", "closedAt", "an array", ",\"status\":\"done\",\"closedAt\":[1]", true),
-        ("pf", "claimedAt", "a bool", ",\"status\":\"in_progress\",\"claimedAt\":true", true) ] do
+        ("pf", "claimedAt", "a bool", ",\"status\":\"in_progress\",\"claimedAt\":true", true),
+        -- The class that actually carries data into the log, and the only one
+        -- the fallback cannot impersonate: a deterministic fallback is
+        -- byte-stable too, so the determinism row cannot tell a run that
+        -- honoured its source instants from one that ignored them all.
+        ("pg", "createdAt", "a valid instant", ",\"createdAt\":\"2020-01-02T03:04:05Z\"", false) ] do
     let line := "{\"id\":\"P\",\"title\":\"t\"" ++ value ++ "}\n"
     let (fp, dir) ← provDir tag line
     o := o ++ [← expectData
@@ -5238,6 +5243,14 @@ def cliImportTests : IO (List Outcome) := do
       ["import", fp, "--dir", dir]
       (fun j => jNat j "issues" == some 1 &&
         discloses field j == shouldDisclose)]
+    -- …and for the one class that yields a value, that the value is the
+    -- source's and not the fallback.
+    if klass == "a valid instant" then
+      o := o ++ [← expectData "import: a valid createdAt materializes the source instant, not the fallback"
+        ["list", "--flat", "--json", "--dir", dir]
+        (fun j => (jArr j "items").any fun it =>
+          (it.getObjVal? "createdAt").toOption.bind (·.getStr?.toOption)
+            == some "2020-01-02T03:04:05.000Z")]
   return o
 
 /-- `tl import` granular resource bounds (ADR-0005 §two distinct safety gates,

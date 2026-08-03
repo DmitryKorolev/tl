@@ -109,11 +109,20 @@ no-auto-init rule (ADR-0012):
   `(replica, hlc, nonce)` OR-Set add-tag / LWW triple is byte-stable across
   re-imports. Import is one-shot and single-writer, so this does not affect the
   LWW total-order argument (ADR-0007).
-- **Deterministic timestamps, never `now()`.** Missing/invalid
-  `createdAt`/`closedAt`/`claimedAt` are assigned from the fixed fallback epoch
+- **Deterministic timestamps, never `now()`.** A `createdAt`/`closedAt`/
+  `claimedAt` that is absent or `null`, or present in any form that is not a
+  canonical ISO-8601 UTC instant, is assigned from the fixed fallback epoch
   `2000-01-01T00:00:00Z` plus one millisecond per stable ordinal (records sorted
-  by `(source-file, source-id)`), disclosed in the import summary, keeping the
-  log byte-stable and wall-clock-independent.
+  by `(source-file, source-id)`), keeping the log byte-stable and
+  wall-clock-independent.
+
+  Only a *present* value discloses. Provenance is optional, and most records
+  carry none, so disclosing its ordinary absence would bury the disclosures that
+  matter; but a value the record actually supplied and the importer then
+  discarded — an unparseable string, a number, a bool, an array, an object —
+  must never be dropped silently. Absent and `null` are therefore silent by
+  decision, and each input class is pinned by its own row in `cliImportTests`
+  so the silence reads as intended rather than as an oversight.
 
 ### Two distinct safety gates
 

@@ -118,10 +118,11 @@ private def optStrField (j : Json) (sid k : String) : Except Tl.Error (Option St
   | .ok (Json.str s) => .ok (some s)
   | .ok _ => .error (malformed s!"import record {sid}: \"{k}\" must be a string")
 
-/-- An optional ISO-8601 UTC instant field: absent or `null` ⇒ `none`, silently,
-    because most records carry no provenance at all and disclosing that would
-    bury the disclosures that matter; anything else *present* ⇒ `none` with a
-    disclosure (the caller assigns the fallback).
+/-- An optional ISO-8601 UTC instant field. A canonical instant ⇒ `some ms`,
+    silently — that is the only input that carries a value into the log. Absent
+    or `null` ⇒ `none`, also silently, because most records carry no provenance
+    at all and disclosing that would bury the disclosures that matter. Anything
+    else *present* ⇒ `none` with a disclosure (the caller assigns the fallback).
 
     A present, ill-typed value discloses rather than throwing, unlike the other
     optional fields: provenance is advisory metadata, so a bad one degrades to
