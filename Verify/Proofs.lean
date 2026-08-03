@@ -175,6 +175,158 @@ theorem landmarkKindFindings_eq_empty_iff (o : Observation) :
     | theoremDecl => exact iff_of_true rfl rfl
     | other => exact iff_of_false nofun nofun
 
+private theorem eq_false_of_not_eq_true {b : Bool} (h : ¬ b = true) : b = false := by
+  cases b with
+  | false => rfl
+  | true => exact absurd rfl h
+
+private theorem repeatedLandmarkStep_eq (seen : Std.HashSet Name) (repeated : Array Name)
+    (landmark : Landmark) :
+    repeatedLandmarkStep (seen, repeated) landmark =
+      if seen.contains landmark.name then (seen, repeated.push landmark.name)
+      else (seen.insert landmark.name, repeated) := rfl
+
+/-- The duplicate scan only ever appends, so a name reported once stays
+    reported. This is what makes the single-pass scan's silence meaningful. -/
+private theorem repeated_size_le (ls : List Landmark) (seen : Std.HashSet Name)
+    (repeated : Array Name) :
+    repeated.size ≤ (ls.foldl repeatedLandmarkStep (seen, repeated)).2.size := by
+  induction ls generalizing seen repeated with
+  | nil => exact Nat.le_refl _
+  | cons landmark rest ih =>
+    rw [List.foldl_cons, repeatedLandmarkStep_eq]
+    by_cases h : seen.contains landmark.name = true
+    · rw [if_pos h]
+      refine Nat.le_trans ?_ (ih seen (repeated.push landmark.name))
+      rw [Array.size_push]
+      exact Nat.le_succ _
+    · rw [if_neg h]
+      exact ih (seen.insert landmark.name) repeated
+
+private theorem repeated_ne_empty (ls : List Landmark) (seen : Std.HashSet Name)
+    (repeated : Array Name) (h : repeated ≠ #[]) :
+    (ls.foldl repeatedLandmarkStep (seen, repeated)).2 ≠ #[] := by
+  intro hempty
+  have size := repeated_size_le ls seen repeated
+  rw [hempty, Array.size_empty] at size
+  exact h (Array.eq_empty_iff_size_eq_zero.mpr (Nat.le_zero.mp size))
+
+private theorem foldl_repeatedLandmarkStep_eq_empty_iff (ls : List Landmark)
+    (seen : Std.HashSet Name) :
+    (ls.foldl repeatedLandmarkStep (seen, #[])).2 = #[] ↔
+      (ls.map (·.name)).Nodup ∧ ∀ landmark ∈ ls, seen.contains landmark.name = false := by
+  induction ls generalizing seen with
+  | nil => exact iff_of_true rfl ⟨List.nodup_nil, nofun⟩
+  | cons landmark rest ih =>
+    rw [List.foldl_cons, repeatedLandmarkStep_eq]
+    by_cases hseen : seen.contains landmark.name = true
+    · rw [if_pos hseen]
+      refine iff_of_false (repeated_ne_empty _ _ _ (push_ne_empty _ _)) ?_
+      rintro ⟨-, hfresh⟩
+      have hcontains := hfresh landmark (List.Mem.head _)
+      rw [hseen] at hcontains
+      exact Bool.noConfusion hcontains
+    · rw [if_neg hseen, ih (seen.insert landmark.name)]
+      constructor
+      · rintro ⟨hnodup, hfresh⟩
+        refine ⟨?_, ?_⟩
+        · rw [List.map_cons, List.nodup_cons]
+          refine ⟨?_, hnodup⟩
+          intro hmem
+          obtain ⟨other, hother, hname⟩ := List.mem_map.mp hmem
+          have hcontains := hfresh other hother
+          rw [Std.HashSet.contains_insert, hname, beq_self_eq_true, Bool.true_or] at hcontains
+          exact Bool.noConfusion hcontains
+        · intro other hother
+          cases hother with
+          | head => exact eq_false_of_not_eq_true hseen
+          | tail _ hmem =>
+            have hcontains := hfresh other hmem
+            rw [Std.HashSet.contains_insert] at hcontains
+            exact (Bool.or_eq_false_iff.mp hcontains).2
+      · rintro ⟨hnodup, hfresh⟩
+        rw [List.map_cons, List.nodup_cons] at hnodup
+        obtain ⟨hnotmem, hnodup⟩ := hnodup
+        refine ⟨hnodup, fun other hother => ?_⟩
+        rw [Std.HashSet.contains_insert]
+        refine Bool.or_eq_false_iff.mpr ⟨?_, hfresh other (List.Mem.tail _ hother)⟩
+        cases hbeq : landmark.name == other.name with
+        | false => rfl
+        | true => exact absurd (List.mem_map.mpr ⟨other, hother, (eq_of_beq hbeq).symm⟩) hnotmem
+
+/-- The single-pass duplicate scan reports nothing exactly when the observed
+    landmark names are pairwise distinct. -/
+theorem repeatedLandmarks_eq_empty_iff (landmarks : Array Landmark) :
+    repeatedLandmarks landmarks = #[] ↔ (landmarks.map (·.name)).toList.Nodup := by
+  unfold repeatedLandmarks
+  rw [← Array.foldl_toList, foldl_repeatedLandmarkStep_eq_empty_iff, Array.toList_map]
+  constructor
+  · rintro ⟨hnodup, -⟩; exact hnodup
+  · exact fun hnodup => ⟨hnodup, fun _ _ => Std.HashSet.contains_empty⟩
+
+theorem duplicateLandmarkFindings_eq_empty_iff (o : Observation) :
+    duplicateLandmarkFindings o = #[] ↔ (o.landmarks.map (·.name)).toList.Nodup := by
+  unfold duplicateLandmarkFindings
+  rw [← repeatedLandmarks_eq_empty_iff]
+  by_cases h : repeatedLandmarks o.landmarks = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+    exact iff_of_false (singleton_ne_empty _) h
+
+theorem axiomDeclarations_eq_empty_iff (o : Observation) :
+    axiomDeclarations o = #[] ↔ ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl := by
+  unfold axiomDeclarations
+  rw [Array.filter_eq_empty_iff]
+  refine forall_congr' fun decl => imp_congr_right fun _ => ?_
+  constructor
+  · exact fun h hkind => h (by rw [hkind]; exact beq_self_eq_true _)
+  · exact fun h hbeq => h (of_decide_eq_true hbeq)
+
+theorem axiomDeclarationFindings_eq_empty_iff (o : Observation) :
+    axiomDeclarationFindings o = #[] ↔ ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl := by
+  unfold axiomDeclarationFindings
+  rw [← axiomDeclarations_eq_empty_iff]
+  by_cases h : axiomDeclarations o = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+    exact iff_of_false (singleton_ne_empty _) h
+
+/-- A first-party axiom is reported by its own arm, so this arm's silence is
+    conditional on the declaration not being one. -/
+theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) (o : Observation) :
+    axiomDependencyOffenders cfg o = #[] ↔
+      ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl →
+        ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
+  unfold axiomDependencyOffenders
+  rw [Array.filterMap_eq_empty_iff]
+  refine forall_congr' fun decl => imp_congr_right fun _ => ?_
+  by_cases hkind : decl.kind = DeclKind.axiomDecl
+  · rw [if_pos (by rw [hkind]; exact beq_self_eq_true _)]
+    exact iff_of_true rfl (fun hne => absurd hkind hne)
+  · rw [if_neg (show ¬((decl.kind == DeclKind.axiomDecl) = true) from
+      fun hbeq => hkind (of_decide_eq_true hbeq))]
+    have allowed : (decl.axioms.filter fun name => !cfg.allowedAxioms.contains name) = #[]
+        ↔ ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
+      rw [Array.filter_eq_empty_iff]
+      refine forall_congr' fun name => imp_congr_right fun _ => ?_
+      rw [not_not_eq_true, Array.contains_iff_mem]
+    by_cases hbad : (decl.axioms.filter fun name => !cfg.allowedAxioms.contains name) = #[]
+    · rw [if_pos (Array.isEmpty_iff.mpr hbad)]
+      exact iff_of_true rfl (fun _ => allowed.mp hbad)
+    · rw [if_neg (fun hc => hbad (Array.isEmpty_iff.mp hc))]
+      exact iff_of_false nofun (fun h => hbad (allowed.mpr (h hkind)))
+
+theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) (o : Observation) :
+    axiomDependencyFindings cfg o = #[] ↔
+      ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl →
+        ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
+  unfold axiomDependencyFindings
+  rw [← axiomDependencyOffenders_eq_empty_iff]
+  by_cases h : axiomDependencyOffenders cfg o = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+    exact iff_of_false (singleton_ne_empty _) h
+
 /-! ### Supervision -/
 
 /-- The completion marker never rescues a worker that failed: accepting a run
