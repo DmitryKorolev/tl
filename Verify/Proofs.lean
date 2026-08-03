@@ -4,10 +4,24 @@ Verdict-logic theorems for the Lean-native trust gate.
 `Verify.Report.analyze`, `Verify.Policy.importViolations`,
 `Verify.Supervise.completedSuccessfully`, and
 `Verify.Environment.replayDependencies` are total pure functions that decide
-the entire `tlverify` verdict. Every arm of that decision is characterised here
-as an if-and-only-if: the forward direction is what makes a green gate mean
-something, and the backward direction is what rules out a gate that fails on a
-clean checkout.
+the entire `tlverify` verdict.
+
+What is characterised here, and how far:
+
+* `analyze`, `Verify.Report.gateEvidenceOf`, and the two aggregates between
+  them are characterised as **if-and-only-ifs**. The forward direction is what
+  makes a green gate mean something; the backward direction is what rules out a
+  gate that fails on a clean checkout.
+* `importViolations` is characterised **exactly**: an if-and-only-if for its
+  silence, plus a cardinality equation pinning one finding per rejected edge.
+* `completedSuccessfully`, `directImportAllowed`, and `replayDependencies`
+  carry **one-directional** implications only — accepted implies status zero
+  and marker-final, allowed implies one of the two recorded reasons, and a
+  used constant — or, for an inductive, a mutual sibling — implies an enqueued
+  replay dependency. Their converses, and
+  everything about how the evidence those functions run on is *collected*
+  (declaration selection, `replayClosure`'s transitive walk, the supervisor's
+  process handling), stay in the tested tier.
 
 These are the gate's *own* correctness, not one of the product's proved claims,
 so they deliberately get no entry in `Tl.Verify.landmarkTheorems` and no row in
@@ -350,7 +364,12 @@ structure GateClean (cfg : Config) (o : Observation) : Prop where
   replayValidated : o.evidence.replayedConstants ≠ 0
   /-- The stored import traversal read something. -/
   importEdgesRead : o.evidence.importEdges ≠ 0
-  /-- Landmark observation preserved the policy list one for one. -/
+  /-- Landmark observation preserved the policy list one for one. On the
+      shipped path `observeEnvironment` builds `landmarks` by mapping over
+      `expectedLandmarks`, so no current run can violate this: it is a tripwire
+      against a future refactor that looks landmarks up separately, not a live
+      per-run check. What the landmark list actually *contains* is pinned by
+      `Tests/VerifyTests.lean`, not by this conjunct. -/
   landmarkPolicyPreserved : o.landmarks.map (·.name) = o.expectedLandmarks
   /-- Every observed landmark is present and is a theorem. -/
   landmarksAreTheorems : ∀ landmark ∈ o.landmarks, landmark.kind? = some .theoremDecl
@@ -377,7 +396,16 @@ theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
     The forward direction is what a green gate buys: no first-party axiom, no
     out-of-allowance axiom dependency, an exact module match, a preserved
     landmark policy, and evidence that the audit was not vacuous. The backward
-    direction rules out a gate that fails on a clean checkout. -/
+    direction rules out a gate that fails on a clean checkout.
+
+    Read the axiom and evidence conjuncts as quantified over what the
+    observation *carries*: `noFirstPartyAxiom` and `axiomsWithinAllowance` range
+    over `o.decls`, and the three non-vacuity conjuncts only say the selection
+    was not empty. That `o.decls` is the scope's full declaration set, that
+    `o.evidence.importErrors` is a real ADR-0009 audit, and that
+    `o.evidence.replayError?` is a real kernel replay are properties of
+    `Verify.Environment`'s collection layer, which stays in the tested tier
+    (ADR-0026). -/
 theorem analyze_clean_iff (cfg : Config) (o : Observation) :
     (analyze cfg o).errors = #[] ↔ GateClean cfg o := by
   rw [analyze_errors_eq_empty_iff_arms, replayFindings_eq_empty_iff,
@@ -466,26 +494,25 @@ theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
   rw [gateEvidence_errors_eq_empty_iff, auditedReports_errors_eq_empty_iff, and_assoc,
     and_assoc, and_assoc, and_assoc, and_assoc]
 
-/-- The gate's decision, end to end and in the shape the worker builds it: the
-    run is accepted exactly when all six audited scopes satisfy `GateClean` and
-    neither the source inventory nor the unclaimed-source scan found anything. -/
+/-- The finding array the worker builds is empty exactly when all six audited
+    scopes satisfy `GateClean` and neither the source inventory nor the
+    unclaimed-source scan found anything.
+
+    This is stated about `gateEvidenceOf`, the function `runChecked` calls, so a
+    scope audited twice or left out of the assembly breaks this theorem instead
+    of slipping past it. The remaining step is IO and stays tested: `runChecked`
+    turning an empty array into status zero plus the completion marker, and the
+    supervisor's handling of that marker. -/
 theorem analyzedGateEvidence_clean_iff (cfg : Config)
     (production tests verifier supervisor testSupervisor tooling : Observation)
     (inventoryErrors unclaimedSources : Array String) :
-    ({ reports :=
-         { production := analyze cfg production
-           tests := analyze cfg tests
-           verifier := analyze cfg verifier
-           supervisor := analyze cfg supervisor
-           testSupervisor := analyze cfg testSupervisor
-           tooling := analyze cfg tooling }
-       inventoryErrors
-       unclaimedSources } : GateEvidence).errors = #[] ↔
+    (gateEvidenceOf cfg production tests verifier supervisor testSupervisor tooling
+      inventoryErrors unclaimedSources).errors = #[] ↔
       GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
         ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor
         ∧ GateClean cfg tooling
         ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
-  rw [gateEvidence_errors_eq_empty_iff_scopes]
+  rw [gateEvidenceOf, gateEvidence_errors_eq_empty_iff_scopes]
   rw [analyze_clean_iff, analyze_clean_iff, analyze_clean_iff, analyze_clean_iff,
     analyze_clean_iff, analyze_clean_iff]
 
@@ -569,6 +596,98 @@ theorem importViolations_isEmpty_iff (policy : ImportPolicy) (scope : String)
     (fun row importedModule => directImportAllowed policy row.1 importedModule
       (projectModules.contains importedModule)) _
 
+/-! Emptiness says nothing about how many findings survive, so a traversal that
+reports only its first violation, or overwrites the accumulator instead of
+appending to it, would satisfy the theorem above. The count below closes that:
+the audit emits exactly one finding per rejected edge. -/
+
+/-- The edges the ADR-0009 policy rejects, counted per row with `filter` rather
+    than by rerunning the traversal being characterised. Proof scaffolding: the
+    gate never calls it. -/
+def disallowedEdgeCount (policy : ImportPolicy) (projectModules : Std.HashSet Name)
+    (rows : Array (Name × Array Name)) : Nat :=
+  rows.foldl (fun total row =>
+    total + (row.2.filter fun importedModule =>
+      !directImportAllowed policy row.1 importedModule
+        (projectModules.contains importedModule)).size) 0
+
+private theorem listFoldl_size_eq {α β : Type} (xs : List α) (step : Array β → α → Array β)
+    (w : α → Nat) (init : Array β)
+    (hstep : ∀ acc x, (step acc x).size = acc.size + w x) :
+    (xs.foldl step init).size = xs.foldl (fun total x => total + w x) init.size := by
+  induction xs generalizing init with
+  | nil => rfl
+  | cons x rest ih => rw [List.foldl_cons, List.foldl_cons, ih (step init x), hstep init x]
+
+private theorem arrayFoldl_size_eq {α β : Type} (xs : Array α) (step : Array β → α → Array β)
+    (w : α → Nat) (init : Array β)
+    (hstep : ∀ acc x, (step acc x).size = acc.size + w x) :
+    (xs.foldl step init).size = xs.foldl (fun total x => total + w x) init.size := by
+  rw [← Array.foldl_toList, ← Array.foldl_toList]
+  exact listFoldl_size_eq xs.toList step w init hstep
+
+private theorem push_unless_size {β : Type} (c : Prop) [Decidable c] (acc : Array β) (b : β) :
+    (if c then acc else acc.push b).size = acc.size + (if c then 0 else 1) := by
+  by_cases h : c
+  · rw [if_pos h, if_pos h, Nat.add_zero]
+  · rw [if_neg h, if_neg h, Array.size_push]
+
+private theorem listFoldl_count_eq_filter_length {β : Type} (ys : List β) (p : β → Bool)
+    (n : Nat) :
+    ys.foldl (fun total y => total + (if p y = true then 0 else 1)) n
+      = n + (ys.filter fun y => !p y).length := by
+  induction ys generalizing n with
+  | nil => exact (Nat.add_zero n).symm
+  | cons y rest ih =>
+    rw [List.foldl_cons]
+    by_cases h : p y = true
+    · rw [if_pos h, Nat.add_zero, ih n,
+        List.filter_cons_of_neg (by rw [h, Bool.not_true]; exact nofun)]
+    · rw [if_neg h, ih (n + 1),
+        List.filter_cons_of_pos (by rw [eq_false_of_not_eq_true h, Bool.not_false]),
+        List.length_cons]
+      exact Nat.add_right_comm n 1 _
+
+private theorem arrayFoldl_count_eq_filter_size {β : Type} (ys : Array β) (p : β → Bool)
+    (n : Nat) :
+    ys.foldl (fun total y => total + (if p y = true then 0 else 1)) n
+      = n + (ys.filter fun y => !p y).size := by
+  rw [← Array.foldl_toList, listFoldl_count_eq_filter_length, ← Array.length_toList,
+    Array.toList_filter]
+
+private theorem innerFoldl_push_size {β γ : Type} (ys : Array β) (p : β → Bool) (g : β → γ)
+    (acc : Array γ) :
+    (ys.foldl (fun acc y => if p y = true then acc else acc.push (g y)) acc).size
+      = acc.size + (ys.filter fun y => !p y).size :=
+  calc (ys.foldl (fun acc y => if p y = true then acc else acc.push (g y)) acc).size
+      = ys.foldl (fun total y => total + (if p y = true then 0 else 1)) acc.size :=
+        arrayFoldl_size_eq ys _ _ acc (fun acc' _ => push_unless_size _ acc' _)
+    _ = acc.size + (ys.filter fun y => !p y).size :=
+        arrayFoldl_count_eq_filter_size ys p acc.size
+
+private theorem nestedFoldl_push_size {α β γ : Type} (rows : Array α)
+    (inner : α → Array β) (p : α → β → Bool) (g : α → β → γ) :
+    (rows.foldl (fun acc row =>
+        (inner row).foldl (fun acc y => if p row y then acc else acc.push (g row y)) acc)
+      #[]).size
+      = rows.foldl (fun total row => total + ((inner row).filter fun y => !p row y).size) 0 := by
+  rw [arrayFoldl_size_eq rows _
+    (fun row => ((inner row).filter fun y => !p row y).size) #[]
+    (fun acc row => innerFoldl_push_size (inner row) (p row) (g row) acc), Array.size_empty]
+
+/-- The ADR-0009 audit reports one finding per rejected edge: findings
+    accumulate across rows and across the edges of a row, so neither a
+    truncating nor an overwriting accumulator can pass. -/
+theorem importViolations_size_eq (policy : ImportPolicy) (scope : String)
+    (projectModules : Std.HashSet Name) (rows : Array (Name × Array Name)) :
+    (importViolations policy scope projectModules rows).size
+      = disallowedEdgeCount policy projectModules rows := by
+  simp only [importViolations, Id.run, Id, bind, pure, ite_yield, forIn_yield_eq_foldl_id,
+    disallowedEdgeCount]
+  exact nestedFoldl_push_size rows (·.2)
+    (fun row importedModule => directImportAllowed policy row.1 importedModule
+      (projectModules.contains importedModule)) _
+
 /-- Without the first-party escape, an allowed import is justified by exactly
     one of the two recorded reasons: an ordinary dependency prefix, or an
     allowlisted reachability module reaching Mathlib. -/
@@ -593,10 +712,59 @@ theorem completedSuccessfully_exitZero {protocol : CompletionProtocol}
   have hand : (exitCode == 0) = true ∧ _ := Bool.and_eq_true _ _ |>.mp h
   exact eq_of_beq hand.1
 
+/-- The scan that keeps the latest nonempty line reports a line only by having
+    read it, with nothing but blank lines after it. -/
+private theorem lastNonemptyLine_eq_some (lines : List String) (init : Option String)
+    (marker : String)
+    (h : lines.foldl (fun latest line => if line.trimAscii.isEmpty then latest else some line)
+      init = some marker) :
+    (init = some marker ∧ ∀ line ∈ lines, line.trimAscii.isEmpty = true) ∨
+      ∃ before after, lines = before ++ marker :: after ∧
+        ∀ line ∈ after, line.trimAscii.isEmpty = true := by
+  induction lines generalizing init with
+  | nil => exact Or.inl ⟨h, nofun⟩
+  | cons line rest ih =>
+    rw [List.foldl_cons] at h
+    by_cases hblank : line.trimAscii.isEmpty = true
+    · rw [if_pos hblank] at h
+      rcases ih init h with ⟨hinit, hrest⟩ | ⟨before, after, hsplit, hafter⟩
+      · refine Or.inl ⟨hinit, fun other hother => ?_⟩
+        cases hother with
+        | head => exact hblank
+        | tail _ hmem => exact hrest other hmem
+      · exact Or.inr ⟨line :: before, after, by rw [hsplit]; rfl, hafter⟩
+    · rw [if_neg hblank] at h
+      rcases ih (some line) h with ⟨hinit, hrest⟩ | ⟨before, after, hsplit, hafter⟩
+      · exact Or.inr ⟨[], rest, by rw [Option.some.inj hinit]; rfl, hrest⟩
+      · exact Or.inr ⟨line :: before, after, by rw [hsplit]; rfl, hafter⟩
+
+/-- Accepting a run also requires the marker to be the *last* nonempty line the
+    worker printed: it occurs in the output with only blank lines after it. A
+    scan that reported the marker without reading it, or that ignored work
+    printed after it, cannot satisfy this — that unmarked-early-exit and
+    work-after-the-marker detection is the reason the protocol exists. -/
+theorem completedSuccessfully_markerFinal {protocol : CompletionProtocol}
+    {exitCode : UInt32} {stdout : String}
+    (h : completedSuccessfully protocol exitCode stdout = true) :
+    ∃ before after, stdout.splitOn "\n" = before ++ protocol.marker :: after ∧
+      ∀ line ∈ after, line.trimAscii.isEmpty = true := by
+  rw [completedSuccessfully, Bool.and_eq_true] at h
+  have hmarker := eq_of_beq h.2
+  rcases lastNonemptyLine_eq_some (stdout.splitOn "\n") none protocol.marker hmarker with
+    ⟨hnone, -⟩ | hsplit
+  · exact absurd hnone nofun
+  · exact hsplit
+
 /-! ### Replay dependency cone -/
 
-/-- Every stored constant a declaration uses is enqueued by a replay step, so
-    the dependency cone cannot silently drop a body's own references. -/
+/-- One replay step enqueues every stored constant the declaration's body uses:
+    the inductive case's extra mutual-inductive siblings (below) are added to
+    that set, never in place of it.
+
+    This is a statement about the single step only. That `replayClosure` then
+    walks those dependencies to a fixed point is not proved — it is a
+    `partial def` worklist — and stays covered by the cross-package replay
+    closure test in `Tests/VerifyLoadedTests.lean`. -/
 theorem replayDependencies_superset (info : Lean.ConstantInfo) {name : Name}
     (h : name ∈ info.getUsedConstantsAsSet.toArray) :
     name ∈ replayDependencies info := by
@@ -604,5 +772,14 @@ theorem replayDependencies_superset (info : Lean.ConstantInfo) {name : Name}
   cases info with
   | inductInfo inductiveInfo => exact Array.mem_append_left _ h
   | _ => exact h
+
+/-- The other half of a replay step for an inductive: every member of the
+    mutual block is enqueued as well, since replay reconstructs the block
+    together. -/
+theorem replayDependencies_inductiveSiblings {inductiveInfo : Lean.InductiveVal} {name : Name}
+    (h : name ∈ inductiveInfo.all) :
+    name ∈ replayDependencies (.inductInfo inductiveInfo) := by
+  unfold replayDependencies
+  exact Array.mem_append_right _ (List.mem_toArray.mpr h)
 
 end Tl.Verify
