@@ -455,6 +455,100 @@ theorem gateEvidence_errors_eq_empty_iff (evidence : GateEvidence) :
     rw [(unclaimedSourceError?_eq_none_iff _).mpr hempty] at hunclaimed
     exact absurd hunclaimed nofun
 
+/-! ### The ADR-0009 direct-import audit
+
+`importViolations` is a nested imperative loop, so its silence is only
+meaningful if the traversal reaches every edge. These lemmas turn the loop into
+a fold and characterise when the fold produces nothing. -/
+
+private theorem forIn_yield_eq_foldl_id {α β : Type} (xs : Array α) (init : β) (f : α → β → β) :
+    (forIn (m := Id) xs init fun x acc => ForInStep.yield (f x acc))
+      = xs.foldl (fun acc x => f x acc) init :=
+  Array.forIn_pure_yield_eq_foldl (m := Id) (fun x acc => f x acc) init
+
+private theorem ite_yield {β : Type} {c : Prop} [Decidable c] (a b : β) :
+    (if c then ForInStep.yield a else ForInStep.yield b)
+      = ForInStep.yield (if c then a else b) := by
+  by_cases h : c
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg h, if_neg h]
+
+/-- A fold whose every step is empty-preserving is empty exactly when it started
+    empty and every element was clean. This is the general form of "the
+    traversal cannot silently stop". -/
+private theorem listFoldl_eq_empty_iff {α β : Type} (xs : List α)
+    (step : Array β → α → Array β) (clean : α → Prop) (init : Array β)
+    (hstep : ∀ acc x, step acc x = #[] ↔ acc = #[] ∧ clean x) :
+    xs.foldl step init = #[] ↔ init = #[] ∧ ∀ x ∈ xs, clean x := by
+  induction xs generalizing init with
+  | nil => exact ⟨fun h => ⟨h, nofun⟩, fun h => h.1⟩
+  | cons x rest ih =>
+    rw [List.foldl_cons, ih (step init x)]
+    constructor
+    · rintro ⟨hstepEmpty, hrest⟩
+      obtain ⟨hinit, hclean⟩ := (hstep init x).mp hstepEmpty
+      refine ⟨hinit, fun y hy => ?_⟩
+      cases hy with
+      | head => exact hclean
+      | tail _ hmem => exact hrest y hmem
+    · rintro ⟨hinit, hclean⟩
+      exact ⟨(hstep init x).mpr ⟨hinit, hclean x (List.Mem.head _)⟩,
+        fun y hy => hclean y (List.Mem.tail _ hy)⟩
+
+private theorem arrayFoldl_eq_empty_iff {α β : Type} (xs : Array α)
+    (step : Array β → α → Array β) (clean : α → Prop) (init : Array β)
+    (hstep : ∀ acc x, step acc x = #[] ↔ acc = #[] ∧ clean x) :
+    xs.foldl step init = #[] ↔ init = #[] ∧ ∀ x ∈ xs, clean x := by
+  rw [← Array.foldl_toList, listFoldl_eq_empty_iff xs.toList step clean init hstep]
+  refine and_congr_right fun _ => forall_congr' fun x => ?_
+  exact imp_congr_left (Array.mem_toList_iff (a := x) (xs := xs))
+
+private theorem push_unless_eq_empty_iff {α β : Type} (p : α → Bool) (g : α → β)
+    (acc : Array β) (x : α) :
+    (if p x = true then acc else acc.push (g x)) = #[] ↔ acc = #[] ∧ p x = true := by
+  by_cases h : p x = true
+  · rw [if_pos h]
+    exact ⟨fun hacc => ⟨hacc, h⟩, fun hc => hc.1⟩
+  · rw [if_neg h]
+    exact iff_of_false (push_ne_empty _ _) (fun hc => h hc.2)
+
+private theorem nestedFoldl_push_eq_empty_iff {α β γ : Type} (rows : Array α)
+    (inner : α → Array β) (p : α → β → Bool) (g : α → β → γ) :
+    rows.foldl (fun acc row =>
+        (inner row).foldl (fun acc y => if p row y then acc else acc.push (g row y)) acc)
+      #[] = #[] ↔ ∀ row ∈ rows, ∀ y ∈ inner row, p row y = true := by
+  rw [arrayFoldl_eq_empty_iff (clean := fun row => ∀ y ∈ inner row, p row y = true)
+    (hstep := fun acc row => arrayFoldl_eq_empty_iff (inner row) _ _ acc
+      (fun acc' y => push_unless_eq_empty_iff (p row) (g row) acc' y))]
+  exact ⟨fun h => h.2, fun h => ⟨rfl, h⟩⟩
+
+/-- No ADR-0009 finding means every edge of every row was checked and allowed:
+    the nested traversal reaches all of them. -/
+theorem importViolations_isEmpty_iff (policy : ImportPolicy) (scope : String)
+    (projectModules : Std.HashSet Name) (rows : Array (Name × Array Name)) :
+    importViolations policy scope projectModules rows = #[] ↔
+      ∀ row ∈ rows, ∀ importedModule ∈ row.2,
+        directImportAllowed policy row.1 importedModule
+          (projectModules.contains importedModule) = true := by
+  simp only [importViolations, Id.run, Id, bind, pure, ite_yield, forIn_yield_eq_foldl_id]
+  exact nestedFoldl_push_eq_empty_iff rows (·.2)
+    (fun row importedModule => directImportAllowed policy row.1 importedModule
+      (projectModules.contains importedModule)) _
+
+/-- Without the first-party escape, an allowed import is justified by exactly
+    one of the two recorded reasons: an ordinary dependency prefix, or an
+    allowlisted reachability module reaching Mathlib. -/
+theorem directImportAllowed_cases {policy : ImportPolicy} {definingModule importedModule : Name}
+    (h : directImportAllowed policy definingModule importedModule false = true) :
+    (∃ candidate ∈ policy.ordinaryPrefixes, Name.isPrefixOf candidate importedModule) ∨
+      (definingModule ∈ policy.mathlibModules ∧ Name.isPrefixOf `Mathlib importedModule) := by
+  unfold directImportAllowed at h
+  rw [Bool.false_or] at h
+  rcases (Bool.or_eq_true _ _).mp h with hordinary | hmathlib
+  · exact Or.inl (Array.any_eq_true'.mp hordinary)
+  · obtain ⟨hcontains, hprefix⟩ := (Bool.and_eq_true _ _).mp hmathlib
+    exact Or.inr ⟨Array.contains_iff_mem.mp hcontains, hprefix⟩
+
 /-! ### Supervision -/
 
 /-- The completion marker never rescues a worker that failed: accepting a run
