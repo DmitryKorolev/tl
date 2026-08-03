@@ -327,6 +327,91 @@ theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) (o : Observation) :
   · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
+/-! ### The whole verdict for one scope -/
+
+/-- Every condition `analyze` can report about one audited scope, stated
+    positively. A field per arm: adding an arm without adding a field here
+    breaks `analyze_clean_iff`, so the verdict cannot grow a condition this
+    characterisation does not mention. -/
+structure GateClean (cfg : Config) (o : Observation) : Prop where
+  /-- The ADR-0009 direct-import audit found nothing. -/
+  importAuditClean : o.evidence.importErrors = #[]
+  /-- Independent kernel replay accepted the stored dependency cone. -/
+  replayClean : o.evidence.replayError? = none
+  /-- Every source module the scope claims was actually imported. -/
+  everyExpectedModuleImported : ∀ name ∈ o.expectedModules, name ∈ o.localModules
+  /-- Every imported first-party module is inside the declared scope. -/
+  everyImportedModuleExpected : ∀ name ∈ o.localModules, name ∈ o.expectedModules
+  /-- The scope is one of the mandatory six, so it must inspect something. -/
+  modulesInspected : o.localModules ≠ #[]
+  /-- Declaration ownership selected something to audit. -/
+  declsSelected : o.decls ≠ #[]
+  /-- Something reached independent replay validation. -/
+  replayValidated : o.evidence.replayedConstants ≠ 0
+  /-- The stored import traversal read something. -/
+  importEdgesRead : o.evidence.importEdges ≠ 0
+  /-- Landmark observation preserved the policy list one for one. -/
+  landmarkPolicyPreserved : o.landmarks.map (·.name) = o.expectedLandmarks
+  /-- Every observed landmark is present and is a theorem. -/
+  landmarksAreTheorems : ∀ landmark ∈ o.landmarks, landmark.kind? = some .theoremDecl
+  /-- No documented claim is covered twice by the same landmark name. -/
+  landmarksDistinct : (o.landmarks.map (·.name)).toList.Nodup
+  /-- No inspected declaration is itself a first-party axiom. -/
+  noFirstPartyAxiom : ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl
+  /-- Every stored axiom dependency is inside the configured allowance. -/
+  axiomsWithinAllowance : ∀ decl ∈ o.decls, ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms
+
+/-- The verdict for one scope is the conjunction of its arms staying silent. -/
+theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
+    (analyze cfg o).errors = #[] ↔
+      o.evidence.importErrors = #[] ∧ replayFindings o = #[]
+        ∧ missingModuleFindings o = #[] ∧ unexpectedModuleFindings o = #[]
+        ∧ vacuityFindings o = #[] ∧ landmarkPolicyFindings o = #[]
+        ∧ landmarkKindFindings o = #[] ∧ duplicateLandmarkFindings o = #[]
+        ∧ axiomDeclarationFindings o = #[] ∧ axiomDependencyFindings cfg o = #[] := by
+  unfold analyze
+  simp only [Array.append_eq_empty_iff, and_assoc]
+
+/-- A scope passes exactly when `GateClean` holds of it.
+
+    The forward direction is what a green gate buys: no first-party axiom, no
+    out-of-allowance axiom dependency, an exact module match, a preserved
+    landmark policy, and evidence that the audit was not vacuous. The backward
+    direction rules out a gate that fails on a clean checkout. -/
+theorem analyze_clean_iff (cfg : Config) (o : Observation) :
+    (analyze cfg o).errors = #[] ↔ GateClean cfg o := by
+  rw [analyze_errors_eq_empty_iff_arms, replayFindings_eq_empty_iff,
+    missingModuleFindings_eq_empty_iff, unexpectedModuleFindings_eq_empty_iff,
+    vacuityFindings_eq_empty_iff, landmarkPolicyFindings_eq_empty_iff,
+    landmarkKindFindings_eq_empty_iff, duplicateLandmarkFindings_eq_empty_iff,
+    axiomDeclarationFindings_eq_empty_iff, axiomDependencyFindings_eq_empty_iff]
+  constructor
+  · rintro ⟨himports, hreplay, hexpected, hlocal,
+      ⟨hmodules, hdecls, hreplayed, hedges⟩,
+      hpolicy, hkinds, hdistinct, hnoaxiom, hdependencies⟩
+    exact {
+      importAuditClean := himports
+      replayClean := hreplay
+      everyExpectedModuleImported := hexpected
+      everyImportedModuleExpected := hlocal
+      modulesInspected := hmodules
+      declsSelected := hdecls
+      replayValidated := hreplayed
+      importEdgesRead := hedges
+      landmarkPolicyPreserved := hpolicy
+      landmarksAreTheorems := hkinds
+      landmarksDistinct := hdistinct
+      noFirstPartyAxiom := hnoaxiom
+      axiomsWithinAllowance := fun decl hdecl =>
+        hdependencies decl hdecl (hnoaxiom decl hdecl) }
+  · intro clean
+    exact ⟨clean.importAuditClean, clean.replayClean, clean.everyExpectedModuleImported,
+      clean.everyImportedModuleExpected,
+      ⟨clean.modulesInspected, clean.declsSelected, clean.replayValidated,
+        clean.importEdgesRead⟩,
+      clean.landmarkPolicyPreserved, clean.landmarksAreTheorems, clean.landmarksDistinct,
+      clean.noFirstPartyAxiom, fun decl hdecl _ => clean.axiomsWithinAllowance decl hdecl⟩
+
 /-! ### Supervision -/
 
 /-- The completion marker never rescues a worker that failed: accepting a run
