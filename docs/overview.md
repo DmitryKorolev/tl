@@ -83,10 +83,19 @@ decision — is **proved** in `Verify/Proofs.lean`: `analyze` and the run-wide
 assembly above it are characterised as if-and-only-ifs against a `GateClean`
 structure that enumerates every condition a scope can be reported for, and the
 ADR-0009 import audit is characterised both for silence and for emitting one
-finding per rejected edge. The supervision status rule, the import-allowance
-case split, and the replay dependency step carry one-directional implications
-only. The *collection* of that evidence — declaration selection, the replay
-closure walk, filesystem inventory, process supervision — stays **tested**.
+finding per rejected edge. Stored-body axiom propagation is proved in both
+directions — the axioms filed under a declaration are exactly those reachable
+from it along stored-body edges — which matters because that function
+reimplements Lean's `collectAxioms` rather than trusting summaries the audited
+compilation produced, so its failure mode is a green run with an axiom
+unreported. It refuses rather than answering when its bound is exhausted, since
+a truncated map would satisfy soundness while missing the axiom that mattered.
+The supervision status rule, the import-allowance case split, and the replay
+dependency step carry one-directional implications only. The rest of the
+*collection* — declaration selection, the replay closure walk, filesystem
+inventory, process supervision — stays **tested**, and the propagation
+theorems are relative to the constants they are handed: exact over that map,
+silent on whether it is the right one.
 Neither half is one of the product's proved claims, so neither appears in the
 table above and neither gets a landmark; that split and its reasoning are
 recorded in [ADR-0026](adr/ADR-0026-continuous-integration.md) and

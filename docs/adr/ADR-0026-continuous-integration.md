@@ -145,13 +145,28 @@ prove the nested ADR-0009 traversal reaches every edge of every row and emits
 one finding per rejected edge. Example rows cannot close that class, because
 the failure being managed is an arm that quietly stops reporting.
 
+Stored-body axiom propagation is proved too, and it is the piece that most
+needed it: `propagatedAxioms` reimplements Lean's `collectAxioms` rather than
+trusting serialized summaries produced by the very compilation under audit, so
+a bug there is a silent false negative rather than a suspicious verdict.
+`propagatedAxioms_sound` and `propagatedAxioms_complete` pin its rows to the
+axioms reachable along stored-body edges, in both directions. Making that
+provable meant replacing a `while` loop — which elaborates to an opaque
+worklist combinator carrying no induction principle — with a fuel-structural
+drain that returns `Option` and *refuses* an exhausted bound instead of
+returning a truncated map. The refusal is not a formality: completeness holds
+at a drained exit, and a truncated map would satisfy soundness while missing
+exactly the axiom that mattered.
+
 What is *not* claimed matters as much. Three seams carry one-directional
 implications rather than characterisations — `directImportAllowed_cases`,
 `completedSuccessfully_exitZero` with `completedSuccessfully_markerFinal`, and
 `replayDependencies_superset` (a single replay step, not the `partial def`
-closure walk) — and the collection layer in `Verify/Environment.lean` stays
-tested: no theorem says the observed declaration set is a scope's complete one,
-or that the replay closure reached a fixed point.
+closure walk) — and the rest of the collection layer in
+`Verify/Environment.lean` stays tested: no theorem says the observed
+declaration set is a scope's complete one, or that the replay closure reached a
+fixed point. The propagation theorems are themselves relative to the constants
+they are handed — exact over that map, silent on whether it is the right one.
 
 These theorems deliberately get no entry in `Tl.Verify.landmarkTheorems` and no
 row in the overview's proved-claims table. The landmark list exists to stop the

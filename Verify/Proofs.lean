@@ -912,7 +912,8 @@ theorem seedStep_axiomsByName (seed : PropagationSeed) (name : Name)
     (info : Lean.ConstantInfo) :
     (seedStep seed name info).axiomsByName =
       (match info with
-        | .axiomInfo _ => seed.axiomsByName.insert name (({} : Std.HashSet Name).insert name)
+        | .axiomInfo _ => seed.axiomsByName.alter name fun row =>
+            some ((row.getD {}).insert name)
         | _ => seed.axiomsByName) := by
   unfold seedStep
   cases info <;> rfl
@@ -955,18 +956,18 @@ theorem seed_rows_sound {cs : Std.HashMap Name Lean.ConstantInfo} {n a : Name}
       | axiomInfo val =>
         rw [hinfo] at hb'
         simp only at hb'
-        rw [Std.HashMap.getElem?_insert] at hb'
+        rw [Std.HashMap.getElem?_alter] at hb'
         cases hbeq : p.1 == m' with
         | false => rw [if_neg (by rw [hbeq]; exact nofun)] at hb'; exact hseed m' b' hb'
         | true =>
           rw [if_pos (by rw [hbeq])] at hb'
           rw [Option.getD_some] at hb'
-          rcases Std.HashSet.mem_insert.mp hb' with heq | hempty
+          rcases Std.HashSet.mem_insert.mp hb' with heq | hold
           · refine ⟨?_, ?_⟩
             · rw [← eq_of_beq hbeq, eq_of_beq heq]
             · refine ⟨val, ?_⟩
               rw [← eq_of_beq heq, hlist p (List.mem_cons_self ..), hinfo]
-          · exact absurd hempty (by simp only [Std.HashSet.not_mem_empty, not_false_eq_true])
+          · exact hseed m' b' (by rw [← eq_of_beq hbeq]; exact hold)
       | _ => rw [hinfo] at hb'; exact hseed m' b' hb'
   refine general cs.toList {} (fun p hp => ?_) (fun m b hb => ?_) n a ?_
   · exact Std.HashMap.mem_toList_iff_getElem?_eq_some.mp hp
@@ -1175,5 +1176,370 @@ theorem propagatedAxioms_sound {cs : Std.HashMap Name Lean.ConstantInfo}
     exact ⟨haxiom, hmb ▸ Reaches.refl _⟩
   · obtain ⟨hdx, haxiom⟩ := seed_pending_sound hq
     exact ⟨haxiom, hdx ▸ Reaches.refl _⟩
+
+private theorem foldl_propagateStep_grew_list (axiomName : Name) :
+    ∀ (deps : List Name) (state : Std.HashMap Name (Std.HashSet Name) × Array (Name × Name)),
+      RowsGrew state.1 (deps.foldl (propagateStep axiomName) state).1
+  | [], _ => RowsGrew.refl _
+  | dep :: rest, state => by
+    rw [List.foldl_cons]
+    exact RowsGrew.trans (propagateStep_grew axiomName state dep)
+      (foldl_propagateStep_grew_list axiomName rest _)
+
+/-- What one step changes: the queue grows only by appending, and any row it
+    adds is queued in exactly that appended part. Stated in the shape the fold
+    below composes with. -/
+private theorem propagateStep_shape (axiomName : Name)
+    (acc : Std.HashMap Name (Std.HashSet Name)) (pending : Array (Name × Name))
+    (dependent : Name) :
+    ∃ extra : List (Name × Name),
+      (propagateStep axiomName (acc, pending) dependent).2.toList
+          = pending.toList ++ extra ∧
+      ∀ n a : Name,
+        a ∈ (propagateStep axiomName (acc, pending) dependent).1[n]?.getD
+          ({} : Std.HashSet Name) →
+          a ∈ acc[n]?.getD ({} : Std.HashSet Name) ∨ (n, a) ∈ extra := by
+  rw [propagateStep_eq]
+  by_cases hcontains :
+      (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName = true
+  · rw [if_pos hcontains]
+    exact ⟨[], by rw [List.append_nil], fun _ _ h => Or.inl h⟩
+  · rw [if_neg hcontains]
+    refine ⟨[(dependent, axiomName)], Array.toList_push, fun n a h => ?_⟩
+    rw [Std.HashMap.getElem?_insert] at h
+    cases hbeq : dependent == n with
+    | false => rw [if_neg (by rw [hbeq]; exact nofun)] at h; exact Or.inl h
+    | true =>
+      rw [if_pos (by rw [hbeq]), Option.getD_some] at h
+      have hdn : dependent = n := eq_of_beq hbeq
+      rcases Std.HashSet.mem_insert.mp h with heq | hold
+      · exact Or.inr (List.mem_singleton.mpr (by rw [hdn, eq_of_beq heq]))
+      · exact Or.inl (hdn ▸ hold)
+
+/-- The same for a whole fold over a dependent list. -/
+private theorem foldl_propagateStep_shape (axiomName : Name) :
+    ∀ (deps : List Name) (acc : Std.HashMap Name (Std.HashSet Name))
+      (pending : Array (Name × Name)),
+      ∃ extra : List (Name × Name),
+        (deps.foldl (propagateStep axiomName) (acc, pending)).2.toList
+            = pending.toList ++ extra ∧
+        ∀ n a : Name,
+          a ∈ (deps.foldl (propagateStep axiomName) (acc, pending)).1[n]?.getD
+            ({} : Std.HashSet Name) →
+            a ∈ acc[n]?.getD ({} : Std.HashSet Name) ∨ (n, a) ∈ extra
+  | [], acc, pending => ⟨[], by rw [List.foldl_nil, List.append_nil], fun _ _ h => Or.inl h⟩
+  | dep :: rest, acc, pending => by
+    rw [List.foldl_cons]
+    obtain ⟨head, hheadList, hheadRows⟩ := propagateStep_shape axiomName acc pending dep
+    obtain ⟨tail, htailList, htailRows⟩ :=
+      foldl_propagateStep_shape axiomName rest
+        (propagateStep axiomName (acc, pending) dep).1
+        (propagateStep axiomName (acc, pending) dep).2
+    refine ⟨head ++ tail, by rw [htailList, hheadList, List.append_assoc], fun n a hrow => ?_⟩
+    rcases htailRows n a hrow with hprev | hnew
+    · rcases hheadRows n a hprev with hold | hhead
+      · exact Or.inl hold
+      · exact Or.inr (List.mem_append_left _ hhead)
+    · exact Or.inr (List.mem_append_right _ hnew)
+
+/-- After the fold, every dependent in the list carries the axiom. -/
+private theorem foldl_propagateStep_covers (axiomName : Name) :
+    ∀ (deps : List Name) (acc : Std.HashMap Name (Std.HashSet Name))
+      (pending : Array (Name × Name)) (m : Name), m ∈ deps →
+      axiomName ∈ (deps.foldl (propagateStep axiomName) (acc, pending)).1[m]?.getD
+        ({} : Std.HashSet Name)
+  | dep :: rest, acc, pending, m, hm => by
+    rw [List.foldl_cons]
+    rcases List.mem_cons.mp hm with rfl | hrest
+    · -- the head step puts it in, and the rest of the fold only grows rows
+      refine foldl_propagateStep_grew_list axiomName rest
+        (propagateStep axiomName (acc, pending) m) m axiomName ?_
+      rw [propagateStep_eq]
+      by_cases hcontains :
+          (acc[m]?.getD ({} : Std.HashSet Name)).contains axiomName = true
+      · rw [if_pos hcontains]
+        exact Std.HashSet.contains_iff_mem.mp hcontains
+      · rw [if_neg hcontains]
+        show axiomName ∈ (acc.insert m _)[m]?.getD ({} : Std.HashSet Name)
+        rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true m), Option.getD_some]
+        exact Std.HashSet.mem_insert.mpr (Or.inl (beq_self_eq_true axiomName))
+    · exact foldl_propagateStep_covers axiomName rest _ _ m hrest
+
+/-- Reverse buckets only grow across one constant's contribution. -/
+private theorem alterFold_reverse_grew_list (name : Name) :
+    ∀ (edges : List Name) (rev : Std.HashMap Name (Array Name)) (d m : Name),
+      m ∈ rev[d]?.getD #[] →
+      m ∈ (edges.foldl (init := rev) (fun r dependency =>
+        r.alter dependency fun dependents => some ((dependents.getD #[]).push name)))[d]?.getD #[]
+  | [], _, _, _, h => h
+  | edge :: rest, rev, d, m, h => by
+    rw [List.foldl_cons]
+    refine alterFold_reverse_grew_list name rest _ d m ?_
+    rw [Std.HashMap.getElem?_alter]
+    cases hbeq : edge == d with
+    | false => rw [if_neg nofun]; exact h
+    | true =>
+      rw [if_pos rfl, Option.getD_some]
+      have hed : edge = d := eq_of_beq hbeq
+      exact Array.mem_push.mpr (Or.inl (hed ▸ h))
+
+/-- Every edge of a constant's stored body lands in that dependency's bucket. -/
+private theorem alterFold_reverse_complete_list (name : Name) :
+    ∀ (edges : List Name) (rev : Std.HashMap Name (Array Name)) (d : Name), d ∈ edges →
+      name ∈ (edges.foldl (init := rev) (fun r dependency =>
+        r.alter dependency fun dependents => some ((dependents.getD #[]).push name)))[d]?.getD #[]
+  | edge :: rest, rev, d, hd => by
+    rw [List.foldl_cons]
+    rcases List.mem_cons.mp hd with rfl | hrest
+    · refine alterFold_reverse_grew_list name rest _ d name ?_
+      rw [Std.HashMap.getElem?_alter, if_pos (beq_self_eq_true d), Option.getD_some]
+      exact Array.mem_push.mpr (Or.inr rfl)
+    · exact alterFold_reverse_complete_list name rest _ d hrest
+
+/-- Rows and worklist entries are seeded together, so a seeded row is queued. -/
+theorem seed_rows_pending {cs : Std.HashMap Name Lean.ConstantInfo} {n a : Name}
+    (h : a ∈ (propagationSeed cs).axiomsByName[n]?.getD ({} : Std.HashSet Name)) :
+    (n, a) ∈ (propagationSeed cs).pending := by
+  have general : ∀ (l : List (Name × Lean.ConstantInfo)) (seed : PropagationSeed),
+      (∀ m b : Name, b ∈ seed.axiomsByName[m]?.getD ({} : Std.HashSet Name) →
+        (m, b) ∈ seed.pending) →
+      ∀ m b : Name,
+        b ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).axiomsByName[m]?.getD
+          ({} : Std.HashSet Name) →
+          (m, b) ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).pending := by
+    intro l
+    induction l with
+    | nil => intro seed hseed m b hb; exact hseed m b hb
+    | cons p rest ih =>
+      intro seed hseed m b hb
+      refine ih _ ?_ m b hb
+      intro m' b' hb'
+      rw [seedStep_axiomsByName] at hb'
+      rw [seedStep_pending]
+      cases hinfo : p.2 with
+      | axiomInfo val =>
+        rw [hinfo] at hb'
+        simp only at hb' ⊢
+        rw [Std.HashMap.getElem?_alter] at hb'
+        cases hbeq : p.1 == m' with
+        | false =>
+          rw [if_neg (by rw [hbeq]; exact nofun)] at hb'
+          exact Array.mem_push.mpr (Or.inl (hseed m' b' hb'))
+        | true =>
+          rw [if_pos (by rw [hbeq]), Option.getD_some] at hb'
+          have hpm : p.1 = m' := eq_of_beq hbeq
+          rcases Std.HashSet.mem_insert.mp hb' with heq | hold
+          · exact Array.mem_push.mpr (Or.inr (by rw [← hpm, ← eq_of_beq heq]))
+          · exact Array.mem_push.mpr (Or.inl
+              (hseed m' b' (by rw [← hpm]; exact hold)))
+      | _ =>
+        rw [hinfo] at hb'
+        exact hseed m' b' hb'
+  rw [propagationSeed, Std.HashMap.fold_eq_foldl_toList] at h ⊢
+  exact general cs.toList {} (fun m b hb => absurd hb (by
+    simp only [Std.HashMap.getElem?_empty, Option.getD_none,
+      Std.HashSet.not_mem_empty, not_false_eq_true])) n a h
+
+/-- Reverse buckets only grow across the whole seed fold. -/
+private theorem seedFold_reverse_grew :
+    ∀ (l : List (Name × Lean.ConstantInfo)) (seed : PropagationSeed) (d m : Name),
+      m ∈ seed.reverse[d]?.getD #[] →
+      m ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).reverse[d]?.getD #[]
+  | [], _, _, _, h => h
+  | p :: rest, seed, d, m, h => by
+    rw [List.foldl_cons]
+    refine seedFold_reverse_grew rest _ d m ?_
+    rw [seedStep_reverse, ← Array.foldl_toList]
+    exact alterFold_reverse_grew_list p.1 (axiomEdges p.2).toList seed.reverse d m h
+
+/-- Rows only grow across the whole seed fold. -/
+private theorem seedFold_rows_grew :
+    ∀ (l : List (Name × Lean.ConstantInfo)) (seed : PropagationSeed) (n a : Name),
+      a ∈ seed.axiomsByName[n]?.getD ({} : Std.HashSet Name) →
+      a ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).axiomsByName[n]?.getD
+        ({} : Std.HashSet Name)
+  | [], _, _, _, h => h
+  | p :: rest, seed, n, a, h => by
+    rw [List.foldl_cons]
+    refine seedFold_rows_grew rest _ n a ?_
+    rw [seedStep_axiomsByName]
+    cases hinfo : p.2 with
+    | axiomInfo val =>
+      simp only
+      rw [Std.HashMap.getElem?_alter]
+      cases hbeq : p.1 == n with
+      | false => rw [if_neg nofun]; exact h
+      | true =>
+        rw [if_pos rfl, Option.getD_some]
+        refine Std.HashSet.mem_insert.mpr (Or.inr ?_)
+        rw [← eq_of_beq hbeq] at h
+        exact h
+    | _ => exact h
+
+/-- **Every reverse edge is recorded.** If `n`'s stored body names `d`, then `n`
+    is listed under `d`. The completeness companion to `reverse_sound`. -/
+theorem reverse_complete {cs : Std.HashMap Name Lean.ConstantInfo} {n d : Name}
+    (h : UsesStored cs n d) : n ∈ (propagationSeed cs).reverse[d]?.getD #[] := by
+  obtain ⟨info, hfind, hedge⟩ := h
+  have hmem : (n, info) ∈ cs.toList := Std.HashMap.mem_toList_iff_getElem?_eq_some.mpr hfind
+  rw [propagationSeed, Std.HashMap.fold_eq_foldl_toList]
+  have general : ∀ (l : List (Name × Lean.ConstantInfo)) (seed : PropagationSeed),
+      (n, info) ∈ l →
+      n ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).reverse[d]?.getD #[] := by
+    intro l
+    induction l with
+    | nil => intro _ hl; exact absurd hl (List.not_mem_nil)
+    | cons p rest ih =>
+      intro seed hl
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hl with rfl | hrest
+      · refine seedFold_reverse_grew rest _ d n ?_
+        rw [seedStep_reverse, ← Array.foldl_toList]
+        exact alterFold_reverse_complete_list n (axiomEdges info).toList seed.reverse d
+          (Array.mem_def.mp hedge)
+      · exact ih _ hrest
+  exact general cs.toList {} hmem
+
+/-- **Every axiom seeds its own row.** The completeness companion to
+    `seed_rows_sound`. -/
+theorem seed_rows_complete {cs : Std.HashMap Name Lean.ConstantInfo} {a : Name}
+    (h : IsAxiom cs a) : a ∈ (propagationSeed cs).axiomsByName[a]?.getD ({} : Std.HashSet Name) := by
+  obtain ⟨val, hfind⟩ := h
+  have hmem : (a, Lean.ConstantInfo.axiomInfo val) ∈ cs.toList :=
+    Std.HashMap.mem_toList_iff_getElem?_eq_some.mpr hfind
+  rw [propagationSeed, Std.HashMap.fold_eq_foldl_toList]
+  have general : ∀ (l : List (Name × Lean.ConstantInfo)) (seed : PropagationSeed),
+      (a, Lean.ConstantInfo.axiomInfo val) ∈ l →
+      a ∈ (l.foldl (fun s p => seedStep s p.1 p.2) seed).axiomsByName[a]?.getD
+        ({} : Std.HashSet Name) := by
+    intro l
+    induction l with
+    | nil => intro _ hl; exact absurd hl (List.not_mem_nil)
+    | cons p rest ih =>
+      intro seed hl
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hl with rfl | hrest
+      · refine seedFold_rows_grew rest _ a a ?_
+        rw [seedStep_axiomsByName]
+        simp only
+        rw [Std.HashMap.getElem?_alter, if_pos (beq_self_eq_true a), Option.getD_some]
+        exact Std.HashSet.mem_insert.mpr (Or.inl (beq_self_eq_true a))
+      · exact ih _ hrest
+  exact general cs.toList {} hmem
+
+/-- Every recorded pair is either already pushed to all of its dependents, or
+    still waiting in the unprocessed tail of the worklist. -/
+def Frontier (reverse : Std.HashMap Name (Array Name))
+    (acc : Std.HashMap Name (Std.HashSet Name)) (pending : Array (Name × Name))
+    (cursor : Nat) : Prop :=
+  ∀ n a : Name, a ∈ acc[n]?.getD ({} : Std.HashSet Name) →
+    (∀ m ∈ reverse[n]?.getD #[], a ∈ acc[m]?.getD ({} : Std.HashSet Name)) ∨
+      (n, a) ∈ pending.toList.drop cursor
+
+/-- At a drained exit the tail is empty, so the first disjunct holds outright:
+    the result is closed under reverse edges. -/
+private theorem drainWorklist_closed (reverse : Std.HashMap Name (Array Name)) :
+    ∀ (fuel cursor : Nat) (acc : Std.HashMap Name (Std.HashSet Name))
+      (pending : Array (Name × Name)) (result : Std.HashMap Name (Std.HashSet Name)),
+      Frontier reverse acc pending cursor →
+      drainWorklist reverse fuel cursor acc pending = some result →
+      ∀ n a : Name, a ∈ result[n]?.getD ({} : Std.HashSet Name) →
+        ∀ m ∈ reverse[n]?.getD #[], a ∈ result[m]?.getD ({} : Std.HashSet Name)
+  | 0, _, _, _, _, _, h => by rw [drainWorklist] at h; exact absurd h nofun
+  | fuel + 1, cursor, acc, pending, result, hfront, h => by
+    rw [drainWorklist] at h
+    split at h
+    · next hlt =>
+      refine drainWorklist_closed reverse fuel (cursor + 1) _ _ result ?_ h
+      obtain ⟨extra, hextra, hrows⟩ :=
+        foldl_propagateStep_shape (pending[cursor]'hlt).2
+          (reverse[(pending[cursor]'hlt).1]?.getD #[]).toList acc pending
+      have hdrop : List.drop (cursor + 1) (pending.toList ++ extra)
+          = List.drop (cursor + 1) pending.toList ++ extra :=
+        List.drop_append_of_le_length (by rw [Array.length_toList]; exact hlt)
+      intro n a ha
+      rw [← Array.foldl_toList] at ha
+      rcases hrows n a ha with hold | hnew
+      · rcases hfront n a hold with hall | hpend
+        · left
+          intro m hm
+          rw [← Array.foldl_toList]
+          exact foldl_propagateStep_grew_list _ _ (acc, pending) m a (hall m hm)
+        · -- the pair is in the unprocessed tail; either it is the one at the
+          -- cursor (now discharged by the fold) or it is still further along
+          rw [List.drop_eq_getElem_cons (by rw [Array.length_toList]; exact hlt)] at hpend
+          rcases List.mem_cons.mp hpend with hhead | htail
+          · left
+            intro m hm
+            rw [← Array.foldl_toList]
+            have hn : n = (pending[cursor]'hlt).1 := by
+              rw [← Array.getElem_toList (i := cursor)] at *
+              exact congrArg Prod.fst hhead
+            have ha2 : a = (pending[cursor]'hlt).2 := by
+              rw [← Array.getElem_toList (i := cursor)] at *
+              exact congrArg Prod.snd hhead
+            rw [ha2]
+            refine foldl_propagateStep_covers _ _ acc pending m ?_
+            rw [← hn]
+            exact Array.mem_def.mp hm
+          · right
+            rw [← Array.foldl_toList, hextra, hdrop]
+            exact List.mem_append_left _ htail
+      · right
+        rw [← Array.foldl_toList, hextra, hdrop]
+        exact List.mem_append_right _ hnew
+    · next hge =>
+      rw [← Option.some.inj h]
+      intro n a ha m hm
+      rcases hfront n a ha with hall | hpend
+      · exact hall m hm
+      · exact absurd (List.drop_eq_nil_iff.mpr (by
+          rw [Array.length_toList]; exact Nat.le_of_not_lt hge) ▸ hpend) (List.not_mem_nil)
+
+/-- **A drained result is closed under reverse edges.** If `d` carries an axiom
+    and `n`'s stored body names `d`, then `n` carries it too. -/
+theorem propagatedAxioms_closed {cs : Std.HashMap Name Lean.ConstantInfo}
+    {result : Std.HashMap Name (Std.HashSet Name)} {d n a : Name}
+    (hrun : propagatedAxioms cs = some result)
+    (hmem : a ∈ result[d]?.getD ({} : Std.HashSet Name))
+    (hrev : n ∈ (propagationSeed cs).reverse[d]?.getD #[]) :
+    a ∈ result[n]?.getD ({} : Std.HashSet Name) := by
+  rw [propagatedAxioms] at hrun
+  refine drainWorklist_closed (propagationSeed cs).reverse _ 0
+    (propagationSeed cs).axiomsByName (propagationSeed cs).pending result ?_ hrun d a hmem n hrev
+  intro m b hb
+  exact Or.inr (by rw [List.drop_zero]; exact Array.mem_def.mp (seed_rows_pending hb))
+
+/-- **No false negatives.** Every axiom reachable from a declaration along
+    stored-body edges is filed under it. With `propagatedAxioms_sound` this
+    pins the axiom rows exactly — which is what the gate's axiom-dependency arm
+    reports, and what `docs/overview.md`'s trust claim rests on.
+
+    The `some` hypothesis is load-bearing and is the reason `drainWorklist`
+    refuses on exhaustion: a truncated map satisfies soundness while missing
+    exactly the axiom that mattered. -/
+theorem propagatedAxioms_complete {cs : Std.HashMap Name Lean.ConstantInfo}
+    {result : Std.HashMap Name (Std.HashSet Name)} {n a : Name}
+    (hrun : propagatedAxioms cs = some result)
+    (haxiom : IsAxiom cs a) (hreach : Reaches cs n a) :
+    a ∈ result[n]?.getD ({} : Std.HashSet Name) := by
+  -- `Reaches` before `IsAxiom` so the induction leaves the axiom hypothesis a
+  -- binder in each case rather than generalizing it away.
+  have aux : ∀ {m b : Name}, Reaches cs m b → IsAxiom cs b →
+      b ∈ result[m]?.getD ({} : Std.HashSet Name) := by
+    intro m b hr
+    induction hr with
+    | refl k =>
+      intro hax
+      have hdrain := hrun
+      rw [propagatedAxioms] at hdrain
+      exact drainWorklist_grew (propagationSeed cs).reverse
+        (propagationFuel cs (propagationSeed cs)) 0
+        (propagationSeed cs).axiomsByName (propagationSeed cs).pending result hdrain k k
+        (seed_rows_complete hax)
+    | step edge _ ih =>
+      intro hax
+      exact propagatedAxioms_closed hrun (ih hax) (reverse_complete edge)
+  exact aux hreach haxiom
 
 end Tl.Verify

@@ -27,6 +27,10 @@ private def pinnedVerdictLogicTheorems : Unit :=
   let _ := @completedSuccessfully_markerFinal
   let _ := @replayDependencies_superset
   let _ := @replayDependencies_inductiveSiblings
+  let _ := @propagatedAxioms_sound
+  let _ := @propagatedAxioms_complete
+  let _ := @propagatedAxioms_closed
+  let _ := @propagationFindings_eq_empty_iff
   ()
 
 private def cfg : Config :=
@@ -597,6 +601,23 @@ private def mutualInductiveInfo : ConstantInfo :=
     isReflexive := false
   }
 
+/-- A mutual inductive that also carries a constructor, so the edge seam and the
+    replay cone can be told apart. -/
+private def constructorBearingInductive : ConstantInfo :=
+  .inductInfo {
+    name := `VerifyFixture.Left
+    levelParams := []
+    type := .sort .zero
+    numParams := 0
+    numIndices := 0
+    all := [`VerifyFixture.Left, `VerifyFixture.Right]
+    ctors := [`VerifyFixture.mkLeft]
+    numNested := 0
+    isRec := false
+    isUnsafe := false
+    isReflexive := false
+  }
+
 private def identityType : Expr :=
   .forallE `p (.sort .zero)
     (.forallE `h (.bvar 0) (.bvar 1) .default) .default
@@ -688,8 +709,15 @@ private def replayTests : IO (List Outcome) := do
     check "the edge seam keeps a declaration's stored constants"
       ((axiomEdges (theoremInfo `VerifyFixture.top identityType
         (.const `VerifyFixture.mid []))).contains `VerifyFixture.mid),
-    check "the edge seam keeps an inductive's mutual block"
-      ((axiomEdges mutualInductiveInfo).contains `VerifyFixture.Right)
+    -- The seam keeps an inductive's *constructors*; its mutual block is
+    -- `replayDependencies`' addition for block reconstruction, not an
+    -- axiom-dependency edge. Pinning both sides keeps the two from being
+    -- conflated the next time one of them is edited.
+    check "the edge seam keeps an inductive's constructors"
+      ((axiomEdges constructorBearingInductive).contains `VerifyFixture.mkLeft),
+    check "the edge seam is not the replay cone"
+      (!(axiomEdges constructorBearingInductive).contains `VerifyFixture.Right &&
+        (replayDependencies constructorBearingInductive).contains `VerifyFixture.Right)
   ]
 
 def verifyTests : IO (List Outcome) := do

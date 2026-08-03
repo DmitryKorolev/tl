@@ -496,6 +496,9 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
   Proofs.lean           --   verdict-logic theorems: GateClean + analyze_clean_iff
                         --   per scope, the gate-wide evidence characterisation,
                         --   ADR-0009 traversal completeness and per-edge count,
+                        --   stored-body axiom propagation exact in both
+                        --   directions (sound + complete over an inductive
+                        --   Reaches, at a drained exit),
                         --   the supervision status/marker rule, one replay step
   Launcher.lean         --   minimal supervisor requiring the worker's final marker
   TestLauncher.lean     --   distinct minimal launcher for the test-worker marker
@@ -525,6 +528,23 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   `importViolations_size_eq` characterise the ADR-0009 traversal's silence and
   its one-finding-per-rejected-edge count. Example rows cannot establish that,
   because the risk being managed is an arm that stops reporting.
+- **Stored-body axiom propagation is proved**, in the same file.
+  `propagatedAxioms` deliberately reimplements Lean's `collectAxioms` rather
+  than trusting the serialized extension summaries — which are data produced by
+  the same compilation the gate audits — so a bug in it is a *silent* false
+  negative: an ordinary green run with an axiom unreported in a theorem's cone.
+  `propagatedAxioms_sound` says every axiom filed under a declaration really is
+  an axiom reachable from it along stored-body edges, and
+  `propagatedAxioms_complete` the converse, so the axiom rows the
+  axiom-dependency arm reports are exactly the reachable set. Both are stated
+  over `axiomEdges`, the seam the code walks, and over an *inductive* `Reaches`
+  relation rather than a bounded iteration — which is what keeps the section
+  batteries-only, since the induction is on a derivation and never asks how
+  long a chain is. `Tl/Kernel/Reach.lean` needed Mathlib for exactly the
+  argument avoided here, and is outside ADR-0009's escape hatch anyway.
+  Completeness assumes the drain *finished*: `drainWorklist` returns `Option`
+  and refuses on an exhausted bound rather than returning a truncated map,
+  which is what makes saturation observable instead of a counting argument.
 - Three further functions carry **one-directional** implications, not
   characterisations, and the docs should not be read as claiming more:
   `directImportAllowed_cases` (allowed without the first-party escape implies
@@ -535,11 +555,13 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   (one replay step enqueues every constant the stored body uses, plus an
   inductive's mutual siblings — the fixed-point walk in the
   `partial def replayClosure` is not proved).
-- The **collection of that evidence stays tested**. `Verify/Environment.lean`
-  reads Lean's stored module and declaration data, walks the filesystem, and
-  replays declarations through the kernel; nothing in `Verify/Proofs.lean` says
-  that `o.decls` is a scope's *complete* declaration set or that
-  `replayClosure` reached a fixed point. `Tests/VerifyTests.lean` and
+- The **rest of the collection stays tested**. `Verify/Environment.lean` reads
+  Lean's stored module and declaration data, walks the filesystem, and replays
+  declarations through the kernel; nothing in `Verify/Proofs.lean` says that
+  `o.decls` is a scope's *complete* declaration set or that `replayClosure`
+  reached a fixed point. What the axiom-propagation theorems establish is
+  relative to the constants they are handed: the propagation is exact over that
+  map, not that the map is the right one. `Tests/VerifyTests.lean` and
   `Tests/VerifyLoadedTests.lean` cover those branches and the adversarial
   composition paths described above, together with what the theorems cannot
   see — the wording each finding uses to teach its fix, the truncation

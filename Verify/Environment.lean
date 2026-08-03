@@ -327,11 +327,17 @@ an opaque worklist combinator carrying a one-step unfolding lemma and no
 induction principle, so nothing about the result could be proved at all. -/
 
 /-- The stored edges axiom propagation follows: every constant a declaration's
-    stored type or value mentions. Lean's own `collectAxioms` walks the same
-    constants plus, for a declaration with no value, its constructors or mutual
-    block — which `ConstantInfo.getUsedConstantsAsSet` already includes — so
-    this edge set is never narrower than Lean's. A named seam, so the spec in
-    `Verify.Proofs` quantifies over exactly the relation the code walks. -/
+    stored type or value mentions. For a declaration carrying no value,
+    `ConstantInfo.getUsedConstantsAsSet` still yields the structural neighbours
+    Lean's own `collectAxioms` walks — an inductive's constructors, a
+    constructor's inductive, a recursor's mutual block — so this edge set is
+    never narrower than Lean's.
+
+    Note this is deliberately *not* `replayDependencies`, which additionally
+    enqueues an inductive's whole mutual block: that is a requirement of
+    reconstructing the block for kernel replay, not an axiom-dependency edge. A
+    named seam, so the spec in `Verify.Proofs` quantifies over exactly the
+    relation the code walks. -/
 def axiomEdges (info : ConstantInfo) : Array Name :=
   info.getUsedConstantsAsSet.toArray
 
@@ -352,8 +358,13 @@ def seedStep (seed : PropagationSeed) (name : Name) (info : ConstantInfo) :
     reverse.alter dependency fun dependents => some ((dependents.getD #[]).push name)
   match info with
   | .axiomInfo _ =>
+    -- `alter` rather than `insert`: a constant is visited once, so the row is
+    -- empty here either way, but adding to it keeps the seed *monotone* — which
+    -- is what lets `Verify.Proofs` carry a growth invariant through the fold
+    -- without first proving that a `Std.HashMap`'s keys are distinct.
     { reverse
-      axiomsByName := seed.axiomsByName.insert name (({} : Std.HashSet Name).insert name)
+      axiomsByName := seed.axiomsByName.alter name fun row =>
+        some ((row.getD {}).insert name)
       pending := seed.pending.push (name, name) }
   | _ => { seed with reverse }
 
