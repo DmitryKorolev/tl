@@ -317,11 +317,13 @@ theorem View.rollup_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
 
 /-- Companion field bridges, one per hoisted collection, so a per-row projection
     reads the view it claims to. `present` and `edges` are the state's own
-    fields; `pedges` is the *fast* parent-edge form, so its bridge is the kernel
-    refinement `State.parentEdgesFast_eq` rather than `rfl` — it is the one
-    hoisted field where the derivation could have changed what is summarized.
-    `prov` is derived from the loaded op log rather than from the state, so its
-    bridge names those ops. -/
+    fields. `pedges` is the *fast* parent-edge form, so it is the one field in
+    this block whose bridge is a kernel refinement (`State.parentEdgesFast_eq`)
+    rather than `rfl`. `prov` is derived from the loaded op log rather than from
+    the state, so its bridge names those ops and goes no further: that
+    `provenanceMap` mirrors the per-row `provenanceOf` arm for arm is pinned by
+    a property row in `Tests/CliTests.lean`, not by a theorem, and this bridge
+    does not supply it. -/
 theorem View.present_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
     (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
     (View.ofLoaded dirs loaded now replica refreshNote).present

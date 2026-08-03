@@ -393,21 +393,12 @@ theorem applyFacets_of_perm {facets facets' : List ListFacet} (h : facets.Perm f
     every copy that passes; `applyFacets_eq_filter` is what rules out a
     deduplicating fold, which this sublist law alone would permit). This is what
     makes a read verb's post-filter list still the *ranked* list — `cmdReady`
-    reports `ranked.length` as the total and `ranked.take limit` as its ranked
-    head, both of which need the ranking to survive the fold. -/
+    reports `ranked.length` as the total and renders `readyPage ranked limit`
+    from it, both of which need the ranking to survive the fold. -/
 theorem applyFacets_sublist (facets : List ListFacet) (sorted : List IssueId) :
     (applyFacets facets sorted).Sublist sorted := by
   rw [applyFacets_eq_filter]
   exact List.filter_sublist
-
-/-- `--limit`'s head, at the strength the read verbs claim: `ranked.take n` is a
-    *prefix* of the filtered list (not merely a subsequence of the input), so the
-    capped `items` are the first `n` rows of the same ranked, filtered list whose
-    length is reported as `count`. Composed with `applyFacets_sublist` it is also
-    a subsequence of the pre-filter queue. -/
-theorem applyFacets_take_prefix (facets : List ListFacet) (sorted : List IssueId) (n : Nat) :
-    ((applyFacets facets sorted).take n).IsPrefix (applyFacets facets sorted) :=
-  List.take_prefix n _
 
 /-- The closed-gate bypass is exactly "some active facet selects into the closed
     set" — the condition `cmdList` stands the default effClosed gate down on. An
@@ -477,8 +468,9 @@ theorem readyFacets_isReady (facets : List ListFacet) (rollup : AMap IssueId Sta
 /-- **The ranking survives the facets.** A sublist of a sorted list is sorted, so
     the filtered queue is still ordered by the kernel's `readyLe` ranking — the
     step `cmdReady`'s "still the ranked list" comment needs and that
-    `applyFacets_sublist` alone does not give. With `applyFacets_take_prefix`,
-    `--limit`'s head is the top of that ranking. -/
+    `applyFacets_sublist` alone does not give. `readyPage_sorted` carries it
+    through the `--limit` cap, so the rendered head is the top of that
+    ranking. -/
 theorem readyFacets_sorted (facets : List ListFacet) (rollup : AMap IssueId Status)
     (s : State) (now : Instant) (hrollup : rollup = s.effStatusAll) :
     List.Pairwise (fun a b => s.readyLe a b = true)
@@ -508,17 +500,14 @@ theorem readyRanked_cannot_widen_ofLoaded (facets : List ListFacet) (i : IssueId
   readyRanked_cannot_widen _ facets i
     (View.rollup_ofLoaded dirs loaded now replica refreshNote) h
 
-/-- `cmdReady`'s `count`/`items` discipline, at the production expression: the
-    reported list is a subsequence of the workable queue (so `ranked.length` is
-    the post-filter total of that queue, never more) and `--limit` shows a
-    prefix of it. -/
+/-- Half of `cmdReady`'s `count`/`items` discipline, at the production
+    expression: the reported list is a subsequence of the workable queue, so
+    `ranked.length` is the post-filter total of that queue and never more. The
+    `items` half belongs to `readyPage_prefix` below, which is stated about the
+    cap `cmdReady` actually renders through. -/
 theorem readyRanked_sublist (v : View) (facets : List ListFacet) :
     (readyRanked v facets).Sublist (State.readyFast v.rollup v.state v.now) :=
   applyFacets_sublist facets _
-
-theorem readyRanked_take_prefix (v : View) (facets : List ListFacet) (n : Nat) :
-    ((readyRanked v facets).take n).IsPrefix (readyRanked v facets) :=
-  applyFacets_take_prefix facets _ n
 
 /-- …and it is still ranked. -/
 theorem readyRanked_sorted (v : View) (facets : List ListFacet)

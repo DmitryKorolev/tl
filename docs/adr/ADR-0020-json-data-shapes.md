@@ -555,11 +555,16 @@ counterpart there. Both halves of that shape rule are proved rather than
 sampled, of the named expression `ready` evaluates (`Tl.Cli.readyRanked`):
 filtering is a sublist of its input and a sublist of a ranked list is still
 ranked, so `count` is the post-filter total of the same queue and the rank
-survives it (`applyFacets_sublist`, `readyRanked_sorted`, with
-`readyRanked_take_prefix` making `items` a *prefix* of that filtered ranked
-list); and every survivor of the facet fold is still in the kernel's `ready` set
-(`readyRanked_cannot_widen`, over the `State.readyFast_eq` bridge — its
-view-construction hypothesis discharged by `readyRanked_cannot_widen_ofLoaded`).
+survives it (`applyFacets_sublist`, `readyRanked_sorted`); `--limit` is the
+named `readyPage`, with `readyPage_prefix` making `items` a *prefix* of that
+filtered ranked list — covering the uncapped `--limit 0` branch as well as the
+capped one — and `readyPage_sorted` carrying the rank to the rendered page; and
+membership is characterized rather than only bounded: a row is on the queue
+exactly when the kernel calls it ready and every supplied facet accepts it
+(`mem_readyRanked_iff`, over the `State.readyFast_eq` bridge — its
+view-construction hypothesis discharged by `mem_readyRanked_ofLoaded_iff`),
+which rules out under-reporting as well as widening; `readyRanked_cannot_widen`
+is the forward half.
 
 The other five `list` facets are deliberately **not** on `ready`:
 `--status open` would be redundant because every ready issue is open, while its
