@@ -393,18 +393,27 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   (labelFacet_pred_eq_true_iff /
                         --   assigneeFacet_pred_eq_true_iff, composed in
                         --   mem_readyFacets_iff); the gate stand-down condition
-                        --   (facetsBypassGate_eq_true_iff, discharged for the
-                        --   shared pair by readyFacets_bypassGate_false — the
-                        --   gate is `list`'s, its only consumer). `ready`'s own
+                        --   (facetsBypassGate_eq_true_iff, discharged per facet
+                        --   by labelFacet_no_bypass/assigneeFacet_no_bypass, so
+                        --   sharing them with `list` — the gate's only consumer,
+                        --   and one whose facet list carries five more of its
+                        --   own — cannot introduce a bypass). `ready`'s own
                         --   post-facet queue is the named readyRanked, so the
                         --   cross-layer bounds are about the expression cmdReady
-                        --   evaluates: no facet widens the proved ready set
-                        --   (readyRanked_cannot_widen, via State.readyFast_eq;
-                        --   readyRanked_cannot_widen_ofLoaded discharges its
-                        --   rollup hypothesis from View.rollup_ofLoaded), the
-                        --   survivors stay ranked (readyRanked_sorted, via
-                        --   ready_sorted) and --limit shows a prefix of them
-                        --   (readyRanked_take_prefix). The list-only --status/
+                        --   evaluates, and they characterize membership rather
+                        --   than only bounding it: a row is on the queue exactly
+                        --   when the kernel calls it ready and every supplied
+                        --   facet accepts it (mem_readyRanked_iff, with
+                        --   mem_readyRanked_ofLoaded_iff discharging the rollup
+                        --   hypothesis from View.rollup_ofLoaded), which rules
+                        --   out under-reporting as well as widening
+                        --   (readyRanked_cannot_widen is the forward half, via
+                        --   State.readyFast_eq). Survivors stay ranked
+                        --   (readyRanked_sorted, via ready_sorted), and --limit
+                        --   is the named readyPage, a prefix of the queue in
+                        --   both branches (readyPage_prefix; mem_readyPage_ready
+                        --   and readyPage_sorted carry the bound and the ranking
+                        --   to the rendered page). The list-only --status/
                         --   --priority facets are inline literals in cmdList and
                         --   stay sampled by the CLI rows.
                         --   Write guards run inside the

@@ -3144,7 +3144,16 @@ def readyRankedTests : List Outcome :=
         && readyRanked v [labelFacet v ["x"], assigneeFacet v []] == [a, b])
       s!"{labelledAssigned}",
     -- both repeats of --label must match (AND within the facet)
-    check "readyRanked --label repeats are AND" bothLabels.isEmpty s!"{bothLabels}" ]
+    check "readyRanked --label repeats are AND" bothLabels.isEmpty s!"{bothLabels}",
+    -- the cap `cmdReady` renders from: 0 means uncapped, and an over-large or
+    -- exact limit is the whole queue rather than a truncation
+    check "readyPage 0 is the uncapped queue"
+      (readyPage queue 0 == queue) s!"{readyPage queue 0}",
+    check "readyPage caps to the ranked head"
+      (readyPage queue 1 == [a] && readyPage queue 2 == [a, c]) s!"{readyPage queue 2}",
+    check "readyPage past the end is the whole queue"
+      (readyPage queue queue.length == queue && readyPage queue 99 == queue)
+      s!"{readyPage queue 99}" ]
 
 /-- The default `--limit` is 50 (was 10) for `ready` and `list`: 11 plain issues
     — all open, unblocked, top-level — must all show with no explicit flag. Under

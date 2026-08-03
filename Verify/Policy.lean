@@ -87,6 +87,8 @@ def landmarkTheorems : Array Name := #[
   `Tl.Cli.applyFacets_sublist,
   `Tl.Cli.readyFacets_cannot_widen,
   `Tl.Cli.readyRanked_cannot_widen,
+  `Tl.Cli.mem_readyRanked_iff,
+  `Tl.Cli.readyPage_prefix,
   `Tl.Cli.labelFacet_pred_eq_true_iff,
   `Tl.Cli.assigneeFacet_pred_eq_true_iff
 ]

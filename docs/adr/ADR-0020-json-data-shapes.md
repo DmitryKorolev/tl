@@ -618,11 +618,16 @@ Composition:
   membership and `assigneeFacet_pred_eq_true_iff` the OR over the single held
   assignee (an unassigned issue matching neither —
   `assigneeFacet_pred_unassigned`); `mem_readyFacets_iff` composes the pair into
-  the single statement `ready` and `list` both instantiate. The two shared
-  facets also provably leave the closed gate standing
-  (`readyFacets_bypassGate_false`), the condition `facetsBypassGate_eq_true_iff`
-  characterizes — the gate `cmdList` consults, so sharing these facets with
-  `ready` cannot introduce a bypass into `list`'s default view.
+  the single statement `ready` instantiates — `list` shares the two facets but
+  folds them inside a longer list with its own five, so what covers `list` is
+  the general `mem_applyFacets_iff` over that list together with the two
+  per-facet predicate laws. The two shared facets also provably leave the closed
+  gate standing: `labelFacet_no_bypass` / `assigneeFacet_no_bypass` state it per
+  facet, which with `facetsBypassGate_eq_true_iff` (a bypass has to come from
+  *some* facet that asks for one — the gate `cmdList` consults) is what says
+  sharing these facets with `ready` cannot introduce a bypass into `list`'s
+  default view, whatever else `cmdList`'s list holds;
+  `readyFacets_bypassGate_false` is the corollary at `ready`'s own pair.
 - A flag value is the next token or `--flag=value`; repeat the flag to add (no
   comma-lists). The facets inherit the uniform `tl` parser and add no parsing
   rules of their own — including no new short aliases, though the global `-p` ⇒

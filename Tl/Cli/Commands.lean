@@ -296,9 +296,10 @@ All of them decompose from **one** characterization: the fold *is* a single
 `List.filter` by the conjunction of every active facet's predicate
 (`applyFacets_eq_filter`). Membership, order, multiplicity and the empty-flag
 reading are then corollaries of that one statement rather than four independent
-laws — an implementation that dropped duplicate survivors, or reordered them,
-would satisfy the membership and sublist corollaries but not the
-characterization. The cross-layer consequence follows too: no facet can widen
+laws — an implementation that deduplicated its survivors would satisfy the
+membership and sublist corollaries but not the characterization. (Reordering is
+already ruled out by the sublist corollary, since `List.Sublist` is
+order-preserving.) The cross-layer consequence follows too: no facet can widen
 `ready`'s workable set.
 
 The CLI suite keeps its facet rows, but as a regression net over the compiled
@@ -421,11 +422,35 @@ theorem facetsBypassGate_eq_true_iff (facets : List ListFacet) :
     by the read facets — the one expression `cmdReady` reports `count` and
     `items` from. It is a named production definition rather than an inline
     `let` so that the laws below are stated about the code that runs: an edit to
-    the derivation (a different rollup, another queue, a filter moved after the
-    cap) changes this definition and breaks the theorems, instead of quietly
-    orphaning them. -/
+    the *derivation* — a different rollup, another queue, an extra filter — is an
+    edit to this definition and breaks the theorems instead of quietly orphaning
+    them. What it does not mechanize is `cmdReady` continuing to call it; that
+    much stays a review obligation. -/
 def readyRanked (v : View) (facets : List ListFacet) : List IssueId :=
   applyFacets facets (State.readyFast v.rollup v.state v.now)
+
+/-- **The queue, characterized at the production expression.** The narrowing
+    laws below are one-directional by design, and on their own a `readyRanked`
+    that returned `[]` would satisfy every one of them — under-reporting is the
+    failure a queue verb's users actually suffer. This is the iff that rules it
+    out: a row is in `ready`'s output exactly when the kernel calls it ready and
+    every supplied facet accepts it. `readyRanked_cannot_widen` is its forward
+    half. -/
+theorem mem_readyRanked_iff (v : View) (facets : List ListFacet) (i : IssueId)
+    (hv : v.rollup = v.state.effStatusAll) :
+    i ∈ readyRanked v facets
+      ↔ i ∈ v.state.ready v.now ∧ ∀ f ∈ facets, f.active = true → f.pred i = true := by
+  rw [readyRanked, mem_applyFacets_iff, hv, State.readyFast_eq]
+
+/-- …with the rollup hypothesis discharged at production's only view
+    constructor, so nothing is assumed about the view beyond how it was built. -/
+theorem mem_readyRanked_ofLoaded_iff (facets : List ListFacet) (i : IssueId)
+    (dirs : Dirs) (loaded : Loaded) (now : Nat) (replica : Option Tl.Clock.Replica)
+    (refreshNote : Option String) :
+    i ∈ readyRanked (View.ofLoaded dirs loaded now replica refreshNote) facets
+      ↔ i ∈ (View.ofLoaded dirs loaded now replica refreshNote).state.ready now
+        ∧ ∀ f ∈ facets, f.active = true → f.pred i = true :=
+  mem_readyRanked_iff _ facets i (View.rollup_ofLoaded dirs loaded now replica refreshNote)
 
 /-- **No facet can widen `ready`.** `cmdReady` folds its facets over the fast
     workable queue; every survivor is still in the proved `ready` set. Composes
@@ -500,6 +525,42 @@ theorem readyRanked_sorted (v : View) (facets : List ListFacet)
     (hv : v.rollup = v.state.effStatusAll) :
     List.Pairwise (fun a b => v.state.readyLe a b = true) (readyRanked v facets) :=
   readyFacets_sorted facets v.rollup v.state v.now hv
+
+/-- **`ready`'s rendered page.** `--limit` applied to the ranked queue, with `0`
+    meaning uncapped (ADR-0020). Named for the reason `readyRanked` is: the cap
+    is the last step between the proved queue and what the user sees, so it
+    belongs inside the perimeter rather than living as an anonymous `let` that
+    the prefix law only resembles. It takes the already-computed queue rather
+    than rebuilding it, so naming it costs no second fold. -/
+def readyPage (ranked : List IssueId) (limit : Nat) : List IssueId :=
+  if limit == 0 then ranked else ranked.take limit
+
+/-- The page is a prefix of the queue — including the uncapped `--limit 0`
+    branch, which the bare `take` law does not reach. So `items` really are the
+    ranked head of the list whose length `count` reports. -/
+theorem readyPage_prefix (ranked : List IssueId) (limit : Nat) :
+    (readyPage ranked limit).IsPrefix ranked := by
+  unfold readyPage
+  by_cases h : (limit == 0) = true
+  · rw [if_pos h]
+  · rw [if_neg h]
+    exact List.take_prefix limit ranked
+
+/-- The cap cannot introduce a row: every row `cmdReady` renders is still in the
+    proved `ready` set, at the exact expression it renders from. -/
+theorem mem_readyPage_ready (v : View) (facets : List ListFacet) (limit : Nat) (i : IssueId)
+    (hv : v.rollup = v.state.effStatusAll)
+    (h : i ∈ readyPage (readyRanked v facets) limit) : i ∈ v.state.ready v.now :=
+  readyRanked_cannot_widen v facets i hv
+    ((readyPage_prefix (readyRanked v facets) limit).sublist.subset h)
+
+/-- …and the page is still ranked. -/
+theorem readyPage_sorted (v : View) (facets : List ListFacet) (limit : Nat)
+    (hv : v.rollup = v.state.effStatusAll) :
+    List.Pairwise (fun a b => v.state.readyLe a b = true)
+      (readyPage (readyRanked v facets) limit) :=
+  List.Pairwise.sublist (readyPage_prefix (readyRanked v facets) limit).sublist
+    (readyRanked_sorted v facets hv)
 
 /-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
     labels — ADR-0020). Shared by `ready` and `list`. -/
@@ -596,13 +657,18 @@ theorem labelFacet_nil_inactive (v : View) : (labelFacet v []).active = false :=
 
 theorem assigneeFacet_nil_inactive (v : View) : (assigneeFacet v []).active = false := rfl
 
-/-- **The two shared facets, composed.** The whole `ready`/`list` `--label` +
-    `--assignee` contract in one statement: a survivor was in the input, carries
-    *every* requested label, and — when `--assignee` was actually supplied —
-    holds one of the requested assignees. Both flags absent leaves the
-    right-hand side vacuous, which is the no-op reading; either flag supplied
-    makes its clause a real obligation (via the `active` iffs above), which is
-    the "a supplied flag filters" reading. -/
+/-- **The two shared facets, composed — `ready`'s facet list.** A survivor was
+    in the input, carries *every* requested label, and — when `--assignee` was
+    actually supplied — holds one of the requested assignees. Both flags absent
+    leaves the right-hand side vacuous, which is the no-op reading; either flag
+    supplied makes its clause a real obligation (via the `active` iffs above),
+    which is the "a supplied flag filters" reading.
+
+    Scope note: this is the pair `cmdReady` evaluates. `cmdList` shares the same
+    two facets but folds them inside a longer list with its own five, so it does
+    not instantiate *this* statement; what covers `list` is `mem_applyFacets_iff`
+    over that longer list, together with `labelFacet_pred_eq_true_iff` and
+    `assigneeFacet_pred_eq_true_iff` for the two shared clauses. -/
 theorem mem_readyFacets_iff (v : View) (labels targets : List String)
     (sorted : List IssueId) (i : IssueId) :
     i ∈ applyFacets [labelFacet v labels, assigneeFacet v targets] sorted
@@ -650,12 +716,22 @@ theorem applyFacets_readyFacets_nil (v : View) (sorted : List IssueId) :
       · exact absurd hf'' (List.not_mem_nil))
 
 /-- Neither shared facet licenses standing down the closed gate: both refine an
-    existing open set rather than selecting into the closed one. The consumer is
-    `cmdList` — the only caller of `facetsBypassGate` — so what this guards is
-    that sharing these two facets with `ready` cannot introduce a gate bypass
-    into `list`'s default open-set view. (`cmdReady` never consults the flag at
-    all: its queue is workable-only by construction, which is
-    `readyFacets_isReady`, not this.) -/
+    existing open set rather than selecting into the closed one. Stated per
+    facet rather than about one particular list, because the consumer is
+    `cmdList` — the only caller of `facetsBypassGate` — and `cmdList` folds
+    these two inside a seven-facet list with its own five. With
+    `facetsBypassGate_eq_true_iff` (a bypass must come from *some* facet that
+    asks for one) these two lemmas are what says sharing the facets with `ready`
+    cannot introduce a gate bypass into `list`'s default open-set view, whatever
+    else that list holds. (`cmdReady` never consults the flag at all: its queue
+    is workable-only by construction, which is `readyFacets_isReady`.) -/
+theorem labelFacet_no_bypass (v : View) (labels : List String) :
+    (labelFacet v labels).bypassClosedGate = false := rfl
+
+theorem assigneeFacet_no_bypass (v : View) (targets : List String) :
+    (assigneeFacet v targets).bypassClosedGate = false := rfl
+
+/-- The corollary at `ready`'s own pair. -/
 theorem readyFacets_bypassGate_false (v : View) (labels targets : List String) :
     facetsBypassGate [labelFacet v labels, assigneeFacet v targets] = false := by
   simp only [facetsBypassGate, labelFacet, assigneeFacet, List.any_cons, List.any_nil,
@@ -708,16 +784,18 @@ def cmdReady (dirOverride : Option String) (limit : Nat) (skipBad : Bool) (sync 
   let notes ← cleanReadNotes v
   -- the proved workable set, then the read facets narrow it (ADR-0020: facets
   -- change membership, never the shape) — `readyRanked`, so the laws proved
-  -- above are about this list and not a copy of its derivation. The ranking is
-  -- preserved (`readyRanked_sorted`), so `count` stays the post-filter total
-  -- and `items` the ranked head of it (`readyRanked_take_prefix`), and no row
-  -- can fall outside the proved `ready` set (`readyRanked_cannot_widen`). No
-  -- facet here can bypass a closed gate: `readyFast` already excludes
-  -- closed/rolled-up issues, so `bypassClosedGate` is moot.
+  -- above are about this list and not a copy of its derivation, and
+  -- `readyPage` for the cap for the same reason. Membership is characterized
+  -- both ways (`mem_readyRanked_iff`): no row can fall outside the proved
+  -- `ready` set, and none that belongs is dropped. The ranking survives
+  -- (`readyPage_sorted`), so `count` stays the post-filter total and `items`
+  -- the ranked head of it (`readyPage_prefix`). No facet here can bypass a
+  -- closed gate: `readyFast` already excludes closed/rolled-up issues, so
+  -- `bypassClosedGate` is moot.
   let facets : List ListFacet :=
     [ labelFacet v labels, assigneeFacet v (resolveAssigneeTargets assignees meActor) ]
   let ranked := readyRanked v facets
-  let capped := if limit == 0 then ranked else ranked.take limit
+  let capped := readyPage ranked limit
   let suffix := filterSuffix [("label", labels), ("assignee", assignees)] []
   -- staleness advisory (ADR-0011 §2): always derived from the posture after any
   -- --sync. A successful sync makes it clean (ahead 0, lastSync now ⇒ none); a

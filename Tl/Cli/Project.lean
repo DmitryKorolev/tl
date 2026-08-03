@@ -315,8 +315,13 @@ theorem View.rollup_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
     (View.ofLoaded dirs loaded now replica refreshNote).rollup
       = (View.ofLoaded dirs loaded now replica refreshNote).state.effStatusAll := rfl
 
-/-- Companion field bridges: the other hoisted collections are likewise the
-    state's own, so a per-row projection reads the view it claims to. -/
+/-- Companion field bridges, one per hoisted collection, so a per-row projection
+    reads the view it claims to. `present` and `edges` are the state's own
+    fields; `pedges` is the *fast* parent-edge form, so its bridge is the kernel
+    refinement `State.parentEdgesFast_eq` rather than `rfl` — it is the one
+    hoisted field where the derivation could have changed what is summarized.
+    `prov` is derived from the loaded op log rather than from the state, so its
+    bridge names those ops. -/
 theorem View.present_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
     (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
     (View.ofLoaded dirs loaded now replica refreshNote).present
@@ -326,6 +331,17 @@ theorem View.edges_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
     (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
     (View.ofLoaded dirs loaded now replica refreshNote).edges
       = (View.ofLoaded dirs loaded now replica refreshNote).state.presentEdges := rfl
+
+theorem View.pedges_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
+    (View.ofLoaded dirs loaded now replica refreshNote).pedges
+      = (View.ofLoaded dirs loaded now replica refreshNote).state.parentEdges :=
+  Tl.Kernel.State.parentEdgesFast_eq _
+
+theorem View.prov_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
+    (View.ofLoaded dirs loaded now replica refreshNote).prov
+      = provenanceMap (View.ofLoaded dirs loaded now replica refreshNote).loaded.ops := rfl
 
 /-! ## Indexed-view row accessors (ADR-0024)
 
