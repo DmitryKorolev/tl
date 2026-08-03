@@ -5139,6 +5139,76 @@ def cliImportTests : IO (List Outcome) := do
        ["import", (← writeBad "c.jsonl" "{\"id\":\"X\",\"title\":\"t\",\"status\":\"wat\"}\n"), "--dir", (badDir / "c").toString] .malformedLine,
      ← expectErr "a duplicate source id is malformed-line"
        ["import", (← writeBad "d.jsonl" "{\"id\":\"X\",\"title\":\"a\"}\n{\"id\":\"X\",\"title\":\"b\"}\n"), "--dir", (badDir / "d").toString] .malformedLine]
+  -- One row per remaining fail-closed path in `parseRecord` (Tl/Import/Bulk.lean).
+  -- Each pins the stable `code` *and* a substring of the message that names the
+  -- offending field, because several paths share a code and a generic row would
+  -- not notice one arm rerouting into another. The parse loop runs before
+  -- `initTarget`, so a refusal must also leave no freshly created `.tl/` — the
+  -- fail-closed half of the contract, checked once per row below.
+  let malformedRow (tag name content needle : String) : IO (Outcome × String) := do
+    let path ← writeBad s!"{tag}.jsonl" content
+    let dir := (badDir / tag).toString
+    let row ← expectErr name ["import", path, "--dir", dir] .malformedLine
+      (fun e => (e.message.splitOn needle).length > 1)
+    pure (row, dir)
+  let cases : List (String × String × String × String) :=
+    [ ("e", "a record with no string id is malformed-line",
+        "{\"title\":\"t\"}\n", "needs a string \"id\""),
+      ("f", "a line that is not a JSON object is malformed-line",
+        "5\n", "needs a string \"id\""),
+      ("g", "an ill-typed status is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"status\":5}\n", "\"status\" must be a string"),
+      ("h", "a fractional priority is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"priority\":1.5}\n", "whole number 0–4"),
+      ("i", "a negative priority is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"priority\":-1}\n", "whole number 0–4"),
+      ("j", "an ill-typed priority is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"priority\":\"high\"}\n", "whole number 0–4"),
+      ("k", "an unknown closeResolution is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"status\":\"done\",\"closeResolution\":\"wat\"}\n",
+        "unknown closeResolution"),
+      ("l", "an ill-typed closeResolution is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"closeResolution\":5}\n",
+        "\"closeResolution\" must be a string"),
+      ("m", "an ill-typed assignee is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"assignee\":5}\n", "\"assignee\" must be a string"),
+      ("n", "an ill-typed description is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"description\":5}\n", "\"description\" must be a string"),
+      ("p", "ill-typed notes are malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"notes\":5}\n", "\"notes\" must be a string"),
+      ("q", "an ill-typed duplicateOf is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"duplicateOf\":5}\n", "\"duplicateOf\" must be a string"),
+      ("r", "an ill-typed parent is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"parent\":5}\n", "\"parent\" must be a string"),
+      ("s", "a non-array labels field is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"labels\":\"a\"}\n", "\"labels\" must be an array of strings"),
+      ("t", "a non-string labels element is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"labels\":[5]}\n", "every \"labels\" element must be a string"),
+      ("u", "a non-array blockedBy field is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"blockedBy\":\"a\"}\n",
+        "\"blockedBy\" must be an array of strings"),
+      ("v", "a non-string blockedBy element is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"blockedBy\":[5]}\n",
+        "every \"blockedBy\" element must be a string"),
+      ("w", "a non-array related field is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"related\":\"a\"}\n", "\"related\" must be an array of strings"),
+      ("x", "a non-string related element is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"related\":[5]}\n", "every \"related\" element must be a string"),
+      ("y", "a non-ISO deferUntil is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"deferUntil\":\"tomorrow\"}\n",
+        "is not a canonical ISO-8601 UTC instant"),
+      ("z", "an ill-typed deferUntil is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"deferUntil\":5}\n", "\"deferUntil\" must be a string"),
+      ("aa", "a closeResolution contradicting its status is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"status\":\"open\",\"closeResolution\":\"done\"}\n",
+        "inconsistent with status"),
+      ("ab", "a non-object meta field is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"meta\":[1]}\n", "\"meta\" must be an object") ]
+  for (tag, name, content, needle) in cases do
+    let (row, dir) ← malformedRow tag name content needle
+    o := o ++ [row,
+      check s!"{name} — and leaves no freshly-created .tl/"
+        (!(← (System.FilePath.mk dir).pathExists)) s!"{dir} exists after a refused import"]
   return o
 
 /-- `tl import` granular resource bounds (ADR-0005 §two distinct safety gates,
