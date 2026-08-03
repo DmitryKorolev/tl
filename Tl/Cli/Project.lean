@@ -276,6 +276,51 @@ structure View where
 
 def View.state (v : View) : State := v.loaded.state
 
+/-- **The one constructor for a view's hoisted fields.** Every command's view —
+    the read path, the post-write echo, and `doctor`'s diagnostic view — derives
+    `rollup`/`present`/`edges`/`pedges`/`prov` and the indexed copies from the
+    same materialized state by exactly this block, so the derivations cannot
+    drift between the three call sites, and the *relationship* between a field
+    and the state it summarizes becomes a property of one pure function rather
+    than of three hand-copied `let` chains. `View.rollup_ofLoaded` is what the
+    read-facet bound (`readyFacets_cannot_widen`) needs to discharge its
+    hypothesis: a view built here always carries the batched rollup *of its own
+    state*, which is the map `State.readyFast_eq` is stated at.
+
+    Each collection is bound once and shared with `ViewIndex.of`, so building a
+    view stays one pass per collection. -/
+def View.ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String := none) : View :=
+  let st := loaded.state
+  let rollup := st.effStatusAll
+  let present := st.presentIssues
+  let edges := st.presentEdges
+  let pedges := State.parentEdgesFast st
+  let prov := provenanceMap loaded.ops
+  { dirs, loaded, now, replica, rollup, present, edges, pedges, prov,
+    idx := ViewIndex.of st.data rollup present edges pedges prov
+             st.edges.adds.toList st.edges.removed.toList,
+    refreshNote }
+
+/-- A constructed view's `rollup` is the batched rollup of *its own* state — the
+    invariant the three construction sites used to carry only by inspection. -/
+theorem View.rollup_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
+    (View.ofLoaded dirs loaded now replica refreshNote).rollup
+      = (View.ofLoaded dirs loaded now replica refreshNote).state.effStatusAll := rfl
+
+/-- Companion field bridges: the other hoisted collections are likewise the
+    state's own, so a per-row projection reads the view it claims to. -/
+theorem View.present_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
+    (View.ofLoaded dirs loaded now replica refreshNote).present
+      = (View.ofLoaded dirs loaded now replica refreshNote).state.presentIssues := rfl
+
+theorem View.edges_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) :
+    (View.ofLoaded dirs loaded now replica refreshNote).edges
+      = (View.ofLoaded dirs loaded now replica refreshNote).state.presentEdges := rfl
+
 /-! ## Indexed-view row accessors (ADR-0024)
 
 Each reads the once-built `ViewIndex` and equals — pointwise — the spec accessor

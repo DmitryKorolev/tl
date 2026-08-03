@@ -59,18 +59,13 @@ def loadView (dirOverride : Option String) (skipBad : Bool := false) : TlM View 
   -- foreign op is deferred from the fold until local time catches up; the
   -- fold itself runs through the content-keyed cache (ADR-0022)
   let loaded ← readStateCached d skipBad (some now) (replica.map (·.id))
-  let st := loaded.state
-  -- bind each hoisted collection once: the base fields AND the indexed views
-  -- both read them, so `effStatusAll`/`provenanceMap`/`parentEdgesFast` run once
-  let rollup := st.effStatusAll
-  let present := st.presentIssues
-  let edges := st.presentEdges
-  let pedges := State.parentEdgesFast st
-  let prov := provenanceMap loaded.ops
-  return { dirs := d, loaded, now, replica, rollup, present, edges, pedges, prov,
-           idx := ViewIndex.of st.data rollup present edges pedges prov st.edges.adds.toList st.edges.removed.toList,
-           refreshNote := refresh.degraded.map (fun r =>
-             s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up") }
+  -- the hoisted collections and their indexed copies come from the single pure
+  -- constructor, so each is bound once (`effStatusAll`/`provenanceMap`/
+  -- `parentEdgesFast` run one pass) and each field is provably the summary of
+  -- *this* state (`View.rollup_ofLoaded` and friends)
+  return View.ofLoaded d loaded now replica
+    (refresh.degraded.map (fun r =>
+      s!"served a moment-stale read: could not refresh from the shared ref ({r}) — fix git/filesystem access, then `tl sync` to catch up"))
 
 /-- The disclosure for a skew-deferred op (ADR-0007), shared by the read and
     write paths so neither silently drops a future-dated op (ADR-0008
@@ -117,17 +112,7 @@ def writeNotes (ctx : TxContext) : List String :=
 def postView (v : TxContext) (parsed : List ParsedOp) (now : Nat) : View :=
   let state := parsed.foldl (fun s p => Tl.Kernel.apply s p.kernelOp) v.loaded.state
   let ops := v.loaded.ops ++ parsed
-  let rollup := state.effStatusAll
-  let present := state.presentIssues
-  let edges := state.presentEdges
-  let pedges := State.parentEdgesFast state
-  let prov := provenanceMap ops
-  { dirs := v.dirs
-    loaded := { v.loaded with state, ops }
-    now
-    replica := some v.replica
-    rollup, present, edges, pedges, prov
-    idx := ViewIndex.of state.data rollup present edges pedges prov state.edges.adds.toList state.edges.removed.toList }
+  View.ofLoaded v.dirs { v.loaded with state, ops } now (some v.replica)
 
 private def listPayload (key : String) (total : Nat) (rows : List Json) : Json :=
   Json.mkObj [("count", jnum total), (key, Json.arr rows.toArray)]
@@ -2366,15 +2351,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
       pure (← readStateCached d false (some now) (own.map (·.id)) (persist := false), none)
     catch e =>
       pure (materialize [] false (some now) (own.map (·.id)), some e)
-  let st := loaded.state
-  let rollup := st.effStatusAll
-  let present := st.presentIssues
-  let edges := st.presentEdges
-  let pedges := State.parentEdgesFast st
-  let prov := provenanceMap loaded.ops
-  let v : View := { dirs := d, loaded, now, replica := own,
-                    rollup, present, edges, pedges, prov,
-                    idx := ViewIndex.of st.data rollup present edges pedges prov st.edges.adds.toList st.edges.removed.toList }
+  let v : View := View.ofLoaded d loaded now own
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
     (Json.mkObj [("name", Json.str "log"),
