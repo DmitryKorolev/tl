@@ -457,7 +457,11 @@ scripts/GenLicenses.lean -- executable Lean tooling, audited as a separate root
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Error`,
 `Tl/Format`, `Tl/Hash`, `Tl/Store` (+ `ffi/tlsys.c`), `Tl/Clock`, `Tl/Sync`,
-`Tl/Import`, `Tl/Cli` are the tested shell outside it. `Verify/` is the
+`Tl/Import`, `Tl/Cli` are the tested shell outside it — tested at module
+granularity, which does not mean no theorem is stated about them: where a piece
+of the shell is already a pure total function of data in hand, principle 1 asks
+for a proof, and those named proved anchors carry landmarks like the kernel's
+own claims do (the per-module blocks above name them). `Verify/` is the
 build-time mechanism that checks the proved tier's trust boundary and is
 itself inspected as a separate scope. Its tier is split, deliberately:
 

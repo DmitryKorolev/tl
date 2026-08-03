@@ -113,12 +113,22 @@ private def reportTests : List Outcome :=
       localModules := clean.localModules.push `Verify.Helper
       moduleRemedy := "edit the typed scope registry" }
   -- Assembled through `gateEvidenceOf`, the function the worker calls, so the
-  -- rows exercise the shipped wiring and not a hand-built `GateEvidence`: which
-  -- observation lands in which named field, and which of the two same-typed
-  -- `Array String` arguments becomes the inventory arm rather than the
-  -- unclaimed-source arm. `analyzedGateEvidence_clean_iff` cannot see either —
-  -- it characterises only the empty verdict, and both arrays reach it as
-  -- `= #[]`.
+  -- rows exercise the shipped wiring rather than a hand-built `GateEvidence`.
+  -- The split of labour with `analyzedGateEvidence_clean_iff` runs the other
+  -- way from what it looks like: the theorem is *false* if a scope is audited
+  -- twice or dropped from the assembly, since its right-hand side still demands
+  -- a `GateClean` the verdict no longer depends on — that arm needs no row. Two
+  -- things the theorem genuinely cannot see are covered here: it characterises
+  -- only the empty verdict, where the two same-typed `Array String` arguments
+  -- both reach it as `= #[]`, so nothing in it pins which becomes the inventory
+  -- arm and which the unclaimed-source arm; and the findings themselves — that
+  -- each observation reaches the verdict at all, labelled with its own scope.
+  -- A pure permutation of the six observations is invisible to both: each
+  -- finding carries the scope from the observation it was built from, and the
+  -- six are only flattened, never read per field.
+  let inventoryFinding :=
+    ({ refusedSymlinks := #["Tl/Linked"] } : SourceInventory).errors "production"
+      "Replace it with a regular in-tree directory or .lean file in the production source scope."
   let scopeFailure (scope : String) : Observation :=
     { clean with scope, evidence := { clean.evidence with
         replayError? := some s!"{scope} sentinel" } }
@@ -194,7 +204,18 @@ private def reportTests : List Outcome :=
       (mentions localAxiom "record the residual as an explicit carried assumption"),
     check "a transitive forbidden axiom is named" (mentions sorryDependency "sorryAx"),
     check "a transitive forbidden axiom teaches the fix"
-      (mentions sorryDependency "Finish the proof") ]
+      (mentions sorryDependency "Finish the proof"),
+    -- The inventory arm is the third finding class, produced outside `analyze`:
+    -- `Verify/Main.lean` calls this once per source scope with that scope's own
+    -- remedy, so the wording is production text and not test scaffolding.
+    check "a refused symlink names its scope, its path and why it was refused"
+      (inventoryFinding.any fun error =>
+        error.startsWith "trust verification (production):" &&
+          error.contains "Tl/Linked" && error.contains "refuses symbolic link"),
+    check "a refused symlink carries its scope's own repair instruction"
+      (inventoryFinding.any (·.contains "regular in-tree directory or .lean file in the production")),
+    check "an inventory with nothing refused reports nothing"
+      (({ modules := #[`Tl] } : SourceInventory).errors "production" "irrelevant").isEmpty ]
 
 private def project : Std.HashSet Name :=
   (#[`Tl.Kernel.Op, `Tl.Kernel.Reach, `Tl.Kernel.Ready] : Array Name).foldl (·.insert ·) ∅
