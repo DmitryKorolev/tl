@@ -134,6 +134,24 @@ that imports modules yet selects no declarations, replays no constants, or
 reads no import edges is reported: every semantic arm is silent on an empty
 selection, so a regressed selection layer would otherwise read as success.
 
+The gate's verdict logic is itself proved, in `Verify/Proofs.lean`. `analyze`
+and the two aggregates above it are total pure functions of already-collected
+evidence, so the AGENTS.md tiering puts them in the provable tier rather than
+the tested one: a `GateClean` structure enumerates every condition `analyze`
+can report and `analyze_clean_iff` proves a scope's finding array is empty
+exactly when all of them hold, while `importViolations_isEmpty_iff` proves the
+nested ADR-0009 traversal reaches every edge of every row. Example rows cannot
+close that class, because the failure being managed is an arm that quietly
+stops reporting. These theorems deliberately get no entry in
+`Tl.Verify.landmarkTheorems` and no row in the overview's proved-claims table.
+The landmark list exists to stop the *product's* documented proved claims from
+shrinking unnoticed; the gate's own internal correctness is not a product
+claim, and mixing the two would make a landmark failure ambiguous between "a
+kernel theorem was retired" and "the gate was refactored". The theorems are
+protected the way every other proof is: they sit inside the audited verifier
+scope, so `lake build tlverify --wfail` fails if one stops compiling and
+`lake exe tlverify` kernel-replays them on every run.
+
 `Tests/VerifyTests.lean` covers the report branches — including list truncation
 and a landmark degraded into an axiom — exact inventory and symlink-refusal
 rules (entry and root), typed scope claims feeding their expected-module sets,

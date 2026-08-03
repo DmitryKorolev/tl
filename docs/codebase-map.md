@@ -443,6 +443,10 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
                         --   Lean tooling without initializers; worker verdict
   Supervise.lean        --   the completion-marker protocol and the supervision
                         --   decision applied to a spawned worker
+  Proofs.lean           --   verdict-logic theorems: GateClean + analyze_clean_iff
+                        --   per scope, the gate-wide evidence characterisation,
+                        --   ADR-0009 traversal completeness, the supervision
+                        --   status rule, the replay dependency cone
   Launcher.lean         --   minimal supervisor requiring the worker's final marker
   TestLauncher.lean     --   distinct minimal launcher for the test-worker marker
 
@@ -455,11 +459,31 @@ Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 `Tl/Format`, `Tl/Hash`, `Tl/Store` (+ `ffi/tlsys.c`), `Tl/Clock`, `Tl/Sync`,
 `Tl/Import`, `Tl/Cli` are the tested shell outside it. `Verify/` is the
 build-time mechanism that checks the proved tier's trust boundary and is
-itself inspected as a separate scope. It remains in the *tested* tier:
-`Verify/Report.lean` is pure decision logic, `Verify/Environment.lean` uses
-Lean's stored module and declaration data and replays declarations through the
-kernel, and `Tests/VerifyTests.lean` covers the policy branches and adversarial
-composition paths described above. The efficiency tiering
+itself inspected as a separate scope. Its tier is split, deliberately:
+
+- The **verdict logic is proved**, in `Verify/Proofs.lean`. `analyze`,
+  `AuditedReports.errors`, `GateEvidence.errors`, `importViolations`,
+  `directImportAllowed`, `completedSuccessfully`, and `replayDependencies` are
+  total pure functions of already-collected evidence, so principle 1 applies to
+  them exactly as it applies to the kernel: a `GateClean` structure enumerates
+  every condition `analyze` can report, and `analyze_clean_iff` proves a
+  scope's finding array is empty if and only if all of them hold. Example rows
+  cannot establish that, because the risk being managed is an arm that stops
+  reporting.
+- The **collection of that evidence stays tested**. `Verify/Environment.lean`
+  reads Lean's stored module and declaration data, walks the filesystem, and
+  replays declarations through the kernel; `Tests/VerifyTests.lean` and
+  `Tests/VerifyLoadedTests.lean` cover those branches and the adversarial
+  composition paths described above, together with what a theorem about array
+  emptiness cannot see — the wording each finding uses to teach its fix, the
+  truncation disclosure, and the summarize limit.
+
+These theorems get **no** entry in `Tl.Verify.landmarkTheorems` and **no** row
+in the [overview](overview.md) proved-claims table. Landmarks exist to stop the
+*product's* proved claims from silently shrinking; the gate's own internal
+correctness is not a product claim, and listing it there would make the
+landmark set mean two different things
+([ADR-0026](adr/ADR-0026-continuous-integration.md)). The efficiency tiering
 that backs the proved tier (the `*Fast` refinements, `HashMapView`, and the
 ratio-asserted regression net) is recorded in
 [ADR-0023](adr/ADR-0023-efficiency-tiering-and-prevention.md) and
