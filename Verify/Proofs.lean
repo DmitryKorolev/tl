@@ -517,8 +517,11 @@ theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
 
     This is stated about `gateEvidenceOf`, the function `runChecked` calls, so a
     scope audited twice or left out of the assembly breaks this theorem instead
-    of slipping past it. The remaining step is IO and stays tested: `runChecked`
-    turning an empty array into status zero plus the completion marker, and the
+    of slipping past it. Composed with `workerVerdict_marker_iff` below it gives
+    `workerVerdict_marker_iff_clean`, so the decision from six observations to
+    the marker is proved rather than sampled. What remains IO and stays tested
+    is only the emission — `runChecked` writing `verdict.diagnostics` to stderr
+    and `verdict.report` to stdout and returning `verdict.status` — plus the
     supervisor's handling of that marker. -/
 theorem analyzedGateEvidence_clean_iff (cfg : Config)
     (production tests verifier supervisor testSupervisor tooling : Observation)
