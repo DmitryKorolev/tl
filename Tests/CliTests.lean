@@ -5130,21 +5130,13 @@ def cliImportTests : IO (List Outcome) := do
   let badDir ← IO.FS.createTempDir
   let writeBad (name content : String) : IO String := do
     IO.FS.writeFile (badDir / name) content; pure (badDir / name).toString
-  o := o ++
-    [← expectErr "invalid JSON is malformed-line"
-       ["import", (← writeBad "a.jsonl" "{not json}\n"), "--dir", (badDir / "a").toString] .malformedLine,
-     ← expectErr "a missing title is malformed-line"
-       ["import", (← writeBad "b.jsonl" "{\"id\":\"X\"}\n"), "--dir", (badDir / "b").toString] .malformedLine,
-     ← expectErr "an unknown status is malformed-line"
-       ["import", (← writeBad "c.jsonl" "{\"id\":\"X\",\"title\":\"t\",\"status\":\"wat\"}\n"), "--dir", (badDir / "c").toString] .malformedLine,
-     ← expectErr "a duplicate source id is malformed-line"
-       ["import", (← writeBad "d.jsonl" "{\"id\":\"X\",\"title\":\"a\"}\n{\"id\":\"X\",\"title\":\"b\"}\n"), "--dir", (badDir / "d").toString] .malformedLine]
-  -- One row per remaining fail-closed path in `parseRecord` (Tl/Import/Bulk.lean).
-  -- Each pins the stable `code` *and* a substring of the message that names the
-  -- offending field, because several paths share a code and a generic row would
-  -- not notice one arm rerouting into another. The parse loop runs before
-  -- `initTarget`, so a refusal must also leave no freshly created `.tl/` — the
-  -- fail-closed half of the contract, checked once per row below.
+  -- One row per fail-closed path in `parseRecord` and its two shared helpers,
+  -- plus the duplicate-source-id check in `cmdImport`. Each pins the stable
+  -- `code` *and* a substring of the message that names the offending field,
+  -- because every class shares one code and a code-only row would not notice
+  -- one arm rerouting into another. The parse loop runs before `initTarget`,
+  -- so a refusal must also leave no freshly created `.tl/` — the fail-closed
+  -- half of the contract, checked once per row below.
   let malformedRow (tag name content needle : String) : IO (Outcome × String) := do
     let path ← writeBad s!"{tag}.jsonl" content
     let dir := (badDir / tag).toString
@@ -5152,7 +5144,16 @@ def cliImportTests : IO (List Outcome) := do
       (fun e => (e.message.splitOn needle).length > 1)
     pure (row, dir)
   let cases : List (String × String × String × String) :=
-    [ ("e", "a record with no string id is malformed-line",
+    [ ("a", "invalid JSON is malformed-line",
+        "{not json}\n", "not valid JSON"),
+      ("b", "a missing title is malformed-line",
+        "{\"id\":\"X\"}\n", "needs a string \"title\""),
+      ("c", "an unknown status is malformed-line",
+        "{\"id\":\"X\",\"title\":\"t\",\"status\":\"wat\"}\n", "unknown status"),
+      ("d", "a duplicate source id is malformed-line",
+        "{\"id\":\"X\",\"title\":\"a\"}\n{\"id\":\"X\",\"title\":\"b\"}\n",
+        "two records with id"),
+      ("e", "a record with no string id is malformed-line",
         "{\"title\":\"t\"}\n", "needs a string \"id\""),
       ("f", "a line that is not a JSON object is malformed-line",
         "5\n", "needs a string \"id\""),
