@@ -136,7 +136,7 @@ CI gates (mirror these locally before declaring done):
 lexical rather than semantic: the prohibited thing *is* a token, so a text scan
 states the rule instead of approximating it — unlike the source greps the trust
 verifier replaced — and it stays outside the trust boundary, reading tracked
-content only and never the log. Three limits are recorded rather than
+content only and never the log. Four limits are recorded rather than
 papered over: a bare stored id written without its `tl-` affix is
 indistinguishable from any other sixteen-digit token and is not detected;
 `docs/` and `README.md` are out of scope because the prohibition binds code and

@@ -558,7 +558,8 @@ ranked, so `count` is the post-filter total of the same queue and the rank
 survives it (`applyFacets_sublist`, `readyRanked_sorted`); `--limit` is the
 named `readyPage`, with `readyPage_prefix` making `items` a *prefix* of that
 filtered ranked list — covering the uncapped `--limit 0` branch as well as the
-capped one — and `readyPage_sorted` carrying the rank to the rendered page; and
+capped one — and `readyPage_length` pinning how long that prefix is, which is
+what rules out the empty page the prefix law alone admits — and `readyPage_sorted` carrying the rank to the rendered page; and
 membership is characterized rather than only bounded: a row is on the queue
 exactly when the kernel calls it ready and every supplied facet accepts it
 (`mem_readyRanked_iff`, over the `State.readyFast_eq` bridge — its

@@ -44,7 +44,9 @@ pinned contract rather than a preference:
   compound cannot hide a match. Matched case-insensitively, because the id
   surface is: `Tl/Cli/Resolve` lowercases a token before testing the affix and
   applies the Crockford aliases, so `TL-…` and `tl-…` resolve to the same issue
-  and are equally a leak.
+  and are equally a leak. Case is where that stops: the *symbol* aliases
+  (`o`→`0`, `i`/`l`→`1`) are deliberately not admitted into the class — see the
+  residuals below.
 - Scope: every tracked file, minus exactly three pathspecs — `docs/`,
   `README.md`, and the registry itself. Fail-closed: a new top-level file is in
   scope automatically, and `git grep` reads tracked content only.
@@ -63,7 +65,7 @@ conflated with the trust boundary: it reads tracked source, never the log, and
 `tlverify` is untouched. Task IDs in commit messages remain permitted and useful
 for traceability (AGENTS.md, "Artifacts must be human-readable").
 
-Three residuals are recorded rather than papered over. A bare stored id written
+Four residuals are recorded rather than papered over. A bare stored id written
 without its `tl-` affix is indistinguishable from any other sixteen-digit token
 and is not detected. `docs/` and `README.md` are out of scope because the
 prohibition binds code and comments; prose that renders sample CLI output would
@@ -73,7 +75,14 @@ hyphenated English compound — the Crockford class still covers most letters, s
 remedy is to reword the prose, not to register it: the registry means "tokens
 that are synthetic ids", and filling it with English would erode the assertion
 registering a token is supposed to make. This change reworded one such comment
-for exactly that reason.
+for exactly that reason. Finally, resolution applies the Crockford symbol
+aliases (`o`→`0`, `i`/`l`→`1`), so a hand-typed `tl-o231…` resolves while the
+canonical class does not match it. Admitting those three letters would catch a
+mistyped reference nobody copy-pasted, at the cost of matching the project's own
+vocabulary (`tl-init`, `tl-local`, `tl-list`) — which the previous residual
+says to reword, so the tax lands on legitimate prose. Every id tl *renders*
+comes from `toCrockford` over an alphabet without `i l o u`, so a copied id is
+always caught.
 
 ### Warning-free build
 

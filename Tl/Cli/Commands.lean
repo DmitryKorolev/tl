@@ -525,8 +525,9 @@ def readyPage (ranked : List IssueId) (limit : Nat) : List IssueId :=
   if limit == 0 then ranked else ranked.take limit
 
 /-- The page is a prefix of the queue — including the uncapped `--limit 0`
-    branch, which the bare `take` law does not reach. So `items` really are the
-    ranked head of the list whose length `count` reports. -/
+    branch, which the bare `take` law does not reach. With `readyPage_length`
+    that is exactly "uncapped, or the first `limit` rows"; on its own the prefix
+    law would also admit an empty page. -/
 theorem readyPage_prefix (ranked : List IssueId) (limit : Nat) :
     (readyPage ranked limit).IsPrefix ranked := by
   unfold readyPage
@@ -534,6 +535,20 @@ theorem readyPage_prefix (ranked : List IssueId) (limit : Nat) :
   · rw [if_pos h]
   · rw [if_neg h]
     exact List.take_prefix limit ranked
+
+/-- **The page is as long as the cap allows.** With `readyPage_prefix` this is
+    exactly "uncapped, or the first `limit` rows": a prefix is pinned by its
+    length. Each half rules out a degenerate page the other permits — an empty
+    page satisfies the prefix law, and the *bottom* `limit` rows satisfy this
+    one — so both are load-bearing and neither landmark may be retired alone. -/
+theorem readyPage_length (ranked : List IssueId) (limit : Nat) :
+    (readyPage ranked limit).length
+      = if limit == 0 then ranked.length else min limit ranked.length := by
+  unfold readyPage
+  by_cases h : (limit == 0) = true
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg h, if_neg h]
+    exact List.length_take
 
 /-- The cap cannot introduce a row: every row `cmdReady` renders is still in the
     proved `ready` set, at the exact expression it renders from. -/
