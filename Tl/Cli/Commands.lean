@@ -329,6 +329,22 @@ theorem mem_applyFacets_iff (facets : List ListFacet) (sorted : List IssueId) (i
       · intro h
         exact ⟨h.1, fun g hg hga => h.2 g (List.mem_cons.mpr (Or.inr hg)) hga⟩
 
+/-- **The no-op reading, at list-identity strength.** `mem_applyFacets_iff`
+    settles membership; this settles the list. When no facet is in play the
+    fold returns its input *unchanged* — an absent or empty flag cannot even
+    reorder or deduplicate the set, let alone filter it to nothing. -/
+theorem applyFacets_eq_self_of_inactive : ∀ (facets : List ListFacet) (sorted : List IssueId),
+    (∀ f ∈ facets, f.active = false) → applyFacets facets sorted = sorted
+  | [], _, _ => rfl
+  | f :: fs, sorted, h => by
+    have hf : ¬ f.active = true := by
+      intro hc
+      rw [h f (List.mem_cons.mpr (Or.inl rfl))] at hc
+      exact Bool.noConfusion hc
+    rw [applyFacets_cons, if_neg hf]
+    exact applyFacets_eq_self_of_inactive fs sorted
+      (fun g hg => h g (List.mem_cons.mpr (Or.inr hg)))
+
 /-- **Order preservation.** The filtered list is a sublist of the input: facets
     change membership only, never the order or the multiplicity of what
     survives. This is what makes a read verb's post-filter list still the
@@ -384,6 +400,29 @@ theorem readyFacets_isReady (facets : List ListFacet) (rollup : AMap IssueId Sta
     i ∈ s.presentIssues ∧ s.isReady now i = true :=
   (mem_ready_iff s now i).mp (readyFacets_cannot_widen facets rollup s now i hrollup h)
 
+/-- The same bound in the shape a read verb writes it: over a `View` whose
+    hoisted `rollup` summarizes its own state. Every command's view is built by
+    `View.ofLoaded`, which establishes exactly that (`View.rollup_ofLoaded`). -/
+theorem readyFacets_cannot_widen_view (facets : List ListFacet) (v : View) (i : IssueId)
+    (hv : v.rollup = v.state.effStatusAll)
+    (h : i ∈ applyFacets facets (State.readyFast v.rollup v.state v.now)) :
+    i ∈ v.state.ready v.now :=
+  readyFacets_cannot_widen facets v.rollup v.state v.now i hv h
+
+/-- …and with the hypothesis discharged, at the only view-construction there
+    is: whatever `loadView` / `postView` / `doctor` handed `cmdReady`, a facet
+    survivor is a genuine `ready` row. Nothing is assumed about the view but
+    that it was constructed the one way views are. -/
+theorem readyFacets_cannot_widen_ofLoaded (facets : List ListFacet) (v : View) (i : IssueId)
+    (dirs : Dirs) (loaded : Loaded) (now : Nat) (replica : Option Tl.Clock.Replica)
+    (refreshNote : Option String)
+    (hv : v = View.ofLoaded dirs loaded now replica refreshNote)
+    (h : i ∈ applyFacets facets (State.readyFast v.rollup v.state v.now)) :
+    i ∈ v.state.ready v.now := by
+  subst hv
+  exact readyFacets_cannot_widen_view facets _ i
+    (View.rollup_ofLoaded dirs loaded now replica refreshNote) h
+
 /-- `--label` (repeatable ⇒ **AND**, exact membership: an issue can carry many
     labels — ADR-0020). Shared by `ready` and `list`. -/
 def labelFacet (v : View) (labels : List String) : ListFacet :=
@@ -398,6 +437,78 @@ def assigneeFacet (v : View) (targets : List String) : ListFacet :=
     pred := fun i => match (v.issueData i).assignee.value.getD none with
       | some a => targets.contains a
       | none => false }
+
+/-! #### The two shared facets, proved
+
+`mem_applyFacets_iff` fixes how facets compose *with each other* (AND). The
+other half of ADR-0020's composition rule is how a *repeated* facet composes
+with itself — AND for `--label` (an issue carries many labels), OR for
+`--assignee` (an issue holds one) — together with the reading of an absent
+flag. Both are properties of these two predicates, so they are theorems here. -/
+
+/-- **`--label` repeats are AND.** An issue passes iff it carries *every*
+    requested label; the membership test is exact (the present-element view of
+    its label OR-Set), never a prefix or substring match. -/
+theorem labelFacet_pred_eq_true_iff (v : View) (labels : List String) (i : IssueId) :
+    (labelFacet v labels).pred i = true
+      ↔ ∀ l ∈ labels, (v.issueData i).labels.presentElements.contains l = true := by
+  simp only [labelFacet, List.all_eq_true]
+
+/-- **`--assignee` repeats are OR.** An issue passes iff it *has* an assignee
+    and that one value is among the (already-`me`-resolved) targets. -/
+theorem assigneeFacet_pred_eq_true_iff (v : View) (targets : List String) (i : IssueId) :
+    (assigneeFacet v targets).pred i = true
+      ↔ ∃ a, (v.issueData i).assignee.value.getD none = some a ∧ targets.contains a = true := by
+  simp only [assigneeFacet]
+  cases ha : (v.issueData i).assignee.value.getD none with
+  | none =>
+    constructor
+    · intro hc; exact Bool.noConfusion hc
+    · intro hc
+      obtain ⟨a, hsome, _⟩ := hc
+      exact (Option.some_ne_none a hsome.symm).elim
+  | some a =>
+    constructor
+    · intro hc; exact ⟨a, rfl, hc⟩
+    · intro hc
+      obtain ⟨b, hsome, hb⟩ := hc
+      rw [Option.some.injEq] at hsome
+      subst hsome
+      exact hb
+
+/-- An *unassigned* issue is never a `--assignee` match — the facet selects
+    into the assigned set, so it can only ever narrow. -/
+theorem assigneeFacet_pred_unassigned (v : View) (targets : List String) (i : IssueId)
+    (h : (v.issueData i).assignee.value.getD none = none) :
+    (assigneeFacet v targets).pred i = false := by
+  simp only [assigneeFacet, h]
+
+/-- **An absent flag is inactive**, which by `mem_applyFacets_iff` /
+    `applyFacets_eq_self_of_inactive` makes it a no-op rather than a filter that
+    matches nothing. -/
+theorem labelFacet_nil_inactive (v : View) : (labelFacet v []).active = false := rfl
+
+theorem assigneeFacet_nil_inactive (v : View) : (assigneeFacet v []).active = false := rfl
+
+/-- `tl ready` with neither flag returns the ranked queue verbatim. -/
+theorem applyFacets_readyFacets_nil (v : View) (sorted : List IssueId) :
+    applyFacets [labelFacet v [], assigneeFacet v []] sorted = sorted :=
+  applyFacets_eq_self_of_inactive _ sorted (by
+    intro f hf
+    rcases List.mem_cons.mp hf with rfl | hf'
+    · exact labelFacet_nil_inactive v
+    · rcases List.mem_cons.mp hf' with rfl | hf''
+      · exact assigneeFacet_nil_inactive v
+      · exact absurd hf'' (List.not_mem_nil))
+
+/-- Neither shared facet licenses standing down the closed gate: both refine an
+    existing open set rather than selecting into the closed one. This is what
+    makes `cmdReady`'s "no facet here can bypass a closed gate" true of the
+    code rather than of a comment. -/
+theorem readyFacets_bypassGate_false (v : View) (labels targets : List String) :
+    facetsBypassGate [labelFacet v labels, assigneeFacet v targets] = false := by
+  simp only [facetsBypassGate, labelFacet, assigneeFacet, List.any_cons, List.any_nil,
+    Bool.and_false, Bool.or_false]
 
 /-- `--assignee me` resolves to the ambient actor for the *filter*; the raw
     tokens (including `me`) stay for the human echo (ADR-0013/ADR-0020). -/
