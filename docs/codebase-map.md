@@ -541,7 +541,8 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   relation rather than a bounded iteration — which is what keeps the section
   batteries-only, since the induction is on a derivation and never asks how
   long a chain is. `Tl/Kernel/Reach.lean` needed Mathlib for exactly the
-  argument avoided here, and is outside ADR-0009's escape hatch anyway.
+  argument avoided here, and `Verify/` is outside ADR-0009's escape hatch
+  anyway.
   Completeness assumes the drain *finished*: `drainWorklist` returns `Option`
   and refuses on an exhausted bound rather than returning a truncated map,
   which is what makes saturation observable instead of a counting argument.

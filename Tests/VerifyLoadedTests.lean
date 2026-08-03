@@ -69,6 +69,13 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
     #[`Tl.Kernel.State.merge_comm, `Absent.Landmark]
     (importAudit := fun _ _ _ => #["injected import-audit finding"])
     (replayAudit := fun _ _ => pure (some "injected replay-audit finding"))
+  -- The refusal arm, through the shipped wiring: a propagation that declines to
+  -- answer must reach the verdict as a *finding*, never as an empty axiom map,
+  -- which would read as clean and silence every axiom arm below it.
+  let refusedObservation ← observeEnvironment "loaded propagation refusal"
+    production #[`Tl.Kernel.State] #[`Tl.Kernel.State] productionModules
+    #[`Tl.Kernel.State.merge_comm]
+    (propagationAudit := fun _ => none)
   let reportNames := declarationNamesOf env #[`Verify.Report]
   let reportDecls ← declarationsOf env #[`Verify.Report] {}
   let reportRows := directImportRows env #[`Verify.Report]
@@ -118,6 +125,15 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
       (stateObservation.evidence.importErrors.contains "injected import-audit finding"),
     check "loaded observation retains the replay-audit result"
       (stateObservation.evidence.replayError? == some "injected replay-audit finding"),
+    check "a refused propagation is reported rather than read as no axioms"
+      (refusedObservation.evidence.propagationError?.isSome &&
+        refusedObservation.decls.all (·.axioms.isEmpty)),
+    check "the refusal teaches the fix at the shipped wiring"
+      (refusedObservation.evidence.propagationError?.any fun message =>
+        (message.splitOn "did not drain its worklist").length > 1 &&
+          (message.splitOn "Raise `propagationFuel`").length > 1),
+    check "a propagation that answers leaves the arm silent"
+      (stateObservation.evidence.propagationError?.isNone),
     check "loaded observation maps every policy landmark one-for-one"
       (stateObservation.landmarks.map (·.name) == stateObservation.expectedLandmarks),
     check "loaded landmark lookup distinguishes present and absent names"

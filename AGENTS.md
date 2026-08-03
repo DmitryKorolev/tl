@@ -87,8 +87,10 @@ for the decisions and their rationale, read the ADRs in
   initializer as a composed no-execution/supervision canary.
   Its *verdict logic* — the pure functions deciding whether a scope, and then
   the whole run, passes — is **proved** in `Verify/Proofs.lean` under principle 1
-  rather than sampled with example rows; the evidence *collection* those
-  functions consume stays tested. Those theorems deliberately get no landmark
+  rather than sampled with example rows, as is the stored-body axiom
+  propagation those arms report on — the one collection-layer function whose
+  bug would be a silent false negative rather than an odd verdict. The rest of
+  the evidence *collection* stays tested. Those theorems deliberately get no landmark
   and no docs/overview.md row: landmarks guard the *product's* proved claims,
   not the gate's own internals. They are instead kept from silent deletion by
   `pinnedVerdictLogicTheorems` in `Tests/VerifyTests.lean`. The split, what is

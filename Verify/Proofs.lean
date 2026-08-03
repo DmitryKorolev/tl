@@ -95,7 +95,8 @@ private theorem ite_singleton_eq_nil_iff {α : Type} {c : Prop} [Decidable c] (a
 
 One characterisation per arm of `Verify.Report.analyze`. Each says exactly when
 that arm is silent, so the aggregate theorem below can neither lose a condition
-nor invent one. -/
+nor invent one. The stored-body axiom propagation those arms report on is
+characterised separately, at the end of this file. -/
 
 theorem replayFindings_eq_empty_iff (o : Observation) :
     replayFindings o = #[] ↔ o.evidence.replayError? = none := by
@@ -812,7 +813,8 @@ what keeps this whole section batteries-only: completeness inducts on a
 derivation the caller supplies, so it never asks how long a chain is and no
 cardinality or pigeonhole argument enters. `Tl/Kernel/Reach.lean` needed
 Mathlib for exactly the argument avoided here — that a fixed iteration count
-suffices — and it is outside ADR-0009's escape hatch anyway. -/
+suffices — and `Verify/` is outside ADR-0009's escape hatch, which is scoped to
+`Reach.lean` and its dependents. -/
 
 /-- `used` is named by the stored type or value of `user`, and `user` is one of
     the inspected constants. The membership side condition is built in, so a

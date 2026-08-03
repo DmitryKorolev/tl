@@ -328,16 +328,18 @@ induction principle, so nothing about the result could be proved at all. -/
 
 /-- The stored edges axiom propagation follows: every constant a declaration's
     stored type or value mentions. For a declaration carrying no value,
-    `ConstantInfo.getUsedConstantsAsSet` still yields the structural neighbours
-    Lean's own `collectAxioms` walks — an inductive's constructors, a
-    constructor's inductive, a recursor's mutual block — so this edge set is
-    never narrower than Lean's.
+    `ConstantInfo.getUsedConstantsAsSet` still yields structural neighbours — an
+    inductive's constructors, a constructor's own name, a recursor's mutual
+    block. Against Lean's own `collectAxioms` this edge set is never narrower:
+    the two agree on axioms, definitions, theorems, opaques and inductives, and
+    for quotients, constructors and recursors this one is strictly broader,
+    which is the safe direction.
 
-    Note this is deliberately *not* `replayDependencies`, which additionally
-    enqueues an inductive's whole mutual block: that is a requirement of
-    reconstructing the block for kernel replay, not an axiom-dependency edge. A
-    named seam, so the spec in `Verify.Proofs` quantifies over exactly the
-    relation the code walks. -/
+    It is deliberately *not* `replayDependencies`, which additionally enqueues
+    an inductive's whole mutual block — a requirement of reconstructing the
+    block for kernel replay, not an axiom-dependency edge. A named seam, so the
+    spec in `Verify.Proofs` quantifies over exactly the relation the code
+    walks. -/
 def axiomEdges (info : ConstantInfo) : Array Name :=
   info.getUsedConstantsAsSet.toArray
 
@@ -460,12 +462,21 @@ abbrev ImportAudit :=
 abbrev ReplayAudit :=
   Environment → Std.HashMap Name ConstantInfo → IO (Option String)
 
+/-- The propagation seam, alongside the import and replay ones. Its refusal is
+    unreachable from real input — the shipped fuel always suffices — so without
+    an injectable seam the `none` arm below could not be exercised at all, and
+    a later edit collapsing it (a `.getD {}`, say) would leave every gate
+    green while a discarded axiom map reached the verdict as an empty one. -/
+abbrev PropagationAudit :=
+  Std.HashMap Name ConstantInfo → Option (Std.HashMap Name (Std.HashSet Name))
+
 def observeEnvironment (scope : String) (env : Environment)
     (expectedModules modulesToInspect projectModules : Array Name)
     (landmarkNames : Array Name := #[])
     (moduleRemedy : String := defaultModuleRemedy)
     (importAudit : ImportAudit := importViolations importPolicy)
-    (replayAudit : ReplayAudit := replayConstantsError?) :
+    (replayAudit : ReplayAudit := replayConstantsError?)
+    (propagationAudit : PropagationAudit := propagatedAxioms) :
     IO Observation := do
   let imported := modulesInEnvironment env modulesToInspect
   let replayConstants := replayClosure env (declarationNamesOf env imported)
@@ -473,7 +484,7 @@ def observeEnvironment (scope : String) (env : Environment)
   -- The empty map silences the axiom-dependency arm, and `propagationError?`
   -- fires its own arm in its place, so the verdict stays fail-closed.
   let (axiomsByName, propagationError?) :=
-    match propagatedAxioms replayConstants with
+    match propagationAudit replayConstants with
     | some axiomsByName => (axiomsByName, none)
     | none =>
       ({}, some "stored-body axiom propagation did not drain its worklist within \
