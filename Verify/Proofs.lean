@@ -455,6 +455,40 @@ theorem gateEvidence_errors_eq_empty_iff (evidence : GateEvidence) :
     rw [(unclaimedSourceError?_eq_none_iff _).mpr hempty] at hunclaimed
     exact absurd hunclaimed nofun
 
+/-- The same verdict with the six scope reports expanded: nothing between an
+    individual scope's findings and the gate's exit status can absorb them. -/
+theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
+    evidence.errors = #[] ↔
+      evidence.reports.production.errors = #[] ∧ evidence.reports.tests.errors = #[]
+        ∧ evidence.reports.verifier.errors = #[] ∧ evidence.reports.supervisor.errors = #[]
+        ∧ evidence.reports.testSupervisor.errors = #[] ∧ evidence.reports.tooling.errors = #[]
+        ∧ evidence.inventoryErrors = #[] ∧ evidence.unclaimedSources = #[] := by
+  rw [gateEvidence_errors_eq_empty_iff, auditedReports_errors_eq_empty_iff, and_assoc,
+    and_assoc, and_assoc, and_assoc, and_assoc]
+
+/-- The gate's decision, end to end and in the shape the worker builds it: the
+    run is accepted exactly when all six audited scopes satisfy `GateClean` and
+    neither the source inventory nor the unclaimed-source scan found anything. -/
+theorem analyzedGateEvidence_clean_iff (cfg : Config)
+    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (inventoryErrors unclaimedSources : Array String) :
+    ({ reports :=
+         { production := analyze cfg production
+           tests := analyze cfg tests
+           verifier := analyze cfg verifier
+           supervisor := analyze cfg supervisor
+           testSupervisor := analyze cfg testSupervisor
+           tooling := analyze cfg tooling }
+       inventoryErrors
+       unclaimedSources } : GateEvidence).errors = #[] ↔
+      GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
+        ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor
+        ∧ GateClean cfg tooling
+        ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
+  rw [gateEvidence_errors_eq_empty_iff_scopes]
+  rw [analyze_clean_iff, analyze_clean_iff, analyze_clean_iff, analyze_clean_iff,
+    analyze_clean_iff, analyze_clean_iff]
+
 /-! ### The ADR-0009 direct-import audit
 
 `importViolations` is a nested imperative loop, so its silence is only
