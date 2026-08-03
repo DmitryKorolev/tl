@@ -3093,6 +3093,59 @@ def rowAccessorAgreementTests : List Outcome :=
           && pa.closedAt == pb.closedAt && pa.claimedAt == pb.claimedAt
           && pa.createdBy == pb.createdBy && pa.createdReplica == pb.createdReplica)))
 
+/-- `readyRanked` and `View.ofLoaded` over a folded state, in-process: the two
+    production definitions the read-facet theorems (`Tl/Cli/Commands.lean`) are
+    stated about, exercised on the *compiled* code the way the kernel property
+    tests exercise the compiled kernel — the theorems are the evidence for the
+    algebra, this is the regression net that compilation preserved it and that
+    the constructor's fields are what the bridges say. `cliReadyFacetTests`
+    covers the same ground through the binary (flag parsing, echo, JSON). -/
+def readyRankedTests : List Outcome :=
+  let st (n : Nat) : Tl.Crdt.Stamp := ⟨n, 7, n⟩
+  let a := "a000000000000000"; let b := "b000000000000000"; let c := "c000000000000000"
+  let now := 1000000
+  let s := Tl.Kernel.fold [
+    Op.create a (st 1) { title := some "A", priority := some (0 : Fin 5) },
+    Op.create b (st 2) { title := some "B", priority := some (2 : Fin 5) },
+    Op.create c (st 3) { title := some "C", priority := some (1 : Fin 5) },
+    Op.labelAdd a "x" (st 4),
+    Op.labelAdd b "x" (st 5)]
+  let loaded : Loaded :=
+    { state := s, ops := [], refused := [], skipped := [], deferred := [],
+      maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+  let v := View.ofLoaded ⟨"", ".tl"⟩ loaded now none
+  let queue := State.readyFast v.rollup v.state v.now
+  let labelled := readyRanked v [labelFacet v ["x"]]
+  let labelledAssigned := readyRanked v [labelFacet v ["x"], assigneeFacet v ["ann"]]
+  let bothLabels := readyRanked v [labelFacet v ["x", "y"]]
+  [ check "View.ofLoaded hoists its own state's rollup/present/data"
+      (v.present == s.presentIssues
+        && s.presentIssues.all (fun i =>
+             v.effStatus i == State.effStatusWith s.effStatusAll s i
+             && (v.issueData i).statusOf == (s.issueData i).statusOf
+             && (v.issueData i).priorityOf == (s.issueData i).priorityOf
+             && (v.issueData i).labels.presentElements == (s.issueData i).labels.presentElements))
+      s!"{v.present}",
+    -- no facet in play ⇒ the ranked queue verbatim (not a reordered or
+    -- deduplicated copy), which is `applyFacets_eq_self_of_inactive` compiled
+    check "readyRanked with no active facet is the ranked queue verbatim"
+      (readyRanked v [] == queue
+        && readyRanked v [labelFacet v [], assigneeFacet v []] == queue)
+      s!"{queue}",
+    -- filters to the carriers, in the queue's own order (p0 before p2)
+    check "readyRanked --label keeps carriers in ranked order"
+      (labelled == [a, b]) s!"{labelled}",
+    -- and never adds a row the unfiltered queue did not have
+    check "readyRanked --label cannot widen the queue"
+      (labelled.all queue.contains && labelled.length ≤ queue.length) s!"{labelled}",
+    -- different facets AND: an unassigned carrier fails the assignee facet
+    check "readyRanked composes the two shared facets with AND"
+      (labelledAssigned.isEmpty
+        && readyRanked v [labelFacet v ["x"], assigneeFacet v []] == [a, b])
+      s!"{labelledAssigned}",
+    -- both repeats of --label must match (AND within the facet)
+    check "readyRanked --label repeats are AND" bothLabels.isEmpty s!"{bothLabels}" ]
+
 /-- The default `--limit` is 50 (was 10) for `ready` and `list`: 11 plain issues
     — all open, unblocked, top-level — must all show with no explicit flag. Under
     the old default of 10 the items array would cap at 10; the literal 50 lives in
@@ -5654,6 +5707,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
     ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
+    ++ readyRankedTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)
     ++ (← cliSyncTwoCloneTests) ++ (← cliSyncDegradeTests) ++ (← cliSyncRecoveryTests)

@@ -276,8 +276,9 @@ structure View where
 
 def View.state (v : View) : State := v.loaded.state
 
-/-- **The one constructor for a view's hoisted fields.** Every command's view —
-    the read path, the post-write echo, and `doctor`'s diagnostic view — derives
+/-- **The one production constructor for a view's hoisted fields.** Every
+    command's view — the read path, the post-write echo, and `doctor`'s
+    diagnostic view — derives
     `rollup`/`present`/`edges`/`pedges`/`prov` and the indexed copies from the
     same materialized state by exactly this block, so the derivations cannot
     drift between the three call sites, and the *relationship* between a field
@@ -286,6 +287,11 @@ def View.state (v : View) : State := v.loaded.state
     read-facet bound (`readyFacets_cannot_widen`) needs to discharge its
     hypothesis: a view built here always carries the batched rollup *of its own
     state*, which is the map `State.readyFast_eq` is stated at.
+
+    `View` keeps a public structure constructor (the test suite builds views
+    directly, with fields it chooses), so "one constructor" is a property of the
+    production call graph, not of the type — which is why the bounds below are
+    stated *about* `View.ofLoaded` rather than about an arbitrary `View`.
 
     Each collection is bound once and shared with `ViewIndex.of`, so building a
     view stays one pass per collection. -/
@@ -332,6 +338,18 @@ Routed through by `issueRow`/`issueObj`/`issueLine`, `Render`'s
 
 /-- `s.issueData i` via the data hash (`issueDataH_eq`). -/
 def View.issueData (v : View) (i : IssueId) : IssueData := (v.idx.dataH[i]?).getD IssueData.empty
+
+/-- The `ofLoaded` bridge for the field the *facet predicates* read. `labelFacet`
+    and `assigneeFacet` (`Tl/Cli/Commands.lean`) test `v.issueData i`, i.e. the
+    index copy `v.idx.dataH`; this is what ties that copy to the state it claims
+    to summarize, so their `pred` characterizations are statements about the
+    view's own state and not about an index built from some other one. -/
+theorem View.issueData_ofLoaded (dirs : Dirs) (loaded : Loaded) (now : Nat)
+    (replica : Option Tl.Clock.Replica) (refreshNote : Option String) (i : IssueId) :
+    (View.ofLoaded dirs loaded now replica refreshNote).issueData i
+      = (View.ofLoaded dirs loaded now replica refreshNote).state.issueData i :=
+  Tl.Kernel.State.issueDataH_eq _ i
+
 /-- The short display id (ADR-0017 human surface; ADR-0018 ids): `tl-` + the
     shortest id prefix unambiguous over the present set, floored at
     `shortIdFloor`. Directly typable as a command argument — input resolution
