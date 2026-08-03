@@ -6,6 +6,10 @@ verifier/supervisor, and executable Lean tooling without running initializers.
 import Lean
 import Verify.Environment
 import Verify.Policy
+-- The verdict-logic theorems are not used by the worker at runtime; the import
+-- keeps them inside the audited verifier scope, so they are kernel-replayed by
+-- the very gate they are about.
+import Verify.Proofs
 import Verify.Supervise
 
 open Lean

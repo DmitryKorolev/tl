@@ -65,7 +65,8 @@ lean_exe tltestWorker where
     invocation and independently replays stored declarations through Lean's
     kernel. -/
 lean_lib VerifyCore where
-  roots := #[`Verify.Report, `Verify.Policy, `Verify.Environment, `Verify.Supervise]
+  roots := #[`Verify.Report, `Verify.Policy, `Verify.Environment, `Verify.Supervise,
+    `Verify.Proofs]
 
 /-- Executable Lean build tooling is semantically audited as a separate root. -/
 lean_lib Tooling where
