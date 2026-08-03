@@ -412,6 +412,49 @@ theorem analyze_clean_iff (cfg : Config) (o : Observation) :
       clean.landmarkPolicyPreserved, clean.landmarksAreTheorems, clean.landmarksDistinct,
       clean.noFirstPartyAxiom, fun decl hdecl _ => clean.axiomsWithinAllowance decl hdecl⟩
 
+/-! ### The whole gate verdict -/
+
+/-- All six audited scopes reach the final verdict: no scope's findings can be
+    lost in the flattening. -/
+theorem auditedReports_errors_eq_empty_iff (reports : AuditedReports) :
+    reports.errors = #[] ↔
+      reports.production.errors = #[] ∧ reports.tests.errors = #[]
+        ∧ reports.verifier.errors = #[] ∧ reports.supervisor.errors = #[]
+        ∧ reports.testSupervisor.errors = #[] ∧ reports.tooling.errors = #[] := by
+  unfold AuditedReports.errors
+  rw [Array.flatMap_eq_empty_iff]
+  simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false,
+    forall_eq_or_imp, forall_eq]
+
+theorem unclaimedSourceError?_eq_none_iff (unclaimed : Array String) :
+    unclaimedSourceError? unclaimed = none ↔ unclaimed = #[] := by
+  unfold unclaimedSourceError?
+  by_cases h : unclaimed = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+    exact iff_of_false nofun h
+
+/-- The gate accepts exactly when every scope report, the source inventory, and
+    the unclaimed-source scan are all silent. -/
+theorem gateEvidence_errors_eq_empty_iff (evidence : GateEvidence) :
+    evidence.errors = #[] ↔
+      evidence.reports.errors = #[] ∧ evidence.inventoryErrors = #[]
+        ∧ evidence.unclaimedSources = #[] := by
+  unfold GateEvidence.errors
+  cases hunclaimed : unclaimedSourceError? evidence.unclaimedSources with
+  | none =>
+    rw [Array.append_eq_empty_iff]
+    constructor
+    · rintro ⟨hreports, hinventory⟩
+      exact ⟨hreports, hinventory, (unclaimedSourceError?_eq_none_iff _).mp hunclaimed⟩
+    · rintro ⟨hreports, hinventory, -⟩
+      exact ⟨hreports, hinventory⟩
+  | some error =>
+    refine iff_of_false (push_ne_empty _ _) ?_
+    rintro ⟨-, -, hempty⟩
+    rw [(unclaimedSourceError?_eq_none_iff _).mpr hempty] at hunclaimed
+    exact absurd hunclaimed nofun
+
 /-! ### Supervision -/
 
 /-- The completion marker never rescues a worker that failed: accepting a run
