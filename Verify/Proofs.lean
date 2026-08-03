@@ -104,6 +104,14 @@ theorem replayFindings_eq_empty_iff (o : Observation) :
   · next h => exact iff_of_true rfl h
   · next replayError h => exact iff_of_false (singleton_ne_empty _) (by rw [h]; exact nofun)
 
+theorem propagationFindings_eq_empty_iff (o : Observation) :
+    propagationFindings o = #[] ↔ o.evidence.propagationError? = none := by
+  unfold propagationFindings
+  split
+  · next h => exact iff_of_true rfl h
+  · next propagationError h =>
+      exact iff_of_false (singleton_ne_empty _) (by rw [h]; exact nofun)
+
 theorem missingModules_eq_empty_iff (o : Observation) :
     missingModules o = #[] ↔ ∀ name ∈ o.expectedModules, name ∈ o.localModules := by
   unfold missingModules
@@ -352,6 +360,10 @@ structure GateClean (cfg : Config) (o : Observation) : Prop where
   importAuditClean : o.evidence.importErrors = #[]
   /-- Independent kernel replay accepted the stored dependency cone. -/
   replayClean : o.evidence.replayError? = none
+  /-- Stored-body axiom propagation answered, so the axiom rows are complete.
+      Without this the axiom conjuncts below would be satisfiable by a scope
+      whose axiom rows were discarded rather than empty. -/
+  propagationClean : o.evidence.propagationError? = none
   /-- Every source module the scope claims was actually imported. -/
   everyExpectedModuleImported : ∀ name ∈ o.expectedModules, name ∈ o.localModules
   /-- Every imported first-party module is inside the declared scope. -/
@@ -384,6 +396,7 @@ structure GateClean (cfg : Config) (o : Observation) : Prop where
 theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
     (analyze cfg o).errors = #[] ↔
       o.evidence.importErrors = #[] ∧ replayFindings o = #[]
+        ∧ propagationFindings o = #[]
         ∧ missingModuleFindings o = #[] ∧ unexpectedModuleFindings o = #[]
         ∧ vacuityFindings o = #[] ∧ landmarkPolicyFindings o = #[]
         ∧ landmarkKindFindings o = #[] ∧ duplicateLandmarkFindings o = #[]
@@ -409,17 +422,19 @@ theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
 theorem analyze_clean_iff (cfg : Config) (o : Observation) :
     (analyze cfg o).errors = #[] ↔ GateClean cfg o := by
   rw [analyze_errors_eq_empty_iff_arms, replayFindings_eq_empty_iff,
+    propagationFindings_eq_empty_iff,
     missingModuleFindings_eq_empty_iff, unexpectedModuleFindings_eq_empty_iff,
     vacuityFindings_eq_empty_iff, landmarkPolicyFindings_eq_empty_iff,
     landmarkKindFindings_eq_empty_iff, duplicateLandmarkFindings_eq_empty_iff,
     axiomDeclarationFindings_eq_empty_iff, axiomDependencyFindings_eq_empty_iff]
   constructor
-  · rintro ⟨himports, hreplay, hexpected, hlocal,
+  · rintro ⟨himports, hreplay, hpropagation, hexpected, hlocal,
       ⟨hmodules, hdecls, hreplayed, hedges⟩,
       hpolicy, hkinds, hdistinct, hnoaxiom, hdependencies⟩
     exact {
       importAuditClean := himports
       replayClean := hreplay
+      propagationClean := hpropagation
       everyExpectedModuleImported := hexpected
       everyImportedModuleExpected := hlocal
       modulesInspected := hmodules
@@ -433,7 +448,8 @@ theorem analyze_clean_iff (cfg : Config) (o : Observation) :
       axiomsWithinAllowance := fun decl hdecl =>
         hdependencies decl hdecl (hnoaxiom decl hdecl) }
   · intro clean
-    exact ⟨clean.importAuditClean, clean.replayClean, clean.everyExpectedModuleImported,
+    exact ⟨clean.importAuditClean, clean.replayClean, clean.propagationClean,
+      clean.everyExpectedModuleImported,
       clean.everyImportedModuleExpected,
       ⟨clean.modulesInspected, clean.declsSelected, clean.replayValidated,
         clean.importEdgesRead⟩,
@@ -781,5 +797,110 @@ theorem replayDependencies_inductiveSiblings {inductiveInfo : Lean.InductiveVal}
     name ∈ replayDependencies (.inductInfo inductiveInfo) := by
   unfold replayDependencies
   exact Array.mem_append_right _ (List.mem_toArray.mpr h)
+
+/-! ### Stored-body axiom propagation
+
+`propagatedAxioms` decides which axioms each inspected declaration transitively
+depends on, and the axiom-dependency arm reports exactly what it says. A miss
+there is the one failure this gate cannot survive: not a wrong verdict a reader
+would question, but an ordinary green run with an axiom sitting unreported in a
+theorem's cone — the opposite of the claim `docs/overview.md` publishes.
+
+The spec is stated over `axiomEdges`, the seam the code actually walks.
+`Reaches` is an *inductive* relation rather than a bounded iteration, which is
+what keeps this whole section batteries-only: completeness inducts on a
+derivation the caller supplies, so it never asks how long a chain is and no
+cardinality or pigeonhole argument enters. `Tl/Kernel/Reach.lean` needed
+Mathlib for exactly the argument avoided here — that a fixed iteration count
+suffices — and it is outside ADR-0009's escape hatch anyway. -/
+
+/-- `used` is named by the stored type or value of `user`, and `user` is one of
+    the inspected constants. The membership side condition is built in, so a
+    chain never leaves the map and no separate hypothesis is needed. -/
+def UsesStored (cs : Std.HashMap Name Lean.ConstantInfo) (user used : Name) : Prop :=
+  ∃ info, cs[user]? = some info ∧ used ∈ axiomEdges info
+
+/-- Transitive reachability along stored-body edges, reflexive at the root. -/
+inductive Reaches (cs : Std.HashMap Name Lean.ConstantInfo) : Name → Name → Prop where
+  | refl (n : Name) : Reaches cs n n
+  | step {n d a : Name} (edge : UsesStored cs n d) (rest : Reaches cs d a) : Reaches cs n a
+
+/-- `a` is one of the inspected constants and is an axiom. -/
+def IsAxiom (cs : Std.HashMap Name Lean.ConstantInfo) (a : Name) : Prop :=
+  ∃ val, cs[a]? = some (.axiomInfo val)
+
+/-! #### The rows only ever grow
+
+Every statement below is about membership, never about the order of `pending`
+or of a `reverse` bucket — those follow `Std.HashMap` iteration order, which
+nothing pins and nothing needs to. -/
+
+/-- `left`'s rows are contained in `right`'s, entry by entry. -/
+def RowsGrew (left right : Std.HashMap Name (Std.HashSet Name)) : Prop :=
+  ∀ n a : Name, a ∈ left[n]?.getD ({} : Std.HashSet Name) →
+    a ∈ right[n]?.getD ({} : Std.HashSet Name)
+
+theorem RowsGrew.refl (m : Std.HashMap Name (Std.HashSet Name)) : RowsGrew m m :=
+  fun _ _ h => h
+
+theorem RowsGrew.trans {x y z : Std.HashMap Name (Std.HashSet Name)}
+    (h₁ : RowsGrew x y) (h₂ : RowsGrew y z) : RowsGrew x z :=
+  fun n a h => h₂ n a (h₁ n a h)
+
+/-- The `rfl`-level equation that makes the step splittable: without it `split`
+    cannot see past the `let`-bound `existing`. Same device as
+    `repeatedLandmarkStep_eq` above. -/
+theorem propagateStep_eq (axiomName : Name) (acc : Std.HashMap Name (Std.HashSet Name))
+    (pending : Array (Name × Name)) (dependent : Name) :
+    propagateStep axiomName (acc, pending) dependent =
+      (if (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName then (acc, pending)
+        else (acc.insert dependent ((acc[dependent]?.getD ({} : Std.HashSet Name)).insert axiomName),
+          pending.push (dependent, axiomName))) := rfl
+
+theorem propagateStep_grew (axiomName : Name)
+    (state : Std.HashMap Name (Std.HashSet Name) × Array (Name × Name)) (dependent : Name) :
+    RowsGrew state.1 (propagateStep axiomName state dependent).1 := by
+  obtain ⟨acc, pending⟩ := state
+  intro n a hmem
+  rw [propagateStep_eq]
+  by_cases hcontains :
+      (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName = true
+  · rw [if_pos hcontains]; exact hmem
+  · rw [if_neg hcontains]
+    show a ∈ (acc.insert dependent _)[n]?.getD ({} : Std.HashSet Name)
+    rw [Std.HashMap.getElem?_insert]
+    cases hbeq : dependent == n with
+    | false => rw [if_neg nofun]; exact hmem
+    | true =>
+      rw [if_pos rfl, Option.getD_some]
+      refine Std.HashSet.mem_insert.mpr (Or.inr ?_)
+      rw [eq_of_beq hbeq]
+      exact hmem
+
+theorem foldl_propagateStep_grew (axiomName : Name) (deps : Array Name)
+    (state : Std.HashMap Name (Std.HashSet Name) × Array (Name × Name)) :
+    RowsGrew state.1 (deps.foldl (propagateStep axiomName) state).1 := by
+  rw [← Array.foldl_toList]
+  induction deps.toList generalizing state with
+  | nil => exact RowsGrew.refl _
+  | cons dep rest ih =>
+    rw [List.foldl_cons]
+    exact RowsGrew.trans (propagateStep_grew axiomName state dep) (ih _)
+
+/-- A drained run never loses a row it had. This is the shape every
+    drain-level induction takes: structural on fuel, `split` on the cursor
+    test. -/
+theorem drainWorklist_grew (reverse : Std.HashMap Name (Array Name)) :
+    ∀ (fuel cursor : Nat) (acc : Std.HashMap Name (Std.HashSet Name))
+      (pending : Array (Name × Name)) (result : Std.HashMap Name (Std.HashSet Name)),
+      drainWorklist reverse fuel cursor acc pending = some result → RowsGrew acc result
+  | 0, _, _, _, _, h => by rw [drainWorklist] at h; exact absurd h nofun
+  | fuel + 1, cursor, acc, pending, result, h => by
+    rw [drainWorklist] at h
+    split at h
+    · next hlt =>
+      refine RowsGrew.trans ?_ (drainWorklist_grew reverse fuel (cursor + 1) _ _ result h)
+      exact foldl_propagateStep_grew _ _ (acc, pending)
+    · next => rw [Option.some.inj h]; exact RowsGrew.refl _
 
 end Tl.Verify

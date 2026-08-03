@@ -32,6 +32,11 @@ def defaultModuleRemedy : String :=
 structure SemanticEvidence where
   importErrors : Array String
   replayError? : Option String
+  /-- Set when stored-body axiom propagation refused to answer. Its own field
+      rather than folded into the replay error: a truncated axiom map is a
+      distinct failure with a distinct fix, and above all it must not reach the
+      verdict as an *empty* axiom set, which would read as clean. -/
+  propagationError? : Option String
   replayedConstants : Nat
   importEdges : Nat
   deriving Inhabited
@@ -115,6 +120,14 @@ def replayFindings (o : Observation) : Array String :=
   match o.evidence.replayError? with
   | none => #[]
   | some replayError => #[s!"trust verification ({o.scope}): {replayError}"]
+
+/-- Axiom propagation refused to answer, so the axiom rows below it are
+    incomplete and were discarded. Its own arm: silence here is what lets the
+    axiom-dependency arm's silence mean anything. -/
+def propagationFindings (o : Observation) : Array String :=
+  match o.evidence.propagationError? with
+  | none => #[]
+  | some propagationError => #[s!"trust verification ({o.scope}): {propagationError}"]
 
 /-- Expected source modules the inspected environment did not import. -/
 def missingModules (o : Observation) : Array Name :=
@@ -222,6 +235,7 @@ def analyze (cfg : Config) (o : Observation) : Report :=
   { errors :=
       o.evidence.importErrors
         ++ replayFindings o
+        ++ propagationFindings o
         ++ missingModuleFindings o
         ++ unexpectedModuleFindings o
         ++ vacuityFindings o

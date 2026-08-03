@@ -45,6 +45,7 @@ private def clean : Observation :=
     evidence := {
       importErrors := #[]
       replayError? := none
+      propagationError? := none
       replayedConstants := 2
       importEdges := 3 } }
 
@@ -93,6 +94,11 @@ private def reportTests : List Outcome :=
       kind := .theoremDecl
       axioms := #[`propext, `sorryAx]
     } }
+  let propagationFailure := analyze cfg {
+    clean with evidence := { clean.evidence with
+      propagationError? := some "stored-body axiom propagation did not drain its \
+        worklist within the bound, so this scope's transitive axiom rows are \
+        incomplete and were discarded. Raise `propagationFuel`." } }
   let noDecls := analyze cfg { clean with decls := #[] }
   let noReplay := analyze cfg { clean with evidence := { clean.evidence with
     replayedConstants := 0 } }
@@ -187,6 +193,13 @@ private def reportTests : List Outcome :=
         error == "inventory sentinel"),
     check "an environment/replay failure is retained"
       (mentions environmentFailure "kernel replay rejected Bad.proof"),
+    -- The refusal must surface as its own finding. Without this arm a truncated
+    -- axiom map would reach the verdict as an empty one, and every axiom arm
+    -- below it would go quietly silent.
+    check "a refused axiom propagation is reported, not read as no axioms"
+      (mentions propagationFailure "did not drain its worklist"),
+    check "a refused axiom propagation says how to fix it"
+      (mentions propagationFailure "Raise `propagationFuel`"),
     check "an unimported source module is named" (mentions missing "Tl.Kernel.Missing"),
     check "missing-source guidance says how to fix it" (mentions missing "Import every source"),
     check "an unexpected cross-scope module is named"
@@ -611,6 +624,32 @@ private def replayTests : IO (List Outcome) := do
     (({} : Std.HashMap Name ConstantInfo).insert `VerifyFixture.good
       (theoremInfo `VerifyFixture.good identityType validIdentity)).insert
       `VerifyFixture.unsafe (axiomInfo `VerifyFixture.unsafe identityType true)
+  -- Two hops: the axiom is named only by `mid`, so `top` gets it only if the
+  -- propagation is transitive rather than one-step.
+  let twoHop :=
+    ((axiomDependency.insert `VerifyFixture.mid
+      (theoremInfo `VerifyFixture.mid identityType (.const `External.assumption []))).insert
+      `VerifyFixture.top
+      (theoremInfo `VerifyFixture.top identityType (.const `VerifyFixture.mid [])))
+  -- Mutual recursion — the case the reverse worklist exists for. Each body
+  -- names the other, and only one of them names the axiom.
+  let mutualPair :=
+    (({} : Std.HashMap Name ConstantInfo).insert `External.assumption
+      (axiomInfo `External.assumption identityType)).insert `VerifyFixture.even
+      (theoremInfo `VerifyFixture.even identityType (.const `VerifyFixture.odd []))
+    |>.insert `VerifyFixture.odd
+      (theoremInfo `VerifyFixture.odd identityType
+        (.app (.const `VerifyFixture.even []) (.const `External.assumption [])))
+  let mutualResult := propagatedAxioms mutualPair
+  let twoHopResult := propagatedAxioms twoHop
+  let axiomFree :=
+    ({} : Std.HashMap Name ConstantInfo).insert `VerifyFixture.good
+      (theoremInfo `VerifyFixture.good identityType validIdentity)
+  let axiomFreeResult := propagatedAxioms axiomFree
+  let seed := propagationSeed twoHop
+  let rowOf (result : Option (Std.HashMap Name (Std.HashSet Name))) (name : Name) :
+      Option (Std.HashSet Name) :=
+    result.bind fun rows => rows[name]?
   let validError ← replayConstantsError? base valid
   let invalidError ← replayConstantsError? base invalid
   let dependencyError ← replayConstantsError? base uncheckedDependency
@@ -628,8 +667,29 @@ private def replayTests : IO (List Outcome) := do
     checkEq "the replay count excludes constants the kernel replay skips"
       (replayedConstantCount replayCountFixture) 1,
     check "stored-body traversal finds a transitive external axiom"
-      ((propagated[`VerifyFixture.usesAssumption]?).any fun axioms =>
-        axioms.contains `External.assumption)
+      ((rowOf propagated `VerifyFixture.usesAssumption).any fun axioms =>
+        axioms.contains `External.assumption),
+    check "propagation crosses two hops, not just the direct user"
+      ((rowOf twoHopResult `VerifyFixture.top).any fun axioms =>
+        axioms.contains `External.assumption),
+    check "propagation reaches both sides of a mutual pair"
+      ((rowOf mutualResult `VerifyFixture.even).any (·.contains `External.assumption) &&
+       (rowOf mutualResult `VerifyFixture.odd).any (·.contains `External.assumption)),
+    check "a constant reaching no axiom gets no axiom"
+      (axiomFreeResult.isSome &&
+        !(rowOf axiomFreeResult `VerifyFixture.good).any (·.isEmpty == false)),
+    -- Fail-closed: a truncated axiom map is the silent false negative this
+    -- module exists to prevent, so the drain refuses instead of returning it.
+    check "an exhausted worklist is refused, not truncated"
+      ((drainWorklist seed.reverse 0 0 seed.axiomsByName seed.pending).isNone &&
+       (drainWorklist seed.reverse 1 0 seed.axiomsByName seed.pending).isNone),
+    check "the shipped fuel drains the same worklist"
+      (propagatedAxioms twoHop).isSome,
+    check "the edge seam keeps a declaration's stored constants"
+      ((axiomEdges (theoremInfo `VerifyFixture.top identityType
+        (.const `VerifyFixture.mid []))).contains `VerifyFixture.mid),
+    check "the edge seam keeps an inductive's mutual block"
+      ((axiomEdges mutualInductiveInfo).contains `VerifyFixture.Right)
   ]
 
 def verifyTests : IO (List Outcome) := do

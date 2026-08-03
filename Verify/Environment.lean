@@ -312,34 +312,104 @@ partial def replayClosure (env : Environment) (roots : Array Name) :
       pending := pending.push dependency
   return constants
 
-/-- Compute exact transitive axiom dependencies from stored constant bodies.
-    The reverse worklist handles mutual recursion without trusting Lean's
-    serialized `collectAxioms` extension summaries. -/
+/-! ### Stored-body axiom propagation
+
+Transitive axiom dependencies are computed from stored constant bodies rather
+than read from Lean's serialized `collectAxioms` extension summaries: those
+summaries are data produced by the same compilation this gate is auditing. That
+makes the propagation load-bearing on its own — a bug in it is a *silent* false
+negative, a green run with an axiom sitting unreported in a theorem's cone — so
+it is written as a fold and a fuel-structural recursion, and its soundness and
+completeness are proved in `Verify.Proofs`.
+
+A `while` loop would rule that out: it elaborates through `Lean.Loop.forIn` to
+an opaque worklist combinator carrying a one-step unfolding lemma and no
+induction principle, so nothing about the result could be proved at all. -/
+
+/-- The stored edges axiom propagation follows: every constant a declaration's
+    stored type or value mentions. Lean's own `collectAxioms` walks the same
+    constants plus, for a declaration with no value, its constructors or mutual
+    block — which `ConstantInfo.getUsedConstantsAsSet` already includes — so
+    this edge set is never narrower than Lean's. A named seam, so the spec in
+    `Verify.Proofs` quantifies over exactly the relation the code walks. -/
+def axiomEdges (info : ConstantInfo) : Array Name :=
+  info.getUsedConstantsAsSet.toArray
+
+/-- The reverse edge map, the seeded axiom rows, and the initial worklist. -/
+structure PropagationSeed where
+  /-- Each constant mapped to the declarations whose stored body mentions it. -/
+  reverse : Std.HashMap Name (Array Name) := {}
+  axiomsByName : Std.HashMap Name (Std.HashSet Name) := {}
+  pending : Array (Name × Name) := #[]
+  deriving Inhabited
+
+def seedStep (seed : PropagationSeed) (name : Name) (info : ConstantInfo) :
+    PropagationSeed :=
+  -- `alter` keeps the stored array uniquely referenced, so the push stays
+  -- amortized O(1); a get-then-insert would copy it once per edge, making
+  -- this pass quadratic in a constant's in-degree.
+  let reverse := (axiomEdges info).foldl (init := seed.reverse) fun reverse dependency =>
+    reverse.alter dependency fun dependents => some ((dependents.getD #[]).push name)
+  match info with
+  | .axiomInfo _ =>
+    { reverse
+      axiomsByName := seed.axiomsByName.insert name (({} : Std.HashSet Name).insert name)
+      pending := seed.pending.push (name, name) }
+  | _ => { seed with reverse }
+
+def propagationSeed (constants : Std.HashMap Name ConstantInfo) : PropagationSeed :=
+  constants.fold seedStep {}
+
+/-- Give one axiom to one dependent, enqueuing it only when the row actually
+    grew. Pairing that guard with the insert is what bounds the worklist. -/
+def propagateStep (axiomName : Name)
+    (state : Std.HashMap Name (Std.HashSet Name) × Array (Name × Name))
+    (dependent : Name) :
+    Std.HashMap Name (Std.HashSet Name) × Array (Name × Name) :=
+  let (axiomsByName, pending) := state
+  let existing := axiomsByName[dependent]?.getD {}
+  if existing.contains axiomName then (axiomsByName, pending)
+  else
+    (axiomsByName.insert dependent (existing.insert axiomName),
+      pending.push (dependent, axiomName))
+
+/-- Drain the worklist, propagating each pair back along the reverse edges.
+    `none` means the fuel ran out before the cursor reached the end, so the
+    axiom map is *truncated* — precisely the silent false negative this module
+    exists to prevent — and it is refused rather than returned. `some`
+    witnesses that the loop reached a drained worklist, which is what makes the
+    closure property in `Verify.Proofs` observable rather than something a
+    counting argument would have to establish. -/
+def drainWorklist (reverse : Std.HashMap Name (Array Name)) :
+    Nat → Nat → Std.HashMap Name (Std.HashSet Name) → Array (Name × Name) →
+      Option (Std.HashMap Name (Std.HashSet Name))
+  | 0, _, _, _ => none
+  | fuel + 1, cursor, axiomsByName, pending =>
+    if h : cursor < pending.size then
+      let (dependency, axiomName) := pending[cursor]
+      let (axiomsByName, pending) :=
+        (reverse[dependency]?.getD #[]).foldl (propagateStep axiomName) (axiomsByName, pending)
+      drainWorklist reverse fuel (cursor + 1) axiomsByName pending
+    else some axiomsByName
+
+/-- Every enqueued pair is a distinct `(dependent, axiom)` whose dependent is a
+    key of `constants` and whose axiom is one of the seeds, so the worklist
+    cannot outgrow this. Exhausting it means a bug in this module rather than a
+    large input, and `drainWorklist` then refuses. Do not answer an exhaustion
+    by returning the partial map: the theorems in `Verify.Proofs` would go
+    vacuous exactly where they matter, and the gate would be silently green
+    again. -/
+def propagationFuel (constants : Std.HashMap Name ConstantInfo)
+    (seed : PropagationSeed) : Nat :=
+  (constants.size + 1) * seed.pending.size + 1
+
+/-- Exact transitive axiom dependencies from stored constant bodies. The
+    reverse worklist handles mutual recursion; `none` is a refusal, never an
+    empty answer. -/
 def propagatedAxioms (constants : Std.HashMap Name ConstantInfo) :
-    Std.HashMap Name (Std.HashSet Name) := Id.run do
-  let mut reverse : Std.HashMap Name (Array Name) := {}
-  let mut axiomsByName : Std.HashMap Name (Std.HashSet Name) := {}
-  let mut pending : Array (Name × Name) := #[]
-  for (name, info) in constants do
-    for dependency in info.getUsedConstantsAsSet do
-      -- `alter` keeps the stored array uniquely referenced, so the push stays
-      -- amortized O(1); a get-then-insert would copy it once per edge, making
-      -- this pass quadratic in a constant's in-degree.
-      reverse := reverse.alter dependency fun dependents =>
-        some ((dependents.getD #[]).push name)
-    if info matches .axiomInfo _ then
-      axiomsByName := axiomsByName.insert name (({} : Std.HashSet Name).insert name)
-      pending := pending.push (name, name)
-  let mut cursor := 0
-  while h : cursor < pending.size do
-    let (dependency, axiomName) := pending[cursor]
-    cursor := cursor + 1
-    for dependent in reverse[dependency]?.getD #[] do
-      let existing := axiomsByName[dependent]?.getD {}
-      unless existing.contains axiomName do
-        axiomsByName := axiomsByName.insert dependent (existing.insert axiomName)
-        pending := pending.push (dependent, axiomName)
-  return axiomsByName
+    Option (Std.HashMap Name (Std.HashSet Name)) :=
+  let seed := propagationSeed constants
+  drainWorklist seed.reverse (propagationFuel constants seed) 0 seed.axiomsByName seed.pending
 
 def replayConstantsError? (base : Environment)
     (constants : Std.HashMap Name ConstantInfo) : IO (Option String) := do
@@ -384,7 +454,19 @@ def observeEnvironment (scope : String) (env : Environment)
     IO Observation := do
   let imported := modulesInEnvironment env modulesToInspect
   let replayConstants := replayClosure env (declarationNamesOf env imported)
-  let axiomsByName := propagatedAxioms replayConstants
+  -- A refusal must not degrade into "no axioms found", which reads as clean.
+  -- The empty map silences the axiom-dependency arm, and `propagationError?`
+  -- fires its own arm in its place, so the verdict stays fail-closed.
+  let (axiomsByName, propagationError?) :=
+    match propagatedAxioms replayConstants with
+    | some axiomsByName => (axiomsByName, none)
+    | none =>
+      ({}, some "stored-body axiom propagation did not drain its worklist within \
+        the bound, so this scope's transitive axiom rows are incomplete and were \
+        discarded. Raise `propagationFuel` in Verify/Environment.lean and rerun \
+        `lake exe tlverify`; the bound assumes one worklist entry per \
+        (declaration, axiom) pair, so needing more of it means the propagation \
+        itself is enqueuing duplicates.")
   let project := projectModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
   let importRows := directImportRows env imported
   let importErrors := importAudit scope project importRows
@@ -402,6 +484,7 @@ def observeEnvironment (scope : String) (env : Environment)
     evidence := {
       importErrors
       replayError?
+      propagationError?
       replayedConstants := replayedConstantCount replayConstants
       importEdges := importRows.foldl (fun total (_, importedModules) =>
         total + importedModules.size) 0
