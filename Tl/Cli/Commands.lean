@@ -299,7 +299,12 @@ reading are then corollaries of that one statement rather than four independent
 laws — an implementation that dropped duplicate survivors, or reordered them,
 would satisfy the membership and sublist corollaries but not the
 characterization. The cross-layer consequence follows too: no facet can widen
-`ready`'s workable set. -/
+`ready`'s workable set.
+
+The CLI suite keeps its facet rows, but as a regression net over the compiled
+code and the flag wiring (`cliReadyFacetTests` / `cliListFacetComposeTests`
+through the binary, `readyRankedTests` in-process), never as the evidence for
+the algebra. -/
 
 theorem applyFacets_nil (sorted : List IssueId) : applyFacets [] sorted = sorted := rfl
 
