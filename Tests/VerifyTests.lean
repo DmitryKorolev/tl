@@ -1,6 +1,7 @@
 /- Failure-path coverage for the Lean-native trust verifier. -/
 import Tests.Harness
 import Verify.Environment
+import Verify.Proofs
 import Verify.Report
 import Verify.Supervise
 
@@ -8,6 +9,25 @@ namespace Tl.Tests
 
 open Lean
 open Tl.Verify
+
+/-- Deletion guard for the verdict-logic theorems. They carry no landmark by
+    design — landmarks guard the *product's* proved claims — so naming each one
+    here is what makes retiring it a compile error rather than a silent
+    deletion that leaves every gate green. Retire a name here only together
+    with the theorem and the tier note in docs/codebase-map.md. -/
+private def pinnedVerdictLogicTheorems : Unit :=
+  let _ := @analyze_clean_iff
+  let _ := @auditedReports_errors_eq_empty_iff
+  let _ := @gateEvidence_errors_eq_empty_iff
+  let _ := @analyzedGateEvidence_clean_iff
+  let _ := @importViolations_isEmpty_iff
+  let _ := @importViolations_size_eq
+  let _ := @directImportAllowed_cases
+  let _ := @completedSuccessfully_exitZero
+  let _ := @completedSuccessfully_markerFinal
+  let _ := @replayDependencies_superset
+  let _ := @replayDependencies_inductiveSiblings
+  ()
 
 private def cfg : Config :=
   { allowedAxioms := #[`propext, `Classical.choice, `Quot.sound] }
@@ -34,11 +54,14 @@ private def mentions (report : Report) (needle : String) : Bool :=
 /-
 What these rows are still for: the verdict *logic* — which conditions make a
 scope clean, that every arm's silence is necessary and sufficient, and that the
-ADR-0009 traversal reaches every edge — is proved in `Verify/Proofs.lean` and is
-deliberately not re-asserted here on examples. What stays is what a theorem
-about array emptiness cannot see: the wording each finding uses to teach its
-fix, the truncation disclosure, and the retention of concrete findings through
-the aggregate.
+ADR-0009 traversal reaches every edge and reports every rejected one — is proved
+in `Verify/Proofs.lean` and is deliberately not re-asserted here on examples.
+What stays is what those theorems cannot see: the wording each finding uses to
+teach its fix, the truncation disclosure, the retention of concrete findings
+through the aggregate, and — the first row below — that this file's own base
+fixture really is clean. No theorem can supply that last one: `analyze_clean_iff`
+is quantified over observations, so a fixture that quietly went dirty would keep
+every `mentions` row green while stopping it from isolating the arm it names.
 -/
 private def reportTests : List Outcome :=
   let environmentFailure := analyze cfg {
@@ -99,7 +122,9 @@ private def reportTests : List Outcome :=
   let gateErrors := ({ reports := sentinelReports
                        inventoryErrors := #["inventory sentinel"]
                        unclaimedSources := #["Bench"] } : GateEvidence).errors
-  [ check "a scope that selected no declarations is not silently vacuous"
+  [ checkEq "the base fixture is clean, so every row below isolates its own defect"
+      (analyze cfg clean).errors.size 0,
+    check "a scope that selected no declarations is not silently vacuous"
       (mentions noDecls "no declarations were selected"),
     check "a scope whose replay cone is empty is not silently vacuous"
       (mentions noReplay "nothing reached independent replay validation"),
@@ -145,6 +170,9 @@ private def reportTests : List Outcome :=
 private def project : Std.HashSet Name :=
   (#[`Tl.Kernel.Op, `Tl.Kernel.Reach, `Tl.Kernel.Ready] : Array Name).foldl (·.insert ·) ∅
 
+-- Traversal completeness and per-edge accumulation are proved
+-- (`importViolations_isEmpty_iff`, `importViolations_size_eq`); these rows are
+-- the message wording and the concrete allowlist decisions behind it.
 private def importTests : List Outcome :=
   let violation := importViolations importPolicy "fixture" project
     #[(`Tl.Kernel.Ready, #[`Init.Data.List, `Mathlib.Data.Finset.Card, `Tl.Kernel.Op])]
