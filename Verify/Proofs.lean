@@ -1,8 +1,8 @@
 /-
 Verdict-logic theorems for the Lean-native trust gate.
 
-`Verify.Report.analyze`, `Verify.Policy.importViolations`,
-`Verify.Supervise.completedSuccessfully`, and
+`Verify.Report.analyze`, `Verify.Report.workerVerdict`,
+`Verify.Policy.importViolations`, `Verify.Supervise.completedSuccessfully`, and
 `Verify.Environment.replayDependencies` are total pure functions that decide
 the entire `tlverify` verdict.
 
@@ -12,6 +12,13 @@ What is characterised here, and how far:
   them are characterised as **if-and-only-ifs**. The forward direction is what
   makes a green gate mean something; the backward direction is what rules out a
   gate that fails on a clean checkout.
+* `workerVerdict` — the last non-IO step, findings in and (what to print, where,
+  what to return) out — is characterised the same way, and composed with the
+  above so the path from six scope observations to the emitted completion marker
+  is proved end to end rather than sampled. Status zero and the marker each hold
+  **exactly** when the evidence is empty; both output streams are pinned in
+  **both** arms, so neither a clean run nor a failing one can start emitting a
+  line of its own with these theorems still true.
 * `importViolations` is characterised **exactly**: an if-and-only-if for its
   silence, plus a cardinality equation pinning one finding per rejected edge.
 * `completedSuccessfully`, `directImportAllowed`, and `replayDependencies`
@@ -563,12 +570,18 @@ theorem workerVerdict_marker_iff (summary marker : String) (evidence : GateEvide
   · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (Array.not_mem_empty marker) h
 
-/-- Every finding reaches the diagnostic stream; none is dropped on the way out. -/
-theorem workerVerdict_diagnostics (summary marker : String) (evidence : GateEvidence)
-    (h : evidence.errors ≠ #[]) :
+/-- Every finding reaches the diagnostic stream, and nothing else does: the
+    stream *is* the evidence, in both arms. Stated without a
+    `evidence.errors ≠ #[]` hypothesis on purpose — restricted to the dirty arm
+    it would leave what a clean run writes to stderr outside the characterised
+    decision, so a clean gate could start emitting diagnostics of its own with
+    every theorem here still true. -/
+theorem workerVerdict_diagnostics (summary marker : String) (evidence : GateEvidence) :
     (workerVerdict summary marker evidence).diagnostics = evidence.errors := by
   unfold workerVerdict
-  rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  by_cases h : evidence.errors = #[]
+  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact h.symm
+  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
 
 /-- The marker is the *last* line, so a future edit cannot reorder the summary
     after it — which is what `completedSuccessfully_markerFinal` requires of a
@@ -578,6 +591,17 @@ theorem workerVerdict_marker_last (summary marker : String) (evidence : GateEvid
     (workerVerdict summary marker evidence).report = #[summary, marker] := by
   unfold workerVerdict
   rw [if_pos (Array.isEmpty_iff.mpr h)]
+
+/-- A failing run puts nothing on the report stream at all. With
+    `workerVerdict_marker_last` this pins the report in *both* arms rather than
+    only the clean one: `workerVerdict_marker_iff` alone says only that the
+    marker is absent from a failing report, which a run that printed some other
+    line would satisfy just as well. -/
+theorem workerVerdict_report_empty (summary marker : String) (evidence : GateEvidence)
+    (h : evidence.errors ≠ #[]) :
+    (workerVerdict summary marker evidence).report = #[] := by
+  unfold workerVerdict
+  rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
 
 /-- The payoff: the gate's whole decision, end to end in the pure tier. The
     marker is printed exactly when all six scopes are `GateClean` and both

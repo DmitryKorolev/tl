@@ -411,9 +411,13 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
                         --   State.readyFast_eq). Survivors stay ranked
                         --   (readyRanked_sorted, via ready_sorted), and --limit
                         --   is the named readyPage, a prefix of the queue in
-                        --   both branches (readyPage_prefix; mem_readyPage_ready
+                        --   both branches (readyPage_prefix) whose length the
+                        --   cap pins (readyPage_length) — the pair is what says
+                        --   "uncapped, or the first limit rows", since the
+                        --   prefix law alone admits an empty page and the length
+                        --   law alone the bottom limit rows; mem_readyPage_ready
                         --   and readyPage_sorted carry the bound and the ranking
-                        --   to the rendered page). The list-only --status/
+                        --   to the rendered page. The list-only --status/
                         --   --priority facets are inline literals in cmdList and
                         --   stay sampled by the CLI rows.
                         --   Write guards run inside the
@@ -495,6 +499,11 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
                         --   decision applied to a spawned worker
   Proofs.lean           --   verdict-logic theorems: GateClean + analyze_clean_iff
                         --   per scope, the gate-wide evidence characterisation,
+                        --   the worker's verdict-to-exit decision (status zero
+                        --   and the completion marker each iff the evidence is
+                        --   empty; report and diagnostics both pinned in both
+                        --   arms) composed with that
+                        --   characterisation into workerVerdict_marker_iff_clean,
                         --   ADR-0009 traversal completeness and per-edge count,
                         --   stored-body axiom propagation exact in both
                         --   directions (sound + complete over an inductive
@@ -519,7 +528,8 @@ build-time mechanism that checks the proved tier's trust boundary and is
 itself inspected as a separate scope. Its tier is split, deliberately:
 
 - The **verdict logic is proved**, in `Verify/Proofs.lean`. `analyze`,
-  `AuditedReports.errors`, `GateEvidence.errors`, `gateEvidenceOf`, and
+  `AuditedReports.errors`, `GateEvidence.errors`, `gateEvidenceOf`,
+  `workerVerdict`, and
   `importViolations` are total pure functions of already-collected evidence, so
   principle 1 applies to them exactly as it applies to the kernel: a
   `GateClean` structure enumerates every condition `analyze` can report, and
@@ -528,6 +538,16 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   `importViolations_size_eq` characterise the ADR-0009 traversal's silence and
   its one-finding-per-rejected-edge count. Example rows cannot establish that,
   because the risk being managed is an arm that stops reporting.
+  `workerVerdict` carries the decision to the exit: status zero and the
+  completion marker each hold exactly when the evidence is empty
+  (`workerVerdict_status_zero_iff`, `workerVerdict_marker_iff`), and both output
+  streams are pinned in both arms — `workerVerdict_marker_last` and
+  `workerVerdict_report_empty` for the report, `workerVerdict_diagnostics`
+  unconditionally for the diagnostics — so `runChecked` needs no branch of its
+  own and neither arm can grow an emission no theorem sees.
+  `workerVerdict_marker_iff_clean` composes it with `analyze_clean_iff` into the
+  whole decision: the marker is printed exactly when all six scopes are
+  `GateClean` and both inventory scans are silent.
 - **Stored-body axiom propagation is proved**, in the same file.
   `propagatedAxioms` deliberately reimplements Lean's `collectAxioms` rather
   than trusting the serialized extension summaries — which are data produced by

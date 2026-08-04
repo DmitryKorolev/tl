@@ -88,6 +88,15 @@ def landmarkTheorems : Array Name := #[
   `Tl.Cli.readyFacets_cannot_widen,
   `Tl.Cli.readyRanked_cannot_widen,
   `Tl.Cli.mem_readyRanked_iff,
+  -- The hypothesis-discharged forms, and the two `View.ofLoaded` bridges that
+  -- discharge them. Without these, deleting the bridges would leave the
+  -- hypothesis-bearing landmarks above intact while the docs/overview.md claim
+  -- that production's own constructor satisfies them silently became an
+  -- assumption.
+  `Tl.Cli.mem_readyRanked_ofLoaded_iff,
+  `Tl.Cli.readyRanked_cannot_widen_ofLoaded,
+  `Tl.Cli.View.rollup_ofLoaded,
+  `Tl.Cli.View.issueData_ofLoaded,
   `Tl.Cli.readyPage_prefix,
   `Tl.Cli.readyPage_length,
   `Tl.Cli.labelFacet_pred_eq_true_iff,

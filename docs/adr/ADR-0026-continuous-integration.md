@@ -181,8 +181,9 @@ reads no import edges is reported: every semantic arm is silent on an empty
 selection, so a regressed selection layer would otherwise read as success.
 
 The gate's verdict logic is itself proved, in `Verify/Proofs.lean`. `analyze`,
-the two aggregates above it, and `gateEvidenceOf` — the assembly the worker
-actually calls — are total pure functions of already-collected evidence, so the
+the two aggregates above it, `gateEvidenceOf` — the assembly the worker actually
+calls — and `workerVerdict` are total pure functions of already-collected
+evidence, so the
 AGENTS.md tiering puts them in the provable tier rather than the tested one: a
 `GateClean` structure enumerates every condition `analyze` can report and
 `analyze_clean_iff` proves a scope's finding array is empty exactly when all of
@@ -190,6 +191,36 @@ them hold, while `importViolations_isEmpty_iff` and `importViolations_size_eq`
 prove the nested ADR-0009 traversal reaches every edge of every row and emits
 one finding per rejected edge. Example rows cannot close that class, because
 the failure being managed is an arm that quietly stops reporting.
+
+`workerVerdict` carries that decision to the exit: it turns the finding array
+into what the worker prints, where, and what it returns, so `runChecked` has no
+branch of its own and a clean CI run exercises the same lines a failing one
+does. Status zero (`workerVerdict_status_zero_iff`) and the completion marker
+(`workerVerdict_marker_iff`) each hold exactly when the evidence is empty, the
+marker is the report's last line (`workerVerdict_marker_last`, which is what the
+supervisor's marker-finality rule requires) and a failing run's report is empty
+(`workerVerdict_report_empty`), and the diagnostic stream is the evidence itself
+in *both* arms (`workerVerdict_diagnostics`) — stated with no
+"only when dirty" hypothesis. Both streams are therefore characterised on both
+paths, so neither a clean run nor a failing one can grow an emission that no
+theorem sees. Composed with the assembly theorem,
+`workerVerdict_marker_iff_clean` states the whole decision in one step: the
+marker is printed exactly when all six scopes are `GateClean` and both inventory
+scans are silent.
+
+What stays IO splits two ways, and only one half is tested. The supervisor's
+handling of the marker is covered against real worker processes. The emission
+itself — `runChecked`'s three unconditional lines writing `verdict.diagnostics`
+to stderr, `verdict.report` to stdout, and returning `verdict.status` — is
+**not**: no test drives `runChecked` on dirty evidence, so deleting the
+diagnostic loop would suppress every finding's remedy while the proofs, the
+suite, and a clean CI run all stayed green. That call site is therefore part of
+the recorded `Verify/Main.lean` bootstrap-review assumption rather than
+something a gate catches: the same protected-review obligation that stops
+`Main.lean` forging the completion marker is what stops it dropping the
+diagnostics. A branch-free `workerVerdict` is what keeps that obligation small —
+there is one emission path, not one per outcome — but small is not zero, and it
+is recorded here rather than claimed as covered.
 
 Stored-body axiom propagation is proved too, and it is the piece that most
 needed it: `propagatedAxioms` reimplements Lean's `collectAxioms` rather than

@@ -34,6 +34,7 @@ private def pinnedVerdictLogicTheorems : Unit :=
   let _ := @workerVerdict_status_zero_iff
   let _ := @workerVerdict_marker_iff
   let _ := @workerVerdict_marker_last
+  let _ := @workerVerdict_report_empty
   let _ := @workerVerdict_diagnostics
   let _ := @workerVerdict_marker_iff_clean
   ()
@@ -325,6 +326,10 @@ private def policyTests : List Outcome :=
         `Tl.Cli.readyFacets_cannot_widen,
         `Tl.Cli.readyRanked_cannot_widen,
         `Tl.Cli.mem_readyRanked_iff,
+        `Tl.Cli.mem_readyRanked_ofLoaded_iff,
+        `Tl.Cli.readyRanked_cannot_widen_ofLoaded,
+        `Tl.Cli.View.rollup_ofLoaded,
+        `Tl.Cli.View.issueData_ofLoaded,
         `Tl.Cli.readyPage_prefix,
         `Tl.Cli.readyPage_length,
         `Tl.Cli.labelFacet_pred_eq_true_iff,
