@@ -130,26 +130,36 @@ if [ "${1:-}" = "--selftest" ]; then
   if ! printf 'a.lean:1:%s\n' "$registered" | classify >/dev/null; then
     echo "selftest: classify rejected the registered token '$registered'"; fail=1
   fi
+  # The same token uppercased. The registry is written lowercase and the lookup
+  # folds case because the CLI resolves both, so without the fold a registered
+  # placeholder written the way the CLI also accepts reads as a leak — a
+  # false alarm rather than a missed one, and the only arm that would see it.
+  if ! printf 'a.lean:1:%s\n' "$(printf '%s' "$registered" | tr '[:lower:]' '[:upper:]')" \
+      | classify >/dev/null; then
+    echo "selftest: classify rejected the registered token in its uppercase form"; fail=1
+  fi
   # A leak sharing a line with a registered placeholder must still be reported.
   if printf 'a.lean:1:%s and %s\n' "$registered" "${affix}f01vn6s6n79wmqa8" | classify >/dev/null; then
     echo "selftest: classify stopped at the registered token on a mixed line"; fail=1
   fi
   # The scan itself, against tracked blobs git classifies as binary — the arm
-  # `-I` used to skip silently. Built through the same `scan` the real run uses,
-  # so the two cannot drift.
+  # `-I` used to skip silently.
   #
   # `-C` sets the working directory, not the repository: an inherited GIT_DIR
   # outranks it, so an un-scrubbed `git init`/`add` here would re-initialise and
   # stage into the *caller's* repository. This gate only ever reads (ADR-0026),
   # and the project already pins this variable set for its own git shell-outs.
-  # `core.excludesFile=/dev/null` keeps a personal global gitignore from
-  # excluding the probe and failing the gate on a clean tree.
-  pgit() {
-    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
-        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-        -u GIT_NAMESPACE -u GIT_CEILING_DIRECTORIES \
-        git -c core.excludesFile=/dev/null -C "$probe_repo" "$@"
+  # One definition of the scrub, used by the probe's writes and by the probe's
+  # scan, so those two cannot drift either.
+  scrub_git_env() {
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+          GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+          GIT_NAMESPACE GIT_CEILING_DIRECTORIES
   }
+  # `core.excludesFile=/dev/null` keeps a personal global gitignore from
+  # excluding the probe and failing the gate on a clean tree. A subshell body,
+  # so the scrub does not leak into the rest of the selftest.
+  pgit() ( scrub_git_env; git -c core.excludesFile=/dev/null -C "$probe_repo" "$@" )
   # Physical path: macOS `mktemp -d` hands back a symlinked /var/... while git
   # reports the resolved /private/var/..., and the containment check below
   # compares them literally.
@@ -168,20 +178,52 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'lead\000\303\277 %sf01vn6s6n79wmqa8 trail\n' "$affix" > "$probe_repo/sniffed.bin"
   printf 'marked %sf01vn6s6n79wmqa8\n' "$affix" > "$probe_repo/marked.dat"
   printf '*.dat binary\n' > "$probe_repo/.gitattributes"
+  # An uppercase rendering, which the CLI resolves to the same issue. The
+  # `probe` rows above assert the *pattern* folds case; this asserts the
+  # production scan does, which is a different claim and a separately losable
+  # flag.
+  printf 'upper %s\n' \
+    "$(printf '%s' "${affix}f01vn6s6n79wmqa8" | tr '[:lower:]' '[:upper:]')" \
+    > "$probe_repo/upper.txt"
   pgit add -A
-  # Through `classify`, not the exit status: plain `git grep` without `-a` still
-  # exits 0 on a binary hit, printing "Binary file X matches" — a line carrying
-  # no token, which `classify` would pass as clean. Testing the status alone
-  # would be blind to exactly that regression.
-  for probe_file in sniffed.bin marked.dat; do
-    probe_out=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-      git -c core.excludesFile=/dev/null -C "$probe_repo" grep -anEi "$pattern" -- "$probe_file" || true)
-    if printf '%s\n' "$probe_out" | classify >/dev/null; then
-      echo "selftest: the scan missed a token in $probe_file (binary-classified)"; fail=1
+  # Through the production `scan`, and through `classify` rather than the exit
+  # status. Both halves matter. Re-typing the `git grep` invocation here would
+  # test a copy: the selftest would stay green while the real scan lost `-a`,
+  # which is precisely the regression this arm exists to catch. And plain
+  # `git grep` without `-a` still exits 0 on a binary hit, printing "Binary file
+  # X matches" — a line carrying no token, which `classify` passes as clean — so
+  # testing the status alone would be blind to it too.
+  # rc is kept for the same reason `run_scan` keeps it: a scan that *cannot run*
+  # and a scan that ran and found nothing both leave `probe_out` empty, and the
+  # repair for each is a different line of this file.
+  for probe_file in sniffed.bin marked.dat upper.txt; do
+    set +e
+    probe_out=$(scrub_git_env; scan "$probe_repo" "$probe_file")
+    probe_rc=$?
+    set -e
+    if [ "$probe_rc" -gt 1 ]; then
+      echo "selftest: the scan could not run against $probe_file (git grep exit $probe_rc) — repair the invocation in scan(), not its blob handling"
+      fail=1
+    elif printf '%s\n' "$probe_out" | classify >/dev/null; then
+      echo "selftest: the production scan missed the token in $probe_file"; fail=1
     fi
   done
   files=$(scope_size)
   [ "$files" -gt 0 ] || { echo "selftest: the scan pathspec selected no files"; fail=1; }
+  # Nonempty is not the contract. ADR-0026 fixes the scope exactly — every
+  # tracked file except `docs/`, `README.md` and the registry — and a pathspec
+  # that quietly dropped a whole directory would still select plenty of files
+  # and still report clean. So the rule is expressed a second way here, as a
+  # filter over the full tracked list, and the two must agree file for file.
+  expected_scope=$(git ls-files | grep -v '^docs/' | grep -v '^README\.md$' \
+    | grep -vxF "$registry" | LC_ALL=C sort)
+  actual_scope=$(git ls-files -- "${pathspec[@]}" | LC_ALL=C sort)
+  if [ "$expected_scope" != "$actual_scope" ]; then
+    echo "selftest: the scan pathspec no longer selects the documented scope (ADR-0026: every tracked file except docs/, README.md and $registry). Repair the pathspec in scripts/check-task-ids.sh, or update this predicate and the ADR together if the scope is meant to change."
+    printf 'selftest: only in the documented scope: %s\n' \
+      "$(comm -23 <(printf '%s\n' "$expected_scope") <(printf '%s\n' "$actual_scope") | head -3 | tr '\n' ' ')"
+    fail=1
+  fi
   if [ "$fail" -ne 0 ]; then
     echo "::error::the task-id lint no longer detects what it claims to — repair scripts/check-task-ids.sh before trusting this gate."
     exit 1
