@@ -977,7 +977,11 @@ private def gitEnvMatrixRows (exe : System.FilePath) : IO (List Outcome) := do
   -- (10) linked worktree with a bogus GIT_COMMON_DIR: the shared-ref transport
   --      must keep working off the real common dir
   let w := tmp / "w"
-  git a ["worktree", "add", "-q", w.toString]
+  -- No `-q`: `worktree add` does not accept it at the ADR-0006 runtime floor,
+  -- where git answers `unknown switch 'q'` and takes the fixture — and every
+  -- row built on it — down with it. `gitOut` captures stdout and stderr and the
+  -- caller reads them only on failure, so the flag bought nothing here anyway.
+  git a ["worktree", "add", w.toString]
   let _ ← spawn ["init"] [] (some w)
   let _ ← spawn ["create", "worktree probe"] [] (some w)
   let s10 ← spawn ["sync", "--json"] [("GIT_COMMON_DIR", some "/nonexistent/common")] (some w)
