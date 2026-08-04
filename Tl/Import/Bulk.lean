@@ -119,8 +119,11 @@ private def optStrField (j : Json) (sid k : String) : Except Tl.Error (Option St
   | .ok _ => .error (malformed s!"import record {sid}: \"{k}\" must be a string")
 
 /-- An optional ISO-8601 UTC instant field. A canonical instant ⇒ `some ms`,
-    silently — that is the only input that carries a value into the log. Absent
-    or `null` ⇒ `none`, also silently, because most records carry no provenance
+    silently at *this* layer — that is the only input that carries a value
+    forward, and `buildSeed` discloses separately if the causality clamp then
+    moves it, or the record's status admits no projection that would surface it.
+    Absent or
+    `null` ⇒ `none`, also silently, because most records carry no provenance
     at all and disclosing that would bury the disclosures that matter. Anything
     else *present* ⇒ `none` with a disclosure (the caller assigns the fallback).
 
@@ -282,11 +285,28 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
     let r := frk.1.2
     let k := frk.2
     let id := idOf r.sourceId
+    -- lifecycle: claim (assignee/in_progress) then close (terminal). A closed
+    -- record with an assignee gets a claim too, so the assignee survives close.
+    let wantsClaim := match r.status with
+      | .InProgress => true
+      | .Open => false
+      | _ => r.assignee.isSome
     let createMs := r.createdAt.getD (fallbackBaseMs + k)
-    let claimMs := max (r.claimedAt.getD (fallbackBaseMs + k)) createMs
     -- close after claim after create (causality): clamp so the +0/+1/+2 logical
-    -- bumps never invert under odd source timestamps (a claimedAt with no closedAt)
-    let closeMs := max (r.closedAt.getD (fallbackBaseMs + k)) claimMs
+    -- bumps never invert under odd source timestamps (a claimedAt with no
+    -- closedAt). The clamp can move a *supplied* instant, which is a value the
+    -- record carried and the log then does not hold — disclosed below, never
+    -- silent (ADR-0005 §deterministic timestamps).
+    --
+    -- The close follows the *claim* only when there is a claim op for it to
+    -- follow. On a record that emits none, chaining it through `claimMs` would
+    -- let the fallback assigned to an absent `claimedAt` — an instant no op in
+    -- the log carries — push apart a `createdAt ≤ closedAt` pair the source got
+    -- right. (Where a claim op *is* emitted its fallback is a real stamp, so it
+    -- does order the close, and moving the close is then disclosed.)
+    let claimMs := max (r.claimedAt.getD (fallbackBaseMs + k)) createMs
+    let closeMs := max (r.closedAt.getD (fallbackBaseMs + k))
+      (if wantsClaim then claimMs else createMs)
     let stamp (role : String) (hlc : Nat) : Stamp :=
       ⟨hlc, replicaNat, importNonce tag r.sourceId role id⟩
     -- create carries the scalars (status/assignee come from the lifecycle ops)
@@ -302,12 +322,6 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
        ++ (match r.duplicateOf with | some d => [("duplicate-of", some (idOf d))] | none => []))
     let metaOps := metaPairs.map (fun (k, v) =>
       parsedLine (.metaSet id k v) (stamp s!"meta:{k}" (packHlc createMs 0)) actor)
-    -- lifecycle: claim (assignee/in_progress) then close (terminal). A closed
-    -- record with an assignee gets a claim too, so the assignee survives close.
-    let wantsClaim := match r.status with
-      | .InProgress => true
-      | .Open => false
-      | _ => r.assignee.isSome
     -- disclose the assignee edge cases rather than silently dropping/inventing one
     let mut lifeDisc : List String := []
     match r.status with
@@ -324,6 +338,50 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
       | none, .Done => [parsedLine (.close id .Done) (stamp "close" (packHlc closeMs 2)) actor]
       | none, .Cancelled => [parsedLine (.close id .Cancelled) (stamp "close" (packHlc closeMs 2)) actor]
       | none, _ => []
+    -- What became of each *supplied* lifecycle instant. Three outcomes, and only
+    -- the first is silent: a read surfaces it unchanged; the causality clamp
+    -- moved it first; or no read surfaces it at all. The fallback assigned to an
+    -- absent value carries nothing and stays silent whatever the clamp does.
+    --
+    -- The test is what a read *projects*, never merely which op was written.
+    -- `claimedAt` is the stamp of a claim that no later `close` supersedes
+    -- (ADR-0008), and the seed always orders its `close` after its `claim`, so a
+    -- closed record's claim carries the assignee but projects no `claimedAt` —
+    -- an op-emitted test would call that a survivor and say nothing about a
+    -- value no reader can see. `closedAt` needs only its op, since the seed
+    -- emits no `reopen` to supersede one.
+    let claimedAtReadable := wantsClaim && closeOps.isEmpty
+    -- Being unprojectable and being clamped are independent, so a record can be
+    -- both. Reporting only the first would leave the reader a remedy that does
+    -- not restore the instant: changing the status makes the field projectable
+    -- and the clamp then moves it anyway.
+    let instantDisc (field : String) (supplied : Option Nat) (recorded : Nat)
+        (readable : Bool) (reads remedy : String) : List String :=
+      match supplied with
+      | none => []
+      | some ms =>
+        let moved := ms != recorded
+        if !readable && moved then
+          [s!"import record {r.sourceId}: {field} '{Time.isoOfEpochMs ms}' is not recorded — \
+{field} reads {reads}, and this record's status leaves none; the create → claim → close order \
+would also move it to '{Time.isoOfEpochMs recorded}'. {remedy} and supply \
+createdAt ≤ claimedAt ≤ closedAt to keep the source instant"]
+        else if !readable then
+          [s!"import record {r.sourceId}: {field} '{Time.isoOfEpochMs ms}' is not recorded — \
+{field} reads {reads}, and this record's status leaves none; {remedy} to keep it"]
+        else if moved then
+          [s!"import record {r.sourceId}: {field} '{Time.isoOfEpochMs ms}' precedes the instant it \
+must follow — recorded as '{Time.isoOfEpochMs recorded}' so the create → claim → close order \
+holds; supply createdAt ≤ claimedAt ≤ closedAt to keep the source instant"]
+        else []
+    -- `createdAt` needs no arm: the create op is unconditional and nothing
+    -- clamps it, so a supplied value always reaches the log as given.
+    let timeDisc :=
+      instantDisc "claimedAt" r.claimedAt claimMs claimedAtReadable
+        "the stamp of a claim no later close supersedes (ADR-0008)"
+        "set status to in_progress" ++
+      instantDisc "closedAt" r.closedAt closeMs (!closeOps.isEmpty)
+        "the close op's stamp" "set status to done or cancelled"
     -- notes: the JSONL `notes` field lowers to ONE synthetic immutable journal
     -- entry (ADR-0027/0005): a `note` op-role in the nonce preimage, the hlc
     -- from the record's createdAt like the other non-lifecycle seed ops, the
@@ -356,7 +414,7 @@ def buildSeed (opts : ImportOptions) (records : List (String × ImportRecord))
         edgeOps := edgeOps ++ [parsedLine (.relate e) (stamp s!"related:{rel}" (packHlc createMs 0)) actor]
       else edgeDisc := edgeDisc ++ [s!"import record {r.sourceId}: related '{rel}' is not in the import — edge skipped"]
     (createOp :: (metaOps ++ claimOps ++ closeOps ++ noteOps ++ labelOps ++ edgeOps),
-     edgeDisc ++ lifeDisc))
+     edgeDisc ++ lifeDisc ++ timeDisc))
   let lines := perRecord.flatMap (·.1)
   let edgeDiscs := perRecord.flatMap (·.2)
   { segmentReplica := replicaId, lines, issueCount := ordered.length,

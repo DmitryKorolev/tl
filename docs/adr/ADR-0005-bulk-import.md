@@ -124,6 +124,38 @@ no-auto-init rule (ADR-0012):
   decision, and each input class is pinned by its own row in `cliImportTests`
   so the silence reads as intended rather than as an oversight.
 
+  A *canonical* instant is the one class that carries a value forward, and the
+  parse step accepts it silently. Two things can still happen to it while the
+  seed log is built, and neither is silent either:
+
+  - **The causality clamp.** The seed stamps `create`, `claim` and `close` with
+    `createdAt`, `claimedAt` and `closedAt` plus a `+0`/`+1`/`+2` logical bump,
+    so a source whose instants run backwards would invert the record's own
+    lifecycle order. Each lifecycle instant is clamped to be no earlier than the
+    stamp of the op before it: `claimedAt` to `createdAt`, and `closedAt` to the
+    clamped `claimedAt` when a `claim` op is emitted or to `createdAt` when one
+    is not. The clamp chains through emitted ops only — an absent `claimedAt`'s
+    fallback is an instant no op carries, and letting it order the `close` would
+    move a `createdAt ≤ closedAt` pair the source got right. A supplied instant
+    the clamp does move is disclosed, carrying the source value, the recorded
+    value, and the ordering the source must satisfy to keep its own.
+  - **A projection the record's status does not admit.** `claimedAt` and
+    `closedAt` are fold-time projections, not stored fields (ADR-0008), so the
+    test is what a read surfaces rather than which op was written. `closedAt` is
+    the `close` op's stamp, and a record whose status emits no `close` projects
+    none. `claimedAt` is stricter: the stamp of a `claim` that no later `close`
+    supersedes — and the seed always orders its `close` after its `claim`, so a
+    closed record's `claim` carries the assignee while projecting no
+    `claimedAt`. Either way the supplied instant reaches no reader, and either
+    way it is disclosed, naming the one status that would keep it.
+
+  `createdAt` needs neither arm: the `create` op is unconditional and nothing
+  clamps it, so a supplied `createdAt` always survives as given.
+
+  Each outcome is pinned by its own row in `cliImportTests`, survivor rows
+  included — a deterministic fallback is byte-stable too, so an absence of
+  disclosures alone cannot tell an honoured source instant from an ignored one.
+
 ### Two distinct safety gates
 
 Two separate explicit gates, never conflated — one flag must not bypass both:

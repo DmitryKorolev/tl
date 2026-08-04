@@ -5231,6 +5231,7 @@ def cliImportTests : IO (List Outcome) := do
         ("pd", "createdAt", "an unparseable string", ",\"createdAt\":\"not-a-date\"", true),
         ("pe", "closedAt", "an array", ",\"status\":\"done\",\"closedAt\":[1]", true),
         ("pf", "claimedAt", "a bool", ",\"status\":\"in_progress\",\"claimedAt\":true", true),
+        ("ph", "createdAt", "an object", ",\"createdAt\":{\"at\":1}", true),
         -- The class that actually carries data into the log, and the only one
         -- the fallback cannot impersonate: a deterministic fallback is
         -- byte-stable too, so the determinism row cannot tell a run that
@@ -5251,6 +5252,100 @@ def cliImportTests : IO (List Outcome) := do
         (fun j => (jArr j "items").any fun it =>
           (it.getObjVal? "createdAt").toOption.bind (·.getStr?.toOption)
             == some "2020-01-02T03:04:05.000Z")]
+  -- What `buildSeed` does to a *canonical* instant, which is the one class the
+  -- rows above cannot reach: `optInstantField` accepts it silently and
+  -- correctly, and any loss happens afterwards — at the causality clamp that
+  -- keeps create → claim → close in order, and at the projections a record's
+  -- status does or does not admit. Three outcomes per field: a read surfaces
+  -- the instant unchanged, the clamp moved it first, or no read surfaces it at
+  -- all. Every row asserts the instant a read actually returns, which is what
+  -- keeps the silent outcome honest: a deterministic fallback is byte-stable,
+  -- so an absence of disclosures cannot by itself tell a preserved instant from
+  -- an ignored one.
+  let soleIssueId (dir : String) : IO (Option String) := do
+    match ← run' ["list", "--flat", "--all", "--dir", dir] with
+    | .ok out => pure ((jArr out.data "items").head?.bind (fun it => jStr it "id"))
+    | .error _ => pure none
+  for (tag, name, record, needles, field, expected) in
+      [ ("ta", "a consistent closedAt survives the clamp",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"createdAt\":\"2020-01-01T00:00:00Z\",\"closedAt\":\"2020-03-01T00:00:00Z\"}",
+          ([] : List String), "closedAt", some "2020-03-01T00:00:00.000Z"),
+        -- Before the fallback epoch on purpose: the fallback assigned to this
+        -- record's *absent* claimedAt sits at 2000-01-01, later than both
+        -- supplied instants. It must not push them apart — no claim op carries
+        -- it, so there is nothing in the log for the close to have to follow.
+        ("tg", "a consistent pair before the fallback epoch survives the clamp",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"createdAt\":\"1995-01-01T00:00:00Z\",\"closedAt\":\"1996-01-01T00:00:00Z\"}",
+          [], "closedAt", some "1996-01-01T00:00:00.000Z"),
+        -- The same shape *with* a claim op in between: the claim's fallback is
+        -- a real stamp in the log now, so the close does follow it, and the
+        -- move is disclosed rather than silent.
+        ("th", "a claim op's own fallback still orders the close, and says so",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"assignee\":\"a\",\"createdAt\":\"1995-01-01T00:00:00Z\",\"closedAt\":\"1996-01-01T00:00:00Z\"}",
+          ["closedAt '1996-01-01T00:00:00Z' precedes"], "closedAt", some "2000-01-01T00:00:00.000Z"),
+        ("tb", "a consistent claimedAt survives the clamp",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"in_progress\",\"assignee\":\"a\",\"createdAt\":\"2020-01-01T00:00:00Z\",\"claimedAt\":\"2020-02-01T00:00:00Z\"}",
+          [], "claimedAt", some "2020-02-01T00:00:00.000Z"),
+        ("tc", "a closedAt before createdAt is clamped, and the clamp is disclosed",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"createdAt\":\"2020-01-02T03:04:05Z\",\"closedAt\":\"2019-01-02T03:04:05Z\"}",
+          ["closedAt '2019-01-02T03:04:05Z' precedes",
+           "recorded as '2020-01-02T03:04:05Z'",
+           "supply createdAt ≤ claimedAt ≤ closedAt to keep the source instant"],
+          "closedAt", some "2020-01-02T03:04:05.000Z"),
+        ("td", "a claimedAt before createdAt is clamped, and the clamp is disclosed",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"in_progress\",\"assignee\":\"a\",\"createdAt\":\"2020-01-02T03:04:05Z\",\"claimedAt\":\"2019-06-01T00:00:00Z\"}",
+          ["claimedAt '2019-06-01T00:00:00Z' precedes", "recorded as '2020-01-02T03:04:05Z'"],
+          "claimedAt", some "2020-01-02T03:04:05.000Z"),
+        ("te", "a closedAt no read surfaces is disclosed, not recorded",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"open\",\"closedAt\":\"2021-01-01T00:00:00Z\"}",
+          ["closedAt '2021-01-01T00:00:00Z' is not recorded", "the close op's stamp",
+           "set status to done or cancelled to keep it"],
+          "closedAt", none),
+        ("tf", "a claimedAt no read surfaces is disclosed, not recorded",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"open\",\"claimedAt\":\"2021-01-01T00:00:00Z\"}",
+          ["claimedAt '2021-01-01T00:00:00Z' is not recorded",
+           "a claim no later close supersedes", "set status to in_progress to keep it"],
+          "claimedAt", none),
+        -- The cell an op-emitted test calls a survivor: the claim op is written
+        -- and carries the assignee, but the seed's own close outranks it, so
+        -- ADR-0008's claimedAt projects nothing. Silence here would be a value
+        -- the record supplied that no reader can ever see.
+        ("ti", "a claimedAt a later close supersedes is disclosed, not recorded",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"assignee\":\"a\",\"createdAt\":\"2020-01-01T00:00:00Z\",\"claimedAt\":\"2020-02-01T00:00:00Z\",\"closedAt\":\"2020-03-01T00:00:00Z\"}",
+          ["claimedAt '2020-02-01T00:00:00Z' is not recorded",
+           "set status to in_progress to keep it"],
+          "claimedAt", none),
+        -- Both at once, which the two outcomes being independent makes
+        -- reachable: the clamp moves the claim to createdAt *and* the close
+        -- then hides it. Reporting only the second would hand the reader a
+        -- remedy that does not restore the instant — switching to in_progress
+        -- makes the field projectable and the clamp still moves it.
+        ("tk", "an instant both clamped and unprojected reports both facts",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"assignee\":\"a\",\"createdAt\":\"2020-01-02T00:00:00Z\",\"claimedAt\":\"2019-06-01T00:00:00Z\",\"closedAt\":\"2021-01-01T00:00:00Z\"}",
+          ["claimedAt '2019-06-01T00:00:00Z' is not recorded",
+           "would also move it to '2020-01-02T00:00:00Z'",
+           "set status to in_progress and supply createdAt ≤ claimedAt ≤ closedAt"],
+          "claimedAt", none),
+        -- …and the same record's assignee and closedAt are untouched by that
+        -- disclosure: it reports one unreadable field, it does not drop an op.
+        ("tj", "the superseded claim still carries its assignee",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"assignee\":\"a\",\"createdAt\":\"2020-01-01T00:00:00Z\",\"claimedAt\":\"2020-02-01T00:00:00Z\",\"closedAt\":\"2020-03-01T00:00:00Z\"}",
+          ["claimedAt '2020-02-01T00:00:00Z' is not recorded"], "assignee", some "a") ] do
+    let (fp, dir) ← provDir tag (record ++ "\n")
+    o := o ++ [← expectData s!"import: {name}"
+      ["import", fp, "--dir", dir]
+      (fun j =>
+        let disclosures := (jArr j "disclosures").map (fun d => d.getStr?.toOption.getD "")
+        jNat j "issues" == some 1 &&
+          (if needles.isEmpty then disclosures.isEmpty
+           else disclosures.any fun d => needles.all fun n => (d.splitOn n).length > 1))]
+    let recorded ← match ← soleIssueId dir with
+      | none => pure (check s!"import: {name} — the record materialized" false
+          "the imported repository holds no issue to read the instant back from")
+      | some id =>
+        expectData s!"import: {name} — the recorded {field}"
+          ["show", id, "--dir", dir] (fun j => jStr j field == expected)
+    o := o ++ [recorded]
   return o
 
 /-- `tl import` granular resource bounds (ADR-0005 §two distinct safety gates,
