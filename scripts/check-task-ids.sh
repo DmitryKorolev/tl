@@ -72,17 +72,29 @@ scan() {
   git -C "$dir" grep -anEi "$pattern" -- "$@"
 }
 
-run_scan() {
+# The whole decision — scan, classify, verdict — in one place, so the real run
+# and the selftest's probe repository exercise the same assembly rather than the
+# same two halves wired up twice. Testing `scan` and `classify` separately leaves
+# exactly one arm uncovered: the condition that turns their output into a
+# failure, which is the arm whose loss makes the gate report clean on a real
+# leak.
+#
+# 0 = clean, 1 = at least one unregistered token (reported on stdout by
+# `classify`), 2 = the scan could not run. `printf '%s\n'`, not `%s`: command
+# substitution already stripped the trailing newline and `read` drops a final
+# line that has none, which would silently lose the last hit.
+gate_verdict() {
+  local dir=$1; shift
   local out rc
   set +e
-  out=$(scan "$root" "${pathspec[@]}")
+  out=$(scan "$dir" "$@")
   rc=$?
   set -e
   if [ "$rc" -gt 1 ]; then
     echo "::error::the task-id scan could not run (git grep exit $rc) — repair the pattern or the pathspec in scripts/check-task-ids.sh. A scan that cannot run must not report clean." >&2
     return 2
   fi
-  printf '%s' "$out"
+  printf '%s\n' "$out" | classify
 }
 
 # Same fail-closed rule as the scan: if the pathspec cannot even be listed, say
@@ -208,6 +220,21 @@ if [ "${1:-}" = "--selftest" ]; then
       echo "selftest: the production scan missed the token in $probe_file"; fail=1
     fi
   done
+  # The assembly, not its halves: `gate_verdict` is the function the live run
+  # below calls, so the condition that turns a hit into a failure is exercised
+  # here rather than only in production. Both arms, because a verdict stuck at
+  # "leak" is as broken as one stuck at "clean" — it would fail every clean
+  # checkout.
+  printf 'registered %s\n' "$registered" > "$probe_repo/registered.txt"
+  pgit add -A
+  probe_verdict=0
+  ( scrub_git_env; gate_verdict "$probe_repo" ) >/dev/null 2>&1 || probe_verdict=$?
+  [ "$probe_verdict" -eq 1 ] || {
+    echo "selftest: the gate verdict did not reject a probe repository holding unregistered tokens (got $probe_verdict)"; fail=1; }
+  clean_verdict=0
+  ( scrub_git_env; gate_verdict "$probe_repo" registered.txt ) >/dev/null 2>&1 || clean_verdict=$?
+  [ "$clean_verdict" -eq 0 ] || {
+    echo "selftest: the gate verdict rejected a probe file holding only the registered token (got $clean_verdict)"; fail=1; }
   files=$(scope_size)
   [ "$files" -gt 0 ] || { echo "selftest: the scan pathspec selected no files"; fail=1; }
   # Nonempty is not the contract. ADR-0026 fixes the scope exactly — every
@@ -238,12 +265,12 @@ if [ "$files" -eq 0 ]; then
   exit 1
 fi
 
-# `printf '%s\n'`, not `%s`: command substitution already stripped the trailing
-# newline, and `read` drops a final line that has none — which would silently
-# lose the last hit.
-hits=$(run_scan)
-if ! printf '%s\n' "$hits" | classify; then
+verdict=0
+gate_verdict "$root" "${pathspec[@]}" || verdict=$?
+if [ "$verdict" -eq 1 ]; then
   echo "::error::task-tracker id in a tracked artifact. Code and comments must stand on their own — describe the substance instead (AGENTS.md, 'Artifacts must be human-readable'). If this token is a test or example placeholder rather than a tracker reference, register it in $registry in this same change."
+  exit 1
+elif [ "$verdict" -ne 0 ]; then
   exit 1
 fi
 echo "task-id lint clean ($files files in scope)"
