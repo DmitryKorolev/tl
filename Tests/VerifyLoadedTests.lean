@@ -20,6 +20,21 @@ private def hasNamePrefix (prefixName : Name)
     (entries : Std.HashMap Name ConstantInfo) : Bool :=
   entries.toList.any fun (name, _) => Name.isPrefixOf prefixName name
 
+/-- A module's direct imports as *written*, parsed from its own source header by
+    Lean's own header parser.
+
+    This is a second, independent path to the fact `directImportRows` reads out
+    of the compiled `.olean` header table, which is what makes it usable as a
+    pin: the two are produced by different code from different artifacts, so
+    they disagree exactly when the collector drops, reorders, or invents an
+    edge. Both include the implicit prelude imports a non-`prelude` module
+    carries, so the rows compare equal element for element. -/
+private def writtenImports (root : System.FilePath) (module : Name) : IO (Array Name) := do
+  let path := (Name.components module).foldl
+    (fun (dir : System.FilePath) part => dir / part.toString) root |>.addExtension "lean"
+  let (imports, _, _) ← Lean.Elab.parseImports (← IO.FS.readFile path) path.toString
+  return imports.map (·.module)
+
 /-- A proof of `False` produced by the *real* kernel-checking bypass, not by
     hand-assembling a `ConstantInfo`. `Lean.Kernel.Environment.addDecl` honours
     `debug.skipKernelTC` by routing to `addDeclWithoutChecking`, so what this
@@ -55,7 +70,10 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
     IO (List Outcome) := do
   initSearchPath sysroot
   let env ← loadEnvironmentNoInitializers #[`Verify.Environment]
-  let production ← loadEnvironmentNoInitializers #[`Tl]
+  -- The gate's own production roots, not a hand-written `#[`Tl]`: `Main` is a
+  -- production root too, so selecting only the library root would leave it and
+  -- anything reachable only from it outside every pin below.
+  let production ← loadEnvironmentNoInitializers auditLayout.productionRoots
   let imported := modulesInEnvironment env #[`Verify.Report, `Verify.Policy, `Absent.Module]
   let projectModules ← projectModulesIn env
   let productionModules ← projectModulesIn production
@@ -81,9 +99,13 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
   let reportRows := directImportRows env #[`Verify.Report]
   -- Truncation and early exit are what the ADR-0009 proofs cannot see: they
   -- characterise the traversal over the rows it is *handed*, so the collector
-  -- that produces those rows has to be pinned separately. A first-row-only
-  -- collector would still report a nonzero `importEdges`, so the vacuity arm
-  -- cannot catch it either.
+  -- that produces those rows has to be pinned separately. A truncating
+  -- collector still returns one well-formed row per selected module and still
+  -- reports a nonzero `importEdges`, so neither the vacuity arm nor a row-count
+  -- assertion can catch it — the row *contents* are what has to be pinned, and
+  -- pinning them against the table they were read from would prove nothing.
+  -- `writtenImports` is the independent source of truth: the same fact taken
+  -- from the module's own source header instead of its compiled `.olean`.
   let multiSel := #[`Verify.Report, `Verify.Policy, `Verify.Environment]
   let multiRows := directImportRows env multiSel
   -- Local to this test, never the shipped policy: it forbids everything the
@@ -94,6 +116,49 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
     (#[`Verify.Report].foldl (·.insert ·) (∅ : Std.HashSet Name)) multiRows
   let analyzeClosure := replayClosure env #[`Tl.Verify.analyze]
   let projectRoot ← projectOLeanRoot
+  -- Resolved from the compiled artifact, not the working directory, so this
+  -- reads the sources that produced the `.olean`s under audit whatever
+  -- directory the suite was launched from.
+  let packageDir? ← packageRoot? projectRoot
+  -- Expectations are keyed off the collector's *own* rows, so each comparison
+  -- below is about row contents alone and cannot fail merely because the
+  -- collector returns rows in the environment's module order while a selection
+  -- is written in another. Which modules get a row is the separate count and
+  -- per-module arms' job, and between them nothing is left uncovered: a
+  -- dropped, duplicated or substituted row breaks one of those, and a row whose
+  -- edges were truncated breaks the equality.
+  --
+  -- An unreadable source degrades to an empty row so the rest of the group
+  -- still reports, but the reason is kept rather than thrown away: without it
+  -- the arms would accuse the collector of disagreeing with a header they in
+  -- fact never read.
+  let mut sourceReadErrors : Array String := #[]
+  let writtenRowsOf (rows : Array (Name × Array Name)) :
+      IO (Array (Name × Array Name) × Array String) := do
+    match packageDir? with
+    | none => return (#[], #[])
+    | some dir =>
+      let mut written := #[]
+      let mut errors := #[]
+      for (module, _) in rows do
+        match ← (writtenImports dir module).toBaseIO with
+        | .ok imports => written := written.push (module, imports)
+        | .error error =>
+          written := written.push (module, #[])
+          errors := errors.push s!"{module}: {error}"
+      return (written, errors)
+  let (writtenRows, multiReadErrors) ← writtenRowsOf multiRows
+  sourceReadErrors := sourceReadErrors ++ multiReadErrors
+  -- The verifier rows above are three hand-picked modules, six stored edges at
+  -- the widest, so on their own they pin the collector only that deep and only
+  -- three rows wide — a cap at either bound would match all three. The whole
+  -- production scope is the pin that has neither ceiling: every module the gate
+  -- actually audits, every edge each one declares, and it widens by itself as
+  -- the project grows.
+  let scopeRows := directImportRows production productionModules
+  let (scopeWritten, scopeReadErrors) ← writtenRowsOf scopeRows
+  sourceReadErrors := sourceReadErrors ++ scopeReadErrors
+  let scopeEdges := scopeRows.foldl (fun total (_, imports) => total + imports.size) 0
   let reportOLean ← realPathNormalized (← findOLean `Verify.Report)
   -- The bypass artifact is replayed alongside the genuine cone of the constants
   -- it names, so the rejection has to be the kernel's type mismatch and cannot
@@ -138,6 +203,37 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
       multiRows.size multiSel.size,
     check "every selected module contributes a row"
       (multiSel.all fun name => multiRows.any fun (rowName, _) => rowName == name),
+    check "the verifier's own sources are reachable from the compiled artifact"
+      packageDir?.isSome
+      "no lakefile above the project olean root, so the header cross-check below reads nothing",
+    check "every cross-checked source is readable at the resolved path"
+      sourceReadErrors.isEmpty
+      (String.intercalate "; " sourceReadErrors.toList),
+    -- Guards the pin against passing because *both* sides came back empty: this
+    -- names two edges that a first-row-only or drop-the-tail collector loses.
+    check "the header cross-check is non-vacuous: a multi-import module parses to its later edges"
+      ((writtenRows.find? (·.1 == `Verify.Environment)).any fun (_, imports) =>
+        imports.contains `Lean.Replay && imports.contains `Verify.Report),
+    checkEq "every collected row is its module's own written header, edge for edge"
+      multiRows writtenRows,
+    -- Row count and edge count, each pinned against something outside the table
+    -- they come from: a collector that capped rows, or edges within a row, is
+    -- caught by one or the other however high it set the cap.
+    checkEq "the collector returns a row for every module of a whole audited scope"
+      scopeRows.size productionModules.size,
+    -- With the count above, this forces a bijection: 74 distinct audited modules
+    -- each appearing among 74 rows leaves no room for a duplicate or a
+    -- substitution. It is the arm the header equality cannot supply, because
+    -- expectations are keyed off the collector's own row names — a collector
+    -- that repeated one row's *name* would have its expectation repeat with it.
+    check "every audited module of that scope contributes its own row"
+      (productionModules.all fun module => scopeRows.any fun (rowName, _) => rowName == module)
+      s!"{scopeRows.size} rows cover {(scopeRows.map (·.1)).toList.eraseDups.length} distinct modules",
+    checkEq "every row of that scope is its module's own written header too"
+      scopeRows scopeWritten,
+    check "the whole-scope cross-check is wider and deeper than the hand-picked one"
+      (productionModules.size ≥ 20 && scopeEdges ≥ 100)
+      s!"{productionModules.size} modules and {scopeEdges} edges cross-checked",
     check "a forbidden edge after an allowed row is still reported"
       (laterRowFindings.any fun error => (error.splitOn "Verify.Policy").length > 1),
     check "loaded observation retains the import-audit result"
