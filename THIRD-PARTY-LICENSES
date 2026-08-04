@@ -15,14 +15,14 @@ Inventory (link-time and compile-time dependency cone of the shipped binary):
 
 | Component | Version / rev | License |
 |---|---|---|
-| Lean 4 runtime & stdlib | v4.32.0 | Apache-2.0 |
+| Lean 4 runtime & stdlib | v4.32.2 | Apache-2.0 |
 | GMP (bundled in the Lean toolchain, statically linked) | toolchain-bundled | LGPL-3.0-or-later (elected from the LGPLv3+/GPLv2+ dual license) |
 | libuv (bundled in the Lean toolchain, statically linked) | toolchain-bundled | MIT |
 | LLVM components (bundled in the Lean toolchain) | toolchain-bundled | Apache-2.0 WITH LLVM-exception (+ legacy NCSA parts) |
 | glibc (Linux artifacts only) | toolchain-bundled | LGPL-2.1 |
 | CaDiCaL (bundled in the Lean toolchain) | toolchain-bundled | MIT |
 | leantar (Lean tooling) | toolchain-bundled | Apache-2.0 |
-| mathlib (https://github.com/leanprover-community/mathlib4) | 81a5d257c8e410db227a6665ed08f64fea08e997 | Apache-2.0 |
+| mathlib (https://github.com/leanprover-community/mathlib4) | 905b95818eb32af7874a58b427f50c1711a5e96c | Apache-2.0 |
 | batteries (https://github.com/leanprover-community/batteries) | 023ce7d62a0531e22a5331e20b587817a80d49ff | Apache-2.0 |
 | plausible (https://github.com/leanprover-community/plausible) | e12c1910fe855cbfc38803cd4e55543906d5fa62 | Apache-2.0 |
 | LeanSearchClient (https://github.com/leanprover-community/LeanSearchClient) | c5d5b8fe6e5158def25cd28eb94e4141ad97c843 | Apache-2.0 |
@@ -297,7 +297,7 @@ mathlib, batteries, plausible, LeanSearchClient, importGraph, proofwidgets, aeso
    limitations under the License.
 ==============================================================================
 Notices propagated verbatim from the Lean 4 toolchain's bundled LICENSES file
-(leanprover/lean4 v4.32.0 — LLVM, glibc, GMP/LGPLv3, CaDiCaL, leantar):
+(leanprover/lean4 v4.32.2 — LLVM, glibc, GMP/LGPLv3, CaDiCaL, leantar):
 ==============================================================================
 
 ==============================================================================
