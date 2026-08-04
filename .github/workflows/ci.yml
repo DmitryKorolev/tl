@@ -143,6 +143,32 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # The ADR-0006 license gate reads `.lake/packages/<pkg>/LICENSE` for every
+      # manifest package, and git-floor ships no dependency sources — so those
+      # ~100 KB of license files travel with the binaries rather than the whole
+      # multi-gigabyte package tree. A same-run artifact, not the trusted-main
+      # sources cache: that cache is keyed on `lake-manifest.json` and only main
+      # may save it, so a PR that adds a dependency would miss it, while the
+      # artifact always matches the commit under test. Keeping the licenses
+      # provisioned is what lets git-floor run the *whole* suite at the floor,
+      # rather than teaching one row to excuse itself.
+      #
+      # The tar paths are stored relative to the checkout root and extracted
+      # there, so no artifact-layout inference is involved. An unmatched glob
+      # makes tar fail the step rather than shipping an empty archive.
+      - name: package the dependency licenses for the git-floor job
+        if: matrix.os == 'ubuntu-latest'
+        run: tar -czf lake-package-licenses.tar.gz .lake/packages/*/LICENSE
+
+      - name: upload the dependency licenses for the git-floor job
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tl-licenses-linux
+          path: lake-package-licenses.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
       # The sources cache must hold sources only: prune the per-package .lake
       # build dirs (the unpacked oleans) before saving. Saved from one leg —
       # the clones are platform-independent.
@@ -218,6 +244,26 @@ jobs:
         with:
           name: tl-binaries-linux
           path: .lake/build/bin
+
+      - name: download the dependency licenses
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tl-licenses-linux
+
+      # Counted against the manifest here rather than left to the license row:
+      # a shortfall in provisioning and an actually-unlicensed dependency are
+      # different faults with different repairs, and the row alone would report
+      # both as "missing/copyleft/unclassified".
+      - name: restore the dependency licenses
+        run: |
+          tar -xzf lake-package-licenses.tar.gz
+          want=$(jq '.packages | length' lake-manifest.json)
+          got=$(ls .lake/packages/*/LICENSE 2>/dev/null | wc -l)
+          if [ "$got" -ne "$want" ]; then
+            echo "::error::restored $got license files for $want manifest packages — the licenses artifact is out of step with lake-manifest.json. Repair the upload glob in the build job; the license row below would otherwise report this as an unlicensed dependency."
+            exit 1
+          fi
+          echo "restored $got dependency license files"
 
       # The supervised tltest worker expects the tl binary at
       # <cwd>/.lake/build/bin/tl and the repo sources/fixtures at cwd, so the
