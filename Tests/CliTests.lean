@@ -5301,6 +5301,30 @@ def cliImportTests : IO (List Outcome) := do
           ["closedAt '2021-01-01T00:00:00Z' is not recorded", "the close op's stamp",
            "set status to done or cancelled to keep it"],
           "closedAt", none),
+        -- The remedy has to be judged against the lifecycle it produces, not
+        -- the one the record has now. Closing this record earns it a claim op
+        -- an open record never gets, and that claim's fallback then orders the
+        -- close — so "set status to done" alone would move the instant it
+        -- promises to keep, and the disclosure has to say so.
+        ("tl", "a closedAt whose remedy would itself move it says both",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"open\",\"assignee\":\"a\",\"createdAt\":\"1995-01-01T00:00:00Z\",\"closedAt\":\"1996-01-01T00:00:00Z\"}",
+          ["closedAt '1996-01-01T00:00:00Z' is not recorded",
+           "would also move it to '2000-01-01T00:00:00Z'",
+           "set status to done or cancelled and supply createdAt ≤ claimedAt ≤ closedAt"],
+          "closedAt", none),
+        -- The mirror topology, where closing *removes* a claim op rather than
+        -- adding one, so the plain remedy is sound and must not be cluttered
+        -- with a clamp warning that would not apply.
+        ("tm", "a closedAt whose remedy is safe keeps the plain wording",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"in_progress\",\"createdAt\":\"1995-01-01T00:00:00Z\",\"closedAt\":\"1996-01-01T00:00:00Z\"}",
+          ["closedAt '1996-01-01T00:00:00Z' is not recorded",
+           "set status to done or cancelled to keep it"],
+          "closedAt", none),
+        -- And the remedy, followed: the instant it promised to keep is kept.
+        ("tn", "following the named remedy restores the source instant",
+          "{\"id\":\"S\",\"title\":\"t\",\"status\":\"done\",\"assignee\":\"a\",\"createdAt\":\"1995-01-01T00:00:00Z\",\"claimedAt\":\"1995-06-01T00:00:00Z\",\"closedAt\":\"1996-01-01T00:00:00Z\"}",
+          ["claimedAt '1995-06-01T00:00:00Z' is not recorded"],
+          "closedAt", some "1996-01-01T00:00:00.000Z"),
         ("tf", "a claimedAt no read surfaces is disclosed, not recorded",
           "{\"id\":\"S\",\"title\":\"t\",\"status\":\"open\",\"claimedAt\":\"2021-01-01T00:00:00Z\"}",
           ["claimedAt '2021-01-01T00:00:00Z' is not recorded",

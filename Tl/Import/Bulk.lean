@@ -374,13 +374,27 @@ createdAt ≤ claimedAt ≤ closedAt to keep the source instant"]
 must follow — recorded as '{Time.isoOfEpochMs recorded}' so the create → claim → close order \
 holds; supply createdAt ≤ claimedAt ≤ closedAt to keep the source instant"]
         else []
+    -- The instant the *recommended* status would record, which is not always
+    -- the one this record's current shape would. Closing an open record that
+    -- carries an assignee earns it a claim op it does not have now, and that
+    -- claim's stamp then orders the close — so a `closedAt` this record would
+    -- keep can still be moved by the very change the remedy asks for. Comparing
+    -- against the current shape would promise a preservation that following the
+    -- advice does not deliver. `claimedAt` needs no such simulation: its own
+    -- remedy is `in_progress`, under which the claim exists and its stamp is
+    -- the `claimMs` already computed.
+    let closedAtRecorded :=
+      if closeOps.isEmpty then
+        max (r.closedAt.getD (fallbackBaseMs + k))
+          (if r.assignee.isSome then claimMs else createMs)
+      else closeMs
     -- `createdAt` needs no arm: the create op is unconditional and nothing
     -- clamps it, so a supplied value always reaches the log as given.
     let timeDisc :=
       instantDisc "claimedAt" r.claimedAt claimMs claimedAtReadable
         "the stamp of a claim no later close supersedes (ADR-0008)"
         "set status to in_progress" ++
-      instantDisc "closedAt" r.closedAt closeMs (!closeOps.isEmpty)
+      instantDisc "closedAt" r.closedAt closedAtRecorded (!closeOps.isEmpty)
         "the close op's stamp" "set status to done or cancelled"
     -- notes: the JSONL `notes` field lowers to ONE synthetic immutable journal
     -- entry (ADR-0027/0005): a `note` op-role in the nonce preimage, the hlc
