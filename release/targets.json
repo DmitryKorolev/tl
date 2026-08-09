@@ -1,0 +1,23 @@
+{
+  "comment": [
+    "The distributed targets and their ADR-0006 support tiers, in one place.",
+    "Read by scripts/lib/release-common.sh and, through it, by npm-pack.sh, the",
+    "Homebrew generator, the release-policy gate and the release workflow. Before",
+    "this file the same tier split was written out independently in five scripts",
+    "with nothing checking that they agreed.",
+    "",
+    "Target names are stored bare, without the `tl-` asset prefix: the task-ID",
+    "lint reads that prefix followed by Crockford digits as a tracker reference,",
+    "and every consumer composes the asset name as `tl-<target>` for that reason.",
+    "",
+    "tier `supported` is release-blocking; tier `best-effort` is built and",
+    "smoke-tested but a failing leg does not stop the release, so every consumer",
+    "must have a defined behaviour for its absence."
+  ],
+  "targets": [
+    { "target": "linux-x64", "tier": "supported", "os": "linux", "cpu": "x64", "libc": "glibc" },
+    { "target": "linux-arm64", "tier": "supported", "os": "linux", "cpu": "arm64", "libc": "glibc" },
+    { "target": "darwin-arm64", "tier": "supported", "os": "darwin", "cpu": "arm64" },
+    { "target": "darwin-x64", "tier": "best-effort", "os": "darwin", "cpu": "x64" }
+  ]
+}

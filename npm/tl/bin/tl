@@ -37,6 +37,13 @@ here=$(CDPATH='' cd -- "$(dirname -- "$target")" && pwd -P)
 # bin/ -> package root
 root=$(CDPATH='' cd -- "$here/.." && pwd -P)
 
+# The two mappings below are embedded copies of `rc_detect_os`/`rc_detect_arch`
+# in scripts/lib/release-common.sh. The duplication is forced: this script ships
+# inside a published npm package and has no access to that repository.
+# `scripts/check-embedded-copies.sh` compares the classifications and fails when
+# they disagree, since a copy that maps a uname to a different target would
+# select the wrong binary rather than fail visibly.
+# EMBEDDED-COPY-BEGIN detect_os
 case $(uname -s) in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
@@ -49,7 +56,9 @@ case $(uname -s) in
     exit 1
     ;;
 esac
+# EMBEDDED-COPY-END detect_os
 
+# EMBEDDED-COPY-BEGIN detect_arch
 case $(uname -m) in
   arm64 | aarch64) arch=arm64 ;;
   x86_64 | amd64) arch=x64 ;;
@@ -58,6 +67,7 @@ case $(uname -m) in
     exit 1
     ;;
 esac
+# EMBEDDED-COPY-END detect_arch
 
 pkg="tl-bin-$os-$arch"
 

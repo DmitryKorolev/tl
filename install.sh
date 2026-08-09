@@ -65,7 +65,15 @@ verify_signature() {
   esac
 }
 
-detect_target() {
+# The platform mapping and the digest helper below are embedded copies of the
+# definitions in scripts/lib/release-common.sh. The duplication is forced: this
+# script is piped straight into a shell and has no checkout to source from.
+# `scripts/check-embedded-copies.sh` compares the two and fails on drift, the
+# same discipline the signing pin already follows — three copies of a digest
+# helper that disagree about case or length are worse than one, because the
+# disagreement is invisible at the call site.
+# EMBEDDED-COPY-BEGIN detect_os
+detect_os() {
   case $(uname -s) in
     Darwin) install_os=darwin ;;
     Linux) install_os=linux ;;
@@ -76,6 +84,10 @@ detect_target() {
       die "unsupported operating system '$(uname -s)'. tl publishes binaries for Linux and macOS only; to use it elsewhere, build from source with Lean 4 (see https://github.com/${TL_REPO})."
       ;;
   esac
+}
+# EMBEDDED-COPY-END detect_os
+# EMBEDDED-COPY-BEGIN detect_arch
+detect_arch() {
   case $(uname -m) in
     arm64 | aarch64) install_arch=arm64 ;;
     x86_64 | amd64) install_arch=x64 ;;
@@ -83,18 +95,42 @@ detect_target() {
       die "unsupported CPU architecture '$(uname -m)'. tl publishes arm64 and x86-64 binaries; to use it elsewhere, build from source with Lean 4 (see https://github.com/${TL_REPO})."
       ;;
   esac
+}
+# EMBEDDED-COPY-END detect_arch
+
+detect_target() {
+  detect_os
+  detect_arch
+  # `uname -m` reports the architecture of the *process*, not of the machine.
+  # Under Rosetta 2 an x86-64 shell on an Apple-silicon Mac reports x86_64, so
+  # this script would otherwise install the Best-effort Intel binary — or, on a
+  # release whose Best-effort leg failed, report no asset at all — on hardware
+  # that has a Supported native build. Say so rather than silently downgrading.
+  if [ "$install_os" = darwin ] && [ "$install_arch" = x64 ] \
+     && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
+    echo "tl-install: this shell is running under Rosetta on Apple silicon, so it reports an x86-64 architecture and this script would install the Best-effort Intel binary. For the Supported native build, re-run from a native arm64 shell (for example 'arch -arm64 /bin/sh')." >&2
+  fi
   asset="tl-${install_os}-${install_arch}"
 }
 
+# EMBEDDED-COPY-BEGIN sha256_of
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | cut -d' ' -f1
   else
-    die "no sha256sum or shasum found. The digest check is mandatory and there is no way to skip it; install coreutils (Linux) or use the system shasum (macOS)."
+    echo "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)." >&2
+    return 1
   fi
 }
+# EMBEDDED-COPY-END sha256_of
+
+# EMBEDDED-COPY-BEGIN lower
+lower() {
+  printf '%s' "$1" | tr 'ABCDEF' 'abcdef'
+}
+# EMBEDDED-COPY-END lower
 
 fetch() {
   # $1 url, $2 destination. Fails loudly: a partial or 404 download that is
@@ -108,6 +144,29 @@ fetch() {
     || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets. Only https (and file:// for a local mirror) is accepted, including after a redirect."
 }
 
+# Turn the effective URL of /releases/latest into a tag, or refuse. Split out
+# from the fetch so the three outcomes are reachable without a network: the
+# selftest sources this file and calls it directly. The curl below stays
+# untested here — asserting that GitHub still redirects is not this script's
+# job, and doing it would make the suite depend on the network.
+version_from_effective_url() {
+  effective=$1
+  case $effective in
+    */releases)
+      # GitHub answers /releases/latest with the releases index when every
+      # release is a prerelease, so this is "nothing stable yet", not a broken
+      # redirect.
+      die "https://github.com/${TL_REPO} has no stable release yet — /releases/latest resolved to the releases index, which is what GitHub returns when only prereleases exist. Pick one explicitly, for example TL_VERSION=v0.1.0-rc.1, from https://github.com/${TL_REPO}/releases."
+      ;;
+  esac
+  version=${effective##*/}
+  case $version in
+    v[0-9]*) ;;
+    *) die "could not work out the latest version from '${effective}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this at https://github.com/${TL_REPO}/issues." ;;
+  esac
+  printf '%s\n' "$version"
+}
+
 resolve_version() {
   if [ -n "${TL_VERSION-}" ]; then
     version=$TL_VERSION
@@ -118,22 +177,15 @@ resolve_version() {
   fi
   # The redirect target of /releases/latest names the tag, which avoids a JSON
   # parse and avoids the API rate limit an unauthenticated curl would hit.
+  # --proto/--proto-redir for the same reason `fetch` carries them: a redirect
+  # must not be able to walk this request down to cleartext, where the tag we
+  # resolve — and therefore which release gets installed — would be chosen by
+  # whoever is on the path.
   latest_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    --proto '=https' --proto-redir '=https' \
     "https://github.com/${TL_REPO}/releases/latest" 2>/dev/null) \
     || die "could not reach GitHub to find the latest release. Check the network, or set TL_VERSION to install a specific tag."
-  version=${latest_url##*/}
-  case $latest_url in
-    */releases)
-      # GitHub answers /releases/latest with the releases index when every
-      # release is a prerelease, so this is "nothing stable yet", not a broken
-      # redirect.
-      die "https://github.com/${TL_REPO} has no stable release yet — /releases/latest resolved to the releases index, which is what GitHub returns when only prereleases exist. Pick one explicitly, for example TL_VERSION=v0.1.0-rc.1, from https://github.com/${TL_REPO}/releases."
-      ;;
-  esac
-  case $version in
-    v*) ;;
-    *) die "could not work out the latest version from '${latest_url}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this at https://github.com/${TL_REPO}/issues." ;;
-  esac
+  version=$(version_from_effective_url "$latest_url")
 }
 
 main() {
@@ -153,7 +205,15 @@ main() {
   fi
 
   work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
+  # `staged` is the temporary inside the *install* directory (see the atomic
+  # replace below), so it is not covered by removing $work. It is named here
+  # and swept by the same trap: an interrupted install would otherwise leave a
+  # `.tl.install.<pid>` file sitting in the user's bin directory forever, one
+  # per attempt. INT and TERM as well as EXIT, because a Ctrl-C during the
+  # download is the common case and a bare EXIT trap does not fire for it in
+  # every shell.
+  staged=''
+  trap 'rm -rf "$work"; [ -z "$staged" ] || rm -f "$staged"' EXIT INT TERM
 
   echo "tl-install: installing ${asset} from ${version}"
   fetch "${base}/${asset}" "$work/$asset"
@@ -172,8 +232,18 @@ main() {
   case $expected in
     *[!0-9a-fA-F]* | '') die "the SHA256SUMS entry for ${asset} is not a hex digest. The file is corrupt or truncated; re-run to download it again." ;;
   esac
-  actual=$(sha256_of "$work/$asset")
-  [ "$actual" = "$expected" ] \
+  # A truncated sums line is a broken download, not a tampered binary, and the
+  # two send the reader to entirely different places. Without this the short
+  # digest simply fails the comparison below and is reported as tampering.
+  [ "${#expected}" -eq 64 ] \
+    || die "the SHA256SUMS entry for ${asset} is ${#expected} characters, not the 64 of a SHA-256 digest. The file is corrupt or truncated; re-run to download it again."
+  # Compared in one case. `sha256_of` always produces lowercase, while a sums
+  # file regenerated by other tooling may legitimately carry uppercase — which
+  # the hex check above deliberately accepts. Comparing them as-is would call
+  # correct bytes tampering, the one verdict this script must not get wrong.
+  actual=$(sha256_of "$work/$asset") \
+    || die "no sha256sum or shasum found. The digest check is mandatory and there is no way to skip it; install coreutils (Linux) or use the system shasum (macOS)."
+  [ "$(lower "$actual")" = "$(lower "$expected")" ] \
     || die "digest mismatch for ${asset}: downloaded ${actual}, expected ${expected}. Nothing has been installed. Re-run to rule out a corrupted download; if it persists, do not run the binary — report it at https://github.com/${TL_REPO}/issues."
   echo "tl-install: ${asset} digest verified"
 
@@ -189,6 +259,14 @@ main() {
     || die "${install_dir} is not writable. Set TL_INSTALL_DIR to a directory you own (for example TL_INSTALL_DIR=\"\$HOME/.local/bin\"), or re-run with elevated privileges if a system-wide install is what you want."
 
   chmod +x "$work/$asset"
+  # `mv -f file dir` moves the file *into* dir rather than replacing it, so a
+  # directory sitting where the binary belongs would end up holding
+  # `tl/.tl.install.<pid>` while every step below reported success and nothing
+  # landed on PATH. Refuse before staging instead: a non-file here is somebody
+  # else's, and silently burying a binary inside it is not a repair.
+  if [ -e "$install_dir/tl" ] && [ ! -f "$install_dir/tl" ]; then
+    die "${install_dir}/tl exists and is not a regular file, so it cannot be replaced by the binary. Remove or rename it, or choose another location with TL_INSTALL_DIR."
+  fi
   # Install through a rename within the destination directory, so a concurrent
   # `tl` either sees the old binary or the new one — never a half-written file.
   # The temporary lives in $install_dir rather than $work because a rename
@@ -198,7 +276,10 @@ main() {
     || die "could not write to ${install_dir}. Choose a writable location with TL_INSTALL_DIR."
   chmod +x "$staged"
   mv -f "$staged" "$install_dir/tl" \
-    || { rm -f "$staged"; die "could not replace ${install_dir}/tl. Close any running tl and re-run, or choose another TL_INSTALL_DIR."; }
+    || die "could not replace ${install_dir}/tl. Close any running tl and re-run, or choose another TL_INSTALL_DIR."
+  # The rename consumed it; clear the name so the trap does not chase a path
+  # that is now the installed binary.
+  staged=''
 
   echo "tl-install: installed ${install_dir}/tl"
   case ":${PATH}:" in
@@ -221,6 +302,18 @@ selftest() {
     echo "tl-install: --selftest needs release/identity.json beside this script (looked at $TL_IDENTITY_FILE) — run it from a checkout." >&2
     exit 2
   }
+  # The selftest runs from a checkout, so unlike `main` it *can* use the shared
+  # library — and does, for the stub cosign and the reporting harness that were
+  # previously copy-pasted between here and the artifact verifier.
+  repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+  RC_LIB_SELF="$repo_root/scripts/lib/release-common.sh"
+  [ -f "$RC_LIB_SELF" ] || {
+    echo "tl-install: --selftest needs scripts/lib/release-common.sh beside this script — run it from a checkout." >&2
+    exit 2
+  }
+  # shellcheck source=scripts/lib/release-common.sh
+  . "$RC_LIB_SELF"
+
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   failures=0
@@ -238,73 +331,8 @@ selftest() {
     fi
   }
 
-  # A stub cosign. Beyond reporting a verdict, it asserts that it was handed
-  # the pinned issuer and expression exactly, byte for byte against
-  # release/identity.json. A stub that ignored its arguments would stay green
-  # while the installer dropped the pin — and an unpinned verify-blob accepts
-  # any valid Sigstore signature from anyone, which is the one failure this
-  # script exists to prevent.
-  #
-  # COSIGN_STUB_VERDICT sets the outcome for every call; COSIGN_STUB_FAIL_ON
-  # names a single blob to fail, so the SHA256SUMS call and the per-asset call
-  # can be exercised independently.
   bin="$work/bin"
-  mkdir -p "$bin"
-  cat > "$bin/cosign" <<STUB
-#!/bin/sh
-pin='$TL_IDENTITY_FILE'
-want_issuer=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateOidcIssuer"])' "\$pin")
-want_identity=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateIdentityRegexp"])' "\$pin")
-blob=''
-got_issuer=''
-got_identity=''
-got_bundle=''
-seen_verify=0
-while [ \$# -gt 0 ]; do
-  case \$1 in
-    verify-blob) seen_verify=1; shift ;;
-    --certificate-oidc-issuer) got_issuer=\$2; shift 2 ;;
-    --certificate-identity-regexp) got_identity=\$2; shift 2 ;;
-    --bundle) got_bundle=\$2; shift 2 ;;
-    --insecure-ignore-tlog*)
-      echo "stub cosign: called with \$1 — the transparency-log check must never be bypassed" >&2
-      exit 90
-      ;;
-    -*) shift ;;
-    *) [ -n "\$blob" ] || blob=\$1; shift ;;
-  esac
-done
-[ "\$seen_verify" -eq 1 ] || { echo "stub cosign: not a verify-blob call" >&2; exit 95; }
-[ "\$got_issuer" = "\$want_issuer" ] || {
-  echo "stub cosign: issuer '\$got_issuer' is not the pinned '\$want_issuer'" >&2
-  exit 91
-}
-[ "\$got_identity" = "\$want_identity" ] || {
-  echo "stub cosign: identity expression '\$got_identity' is not the pinned '\$want_identity'" >&2
-  exit 92
-}
-[ -n "\$got_bundle" ] || { echo "stub cosign: no --bundle was passed" >&2; exit 93; }
-[ -f "\$got_bundle" ] || { echo "stub cosign: bundle '\$got_bundle' does not exist" >&2; exit 94; }
-printf '%s\n' "\$blob" >> "$work/cosign-blobs"
-if [ -n "\${COSIGN_STUB_FAIL_ON:-}" ] && [ "\${blob##*/}" = "\$COSIGN_STUB_FAIL_ON" ]; then
-  echo "error: no matching signatures: none of the expected identities matched what was in the certificate" >&2
-  exit 1
-fi
-case "\${COSIGN_STUB_VERDICT:-ok}" in
-  ok) ;;
-  bad)
-    echo "error: no matching signatures: none of the expected identities matched what was in the certificate" >&2
-    exit 1
-    ;;
-  broken)
-    echo "error: fetching trust root: Get \\"https://tuf-repo-cdn.sigstore.dev/\\": dial tcp: lookup failed" >&2
-    exit 1
-    ;;
-esac
-echo "Verified OK"
-exit 0
-STUB
-  chmod +x "$bin/cosign"
+  rc_write_stub_cosign "$bin" "$TL_IDENTITY_FILE" "$work"
 
   host_os=$(uname -s)
   host_arch=$(uname -m)
@@ -486,6 +514,88 @@ UNAME
   note "$([ "$got" -eq 1 ] && grep -q 'could not download' "$work/err" && echo 0 || echo 1)" \
     "an http base URL is refused rather than fetched in cleartext"
 
+  # An uppercase sums file is valid — the hex check deliberately accepts A-F —
+  # and must install rather than read as tampering. This is the case the
+  # case-sensitive comparison used to fail, with the loudest possible message.
+  rm -rf "$work/dest"
+  cp "$release/SHA256SUMS" "$work/sums.lower"
+  awk '{ print toupper($1) "  " $2 }' "$work/sums.lower" > "$release/SHA256SUMS"
+  run 0 "an uppercase SHA256SUMS installs rather than reading as tampering" IGNORE=1
+  cp "$work/sums.lower" "$release/SHA256SUMS"
+
+  # A truncated digest is a broken download, not a tampered binary; the two
+  # messages send the reader to different places.
+  rm -rf "$work/dest"
+  printf 'abcdef  %s\n' "$host_asset" > "$release/SHA256SUMS"
+  run 1 "a digest of the wrong length refuses" IGNORE=1
+  note "$(grep -q 'not the 64' "$work/err" && echo 0 || echo 1)" \
+    "the short-digest message says the file is truncated, not that it was tampered with"
+  note "$(! grep -q 'digest mismatch' "$work/err" && echo 0 || echo 1)" \
+    "a short digest is not reported as a mismatch"
+  cp "$work/sums.lower" "$release/SHA256SUMS"
+
+  # Nothing is left behind in the user's bin directory after a good install.
+  rm -rf "$work/dest"
+  run 0 "a second complete install still succeeds" IGNORE=1
+  leftover=$(find "$work/dest" -name '.tl.install.*' 2>/dev/null | wc -l | tr -d ' ')
+  note "$([ "$leftover" -eq 0 ] && echo 0 || echo 1)" \
+    "no .tl.install.<pid> temporary survives a successful install (found $leftover)"
+
+  # …nor after one that fails *after* staging. A non-empty directory where the
+  # binary belongs makes the atomic rename fail, which is the one path that
+  # reaches `die` with the temporary already written. Before the trap covered
+  # it, every such attempt left another `.tl.install.<pid>` in the user's bin
+  # directory. This is the failure arm the successful-install row cannot reach.
+  rm -rf "$work/dest"
+  mkdir -p "$work/dest/tl/occupied"
+  : > "$work/dest/tl/occupied/keep"
+  run 1 "a non-file where the binary belongs refuses" IGNORE=1
+  note "$(grep -q 'not a regular file' "$work/err" && echo 0 || echo 1)" \
+    "the occupied-destination message names the remedy"
+  note "$([ ! -e "$work/dest/tl/.tl.install."* ] 2>/dev/null && echo 0 || echo 1)" \
+    "the binary is not buried inside the directory that occupies its name"
+  leftover=$(find "$work/dest" -name '.tl.install.*' 2>/dev/null | wc -l | tr -d ' ')
+  note "$([ "$leftover" -eq 0 ] && echo 0 || echo 1)" \
+    "no .tl.install.<pid> temporary survives a failed install (found $leftover)"
+  rm -rf "$work/dest"
+
+  # `resolve_version` is the branch a bare `curl … | sh` takes, and its three
+  # outcomes were previously unreachable from any test because they sat behind
+  # a network call. Sourcing the script exposes the pure half directly.
+  (
+    TL_INSTALL_SOURCE_ONLY=1
+    export TL_INSTALL_SOURCE_ONLY
+    # shellcheck source=/dev/null
+    . "$self"
+    got=$(version_from_effective_url "https://github.com/${TL_REPO}/releases/tag/v1.2.3" 2>/dev/null) || exit 10
+    [ "$got" = v1.2.3 ] || exit 11
+    got=$(version_from_effective_url "https://github.com/${TL_REPO}/releases/tag/v0.1.0-rc.1" 2>/dev/null) || exit 12
+    [ "$got" = v0.1.0-rc.1 ] || exit 13
+  ) >"$work/out" 2>"$work/err"
+  note $? "version_from_effective_url reads the tag out of a release redirect"
+
+  got=0
+  (
+    TL_INSTALL_SOURCE_ONLY=1
+    export TL_INSTALL_SOURCE_ONLY
+    # shellcheck source=/dev/null
+    . "$self"
+    version_from_effective_url "https://github.com/${TL_REPO}/releases"
+  ) >"$work/out" 2>"$work/err" || got=$?
+  note "$([ "$got" -eq 1 ] && grep -q 'no stable release yet' "$work/err" && echo 0 || echo 1)" \
+    "a prerelease-only repository is reported as 'nothing stable yet', not as a broken redirect"
+
+  got=0
+  (
+    TL_INSTALL_SOURCE_ONLY=1
+    export TL_INSTALL_SOURCE_ONLY
+    # shellcheck source=/dev/null
+    . "$self"
+    version_from_effective_url "https://github.com/${TL_REPO}/something/else"
+  ) >"$work/out" 2>"$work/err" || got=$?
+  note "$([ "$got" -eq 1 ] && grep -q 'redirect changed shape' "$work/err" && echo 0 || echo 1)" \
+    "an unrecognised redirect target refuses instead of installing a guessed tag"
+
   if [ "$failures" -ne 0 ]; then
     echo "tl-install: --selftest found $failures broken case(s). Do not publish this installer — a user piping it into a shell has no way to notice a check that stopped running." >&2
     exit 1
@@ -493,6 +603,14 @@ UNAME
   echo "tl-install: --selftest passed"
   exit 0
 }
+
+# Sourced by the selftest to drive the pure helpers (`version_from_effective_url`)
+# without a network. Only ever set by that caller: with it unset this file runs
+# exactly as a piped `curl … | sh` does. `return` is legal here only because
+# the guard is false unless the file was sourced.
+if [ -n "${TL_INSTALL_SOURCE_ONLY-}" ]; then
+  return 0
+fi
 
 case "${1-}" in
   '') main ;;
