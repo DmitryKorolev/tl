@@ -71,6 +71,33 @@ jobs:
       - name: release artifact verifier selftest
         run: ./scripts/verify-release-artifacts.sh --selftest
 
+      # The npm packages are five manifests that must agree on one version and
+      # a launcher whose whole job is picking the right binary. Both are
+      # checkable without publishing anything: this packs the packages, installs
+      # them from their tarballs, and drives the launcher through every platform
+      # branch, missing-package path, and exit-status and signal case.
+      - name: npm package selftest
+        run: ./scripts/npm-pack.sh --selftest
+
+      # A workflow cannot validate itself: if GitHub refuses to load
+      # release.yml, nothing runs to say so, and the failure surfaces only when
+      # someone pushes a tag. actionlint parses both workflows here — expression
+      # syntax, unknown keys, runner labels, and the embedded shell — so a
+      # malformed release workflow fails on the commit that introduced it.
+      # Hash-pinned like every other downloaded tool in this repository.
+      - name: workflow lint (actionlint)
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          curl -sSfL --retry 3 -o "$tmp/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+          "$tmp/actionlint" -color .github/workflows/*.yml
+
       # Tl/Build/Stamp.lean is generated, and three places state as fact that
       # the checked-in copy is the *development* stamp. Nothing but this step
       # enforces it: a stamped copy swept in by `git commit -a` would otherwise

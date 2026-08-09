@@ -1,0 +1,86 @@
+#!/bin/sh
+# The @taskloop/tl launcher.
+#
+# tl is a compiled Lean binary, not JavaScript. This package holds no code of
+# its own: it declares one optional dependency per platform, npm installs the
+# single one that matches, and this script execs it.
+#
+# A POSIX shell script rather than a Node shim, deliberately. Node would add
+# ~30ms of interpreter startup to a CLI whose own commands run in single-digit
+# milliseconds, and it would put a JavaScript runtime between the user and a
+# formally verified binary for no benefit. `exec` also means the binary
+# *replaces* this process: signals, exit status, stdin/stdout/stderr, and job
+# control all belong to tl directly, with no forwarding layer to get wrong.
+#
+# There is no `postinstall`. Nothing here downloads anything at install time
+# (ADR-0006 / ADR-0014 T3): the binaries arrive as ordinary npm tarballs whose
+# integrity the registry client already checks, from packages pinned to an
+# exact version. An install-time download would be an unverified fetch running
+# with the user's privileges, which is the supply-chain hole this whole
+# arrangement exists to avoid.
+set -eu
+
+# Resolve this script's real location. npm links bin entries into node_modules/
+# .bin (and into a global bin directory for `npm i -g`), so $0 is normally a
+# symlink and the package root is not where we were invoked from. Walk the
+# symlink chain rather than assuming a layout — `readlink -f` is GNU-only and
+# missing on macOS.
+target=$0
+while [ -L "$target" ]; do
+  link=$(readlink "$target")
+  case $link in
+    /*) target=$link ;;
+    *) target=$(dirname -- "$target")/$link ;;
+  esac
+done
+here=$(CDPATH='' cd -- "$(dirname -- "$target")" && pwd -P)
+# bin/ -> package root
+root=$(CDPATH='' cd -- "$here/.." && pwd -P)
+
+case $(uname -s) in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    echo "tl: native Windows is not supported — tl's filesystem primitives are unimplemented there, so a binary would start but could not safely create or mutate task state. Run tl inside WSL2, where the linux-x64 package installs and is fully supported." >&2
+    exit 1
+    ;;
+  *)
+    echo "tl: unsupported operating system '$(uname -s)'. tl publishes binaries for Linux and macOS; build from source with Lean 4 if you need another platform (see the repository README)." >&2
+    exit 1
+    ;;
+esac
+
+case $(uname -m) in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64 | amd64) arch=x64 ;;
+  *)
+    echo "tl: unsupported CPU architecture '$(uname -m)'. tl publishes arm64 and x64 binaries; build from source with Lean 4 if you need another architecture (see the repository README)." >&2
+    exit 1
+    ;;
+esac
+
+pkg="tl-bin-$os-$arch"
+
+# Two layouts, because installers disagree about where an optional dependency
+# lands: npm hoists it beside us under node_modules/@taskloop/, while a version
+# conflict or a nesting installer can put it under our own node_modules/.
+binary=''
+for candidate in \
+  "$root/../$pkg/bin/tl" \
+  "$root/node_modules/@taskloop/$pkg/bin/tl"; do
+  if [ -x "$candidate" ]; then
+    binary=$candidate
+    break
+  fi
+done
+
+if [ -z "$binary" ]; then
+  # The optional dependency for this platform is missing. The usual causes are
+  # an --omit=optional install, or a lockfile produced on a different platform
+  # and installed with --ignore-optional.
+  echo "tl: the binary for $os-$arch is not installed (looked for @taskloop/$pkg)." >&2
+  echo "tl: reinstall without omitting optional dependencies — 'npm install @taskloop/tl' installs exactly one platform package, and that is where the binary lives." >&2
+  exit 1
+fi
+
+exec "$binary" "$@"

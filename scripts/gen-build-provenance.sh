@@ -63,6 +63,7 @@ if [ "$selftest" -eq 1 ]; then
   fi
   root=$(pwd -P)
   work=$(mktemp -d)
+  mkdir -p "$work/fixture-home"
   trap 'rm -rf "$work"' EXIT
   failures=0
 
@@ -73,11 +74,22 @@ if [ "$selftest" -eq 1 ]; then
     cp "$root/lean-toolchain" "$root/lake-manifest.json" "$d/"
     echo "$d"
   }
+  # Fixture git, isolated from the developer's own configuration. HOME is
+  # redirected (rather than GIT_CONFIG_GLOBAL, which needs git 2.32 while the
+  # project floor is 2.17) and commit signing and hooks are disabled per
+  # invocation. Without this the selftest inherits `commit.gpgSign` and
+  # prompts for a signing key, so it fails on a correctly configured machine
+  # and passes only on an unconfigured one.
+  git_q() {
+    HOME="$work/fixture-home" GIT_CONFIG_NOSYSTEM=1 \
+      git -c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=/dev/null \
+          -c init.defaultBranch=main \
+          -c user.email=selftest@example.invalid -c user.name=selftest \
+          "$@"
+  }
   git_fixture() {
     d=$(fixture "$1")
-    git -C "$d" init -q .
-    git -C "$d" config user.email selftest@example.invalid
-    git -C "$d" config user.name selftest
+    git_q -C "$d" init -q .
     echo "$d"
   }
   # Run the script in $1, assert its exit status is $2. $3 names the case.
@@ -124,7 +136,7 @@ if [ "$selftest" -eq 1 ]; then
 
   # A source tree unpacked *inside* someone else's checkout must not inherit
   # that checkout's commit.
-  d=$(git_fixture outer); git -C "$d" commit -q --allow-empty -m outer
+  d=$(git_fixture outer); git_q -C "$d" commit -q --no-verify --allow-empty -m outer
   mkdir -p "$d/unpacked/Tl/Build"
   cp "$root/lean-toolchain" "$root/lake-manifest.json" "$d/unpacked/"
   expect_status "$d/unpacked" 2 "--stamp below an unrelated repository is refused" --stamp
@@ -137,7 +149,7 @@ if [ "$selftest" -eq 1 ]; then
 
   d=$(git_fixture clean)
   cp "$root/$output" "$d/$output"
-  git -C "$d" add -A && git -C "$d" commit -q -m seed
+  git_q -C "$d" add -A && git_q -C "$d" commit -q --no-verify -m seed
   expect_status "$d" 0 "--stamp on a clean checkout succeeds" --stamp
   expect_output_contains "$d" 'stampDirty : Bool := false' "a clean checkout stamps clean"
   # Idempotence: the file the first run wrote must not make the second run
@@ -147,7 +159,7 @@ if [ "$selftest" -eq 1 ]; then
 
   d=$(git_fixture modified)
   cp "$root/$output" "$d/$output"
-  git -C "$d" add -A && git -C "$d" commit -q -m seed
+  git_q -C "$d" add -A && git_q -C "$d" commit -q --no-verify -m seed
   printf 'leanprover/lean4:v9.99.9\n' > "$d/lean-toolchain"
   expect_status "$d" 0 "--stamp on a modified tracked file succeeds" --stamp
   expect_output_contains "$d" 'stampDirty : Bool := true' "a modified tracked file stamps dirty"
@@ -156,8 +168,8 @@ if [ "$selftest" -eq 1 ]; then
   # repository's own config tells git to hide them.
   d=$(git_fixture untracked-hidden)
   cp "$root/$output" "$d/$output"
-  git -C "$d" add -A && git -C "$d" commit -q -m seed
-  git -C "$d" config status.showUntrackedFiles no
+  git_q -C "$d" add -A && git_q -C "$d" commit -q --no-verify -m seed
+  git_q -C "$d" config status.showUntrackedFiles no
   : > "$d/EXTRA.c"
   expect_status "$d" 0 "--stamp with hidden untracked files succeeds" --stamp
   expect_output_contains "$d" 'stampDirty : Bool := true' \
@@ -166,7 +178,7 @@ if [ "$selftest" -eq 1 ]; then
   # A git that cannot report must not be read as a clean tree.
   d=$(git_fixture broken-index)
   cp "$root/$output" "$d/$output"
-  git -C "$d" add -A && git -C "$d" commit -q -m seed
+  git_q -C "$d" add -A && git_q -C "$d" commit -q --no-verify -m seed
   printf 'leanprover/lean4:v9.99.9\n' > "$d/lean-toolchain"
   printf 'garbage' > "$d/.git/index"
   expect_status "$d" 2 "--stamp refuses when git status cannot run" --stamp

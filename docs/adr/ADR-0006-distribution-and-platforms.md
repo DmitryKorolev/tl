@@ -85,9 +85,16 @@ as the downstream `math/lean4` port (build-from-source).
 - npm — the priority veneer; the audience is agent/Node tooling and
   `npm i -g` is how such tools get adopted. Use
   the `optionalDependencies` pattern: the public `@taskloop/tl` package holds
-  a POSIX `#!/bin/sh` launcher, and exact-version `@taskloop/tl-darwin-arm64`,
-  `@taskloop/tl-darwin-x64`, `@taskloop/tl-linux-arm64`, and
-  `@taskloop/tl-linux-x64` packages hold the same binaries as GitHub Releases.
+  a POSIX `#!/bin/sh` launcher, and exact-version
+  `@taskloop/tl-bin-darwin-arm64`, `@taskloop/tl-bin-darwin-x64`,
+  `@taskloop/tl-bin-linux-arm64`, and `@taskloop/tl-bin-linux-x64` packages
+  hold the same binaries as GitHub Releases. The `-bin-` infix is not
+  decoration: it says the package carries a prebuilt binary rather than a
+  library, and it keeps the names clear of the task-ID lint, whose Crockford
+  class reads `tl-darwin` as a possible tracker id
+  ([ADR-0026](ADR-0026-continuous-integration.md) records that limitation, and
+  registering real package names in its exclusion set would erode what
+  registering a token asserts).
   The launcher detects the installed target and `exec`s it, preserving signals
   and exit status; it uses no JavaScript process and no lifecycle hook. In
   particular, no `postinstall` download reaches an arbitrary URL. Native

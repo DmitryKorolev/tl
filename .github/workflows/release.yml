@@ -16,9 +16,12 @@ name: Release
 on:
   push:
     tags:
-      # SemVer releases and pre-releases. The same shape the pinned certificate
-      # identity regexp accepts — a tag outside it would produce artifacts no
-      # verifier could accept, so it must not start a release.
+      # A coarse filter only. GitHub's tag globs have no alternation and no
+      # repetition bounds, so they cannot express SemVer — `v01.0.0` and
+      # `v1.2.3-` both match these. The stamp job re-checks the tag against
+      # the pinned certificate identity expression before anything is built,
+      # which is where a tag the signing identity would later reject gets
+      # rejected instead of after a full matrix run.
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
   # A build-only rehearsal: everything up to and including the artifacts and
@@ -120,6 +123,29 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # The tag glob that triggered this run cannot express SemVer, and the
+      # signing identity can. Checking the tag against the pin here — before
+      # the build matrix — turns "four platform builds, then an unsignable
+      # artifact" into an immediate refusal.
+      - name: the tag is one the signing identity will accept
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          san="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          python3 - "$san" "${GITHUB_REF_NAME}" <<'PY'
+          import json, re, sys
+          san, tag = sys.argv[1], sys.argv[2]
+          pin = json.load(open("release/identity.json"))
+          if re.search(pin["certificateIdentityRegexp"], san) is None:
+              sys.exit(
+                  f"::error::tag {tag!r} is outside the SemVer shape release/identity.json accepts, "
+                  "so nothing built from it could be signed with an identity any verifier would "
+                  "accept. Delete the tag and re-tag as vMAJOR.MINOR.PATCH (no leading zeroes), "
+                  "optionally with a -prerelease suffix of dot-separated alphanumerics."
+              )
+          print(f"tag {tag} is acceptable to the pinned signing identity")
+          PY
+
       - name: stamp the tagged commit
         id: stamp
         run: |
@@ -186,24 +212,34 @@ jobs:
           - target: linux-x64
             runs-on: ubuntu-latest
             container: true
+            best_effort: false
             elan_triple: x86_64-unknown-linux-gnu
             elan_sha256: df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2
           - target: linux-arm64
             runs-on: ubuntu-24.04-arm
             container: true
+            best_effort: false
             elan_triple: aarch64-unknown-linux-gnu
             elan_sha256: cb69af0803b04157bc30201c29c12fca882bb3ad8b43476b8d2d3064810bc3ac
           - target: darwin-arm64
-            runs-on: macos-14
+            runs-on: macos-15
             container: false
+            best_effort: false
           # macOS x86-64 is Lean Tier 2 and our Best-effort tier: smoke-tested,
-          # not release-blocking (ADR-0006). fail-fast is off so a failure here
-          # does not take the Supported artifacts down with it. macos-15-intel
-          # is the last x86-64 macOS image GitHub offers.
+          # not release-blocking (ADR-0006). `fail-fast: false` alone would not
+          # deliver that — it lets the other legs finish, but a failed leg still
+          # fails the matrix job and blocks the downstream signing job.
+          # `continue-on-error` is what actually makes this leg non-blocking;
+          # the sign job then checks which artifacts arrived, so a missing
+          # best-effort binary is reported rather than silently omitted, and a
+          # missing Supported one still stops the release. macos-15-intel is
+          # the last x86-64 macOS image GitHub offers.
           - target: darwin-x64
             runs-on: macos-15-intel
             container: false
+            best_effort: true
     runs-on: ${{ matrix.runs-on }}
+    continue-on-error: ${{ matrix.best_effort }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -320,8 +356,11 @@ jobs:
         run: |
           set -euo pipefail
           asset="dist/${{ steps.stage.outputs.asset }}"
+          # `|| true`: with no GLIBC_ symbols, grep exits 1 and pipefail would
+          # abort the whole step here — skipping the explanation below, which
+          # is the case a reader most needs it for.
           highest=$(readelf --dyn-syms --wide "$asset" \
-            | grep -o 'GLIBC_[0-9]\+\.[0-9]\+' | sed 's/GLIBC_//' | sort -V | tail -1)
+            | grep -o 'GLIBC_[0-9]\+\.[0-9]\+' | sed 's/GLIBC_//' | sort -V | tail -1 || true)
           if [ -z "$highest" ]; then
             echo "::error::found no GLIBC_ version references in $asset — either it is statically linked (then delete this check and record why in ADR-0006) or readelf did not read it. Do not publish an unchecked artifact."
             exit 1
@@ -449,6 +488,34 @@ jobs:
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # The best-effort leg is allowed to fail, so this job cannot assume four
+      # artifacts. It can and does insist on the Supported three: a release
+      # missing one of those is a broken release, whereas a release missing the
+      # best-effort binary is the policy working. Either way the outcome is
+      # stated rather than inferred from what happens to be in the directory.
+      - name: check which targets produced an artifact
+        run: |
+          set -euo pipefail
+          # Target names, not asset names: the asset name is built from the
+          # target below. Spelling `tl-<target>` out here would read as a task
+          # id to the AGENTS.md lint, which cannot tell the two apart.
+          required="linux-x64 linux-arm64 darwin-arm64"
+          optional="darwin-x64"
+          missing=""
+          for target in $required; do
+            [ -f "dist/tl-$target" ] || missing="$missing tl-$target"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::these Supported-tier artifacts are missing:${missing}. They are release-blocking (ADR-0006) — fix the failing build leg and re-run; do not publish a partial release."
+            exit 1
+          fi
+          for target in $optional; do
+            if [ ! -f "dist/tl-$target" ]; then
+              echo "::warning::tl-${target} is absent — its build leg failed. macOS x86-64 is Best-effort (ADR-0006), so the release proceeds without it; users on that platform get no binary from this release."
+            fi
+          done
+          ls -l dist
+
       - name: build SHA256SUMS
         working-directory: dist
         run: |
@@ -515,3 +582,71 @@ jobs:
             --notes-file "$notes" \
             $(if [ "${GITHUB_REF_NAME}" != "${GITHUB_REF_NAME%%-*}" ]; then echo --prerelease; fi) \
             dist/*
+
+  # ---------------------------------------------------------------------------
+  # 5. npm.
+  #
+  # After the GitHub Release, not before: the release is the source of truth
+  # for artifacts, and npm is a veneer over it (ADR-0006). Publishing npm first
+  # would let a failure between the two leave a version on the registry with no
+  # signed artifacts to check it against — and npm versions cannot be reused.
+  #
+  # Trusted publishing (OIDC), so there is no long-lived npm token in this
+  # repository. Each of the five packages must have this workflow registered as
+  # its trusted publisher on npmjs.com; a package that does not will fail here
+  # with npm's own error rather than fall back to a token.
+  # ---------------------------------------------------------------------------
+  publish-npm:
+    needs: [stamp, sign-and-publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Trusted publishing needs npm >= 11.5.1 and Node >= 22.14.
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: check the npm CLI is new enough for trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          npm --version
+
+      - name: download the signed assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-candidate-*
+          merge-multiple: true
+          path: dist
+
+      # The npm packages must carry the binaries the release signed, not a
+      # rebuild. These are the same artifacts sign-and-publish attested, so a
+      # user can compare an npm tarball's binary against the release asset and
+      # verify that asset's Sigstore bundle.
+      - name: stage the npm packages around the signed binaries
+        run: ./scripts/npm-pack.sh npm-staging dist
+
+      - name: the staged packages install and run
+        run: ./scripts/npm-pack.sh --selftest
+
+      - name: publish
+        run: |
+          set -euo pipefail
+          # Platform packages first: the launcher declares them as exact-version
+          # optional dependencies, and publishing it first would leave a window
+          # where installing it resolves nothing to run.
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            if [ ! -f "dist/tl-${target}" ]; then
+              echo "::warning::no binary for ${target} — skipping @taskloop/tl-bin-${target}. The launcher still lists it as an optional dependency, so users on that platform get the missing-package error rather than a broken binary."
+              continue
+            fi
+            npm publish "npm-staging/tl-bin-${target}" --provenance --access public
+          done
+          npm publish npm-staging/tl --provenance --access public

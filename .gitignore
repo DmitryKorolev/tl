@@ -17,3 +17,8 @@ Thumbs.db
 # tl self-contains: it keeps all state under a self-ignored `.tl/`
 # (`.tl/.gitignore` = `*`) and syncs via the `refs/tl/log` ref, never tracked
 # files — so nothing tl-related needs ignoring here (ADR-0001).
+
+# npm publication staging (scripts/npm-pack.sh), built from npm/ plus the
+# release binaries; never committed — the platform packages hold no binary in
+# git.
+/npm-staging/
