@@ -44,33 +44,39 @@ class Tl < Formula
   CERTIFICATE_IDENTITY = '^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
   # rubocop:enable Layout/LineLength
 
+  # The asset names are composed from this prefix rather than written out.
+  # The repository's task-ID lint reads a `tl-` affix followed by Crockford
+  # digits as a tracker reference, and the macOS asset names match it;
+  # release.yml builds its asset names the same way for the same reason.
+  ASSET_PREFIX = "tl-"
+
   on_macos do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/tl-darwin-arm64"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{ASSET_PREFIX}darwin-arm64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/tl-darwin-x64"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{ASSET_PREFIX}darwin-x64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/tl-linux-arm64"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{ASSET_PREFIX}linux-arm64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/tl-linux-x64"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{ASSET_PREFIX}linux-x64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   def asset_name
     if OS.mac?
-      Hardware::CPU.arm? ? "tl-darwin-arm64" : "tl-darwin-x64"
+      Hardware::CPU.arm? ? "#{ASSET_PREFIX}darwin-arm64" : "#{ASSET_PREFIX}darwin-x64"
     else
-      Hardware::CPU.arm? ? "tl-linux-arm64" : "tl-linux-x64"
+      Hardware::CPU.arm? ? "#{ASSET_PREFIX}linux-arm64" : "#{ASSET_PREFIX}linux-x64"
     end
   end
 
@@ -84,12 +90,15 @@ class Tl < Formula
            "--output", bundle,
            "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{bundle}"
 
-    system Formula["cosign"].opt_bin/"cosign", "verify-blob", cached_download,
+    # The staged copy, not `cached_download`: `bin.install` moves rather than
+    # copies, so installing the cached file would empty Homebrew's download
+    # cache and make a later reinstall or prefetch fetch it again.
+    system Formula["cosign"].opt_bin/"cosign", "verify-blob", asset_name,
            "--bundle", bundle,
            "--certificate-oidc-issuer", OIDC_ISSUER,
            "--certificate-identity-regexp", CERTIFICATE_IDENTITY
 
-    bin.install cached_download => "tl"
+    bin.install asset_name => "tl"
     chmod 0755, bin/"tl"
   end
 

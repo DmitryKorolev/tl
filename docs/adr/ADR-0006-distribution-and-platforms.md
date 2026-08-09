@@ -109,7 +109,17 @@ as the downstream `math/lean4` port (build-from-source).
   each url, and a cosign verification against the pinned identity in `install`,
   with `cosign` a hard dependency rather than an optional one. Homebrew has no
   equivalent of the installer's signature-only escape — on a machine that
-  cannot run cosign, `brew` would simply install it first.
+  cannot run cosign, `brew` would simply install it first. A Best-effort target
+  that did not build has its block dropped from the generated formula rather
+  than pinning a digest that does not exist, so `brew` offers nothing on that
+  platform for that release instead of the release failing.
+- Prereleases reach each channel differently, and deliberately. GitHub marks
+  them prerelease, so `install.sh`'s `/releases/latest` resolution skips them
+  and a user must name one with `TL_VERSION`. npm publishes them under the
+  `next` dist-tag, so `npm install @taskloop/tl` still resolves to the last
+  stable version. Homebrew is not updated at all: a tap carries one formula,
+  and overwriting it would make `brew install tl` resolve to a prerelease. The
+  generated formula is still produced and attached to the run.
 - Skip `go install` / `cargo` (wrong ecosystems). FreeBSD via Ports.
 
 ### Runtime prerequisites and signing

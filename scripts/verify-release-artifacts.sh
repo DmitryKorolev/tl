@@ -198,6 +198,7 @@ selftest() {
   cat > "$work/bin/cosign" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" >> "$work/cosign-argv"
+for a in "\$@"; do case \$a in --*|verify-blob) ;; *) [ -f "\$a" ] && printf '%s\n' "\${a##*/}" >> "$work/cosign-blobs" && break ;; esac; done
 want_issuer=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateOidcIssuer"])' "$identity_file")
 want_identity=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateIdentityRegexp"])' "$identity_file")
 got_issuer=''
@@ -434,6 +435,17 @@ STUB
       echo "  ok   every cosign call names a bundle ($calls calls)"
     else
       echo "  FAIL every cosign call names a bundle ($calls verify-blob calls, $bundles with --bundle)" >&2
+      failures=$((failures + 1))
+    fi
+    # Which blobs, not just how many calls. An aggregate count is satisfied by
+    # the sums-file call alone, so deleting the per-asset check would pass it.
+    : > "$work/cosign-blobs"
+    d=$(fixture blob-coverage)
+    ( PATH="$work/bin:$PATH" "$self" "$d" tl-linux-x64 >/dev/null 2>&1 ) || true
+    if grep -qx SHA256SUMS "$work/cosign-blobs" && grep -qx tl-linux-x64 "$work/cosign-blobs"; then
+      echo "  ok   cosign is handed both the sums file and each asset"
+    else
+      echo "  FAIL cosign is handed both the sums file and each asset (saw: $(tr '\n' ' ' < "$work/cosign-blobs"))" >&2
       failures=$((failures + 1))
     fi
   else

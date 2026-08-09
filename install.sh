@@ -38,6 +38,33 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "$2"
 }
 
+# Verify one blob, and tell apart the two outcomes that look alike from the
+# outside. A rejected certificate means these bytes are not what this
+# repository signed. Anything else — cosign missing a dependency, no network
+# for the trust-root refresh, a damaged bundle — means the check did not run,
+# and calling that tampering sends the reader hunting for an attacker who is
+# not there.
+verify_signature() {
+  blob=$1
+  bundle=$2
+  label=$3
+  out=$(cosign verify-blob "$blob" \
+          --bundle "$bundle" \
+          --certificate-oidc-issuer "$TL_ISSUER" \
+          --certificate-identity-regexp "$TL_IDENTITY" 2>&1) && return 0
+  printf '%s\n' "$out" >&2
+  case $out in
+    *"no matching signatures"* | *"none of the expected identities matched"* | \
+    *"certificate identity"* | *"invalid signature"* | *"inclusion proof"* | \
+    *"transparency log"* | *"tlog"*)
+      die "the signature on ${label} did not verify against this repository's pinned release identity. Nothing has been installed. Do not work around this — re-run to rule out a corrupted download, and if it persists, report it at https://github.com/${TL_REPO}/issues."
+      ;;
+    *)
+      die "cosign could not complete the check on ${label}, so whether it is authentic is unknown — this is not evidence of tampering. Nothing has been installed. The usual causes are a cosign version mismatch or no network for the trust-root refresh; re-run once, and if it persists, verify by hand with the commands in VERIFYING.md."
+      ;;
+  esac
+}
+
 detect_target() {
   case $(uname -s) in
     Darwin) install_os=darwin ;;
@@ -73,9 +100,12 @@ fetch() {
   # $1 url, $2 destination. Fails loudly: a partial or 404 download that is
   # later "verified" against a sums file from the same source proves nothing,
   # so nothing continues past a failed fetch.
-  curl -fsSL --retry 3 --proto '=https,file' -o "$2" "$1" 2>/dev/null \
-    || curl -fsSL --retry 3 -o "$2" "$1" 2>/dev/null \
-    || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets."
+  # --proto and --proto-redir together, so neither the request nor a redirect
+  # can drop to cleartext. There is no unrestricted retry: a fallback that
+  # permits what the first call refuses would make the restriction decorative.
+  curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https,file' \
+       -o "$2" "$1" \
+    || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets. Only https (and file:// for a local mirror) is accepted, including after a redirect."
 }
 
 resolve_version() {
@@ -92,9 +122,17 @@ resolve_version() {
     "https://github.com/${TL_REPO}/releases/latest" 2>/dev/null) \
     || die "could not reach GitHub to find the latest release. Check the network, or set TL_VERSION to install a specific tag."
   version=${latest_url##*/}
+  case $latest_url in
+    */releases)
+      # GitHub answers /releases/latest with the releases index when every
+      # release is a prerelease, so this is "nothing stable yet", not a broken
+      # redirect.
+      die "https://github.com/${TL_REPO} has no stable release yet — /releases/latest resolved to the releases index, which is what GitHub returns when only prereleases exist. Pick one explicitly, for example TL_VERSION=v0.1.0-rc.1, from https://github.com/${TL_REPO}/releases."
+      ;;
+  esac
   case $version in
     v*) ;;
-    *) die "could not work out the latest version from '${latest_url}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this." ;;
+    *) die "could not work out the latest version from '${latest_url}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this at https://github.com/${TL_REPO}/issues." ;;
   esac
 }
 
@@ -124,11 +162,7 @@ main() {
   # The sums file first: everything after this trusts it.
   if [ "$skip_signature" -eq 0 ]; then
     fetch "${base}/SHA256SUMS.sigstore.json" "$work/SHA256SUMS.sigstore.json"
-    cosign verify-blob "$work/SHA256SUMS" \
-      --bundle "$work/SHA256SUMS.sigstore.json" \
-      --certificate-oidc-issuer "$TL_ISSUER" \
-      --certificate-identity-regexp "$TL_IDENTITY" >/dev/null \
-      || die "the signature on SHA256SUMS did not verify against this repository's pinned release identity. Nothing has been installed. Do not work around this — re-run to rule out a corrupted download, and if it persists, report it at https://github.com/${TL_REPO}/issues."
+    verify_signature "$work/SHA256SUMS" "$work/SHA256SUMS.sigstore.json" SHA256SUMS
     echo "tl-install: SHA256SUMS signature verified"
   fi
 
@@ -145,11 +179,7 @@ main() {
 
   if [ "$skip_signature" -eq 0 ]; then
     fetch "${base}/${asset}.sigstore.json" "$work/${asset}.sigstore.json"
-    cosign verify-blob "$work/$asset" \
-      --bundle "$work/${asset}.sigstore.json" \
-      --certificate-oidc-issuer "$TL_ISSUER" \
-      --certificate-identity-regexp "$TL_IDENTITY" >/dev/null \
-      || die "the signature on ${asset} did not verify against this repository's pinned release identity. Nothing has been installed. Do not run this binary; report it at https://github.com/${TL_REPO}/issues."
+    verify_signature "$work/$asset" "$work/${asset}.sigstore.json" "$asset"
     echo "tl-install: ${asset} signature verified"
   fi
 
@@ -183,6 +213,14 @@ main() {
 # checkout: `sh install.sh --selftest`.
 # ---------------------------------------------------------------------------
 selftest() {
+  # The selftest runs from a checkout, so the stub can read the canonical pin
+  # and compare it against what install.sh actually passes. install.sh itself
+  # keeps its embedded copy: it has no checkout when piped from curl.
+  TL_IDENTITY_FILE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/release/identity.json
+  [ -f "$TL_IDENTITY_FILE" ] || {
+    echo "tl-install: --selftest needs release/identity.json beside this script (looked at $TL_IDENTITY_FILE) — run it from a checkout." >&2
+    exit 2
+  }
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   failures=0
@@ -200,15 +238,71 @@ selftest() {
     fi
   }
 
-  # A stub cosign whose verdict comes from COSIGN_STUB_VERDICT, and stub
-  # uname/sha256 tools, all ahead of the real ones on PATH.
+  # A stub cosign. Beyond reporting a verdict, it asserts that it was handed
+  # the pinned issuer and expression exactly, byte for byte against
+  # release/identity.json. A stub that ignored its arguments would stay green
+  # while the installer dropped the pin — and an unpinned verify-blob accepts
+  # any valid Sigstore signature from anyone, which is the one failure this
+  # script exists to prevent.
+  #
+  # COSIGN_STUB_VERDICT sets the outcome for every call; COSIGN_STUB_FAIL_ON
+  # names a single blob to fail, so the SHA256SUMS call and the per-asset call
+  # can be exercised independently.
   bin="$work/bin"
   mkdir -p "$bin"
-  cat > "$bin/cosign" <<'STUB'
+  cat > "$bin/cosign" <<STUB
 #!/bin/sh
-[ "${COSIGN_STUB_VERDICT:-ok}" = "ok" ] && exit 0
-echo "stub cosign: refusing" >&2
-exit 1
+pin='$TL_IDENTITY_FILE'
+want_issuer=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateOidcIssuer"])' "\$pin")
+want_identity=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateIdentityRegexp"])' "\$pin")
+blob=''
+got_issuer=''
+got_identity=''
+got_bundle=''
+seen_verify=0
+while [ \$# -gt 0 ]; do
+  case \$1 in
+    verify-blob) seen_verify=1; shift ;;
+    --certificate-oidc-issuer) got_issuer=\$2; shift 2 ;;
+    --certificate-identity-regexp) got_identity=\$2; shift 2 ;;
+    --bundle) got_bundle=\$2; shift 2 ;;
+    --insecure-ignore-tlog*)
+      echo "stub cosign: called with \$1 — the transparency-log check must never be bypassed" >&2
+      exit 90
+      ;;
+    -*) shift ;;
+    *) [ -n "\$blob" ] || blob=\$1; shift ;;
+  esac
+done
+[ "\$seen_verify" -eq 1 ] || { echo "stub cosign: not a verify-blob call" >&2; exit 95; }
+[ "\$got_issuer" = "\$want_issuer" ] || {
+  echo "stub cosign: issuer '\$got_issuer' is not the pinned '\$want_issuer'" >&2
+  exit 91
+}
+[ "\$got_identity" = "\$want_identity" ] || {
+  echo "stub cosign: identity expression '\$got_identity' is not the pinned '\$want_identity'" >&2
+  exit 92
+}
+[ -n "\$got_bundle" ] || { echo "stub cosign: no --bundle was passed" >&2; exit 93; }
+[ -f "\$got_bundle" ] || { echo "stub cosign: bundle '\$got_bundle' does not exist" >&2; exit 94; }
+printf '%s\n' "\$blob" >> "$work/cosign-blobs"
+if [ -n "\${COSIGN_STUB_FAIL_ON:-}" ] && [ "\${blob##*/}" = "\$COSIGN_STUB_FAIL_ON" ]; then
+  echo "error: no matching signatures: none of the expected identities matched what was in the certificate" >&2
+  exit 1
+fi
+case "\${COSIGN_STUB_VERDICT:-ok}" in
+  ok) ;;
+  bad)
+    echo "error: no matching signatures: none of the expected identities matched what was in the certificate" >&2
+    exit 1
+    ;;
+  broken)
+    echo "error: fetching trust root: Get \\"https://tuf-repo-cdn.sigstore.dev/\\": dial tcp: lookup failed" >&2
+    exit 1
+    ;;
+esac
+echo "Verified OK"
+exit 0
 STUB
   chmod +x "$bin/cosign"
 
@@ -359,6 +453,38 @@ UNAME
     note "$([ "$got" -eq 1 ] && grep -q "$expect" "$work/err" && echo 0 || echo 1)" \
       "$1/$2 refuses and explains ($expect)"
   done
+
+  # The per-asset signature check needs a case that reaches it: a stub failing
+  # every call dies on SHA256SUMS first, so nothing would notice the second
+  # call being deleted.
+  rm -rf "$work/dest"
+  got=0
+  ( PATH="$bin:$PATH" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
+      TL_INSTALL_DIR="$work/dest" COSIGN_STUB_FAIL_ON="$host_asset" sh "$self" \
+      >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 1 ] && grep -q "signature on ${host_asset}" "$work/err" && echo 0 || echo 1)" \
+    "a rejected per-asset signature refuses, naming the asset"
+  note "$([ ! -e "$work/dest/tl" ] && echo 0 || echo 1)" \
+    "nothing is installed when the per-asset signature is rejected"
+  note "$(grep -q "$host_asset" "$work/cosign-blobs" && grep -q SHA256SUMS "$work/cosign-blobs" && echo 0 || echo 1)" \
+    "both the sums file and the asset were handed to cosign"
+
+  # A verifier that cannot run is a different thing from a rejected signature.
+  rm -rf "$work/dest"
+  got=0
+  ( PATH="$bin:$PATH" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
+      TL_INSTALL_DIR="$work/dest" COSIGN_STUB_VERDICT=broken sh "$self" \
+      >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 1 ] && grep -q 'not evidence of tampering' "$work/err" && echo 0 || echo 1)" \
+    "a verifier that cannot run is not reported as tampering"
+
+  # Cleartext must be refused, not silently retried without the restriction.
+  rm -rf "$work/dest"
+  got=0
+  ( PATH="$bin:$PATH" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="http://127.0.0.1:1/x" \
+      TL_INSTALL_DIR="$work/dest" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 1 ] && grep -q 'could not download' "$work/err" && echo 0 || echo 1)" \
+    "an http base URL is refused rather than fetched in cleartext"
 
   if [ "$failures" -ne 0 ]; then
     echo "tl-install: --selftest found $failures broken case(s). Do not publish this installer — a user piping it into a shell has no way to notice a check that stopped running." >&2

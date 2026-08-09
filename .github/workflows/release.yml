@@ -146,6 +146,15 @@ jobs:
           print(f"tag {tag} is acceptable to the pinned signing identity")
           PY
 
+      # A dispatch run against a tag ref would otherwise satisfy every
+      # `ref_type == 'tag'` guard below and perform a real release, which is
+      # not what the rehearsal path advertises.
+      - name: a rehearsal is not a release
+        if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
+        run: |
+          echo "::error::this workflow was dispatched against the tag ${GITHUB_REF_NAME}. A dispatch run is a build-only rehearsal; dispatching a tag ref would sign and publish for real. Push the tag to release, or dispatch against a branch to rehearse."
+          exit 1
+
       - name: stamp the tagged commit
         id: stamp
         run: |
@@ -766,6 +775,7 @@ jobs:
       # configured the formula is produced and attached to the run, so the tap
       # can be updated by hand without anyone re-deriving the digests.
       - name: upload the generated formula
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tl-homebrew-formula
@@ -776,7 +786,11 @@ jobs:
       # the environment and the step decides for itself. It is a skip rather
       # than a failure: the formula is already uploaded above, so a tap that is
       # not yet configured costs a manual copy, not a broken release.
+      # A tap carries one formula, so pushing a prerelease would make
+      # `brew install tl` resolve to it. The formula is still generated and
+      # uploaded above; only the push is skipped.
       - name: push the formula to the tap
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -830,10 +844,17 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: check the npm CLI is new enough for trusted publishing
+      # A pinned version, and no lifecycle scripts. This job holds
+      # `id-token: write`, and every job defined inline in this file shares one
+      # `job_workflow_ref`, so a certificate minted here would satisfy the
+      # release pin — an unpinned `npm@latest` would be arbitrary code running
+      # next to that capability. Bumped deliberately, like ELAN_VERSION.
+      - name: install the pinned npm CLI
+        env:
+          NPM_VERSION: "11.5.1"
         run: |
           set -euo pipefail
-          npm install -g npm@latest
+          npm install -g --ignore-scripts "npm@${NPM_VERSION}"
           npm --version
 
       # The verified set, not the raw candidates: the npm tarballs must carry
@@ -848,6 +869,20 @@ jobs:
       # rebuild. These are the same artifacts sign-and-publish attested, so a
       # user can compare an npm tarball's binary against the release asset and
       # verify that asset's Sigstore bundle.
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # The other two consumers of tl-signed-release re-verify what they
+      # received; so does this one. Re-establishing the invariant at each
+      # artifact boundary is cheap, and "an earlier job checked it" is an
+      # assumption rather than a check.
+      - name: verify what arrived, before packaging it
+        run: |
+          set -euo pipefail
+          ./scripts/verify-release-artifacts.sh --selftest
+          # shellcheck disable=SC2046
+          ./scripts/verify-release-artifacts.sh dist $(cat asset-names)
+
       - name: stage the npm packages around the signed binaries
         run: ./scripts/npm-pack.sh npm-staging dist
 
@@ -860,6 +895,15 @@ jobs:
       - name: publish
         run: |
           set -euo pipefail
+          # A prerelease tag must not become what `npm install @taskloop/tl`
+          # resolves to. npm applies `latest` unless told otherwise, and a
+          # published version cannot be reissued under a different tag without
+          # a manual dist-tag fix.
+          case "${GITHUB_REF_NAME}" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          echo "publishing under the '${dist_tag}' dist-tag"
           # Platform packages first: the launcher declares them as exact-version
           # optional dependencies, and publishing it first would leave a window
           # where installing it resolves nothing to run.
@@ -868,6 +912,6 @@ jobs:
               echo "::warning::no binary for ${target} — skipping @taskloop/tl-bin-${target}. The launcher still lists it as an optional dependency, so users on that platform get the missing-package error rather than a broken binary."
               continue
             fi
-            npm publish "npm-staging/tl-bin-${target}" --provenance --access public
+            npm publish "npm-staging/tl-bin-${target}" --provenance --access public --tag "$dist_tag"
           done
-          npm publish npm-staging/tl --provenance --access public
+          npm publish npm-staging/tl --provenance --access public --tag "$dist_tag"

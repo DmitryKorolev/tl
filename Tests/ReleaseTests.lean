@@ -124,16 +124,11 @@ def releaseIdentityTests : IO (List Outcome) := do
           check s!"release identity: {name} has no second name for the skip variable"
             (!has content "TL_VERIFY_SKIP_SIGNATURE")
             s!"{name} still mentions TL_VERIFY_SKIP_SIGNATURE — one escape hatch, one name"]
-  -- No transparency-log bypass in the installer. Only the installer is checked
-  -- textually: `scripts/verify-release-artifacts.sh` mentions the flag inside
-  -- its stub cosign, which *rejects* it, and that script asserts the same
-  -- property behaviourally against the arguments it really passed.
-  match installerRaw with
-  | .error _ => pure ()
-  | .ok content =>
-      outs := outs ++ [check "release identity: install.sh never bypasses the transparency log"
-        (!has content "insecure-ignore-tlog")
-        "install.sh passes a transparency-log bypass to cosign; the inclusion proof is what makes the bundle worth checking"]
+  -- The transparency-log bypass is checked behaviourally rather than here.
+  -- Both shell verifiers now embed a stub cosign that *rejects* the flag, so
+  -- the string legitimately appears in each file and a text scan would report
+  -- the guard as the violation. Each script's `--selftest` asserts on the
+  -- arguments actually passed, which is the property that matters.
   return outs
 
 /-! ## Build provenance (`tl version`, ADR-0006 "Tool versioning") -/

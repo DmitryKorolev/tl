@@ -88,6 +88,11 @@ jobs:
       - name: Homebrew formula generator selftest
         run: ./scripts/gen-homebrew-formula.sh --selftest
 
+      # Nothing else evaluates the formula: a syntax error would pass every
+      # other gate here and surface only when the tap tried to use it.
+      - name: the Homebrew formula parses
+        run: ruby -c Formula/tl.rb
+
       # A workflow cannot validate itself: if GitHub refuses to load
       # release.yml, nothing runs to say so, and the failure surfaces only when
       # someone pushes a tag. actionlint parses both workflows here — expression
