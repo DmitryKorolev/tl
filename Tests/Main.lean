@@ -16,6 +16,7 @@ import Tests.CrossTests
 import Tests.SanitizeTests
 import Tests.GrammarTests
 import Tests.DocGrammarTests
+import Tests.ReleaseTests
 import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
@@ -38,6 +39,7 @@ unsafe def main : IO UInt32 := do
   let cli ← cliTests
   let grammar ← grammarTests
   let docGrammar ← docGrammarTests
+  let releaseIdentity ← releaseIdentityTests
   let sync ← syncTests
   let cacheIo ← cacheIoTests
   let perf ← perfTests
@@ -67,6 +69,7 @@ unsafe def main : IO UInt32 := do
     ("Render sanitization (ADR-0014)", sanitizeTests),
     ("Grammar: tl help --json schema & parser agreement", grammar),
     ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
+    ("Release identity: repository/workflow/npm pins do not drift", releaseIdentity),
     ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
     ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
     ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),

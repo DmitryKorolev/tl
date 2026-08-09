@@ -43,13 +43,6 @@ forever-contract surface that freezes on first implementation.
 ## Distribution (before release)
 
 - Native-Windows gating test pass [low] — the gating test pass for native
-  Windows is open, spec'd only if it is promoted from Tier-2 (WSL is the Supported
-  Windows path). The Win32 FS/git-shell-out *design* is in ADR-0015 §7 / ADR-0006.
-- Signed-release verification is under-specified [med] — ADR-0006 says
-  `curl|sh`/brew "verify and fail closed" via keyless Sigstore/cosign, but never
-  pins the expected `--certificate-identity` + `--certificate-oidc-issuer` the
-  verifier checks against — without which a fail-closed verifier accepts *any* valid
-  Sigstore cert, hollowing out T3. Secondary (weaker): no Rekor/transparency-log
-  disposition, offline-verification stance, or key/identity rotation/revocation
-  path. Pin the expected identity/issuer and a rotation procedure (ADR-0006,
-  cross-ref ADR-0014 T3).
+  Windows is open, spec'd only if it is promoted from Deferred (WSL is the
+  Supported Windows path). The Win32 FS/git-shell-out *design* is in ADR-0015
+  §7 / ADR-0006; no native package is published while the shim returns `ENOSYS`.

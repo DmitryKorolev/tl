@@ -43,13 +43,13 @@ as the downstream `math/lean4` port (build-from-source).
     compensates for the lack of upstream testing. A failure here does not
     block a release of the Supported binaries. No universal (`lipo`)
     binary — a separate artifact suffices.
-  - Native (non-WSL) Windows x86-64 — Lean Tier 1, but *our* Tier 2: we ship
-    a `win32-x64` binary (npm/Release), smoke-tested only. The Win32 filesystem
-    abstraction (ADR-0015 §7) and git-shell-out specifics are the *design* but are
-    not in the gating matrix — a native-Windows-only bug is best-effort, not
-    release-blocking. Demoted because the agent/dev surface is Linux+macOS and
-    serious Windows use is WSL (above); promote back to Supported on real
-    native-Windows demand or a maintainer for the Windows test pass.
+- Deferred — designed but neither functional nor distributed:
+  - Native (non-WSL) Windows x86-64. Lean supports the target, but tl's native
+    filesystem shim deliberately returns `ENOSYS` on Win32 (ADR-0019), so a
+    binary that starts but cannot safely create or mutate task state is not a
+    release artifact. WSL2 is the Supported Windows path. Native Windows moves
+    to Best-effort only after the Win32 primitives and their smoke-test pass
+    exist; until then npm refuses `win32` rather than installing a broken CLI.
 - Community — not in our CI:
   - FreeBSD, via the `math/lean4` Ports path (build-from-source,
     version tracking the port, CI only via a FreeBSD VM action or Cirrus if
@@ -58,9 +58,9 @@ as the downstream `math/lean4` port (build-from-source).
 
 ### Build approach
 
-- Native per-target CI matrix (Lean cross-compile is weak): GitHub
-  hosted runners cover all five Supported/Best-effort targets
-  (`ubuntu-*`, `ubuntu-*-arm`, `macos-14`, `macos-13`, `windows-latest`).
+- Native per-target CI matrix (Lean cross-compile is weak): GitHub hosted
+  runners cover the four distributed targets (`ubuntu-*`,
+  `ubuntu-*-arm`, Apple-Silicon macOS, and Intel macOS).
 - Linux: build on an old-glibc base (manylinux-style container or an
   old Ubuntu) to honor Lean's glibc 2.26/2.27 floors, so the binaries run
   on any distro at or above that floor.
@@ -84,11 +84,14 @@ as the downstream `math/lean4` port (build-from-source).
   (WSL is our Linux x86-64 target).
 - npm — the priority veneer; the audience is agent/Node tooling and
   `npm i -g` is how such tools get adopted. Use
-  the `optionalDependencies` pattern (a launcher package + one
-  prebuilt-binary package per platform, e.g. `@tl/cli-darwin-arm64`), not a
-  `postinstall` download — hermetic and CI-safe. This pattern also delivers a
-  native Windows `win32-x64` binary for `npm i -g`, shipped best-effort
-  (our Tier 2 — smoke-tested, not gating; WSL is the Supported Windows path).
+  the `optionalDependencies` pattern: the public `@taskloop/tl` package holds
+  a POSIX `#!/bin/sh` launcher, and exact-version `@taskloop/tl-darwin-arm64`,
+  `@taskloop/tl-darwin-x64`, `@taskloop/tl-linux-arm64`, and
+  `@taskloop/tl-linux-x64` packages hold the same binaries as GitHub Releases.
+  The launcher detects the installed target and `exec`s it, preserving signals
+  and exit status; it uses no JavaScript process and no lifecycle hook. In
+  particular, no `postinstall` download reaches an arbitrary URL. Native
+  Windows npm installation is refused; npm under WSL selects Linux normally.
 - Homebrew tap — fast-follow; a formula that downloads the Release
   artifact per platform (not build-from-source, which would require users to
   have Lean).
@@ -148,6 +151,38 @@ plumbing dependency above the floor cannot slip in unnoticed.
 
 Binary distribution is gated on a verifiable release pipeline:
 
+- The permanent release repository is `DmitryKorolev/tl`; the public npm
+  package is `@taskloop/tl`. `release/identity.json` is the machine-readable
+  current pin, and `VERIFYING.md` is the user procedure and identity-history
+  table.
+- Keyless signing runs directly in `.github/workflows/release.yml`, triggered
+  by a SemVer tag. It is not delegated to a reusable workflow: GitHub OIDC
+  records the workflow ref, so indirection would change the certificate
+  identity being pinned. The exact issuer and anchored cosign expression are:
+
+  ```text
+  https://token.actions.githubusercontent.com
+  ^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$
+  ```
+
+  The expression permits SemVer release and pre-release tags, but is anchored
+  to this repository and workflow. A valid certificate from any other GitHub
+  repository, workflow path, branch, or non-SemVer tag fails verification.
+- Each asset has a Sigstore bundle containing its signature, Fulcio
+  certificate, and Rekor inclusion proof. Verification requires the proof in
+  the bundle; it never repairs a missing proof by trusting an unbound live-log
+  lookup. The installer's sole escape is
+  `TL_INSTALL_SKIP_SIGNATURE=1`, which skips Sigstore only — the selected
+  SHA-256 digest remains mandatory. Homebrew has no signature-skip mode.
+- A repository owner/name or release-workflow-path change is an identity
+  rotation, not an editorial rename. Before the new identity signs anything,
+  a protected change updates `release/identity.json`, `VERIFYING.md`, this ADR,
+  the installer, and the Homebrew formula together. The history table retains
+  the old identity for old releases; artifacts are never re-signed to rewrite
+  history. A compromise records and withdraws the affected release interval
+  before rotating. The release-identity drift test covers every operative copy
+  that exists, growing to include the installer and formula when they land.
+
 - Every GitHub Release publishes per-asset SHA-256 digests, a signed
   `SHA256SUMS`, and per-asset signatures. The `curl | sh` installer and
   Homebrew formula verify these and fail closed by default.
@@ -155,9 +190,10 @@ Binary distribution is gated on a verifiable release pipeline:
   attestation from GitHub OIDC, binding the artifact to the source commit,
   workflow, pinned Lean toolchain, and checked-in `lake-manifest.json`.
 - npm uses trusted publishing / OIDC, 2FA, `npm --provenance`, no long-lived
-  publish tokens, and a defensively-registered `@tl` package scope. The
-  launcher pins each platform package by exact version and integrity hash; it
-  never downloads arbitrary URLs in `postinstall`.
+  publish tokens, and the registered `@taskloop` organization scope. The
+  launcher pins each platform package by exact version, and npm verifies the
+  registry-supplied tarball integrity. The package has no lifecycle script and
+  never downloads arbitrary URLs during installation.
 - Builds are made reproducible where the platform toolchain allows: pinned
   Lean + lake dependencies, deterministic timestamps/paths, and a documented
   independent rebuilder that can verify binary-to-source correspondence.

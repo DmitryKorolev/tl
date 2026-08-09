@@ -9,6 +9,8 @@
 
 ```
 Tl.lean                 -- root module; imports everything under Tl/
+VERIFYING.md            -- signed-release verification procedure + identity history
+release/identity.json   -- machine-readable current repository/workflow/OIDC/npm pin
 
 Tl/Crdt/                -- generic CRDT pieces (verified; join laws — comm/
                         -- assoc/idem — are proved per structure in each file,
@@ -467,6 +469,9 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   DocGrammarTests.lean  --   docs↔grammar drift guard: the fenced shipped-surface
                         --   block in vision.md must equal commandSpecs (so the
                         --   prose can't silently over-promise/under-document verbs)
+  ReleaseTests.lean     --   signed-release identity drift guard: the canonical
+                        --   repository/workflow/OIDC/npm pins agree across the
+                        --   machine-readable policy, VERIFYING.md, and ADRs
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,

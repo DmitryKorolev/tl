@@ -157,10 +157,19 @@ Stance: mitigate — DONE (ADR-0006).
   `brew` verify and fail closed (no default `--force` bypass). Keyless
   signing (Sigstore/cosign via GitHub OIDC) + an SLSA provenance attestation per
   artifact.
-- npm: register the `@tl/cli-*` scope defensively (defeat dependency
+- npm: publish `@taskloop/tl` plus its four exact-version platform packages
+  from the controlled `@taskloop` organization scope (defeat dependency
   confusion); publish-only OIDC trusted-publishing tokens (no long-lived
-  secrets), 2FA, `npm --provenance`, and pinned integrity hashes between the
-  launcher and each platform package.
+  secrets), 2FA, `npm --provenance`, exact platform-package versions, and
+  npm's registry-supplied tarball integrity verification. The launcher package
+  has no lifecycle script.
+- The fail-closed Sigstore pin is the direct
+  `.github/workflows/release.yml` workflow in `DmitryKorolev/tl`, with issuer
+  `https://token.actions.githubusercontent.com` and anchored identity
+  `^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$`.
+  Per-asset bundles must carry a Rekor inclusion proof. `VERIFYING.md` records
+  historical identities and ADR-0006 owns rotation, the mandatory SHA-256
+  check, and the explicit signature-only escape.
 - Reproducible builds (pinned toolchain hash, pinned `lake-manifest`,
   deterministic timestamps/paths/linking) + an independent rebuilder so
   binary↔source is verifiable — this is what makes "artifact = proof" honest
@@ -186,8 +195,8 @@ ADR-0015 pins it: a per-working-copy mutation lock; atomic `O_APPEND` records;
 `O_NOFOLLOW`/`openat`/`O_EXCL` path hardening for `.tl/` and `--dir`/`TL_DIR` —
 each with named Windows equivalents (`LockFileEx`, `MoveFileEx`/`ReplaceFile`,
 reparse-point checks). The Supported Windows path is WSL (= Linux, fully
-covered); *native* Windows is best-effort/Tier-2 (ADR-0006), so those Win32
-bindings are the design but untested in the gating matrix — the local-FS
+covered); native Windows is deferred and not distributed until those Win32
+bindings exist and have a smoke-test pass (ADR-0006), so the local-FS
 hardening is therefore best-effort on native Windows.
 
 ### T5. Confidentiality & privacy — accepted by design, documented
