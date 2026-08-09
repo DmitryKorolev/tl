@@ -454,11 +454,99 @@ jobs:
           "$asset" doctor --json | jq -e '.data.healthy == true' > /dev/null
           echo "smoke test passed for ${{ matrix.target }}"
 
+      # The link-time dependency audit ADR-0006 requires, run on the actual
+      # candidate rather than inferred from the toolchain. It is what lets a
+      # recipient check THIRD-PARTY-LICENSES against the artifact instead of
+      # taking the notice on trust — and it is the one drift the license
+      # generator cannot see, since a *newly* bundled library appears in the
+      # binary without appearing in any manifest.
+      - name: audit what this binary links against
+        run: |
+          set -euo pipefail
+          asset="dist/${{ steps.stage.outputs.asset }}"
+          audit="dist/link-audit-${{ matrix.target }}.txt"
+          {
+            echo "link-time dependency audit for ${{ matrix.target }}"
+            echo "binary:    ${{ steps.stage.outputs.asset }}"
+            echo "sha256:    $(sha256sum "$asset" | cut -d' ' -f1)"
+            echo "toolchain: $(cat lean-toolchain)"
+            echo
+            echo "== dynamically linked libraries =="
+            if [ "${{ matrix.container }}" = "true" ]; then
+              ldd "$asset" || echo "(ldd reported nothing; a static binary would be a change worth recording in ADR-0006)"
+            else
+              otool -L "$asset"
+            fi
+            echo
+            echo "== symbols from statically linked third-party components =="
+            # GMP and libuv are linked in through the Lean runtime and are the
+            # entries ADR-0006's licensing section turns on. OpenSSL is checked
+            # too: the v4.32.0 toolchain began bundling it, and the notice owes
+            # an entry only if the linker did not dead-strip it.
+            for prefix in __gmp gmp_ uv_ SSL_ EVP_ CRYPTO_; do
+              count=$(nm -a "$asset" 2>/dev/null | grep -c " ${prefix}" || true)
+              echo "${prefix}*: ${count}"
+            done
+          } > "$audit"
+          cat "$audit"
+
+      # What this leg built, recorded by the leg that built it. The sign job
+      # downloads binaries from the artifact store and, until now, signed
+      # whatever arrived: nothing carried the digest of the binary that was
+      # actually smoke-tested out of the job that tested it. Comparing this
+      # there closes the one boundary in the pipeline that had no
+      # re-verification.
+      #
+      # This is also the honest form of build provenance. Attesting per leg
+      # would mean granting `id-token: write` to four more jobs, and every job
+      # defined inline in this file shares one job_workflow_ref — so each of
+      # them could then mint a certificate every verifier accepts. The evidence
+      # travels instead of the capability.
+      - name: record what this leg built
+        run: |
+          set -euo pipefail
+          asset="dist/${{ steps.stage.outputs.asset }}"
+          python3 - "$asset" > "dist/build-metadata-${{ matrix.target }}.json" <<'PY'
+          import hashlib, json, os, sys
+          with open(sys.argv[1], "rb") as handle:
+              digest = hashlib.sha256(handle.read()).hexdigest()
+          with open("lean-toolchain", encoding="utf-8") as handle:
+              toolchain = handle.read().strip()
+          with open("lake-manifest.json", "rb") as handle:
+              manifest_digest = hashlib.sha256(handle.read()).hexdigest()
+          json.dump({
+              "target": os.environ["TARGET"],
+              "sha256": digest,
+              "commit": os.environ["COMMIT"],
+              "tier": os.environ["TIER"],
+              "runner": os.environ["RUNNER"],
+              "runnerOs": os.environ.get("RUNNER_OS", ""),
+              "runnerArch": os.environ.get("RUNNER_ARCH", ""),
+              "containerImage": os.environ.get("CONTAINER_IMAGE", ""),
+              "toolchain": toolchain,
+              "lakeManifestSha256": manifest_digest,
+              "workflowRef": os.environ.get("GITHUB_WORKFLOW_REF", ""),
+              "runId": os.environ.get("GITHUB_RUN_ID", ""),
+              "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+          }, sys.stdout, indent=2, sort_keys=True)
+          sys.stdout.write("\n")
+          PY
+          cat "dist/build-metadata-${{ matrix.target }}.json"
+        env:
+          TARGET: ${{ matrix.target }}
+          COMMIT: ${{ needs.stamp.outputs.commit }}
+          TIER: ${{ matrix.best_effort && 'best-effort' || 'supported' }}
+          RUNNER: ${{ matrix.runs-on }}
+          CONTAINER_IMAGE: ${{ matrix.container && env.GLIBC_FLOOR_IMAGE || '' }}
+
       - name: upload the release candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-candidate-${{ matrix.target }}
-          path: dist/${{ steps.stage.outputs.asset }}
+          path: |
+            dist/${{ steps.stage.outputs.asset }}
+            dist/build-metadata-${{ matrix.target }}.json
+            dist/link-audit-${{ matrix.target }}.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -623,13 +711,45 @@ jobs:
           done
           ls -l dist
 
+      # ADR-0006 requires the notice file, an SBOM and the link-time audit to
+      # travel with every binary release, and until now none of them reached
+      # the GitHub or Homebrew channels: only npm bundled the notice, because
+      # npm packages happen to have a place to put it. They are published as
+      # companion assets, listed in SHA256SUMS and signed like everything else,
+      # rather than by wrapping each binary in an archive — the download stays
+      # one unpacked file, and the manifest below is what gives the release a
+      # single identity across channels.
+      - name: assemble the compliance set
+        run: |
+          set -euo pipefail
+          cp LICENSE THIRD-PARTY-LICENSES REBUILDING.md dist/
+          ./scripts/gen-sbom.sh "${GITHUB_REF_NAME#v}" "dist/tl-${GITHUB_REF_NAME#v}.spdx.json"
+          ls -l dist
+
+      # The canonical description of this release, written once and signed with
+      # everything else. It also performs the build-boundary check: each
+      # binary's digest must equal what its own build leg recorded, so `sign`
+      # signs the bytes that were smoke-tested rather than whatever the
+      # artifact store returned.
+      - name: describe the release
+        run: |
+          set -euo pipefail
+          ./scripts/gen-release-manifest.sh dist "${GITHUB_REF_NAME}" \
+            "${{ needs.stamp.outputs.commit }}" dist/release-manifest.json
+          cat dist/release-manifest.json
+
       - name: build SHA256SUMS
         working-directory: dist
         run: |
           set -euo pipefail
+          # Every published file, not only the binaries: the notice, the SBOM,
+          # the per-target link audits, the build metadata and the manifest are
+          # all part of what this release conveys, and an asset outside
+          # SHA256SUMS is an asset no verifier checks.
+          #
           # Sorted by name so the file is byte-stable across runs regardless of
           # the order artifacts happened to download in.
-          find . -maxdepth 1 -type f -name 'tl-*' ! -name '*.sigstore.json' -printf '%f\n' \
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name '*.sigstore.json' -printf '%f\n' \
             | sort > ../asset-names
           if [ ! -s ../asset-names ]; then
             echo "::error::no candidate assets were downloaded — the build matrix produced nothing to sign. Check the upload-artifact steps in the build job."
@@ -684,6 +804,11 @@ jobs:
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
           ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
+          # …and then the manifest, which is what this job reads instead of
+          # re-deriving which targets and assets the release consists of. The
+          # signature check comes first: the manifest is evidence about a set
+          # of bytes, not evidence that they are the bytes we signed.
+          ./scripts/gen-release-manifest.sh --verify dist dist/release-manifest.json
 
       # The signed set travels to the publishing job as one artifact, so the
       # job that creates the release never holds an OIDC token and cannot mint
@@ -731,6 +856,11 @@ jobs:
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
           ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
+          # …and then the manifest, which is what this job reads instead of
+          # re-deriving which targets and assets the release consists of. The
+          # signature check comes first: the manifest is evidence about a set
+          # of bytes, not evidence that they are the bytes we signed.
+          ./scripts/gen-release-manifest.sh --verify dist dist/release-manifest.json
 
       - name: the tag still points at the built commit
         run: |
@@ -815,6 +945,11 @@ jobs:
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
           ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
+          # …and then the manifest, which is what this job reads instead of
+          # re-deriving which targets and assets the release consists of. The
+          # signature check comes first: the manifest is evidence about a set
+          # of bytes, not evidence that they are the bytes we signed.
+          ./scripts/gen-release-manifest.sh --verify dist dist/release-manifest.json
 
       # A stable tag must not reach this job without somewhere to push. The
       # token is checked *before* the formula is generated, so a missing
@@ -953,6 +1088,11 @@ jobs:
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
           ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
+          # …and then the manifest, which is what this job reads instead of
+          # re-deriving which targets and assets the release consists of. The
+          # signature check comes first: the manifest is evidence about a set
+          # of bytes, not evidence that they are the bytes we signed.
+          ./scripts/gen-release-manifest.sh --verify dist dist/release-manifest.json
 
       - name: stage the npm packages around the signed binaries
         run: ./scripts/npm-pack.sh npm-staging dist

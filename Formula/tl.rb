@@ -148,6 +148,27 @@ class Tl < Formula
 
     bin.install asset_name => "tl"
     chmod 0755, bin/"tl"
+
+    # ADR-0006 requires the third-party notice to travel with every
+    # distribution artifact. The npm packages bundle it because a package has
+    # somewhere to put it; a bare binary does not, so the release publishes it
+    # as a companion asset and it is installed here. Fetched rather than
+    # declared as a `resource` for the same reason as the bundle: a resource
+    # needs a sha256 known at generation time, and the digest here comes from
+    # the release's own SHA256SUMS, which Homebrew has no way to consult.
+    #
+    # A release that does not publish it still installs: `tl licenses` prints
+    # the same content from the binary, and refusing a good binary over a
+    # missing sidecar would be the wrong trade.
+    notice = "THIRD-PARTY-LICENSES"
+    if system "curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3",
+              "--proto", "=https", "--proto-redir", "=https",
+              "--output", notice,
+              "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{notice}"
+      doc.install notice
+    else
+      opoo "tl #{version} publishes no #{notice}; run `tl licenses` for the same content."
+    end
   end
 
   test do

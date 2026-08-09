@@ -281,6 +281,33 @@ main() {
   # that is now the installed binary.
   staged=''
 
+  # ADR-0006: the third-party notice travels with every distribution artifact.
+  # The npm packages bundle it because a package has somewhere to put it; a
+  # bare binary does not, so the release publishes it as a companion asset and
+  # the installer places it beside the binary. Verified against the same signed
+  # SHA256SUMS as everything else — an unverified notice would be a file
+  # claiming to describe what you just installed, from nobody in particular.
+  #
+  # Skipped, with a note, for a release that does not list it: `TL_VERSION` can
+  # name an older tag, and refusing to install a perfectly good binary over a
+  # missing notice would be the wrong trade.
+  notice=THIRD-PARTY-LICENSES
+  if notice_expected=$(awk -v want="$notice" '$2 == want || $2 == "*" want { print $1; found = 1 } END { exit !found }' "$work/SHA256SUMS"); then
+    fetch "${base}/${notice}" "$work/$notice"
+    notice_actual=$(sha256_of "$work/$notice") \
+      || die "no sha256sum or shasum found; the digest check is mandatory."
+    [ "$(lower "$notice_actual")" = "$(lower "$notice_expected")" ] \
+      || die "digest mismatch for ${notice}: downloaded ${notice_actual}, expected ${notice_expected}. The binary is installed but the licence notice that must accompany it is not what this release signed; re-run, and report it if it persists."
+    share_dir=${TL_INSTALL_SHARE_DIR:-"$(dirname -- "$install_dir")/share/tl"}
+    if mkdir -p "$share_dir" 2>/dev/null && cp "$work/$notice" "$share_dir/$notice" 2>/dev/null; then
+      echo "tl-install: ${notice} installed at ${share_dir}/${notice}"
+    else
+      echo "tl-install: could not write ${share_dir}; the notice is not installed. It is published with the release, and 'tl licenses' prints the same content from the binary." >&2
+    fi
+  else
+    echo "tl-install: ${version} publishes no ${notice} asset, so none was installed. 'tl licenses' prints the same content from the binary."
+  fi
+
   echo "tl-install: installed ${install_dir}/tl"
   case ":${PATH}:" in
     *":${install_dir}:"*) ;;
@@ -513,6 +540,33 @@ UNAME
       TL_INSTALL_DIR="$work/dest" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
   note "$([ "$got" -eq 1 ] && grep -q 'could not download' "$work/err" && echo 0 || echo 1)" \
     "an http base URL is refused rather than fetched in cleartext"
+
+  # The third-party notice ADR-0006 requires alongside every distributed
+  # binary. Both arms: published and installed, and absent from an older
+  # release, where a missing notice must not stop a good binary installing.
+  printf 'notice for the selftest\n' > "$release/THIRD-PARTY-LICENSES"
+  ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
+      && sha256sum "$host_asset" THIRD-PARTY-LICENSES > SHA256SUMS \
+      || shasum -a 256 "$host_asset" THIRD-PARTY-LICENSES > SHA256SUMS; } )
+  rm -rf "$work/dest" "$work/share"
+  run 0 "a release publishing the notice installs it" TL_INSTALL_SHARE_DIR="$work/share"
+  note "$([ -f "$work/share/THIRD-PARTY-LICENSES" ] && echo 0 || echo 1)" \
+    "the notice lands beside the binary"
+  # A tampered notice must be refused like anything else in the signed set.
+  printf 'tampered\n' >> "$release/THIRD-PARTY-LICENSES"
+  rm -rf "$work/dest" "$work/share"
+  run 1 "a notice whose digest does not match refuses" TL_INSTALL_SHARE_DIR="$work/share"
+  note "$(grep -q 'digest mismatch for THIRD-PARTY-LICENSES' "$work/err" && echo 0 || echo 1)" \
+    "the message names the notice, not the binary"
+  rm -f "$release/THIRD-PARTY-LICENSES"
+  ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
+      && sha256sum "$host_asset" > SHA256SUMS \
+      || shasum -a 256 "$host_asset" > SHA256SUMS; } )
+  rm -rf "$work/dest" "$work/share"
+  run 0 "a release without the notice still installs the binary" TL_INSTALL_SHARE_DIR="$work/share"
+  note "$(grep -q 'publishes no THIRD-PARTY-LICENSES' "$work/out" && echo 0 || echo 1)" \
+    "the absent notice is reported rather than passed over"
+  cp "$release/SHA256SUMS" "$work/sums.lower"
 
   # An uppercase sums file is valid — the hex check deliberately accepts A-F —
   # and must install rather than read as tampering. This is the case the

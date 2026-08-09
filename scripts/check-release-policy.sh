@@ -126,6 +126,9 @@ release-policy gates, in order:
   embedded-copy drift selftest        scripts/check-embedded-copies.sh --selftest
   embedded-copy drift                 scripts/check-embedded-copies.sh
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
+  SBOM generator selftest             scripts/gen-sbom.sh --selftest
+  release manifest selftest           scripts/gen-release-manifest.sh --selftest
+  release prerequisites reporting     scripts/check-release-prereqs.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   npm package selftest                scripts/npm-pack.sh --selftest
   npm publisher selftest              scripts/npm-publish.sh --selftest
@@ -154,6 +157,9 @@ gate "embedded-copy drift selftest" ./scripts/check-embedded-copies.sh --selftes
 gate "embedded-copy drift" ./scripts/check-embedded-copies.sh
 
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
+gate "SBOM generator selftest" ./scripts/gen-sbom.sh --selftest
+gate "release manifest selftest" ./scripts/gen-release-manifest.sh --selftest
+gate "release prerequisites reporting selftest" ./scripts/check-release-prereqs.sh --selftest
 
 # The code path behind VERIFYING.md, the installer, and the release workflow's
 # own pre-publish check. Its refusal paths are the whole point of it.
