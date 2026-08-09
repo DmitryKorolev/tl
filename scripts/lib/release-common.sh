@@ -254,11 +254,21 @@ rc_expect_output() {
   rc__name=$3
   shift 3
   rc_run "$@"
-  if [ "$RC_STATUS" -eq "$rc__want" ] && grep -q -- "$rc__needle" "$RC_ERR" "$RC_OUT"; then
+  rc__matched=0
+  grep -q -- "$rc__needle" "$RC_ERR" "$RC_OUT" && rc__matched=1
+  if [ "$RC_STATUS" -eq "$rc__want" ] && [ "$rc__matched" -eq 1 ]; then
     echo "  ok   $rc__name (exit $RC_STATUS)"
     return 0
   fi
-  echo "  FAIL $rc__name: expected exit $rc__want and output matching '$rc__needle', got exit $RC_STATUS" >&2
+  # Which half failed, not just that one did. A row whose status is right and
+  # whose message is wrong is the common case — the code took some *other*
+  # refusal path — and reporting only the status sends the reader looking at
+  # the exit code, which was never the problem.
+  if [ "$RC_STATUS" -ne "$rc__want" ]; then
+    echo "  FAIL $rc__name: expected exit $rc__want, got $RC_STATUS" >&2
+  else
+    echo "  FAIL $rc__name: exit $RC_STATUS was expected, but no output matched '$rc__needle' — the command refused for some other reason" >&2
+  fi
   sed 's/^/    /' "$RC_ERR" >&2
   RC_FAILURES=$((RC_FAILURES + 1))
 }
