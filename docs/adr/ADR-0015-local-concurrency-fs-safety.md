@@ -110,10 +110,11 @@ redirecting a `tl` write to an attacker-chosen path (ADR-0014 threat T4).
 The primitives above are a thin filesystem-abstraction layer, bound per
 platform. On the Supported targets — Linux, macOS, and Windows-via-WSL
 (ADR-0006) — the POSIX bindings are the gating, fully-tested path. The Windows
-column below is the design for *native* Windows, which is best-effort (our
-Tier 2): shipped and smoke-tested, but its Win32 paths are not in the
-gating matrix, so a native-Windows FS edge is a best-effort fix, not a release
-blocker.
+column below is the design for *native* Windows, which is deferred under
+ADR-0006: neither functional nor distributed. The bindings do not exist —
+`ffi/tlsys.c` returns `ENOSYS` for every Win32 primitive — so no artifact ships
+for that target, and implementing this column is what native Windows would
+need before it could be published at all.
 
 | Primitive | POSIX | Windows |
 |---|---|---|

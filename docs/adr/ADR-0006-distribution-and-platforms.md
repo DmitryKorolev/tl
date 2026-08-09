@@ -145,9 +145,27 @@ The provenance is compiled in from the generated `Tl/Build/Stamp.lean`, whose
 checked-in copy is the development stamp; `scripts/gen-build-provenance.sh
 --stamp` rewrites it from git HEAD, which the release workflow runs on a clean
 checkout of the tag before building and then smoke-tests against the compiled
-binary. The generator's output is a pure function of `lean-toolchain`,
-`lake-manifest.json`, and the git state, so an independent rebuilder reproduces
-the same stamp — and therefore the same binary — from the same commit.
+binary. CI regenerates the file and diffs it, so a stamped copy cannot reach
+`main` and be mistaken for the development stamp everything else assumes.
+
+The generator's output is a pure function of `lean-toolchain`,
+`lake-manifest.json`, and the git state, so an independent rebuilder gets the
+same *stamp* from the same commit. That is a claim about the stamp only.
+Whether the compiled binary comes out bit-identical rests on the Lean and
+system toolchains, which the generator does not touch and nothing here checks —
+reproducible builds remain the open item recorded below, and a stamp match is
+not evidence of binary-to-source correspondence.
+
+The generator fails closed throughout, because a stamp reading `clean` is taken
+as an exact-correspondence claim: it refuses when `git status` cannot run
+rather than reading the silence as a clean tree, counts untracked files even
+when the repository's `status.showUntrackedFiles` config hides them, excludes
+only its own output from that probe (so a second `--stamp` in one checkout does
+not report the first run's stamp as a modification), and refuses to stamp a
+source tree that merely sits inside an unrelated checkout, whose commit does
+not contain that source at all. `--selftest` exercises each refusal in
+throwaway directories and runs in CI, so a generator that quietly stopped
+refusing cannot pass unnoticed.
 
 ### Runtime prerequisite: git ≥ 2.17
 
@@ -237,13 +255,15 @@ Binary distribution is gated on a verifiable release pipeline:
 ## Consequences
 
 - The marginal cost of each channel is small; the cost is the per-target
-  build. Releases + curl + npm covers ~everyone (incl. Windows via npm);
-  brew is cheap to add.
-- Windows is more tractable than its app-level reputation. The toolchain
-  is Lean Tier 1 (built + tested upstream) and npm reaches it for free; the
-  residual lift is git-shell-out path handling and a Windows test pass. (The
-  `.gitattributes` log-integrity requirement is obviated under ADR-0001 — the
-  log lives in `refs/tl/log`, not EOL-normalizable working-tree files.)
+  build. Releases + curl + npm cover Linux and macOS, with WSL2 as the
+  Supported Windows path; brew is cheap to add.
+- Native Windows is a toolchain problem the project has not paid for, not an
+  app-level one. Lean itself is Tier 1 there, but `ffi/tlsys.c` returns
+  `ENOSYS` for every Win32 primitive, so the residual lift is the ADR-0015 §7
+  primitives plus a smoke-test pass — not path handling, and not free via npm,
+  which refuses `win32` outright. (The `.gitattributes` log-integrity
+  requirement is obviated under ADR-0001 — the log lives in `refs/tl/log`, not
+  EOL-normalizable working-tree files.)
 - macOS x86-64 stays cheap and bounded by the best-effort policy.
 - Licensing boundary. The runtime links GMP under LGPLv3; this
   is a stated, bounded exception to the project's no-copyleft rule. Binary

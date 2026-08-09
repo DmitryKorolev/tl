@@ -523,8 +523,9 @@ including `.tl/local/replica`, which duplicates a replica id and breaks the
 ADR-0007 uniqueness assumption. In all three, convergence still holds via the
 per-op nonce; ownership, HLC monotonicity, and recent-write durability do not.
 The remedy is a local clone plus `git push`, or `--dir` / `TL_DIR`. The Win32
-bindings of these primitives (ADR-0015 §7) are best-effort on native Windows
-(our Tier-2, ADR-0006); WSL is the Supported Windows path.
+bindings of these primitives (ADR-0015 §7) are unimplemented, so native Windows
+is deferred and no artifact ships for it (ADR-0006); WSL is the Supported
+Windows path.
 
 The TCB is: the Lean kernel (+ its checker), the file/JSONL I/O, git, and the
 system clock. Nothing else.

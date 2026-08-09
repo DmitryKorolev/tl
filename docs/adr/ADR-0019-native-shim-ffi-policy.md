@@ -68,7 +68,7 @@ existing because a specific ADR-pinned behavior requires it:
   `BCryptGenRandom` on Win32), discharging ADR-0007's replica/nonce
   requirement with a contract core does not promise.
 - `ownedByCaller fd` — the §6 ownership check, computed in C (owner uid vs
-  caller euid; the Win32 owner-SID analog is Tier-2 best-effort per §7).
+  caller euid; the Win32 owner-SID analog is designed but unimplemented, per §7).
 - `close fd`.
 
 The §6 *policy* — the `.tl` path discipline, what to refuse, the error codes
@@ -104,7 +104,8 @@ Not rename (`IO.FS.rename` covers §3), not temp-dir plumbing (core
 `withTempDir`), not a general POSIX binding layer. Platform scope follows
 ADR-0015 §7: the POSIX implementation is the gating, fully-tested path
 (Linux, macOS, Windows-via-WSL — ADR-0006); the native-Win32 column is
-designed there and remains Tier-2 best-effort.
+designed there but unimplemented, so native Windows is deferred and no artifact
+ships for it.
 
 ### Upstreaming intent
 

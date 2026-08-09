@@ -27,11 +27,48 @@ pinned to full commit hashes.
 The graph is:
 
 1. `task-id-lint`, needing no toolchain;
-2. `build-and-test` on Ubuntu and macOS;
-3. `git-floor`, after the build matrix, using the Ubuntu artifacts.
+2. `release-policy`, also needing no toolchain;
+3. `build-and-test` on Ubuntu and macOS;
+4. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
-Only `git-floor` carries a `needs:`. The task-ID lint runs independently of the
-build so a lexical failure and a build failure are both visible from one run.
+Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
+of the build so a lexical or policy failure and a build failure are both
+visible from one run, and they fail in seconds rather than after the matrix.
+
+`release-policy` holds the release-machinery gates that the Lean suite cannot
+express:
+
+- `scripts/check-release-identity.sh` checks what the pinned cosign
+  certificate expression *means* — that it accepts this repository's release
+  workflow on a SemVer tag and rejects adversarial neighbours (a repository
+  whose name contains ours, a different workflow in this repository, an
+  unescaped-dot match, a non-SemVer tag). `Tests/ReleaseTests.lean` guards that
+  every operative copy carries the same text, which is drift; meaning needs a
+  regular-expression engine the Lean suite does not have, and an expression
+  that is anchored and well-formed while matching the wrong repository would
+  pass a text-equality guard and hollow out the fail-closed verifier
+  (ADR-0014 T3).
+- `scripts/gen-build-provenance.sh --selftest` exercises the stamp generator's
+  refusal paths.
+- A regeneration diff on `Tl/Build/Stamp.lean`. Three places state as fact that
+  the checked-in copy is the development stamp; without this step a stamped
+  copy swept in by `git commit -a` would make every build from that tree claim
+  `clean build — commit <stale>` while passing the whole suite. It is a CI step
+  rather than a `tltest` assertion so the release job, which stamps on purpose,
+  is unaffected.
+
+Both scripts carry a `--selftest` arm on the same reasoning as the task-ID
+lint: a checker that quietly stopped detecting would pass forever, so it proves
+it can still fail before its silence is believed.
+
+`.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
+tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs these
+gates against the tagged commit rather than trusting that the tag happens to
+point at a commit CI already saw, then builds the four native artifacts and
+signs them. Signing runs directly in that workflow because GitHub's OIDC
+certificate names the workflow that requested it, and `release/identity.json`
+pins that name — indirection through a reusable workflow would change the
+identity every verifier checks.
 
 The earlier `lint` job carried the source greps this ADR replaces, plus an
 advisory task-ID-leakage warning, and went away with them. The task-ID check

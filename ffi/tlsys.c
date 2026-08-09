@@ -15,9 +15,9 @@
  * "tlsys:<op>:<ERRNO-NAME>: <detail>"; the Lean side branches on the token.
  *
  * POSIX is the gating, fully-tested path (Linux, macOS, Windows-via-WSL —
- * ADR-0006/0015 §7). Native Win32 is Tier-2: deliberately not implemented
- * here yet; building for it yields honest unsupported errors, never a
- * silently weaker primitive.
+ * ADR-0006/0015 §7). Native Win32 is deferred and undistributed: deliberately
+ * not implemented here; building for it yields honest unsupported errors,
+ * never a silently weaker primitive.
  */
 #include <lean/lean.h>
 
@@ -28,9 +28,10 @@
 #ifdef _WIN32
 
 static lean_obj_res tl_sys_unsupported(const char *op) {
-    char buf[160];
+    char buf[256];
     snprintf(buf, sizeof buf,
-             "tlsys:%s:ENOSYS: native Windows is Tier-2; use WSL (the Supported Windows path)", op);
+             "tlsys:%s:ENOSYS: native Windows is not supported — the Win32 primitives are "
+             "unimplemented (ADR-0006); run tl under WSL2", op);
     return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string(buf)));
 }
 

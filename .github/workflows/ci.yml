@@ -40,6 +40,45 @@ jobs:
       - name: task-id leakage
         run: ./scripts/check-task-ids.sh
 
+  # Release-machinery gates. Like task-id-lint these need no toolchain, so they
+  # fail in seconds rather than after the build matrix, and they are a separate
+  # job so a release-policy failure and a build failure are both visible from
+  # one run.
+  release-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Tests/ReleaseTests.lean guards that every copy of the signing identity
+      # carries the same text. What the text *means* needs a regular-expression
+      # engine the Lean suite does not have, so it is checked here: an
+      # expression that is anchored and well-formed but matches the wrong
+      # repository would pass a text-equality guard while hollowing out the
+      # fail-closed verifier (ADR-0014 T3).
+      - name: release identity selftest
+        run: ./scripts/check-release-identity.sh --selftest
+      - name: release identity discriminates
+        run: ./scripts/check-release-identity.sh
+
+      - name: build-provenance generator selftest
+        run: ./scripts/gen-build-provenance.sh --selftest
+
+      # Tl/Build/Stamp.lean is generated, and three places state as fact that
+      # the checked-in copy is the *development* stamp. Nothing but this step
+      # enforces it: a stamped copy swept in by `git commit -a` would otherwise
+      # make every build from that tree report `clean build — commit <stale>`,
+      # an exact-correspondence claim that is false, while passing the whole
+      # suite. Deliberately a CI step rather than a tltest assertion, so the
+      # release job — which stamps on purpose — is unaffected.
+      - name: the checked-in build stamp is the development stamp
+        run: |
+          ./scripts/gen-build-provenance.sh
+          if ! git diff --exit-code -- Tl/Build/Stamp.lean; then
+            echo "::error::Tl/Build/Stamp.lean differs from what scripts/gen-build-provenance.sh produces. Either a stamped copy was committed (run the generator with no arguments and commit the result), or lean-toolchain / lake-manifest.json changed without regenerating it."
+            exit 1
+          fi
+
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including
   # cache-replayed ones) into failure — this is the warning-free-build gate.
