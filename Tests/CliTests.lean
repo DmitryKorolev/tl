@@ -696,13 +696,38 @@ def cliBinaryTests : IO (List Outcome) := do
       (cwd : Option System.FilePath := none) : IO IO.Process.Output :=
     IO.Process.output { cmd := exe.toString, args := args.toArray,
                         env := env.toArray, cwd }
-  -- exact envelope bytes + exit code on stdout
+  -- exact envelope bytes + exit code on stdout. The `build` object is spliced
+  -- from this binary's own stamp rather than written out literally: its digest
+  -- changes whenever `lake-manifest.json` does, and pinning it here would turn
+  -- an ordinary dependency bump into a byte-comparison failure in a row that
+  -- is about envelope shape and key order, not about the pins themselves
+  -- (`Tests/ReleaseTests.lean` owns the drift guard on those).
   let out ← spawn ["version", "--json"]
+  let expectedVersion :=
+    "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"build\":"
+      ++ (Tl.Cli.buildProvenanceJson Tl.Build.current).compress
+      ++ ",\"logFormat\":2,\"version\":\"0.1.0\"}}\n"
   o := o ++
-    [check "version --json envelope bytes"
-      (out.stdout == "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"logFormat\":2,\"version\":\"0.1.0\"}}\n")
-      out.stdout,
+    [check "version --json envelope bytes" (out.stdout == expectedVersion)
+      s!"got {out.stdout}want {expectedVersion}",
      check "version exits 0" (out.exitCode == 0)]
+  -- The human rendering is two lines: the product line, then the build line —
+  -- so a human sees the same provenance the --json consumer branches on.
+  let outHuman ← spawn ["version"]
+  o := o ++
+    [check "version human output carries the product and build lines"
+      (outHuman.stdout ==
+        s!"tl {Tl.Cli.productVersion} (log format v{Tl.Format.supportedVersion})\n"
+          ++ Tl.Cli.buildProvenanceHuman Tl.Build.current ++ "\n")
+      outHuman.stdout,
+     check "version (human) exits 0" (outHuman.exitCode == 0)]
+  -- A positional is a usage error, not a silently-ignored argument.
+  let versionExtra ← spawn ["version", "extra", "--json"]
+  o := o ++
+    [check "version rejects a positional argument"
+      (versionExtra.stdout.startsWith "{\"schemaVersion\":3,\"ok\":false,\"error\":{\"code\":\"usage\"")
+      versionExtra.stdout,
+     check "version with a positional exits 2" (versionExtra.exitCode == 2)]
   -- `tl licenses` stdout is byte-equal to the repo THIRD-PARTY-LICENSES file
   -- (the human string omits the final newline; println restores it)
   let lic ← spawn ["licenses"]

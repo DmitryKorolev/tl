@@ -167,7 +167,7 @@ Read / visibility
 | `tl doctor [--sync]` | health check: replica-id/clock/log integrity and graph conditions — cycles, multi-parent, dangling `blocks`/`parent` endpoints, `duplicate-of` hygiene (dangling/self/chained targets, ADR-0008); plus a local sync-posture row (upstream / lastSync / ahead, no remote contact; `--sync` = reconcile first — ADR-0011/0001) |
 | `tl help [<cmd>]` / `tl <cmd> --help` | human help: top-level overview or per-command usage |
 | `tl help [<cmd>] --json` | the same grammar machine-readably, for agent introspection (ADR-0011) |
-| `tl version` | print the `tl` SemVer product version (`0.1.0` initially); `--json` adds the supported log-format version as `logFormat` (the JSON-envelope schema version travels as the top-level `schemaVersion` on every `--json` response, ADR-0020), plus build provenance once the release pipeline exists (ADR-0006/0008) |
+| `tl version` | print the `tl` SemVer product version (`0.1.0` initially) and this binary's build provenance — source commit, `kind` (`development` / `dirty` / `clean`), pinned Lean toolchain, `lake-manifest.json` digest; `--json` adds the supported log-format version as `logFormat` and the provenance as a `build` object (the JSON-envelope schema version travels as the top-level `schemaVersion` on every `--json` response, ADR-0020/0006/0008) |
 | `tl --licenses` | print bundled third-party license notices and link-time dependency attribution (ADR-0006) |
 
 `dep remove` / `unrelate` are first-class, not afterthoughts: they are the

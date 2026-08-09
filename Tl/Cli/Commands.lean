@@ -16,6 +16,7 @@ import Tl.Cli.Render
 import Tl.Cli.Resolve
 import Tl.Cli.Init
 import Tl.Cli.Licenses
+import Tl.Build.Provenance
 import Tl.Kernel.Path
 import Tl.Kernel.Claim
 -- `ready_sorted`: the ranked queue is `readyLe`-ordered, which the read facets
@@ -3217,9 +3218,34 @@ def cmdImport (dirOverride : Option String) (path : String) (sourceTagArg : Opti
     version; `tl version` is the single user-facing source). -/
 def productVersion : String := "0.1.0"
 
+/-- The `build` object of `tl version --json`. `commit` is `null` rather than
+    `""` for a development build: an agent branching on provenance should get a
+    type-level absence, not an empty string that reads as a real value. -/
+def buildProvenanceJson (p : Tl.Build.Provenance) : Json :=
+  Json.mkObj
+    [("kind", Json.str p.kind.name),
+     ("commit", if p.commit.isEmpty then Json.null else Json.str p.commit),
+     ("dirty", Json.bool p.dirty),
+     ("toolchain", Json.str p.toolchain),
+     ("manifestDigest", Json.str p.manifestDigest)]
+
+/-- The human build line, in parity with `buildProvenanceJson` — same facts,
+    same order. A development build names no commit because it has none; the
+    dirty line says outright that the commit does not describe the binary,
+    since that is the case where trusting the commit would mislead. -/
+def buildProvenanceHuman (p : Tl.Build.Provenance) : String :=
+  let pins := s!"toolchain {p.toolchain}, manifest {(p.manifestDigest.take 12).toString}"
+  match p.kind with
+  | .development => s!"development build (no source commit stamped) — {pins}"
+  | .dirty => s!"dirty build — commit {p.shortCommit} plus uncommitted changes, so it does not describe this binary — {pins}"
+  | .clean => s!"clean build — commit {p.shortCommit} — {pins}"
+
 def cmdVersion : CmdOut :=
-  { data := Json.mkObj [("version", Json.str productVersion), ("logFormat", jnum supportedVersion)]
-    human := s!"tl {productVersion} (log format v{supportedVersion})" }
+  let p := Tl.Build.current
+  { data := Json.mkObj
+      [("version", Json.str productVersion), ("logFormat", jnum supportedVersion),
+       ("build", buildProvenanceJson p)]
+    human := s!"tl {productVersion} (log format v{supportedVersion})\n{buildProvenanceHuman p}" }
 
 /-- `tl licenses` / `tl --licenses`: the third-party notice, embedded in the
     binary (ADR-0006 compliance deliverable). Human output is the notice

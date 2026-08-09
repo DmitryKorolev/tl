@@ -46,6 +46,8 @@ import Tl.Kernel.CanonParent
 
 -- Tested I/O shell
 import Tl.Error
+import Tl.Build.Stamp
+import Tl.Build.Provenance
 import Tl.Hash.Sha256
 import Tl.Clock.Hlc
 import Tl.Clock.Replica

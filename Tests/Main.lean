@@ -40,6 +40,7 @@ unsafe def main : IO UInt32 := do
   let grammar ← grammarTests
   let docGrammar ← docGrammarTests
   let releaseIdentity ← releaseIdentityTests
+  let buildProvenance ← buildProvenanceTests
   let sync ← syncTests
   let cacheIo ← cacheIoTests
   let perf ← perfTests
@@ -70,6 +71,7 @@ unsafe def main : IO UInt32 := do
     ("Grammar: tl help --json schema & parser agreement", grammar),
     ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
     ("Release identity: repository/workflow/npm pins do not drift", releaseIdentity),
+    ("Build provenance: tl version kinds, renderings, and stamp drift", buildProvenance),
     ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
     ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
     ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),

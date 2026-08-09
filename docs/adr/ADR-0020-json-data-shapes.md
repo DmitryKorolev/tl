@@ -411,12 +411,16 @@ diagnostics, stale claims); checks are added additively.
 
 ```json
 { "schemaVersion": 3, "ok": true, "data": { "root": ".tl", "replica": "chp14mvsxr027", "created": true } }
-{ "schemaVersion": 3, "ok": true, "data": { "version": "0.1.0", "logFormat": 2 } }
+{ "schemaVersion": 3, "ok": true, "data": { "version": "0.1.0", "logFormat": 2,
+  "build": { "kind": "clean", "commit": "<40-hex>", "dirty": false,
+             "toolchain": "leanprover/lean4:v4.32.2", "manifestDigest": "<sha256 hex>" } } }
 ```
 
-(`"created": false` on an idempotent re-run. The ADR-0006 build-provenance
-digest joins `version`'s payload as an additive field once the release
-pipeline that produces it exists — deferred, not dropped.)
+(`"created": false` on an idempotent re-run. `build` is the ADR-0006
+build-provenance object, added here additively now that it has a pipeline to
+produce it. `kind` is `development` | `dirty` | `clean` — see ADR-0006 "Tool
+versioning" for what each asserts, and why there is no `release` value.
+`commit` is `null` for a development build.)
 
 **`tl help --json`** / **`tl help <command> --json`** — the command grammar,
 machine-readable (ADR-0011 §1), for agent introspection. The full dump and a

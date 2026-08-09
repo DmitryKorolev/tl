@@ -112,10 +112,42 @@ The product version is SemVer (`tl version`, initially `0.1.0`) and is
 distinct from the on-disk log `v` and the `--json` `schemaVersion` (ADR-0008).
 A product minor/patch release may leave both schemas unchanged; a log or JSON
 breaking change bumps its own schema even if the product version also changes.
-`tl version --json` reports all three numbers plus the git commit / build
-provenance digest for the running binary (the provenance digest joins the
-payload additively once the release pipeline that produces it exists —
-ADR-0020 pins the stage-1 shape without it).
+`tl version --json` reports all three numbers plus the build provenance of the
+running binary, as the additive `build` object ADR-0020 left room for:
+
+```json
+{ "version": "0.1.0", "logFormat": 2,
+  "build": { "kind": "clean", "commit": "<40-hex>", "dirty": false,
+             "toolchain": "leanprover/lean4:v4.32.2", "manifestDigest": "<sha256 hex>" } }
+```
+
+`commit` is `null` — not `""` — when no commit was stamped, so an agent reads
+an absence rather than a value. `manifestDigest` is the SHA-256 of
+`lake-manifest.json`, which fixes every dependency revision at once because the
+ADR-0009 pins are immutable commits. Human output carries the same facts.
+
+`kind` answers *which source does this binary correspond to*, and deliberately
+stops there:
+
+- `development` — no commit was stamped; a local `lake build`. A development
+  build reports `dirty: false` whatever the tree looked like, because there is
+  no commit for the tree to be dirty relative to.
+- `dirty` — a commit was stamped over a tree with uncommitted changes, so the
+  commit does not describe the binary.
+- `clean` — stamped from a clean checkout; the binary corresponds to that commit.
+
+There is deliberately no `release` kind. A binary cannot attest that it is an
+official release — anyone can stamp a commit and build — so that claim is
+carried by the Sigstore certificate identity pinned in `release/identity.json`
+and verified per `VERIFYING.md`, never by the binary's own self-report.
+
+The provenance is compiled in from the generated `Tl/Build/Stamp.lean`, whose
+checked-in copy is the development stamp; `scripts/gen-build-provenance.sh
+--stamp` rewrites it from git HEAD, which the release workflow runs on a clean
+checkout of the tag before building and then smoke-tests against the compiled
+binary. The generator's output is a pure function of `lean-toolchain`,
+`lake-manifest.json`, and the git state, so an independent rebuilder reproduces
+the same stamp — and therefore the same binary — from the same commit.
 
 ### Runtime prerequisite: git ≥ 2.17
 
