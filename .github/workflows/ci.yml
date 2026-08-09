@@ -64,6 +64,13 @@ jobs:
       - name: build-provenance generator selftest
         run: ./scripts/gen-build-provenance.sh --selftest
 
+      # The artifact verifier is the code path behind VERIFYING.md, the
+      # installer, and the release workflow's pre-publish check. Its refusal
+      # paths are the whole point of it, so they are exercised on every commit
+      # rather than first discovered during a release.
+      - name: release artifact verifier selftest
+        run: ./scripts/verify-release-artifacts.sh --selftest
+
       # Tl/Build/Stamp.lean is generated, and three places state as fact that
       # the checked-in copy is the *development* stamp. Nothing but this step
       # enforces it: a stamped copy swept in by `git commit -a` would otherwise

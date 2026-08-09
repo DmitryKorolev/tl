@@ -50,6 +50,12 @@ express:
   (ADR-0014 T3).
 - `scripts/gen-build-provenance.sh --selftest` exercises the stamp generator's
   refusal paths.
+- `scripts/verify-release-artifacts.sh --selftest` exercises the artifact
+  verifier's, against fabricated missing, malformed, mismatched, and
+  rejected-signature inputs. That script is the VERIFYING.md procedure as code,
+  shared by the installer and by the release workflow's pre-publish check, so
+  the documented steps are the executed ones and a release cannot ship
+  artifacts its own published procedure would reject.
 - A regeneration diff on `Tl/Build/Stamp.lean`. Three places state as fact that
   the checked-in copy is the development stamp; without this step a stamped
   copy swept in by `git commit -a` would make every build from that tree claim

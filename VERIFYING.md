@@ -50,6 +50,28 @@ The normal installer verifies both checks. Its explicit
 verification remains mandatory. This is for an environment where cosign cannot
 run, not a weaker default.
 
+## The same checks, scripted
+
+`scripts/verify-release-artifacts.sh` in this repository performs exactly the
+steps above, reading the issuer and identity from `release/identity.json` so
+there is no second copy of the pin to drift:
+
+```sh
+scripts/verify-release-artifacts.sh <download-dir> tl-linux-x64
+```
+
+It is the same code the installer and the release workflow use. The workflow
+runs it over the candidate artifacts before creating the GitHub Release, so
+nothing is published that this procedure would reject; `--selftest` runs it
+against fabricated missing, malformed, mismatched, and rejected-signature
+inputs on every commit. A procedure that is documented but never executed is a
+procedure nobody has tested.
+
+`TL_VERIFY_SKIP_SIGNATURE=1` is its equivalent of the installer's escape: it
+drops the Sigstore checks and keeps SHA-256 mandatory. Without cosign on `PATH`
+and without that variable, it refuses rather than quietly degrading to a
+digest-only check.
+
 ## Identity history and rotation
 
 | Releases | Repository and workflow | OIDC issuer | Status |
