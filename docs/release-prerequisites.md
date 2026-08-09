@@ -14,6 +14,34 @@ recorded is the one that fails at the worst moment.
 
 ## Before the first release, once
 
+### 0. The repository must be public
+
+Everything below assumes it. GitHub Releases are the source of truth for
+artifacts (ADR-0006), and a private repository serves its release assets only
+to authenticated clients with access: an anonymous `GET` of
+`https://github.com/DmitryKorolev/tl/releases/latest` answers **404**. That is
+not a configuration detail, it is the whole distribution story —
+
+- `install.sh` resolves the latest tag from that redirect and downloads every
+  asset from `/releases/download/<tag>/`. Both 404 for a user.
+- `Formula/tl.rb` downloads its binary, its Sigstore bundle and the notice from
+  the same place, so `brew install tl` cannot work.
+- `VERIFYING.md` tells a user to download the asset, `SHA256SUMS` and the
+  bundles. They cannot.
+- The npm packages would still install — npm does not care where the binaries
+  came from — but the release they are meant to be checkable against would be
+  unreachable, which removes the property the npm job exists to preserve.
+
+Deployment protection rules are also a paid feature on private repositories
+(free on public ones), so the `release` environment's required reviewers and
+`v*` deployment-tag rule — the whole of section 2 — may not be configurable at
+all while the repository is private. Confirm that before relying on them.
+
+So: make the repository public, or decide deliberately that this release is
+npm-only and record that decision in ADR-0006 — it would retire the installer,
+the Homebrew tap and the published verification procedure, which is a change to
+what tl distributes rather than a deferral.
+
 ### 1. Bootstrap the five npm packages
 
 npm configures trusted publishing **per package**, and only for a package that
