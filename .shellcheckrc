@@ -1,0 +1,24 @@
+# ShellCheck configuration for tl's shell code.
+#
+# No `shell=` override: each file's shebang decides. install.sh and the release
+# scripts are POSIX sh — install.sh is piped into whatever /bin/sh the user has,
+# and the others run on macOS where /bin/sh is not bash — while
+# check-task-ids.sh is deliberately bash. Forcing one dialect on both would
+# report every `local` in the bash script as a portability defect and drown the
+# findings that matter.
+
+# Follow `. "$RC_LIB_SELF"` into scripts/lib/release-common.sh, so the helpers
+# it defines are not reported as undefined and the variables it sets are not
+# reported as unused. Without this the shared library is invisible to the gate,
+# which is the opposite of what collecting the helpers there was for.
+external-sources=true
+source-path=SCRIPTDIR
+
+# Warnings and above fail. The info level is advisory style — `ls | head` over
+# a script-controlled temp directory, `A && B || C` in a test fixture — and
+# admitting it as a gate would mean either a wave of suppressions or churn in
+# code that is correct. Anything genuinely wrong at that level gets fixed at
+# the site, with a per-line directive and a reason where the pattern is
+# deliberate.
+# (the gate passes -S warning on the command line; this key is not honoured
+# in every ShellCheck release, so the floor is set where it is enforced)

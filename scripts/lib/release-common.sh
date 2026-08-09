@@ -96,6 +96,13 @@ rc_sums_digest() {
 # ---------------------------------------------------------------------------
 
 # Sets RC_OS. Returns 1 with a teaching message on an unsupported system.
+#
+# Nothing in this repository calls it, and that is the point: the two consumers
+# that need the mapping — install.sh and the npm launcher — cannot source this
+# file, so what lives here is the *reference* their copies are compared against
+# by scripts/check-embedded-copies.sh, which reads it as text. RC_OS therefore
+# has no reader in shell, which is what SC2034 is reporting.
+# shellcheck disable=SC2034
 rc_detect_os() {
   case $(uname -s) in
     Darwin) RC_OS=darwin ;;
@@ -111,7 +118,8 @@ rc_detect_os() {
   esac
 }
 
-# Sets RC_ARCH. Returns 1 with a teaching message on an unsupported CPU.
+# Sets RC_ARCH. The reference for the shipped copies, as above.
+# shellcheck disable=SC2034
 rc_detect_arch() {
   case $(uname -m) in
     arm64 | aarch64) RC_ARCH=arm64 ;;
@@ -123,12 +131,11 @@ rc_detect_arch() {
   esac
 }
 
-# Sets RC_OS, RC_ARCH and RC_TARGET.
-rc_detect_target() {
-  rc_detect_os || return 1
-  rc_detect_arch || return 1
-  RC_TARGET="$RC_OS-$RC_ARCH"
-}
+# There is deliberately no `rc_detect_target` composing the two above. One
+# existed and nothing called it: the consumers that need a target string are
+# install.sh and the npm launcher, and both carry their own copies precisely
+# because neither can source this file. A convenience wrapper with no caller is
+# a third definition of the mapping waiting to drift from the two that ship.
 
 # ---------------------------------------------------------------------------
 # Targets and ADR-0006 support tiers, from release/targets.json
@@ -201,13 +208,26 @@ rc_target_is_required() {
 # observed rather than inferred, and the command's output is kept and shown.
 # ---------------------------------------------------------------------------
 
-# rc_selftest_begin <label> — call once, after setting up a temp dir.
+# rc_selftest_begin <label> [scratch-dir] — call once, after setting up a temp
+# dir. The scratch dir is where captured stdout and stderr land; passing it here
+# rather than having each caller assign RC_OUT/RC_ERR keeps those variables
+# owned by the one file that reads them. Shellcheck flagged ten assignments as
+# unused for exactly that reason — it cannot see through the `.` into this
+# library — and silencing ten directives would have been the wrong repair for
+# a real smell.
 rc_selftest_begin() {
   RC_SELFTEST_LABEL=$1
   RC_FAILURES=0
-  RC_OUT=${RC_OUT:-"${TMPDIR:-/tmp}/rc-out.$$"}
-  RC_ERR=${RC_ERR:-"${TMPDIR:-/tmp}/rc-err.$$"}
+  rc_capture_into "${2:-${TMPDIR:-/tmp}}"
   echo "$RC_SELFTEST_LABEL --selftest:"
+}
+
+# rc_capture_into <dir> — where `rc_run` puts the captured stdout and stderr.
+# Non-selftest callers that use `rc_run`/`$RC_OUT`/`$RC_ERR` call this; under
+# `set -u` an unset RC_OUT is an immediate failure, so it is not optional.
+rc_capture_into() {
+  RC_OUT="$1/rc-out.$$"
+  RC_ERR="$1/rc-err.$$"
 }
 
 # rc_note <status> <name> — record an already-observed status.

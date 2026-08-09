@@ -68,6 +68,12 @@ jobs:
           tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
           install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
           actionlint --version
+          # ShellCheck is preinstalled on ubuntu-latest, and both gates need
+          # it: actionlint shells out to it for every `run:` block and silently
+          # checks only the YAML without it, and the policy's own shell gate
+          # refuses to run at all. Asserting it here turns a runner-image
+          # change from a quietly smaller policy into a failed step.
+          shellcheck --version
 
       # The whole policy, from the one place that defines it. The release
       # workflow runs this same command against the tagged commit; keeping the

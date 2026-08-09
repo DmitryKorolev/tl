@@ -476,15 +476,18 @@ trusted publishing in a comment does not register it with npm.
 `scripts/check-release-prereqs.sh` runs before anything is signed and verifies
 what it can — that each of the five npm packages exists, that the `release`
 environment exists and carries protection rules where its token may read them,
-that a ruleset is configured, that the tap exists. Four things it cannot see
-are carried here rather than assumed silently: that the environment's required
-reviewers are configured and distinct from the tag pusher; that the `v*` tag
-ruleset actually restricts tag *creation*; that each npm package's trusted
-publisher names this repository, this workflow and this environment, with no
-classic token still able to publish; and that `HOMEBREW_TAP_TOKEN` grants write
-access to the tap and nothing more. The first two need a token with admin
-scope, which a release run deliberately does not hold; the npm ones have no
-public API; a secret's scope is not readable from a workflow. Each is a *live*
+that a ruleset is configured, that the tap exists. It inspects the actual rule
+types rather than counting them — a required-reviewers rule with somebody in
+it, a deployment policy whose tag patterns cover `v*`, and a tag ruleset that
+is actively enforced and carries a creation restriction — because a count is
+satisfied by a wait timer or an unrelated branch rule. Three things it cannot
+see are carried here rather than assumed silently: that the required reviewer
+is somebody other than whoever pushes the tag (the API exposes who may approve,
+not who will push, and on a single-maintainer repository the two coincide);
+that each npm package's trusted publisher names this repository, this workflow
+and this environment, with no classic token still able to publish; and that
+`HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing more. The npm
+ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after
 any permission change, not once. What follows if one fails is bounded and

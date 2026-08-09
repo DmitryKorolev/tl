@@ -108,6 +108,25 @@ development_stamp_is_checked_in() {
   fi
 }
 
+# -S warning is the floor: the info level is advisory style over
+# script-controlled temp paths, and admitting it would mean a wave of
+# suppressions rather than better code. Anything genuinely wrong there is fixed
+# at the site. The configuration lives in .shellcheckrc so an editor and a
+# developer's own `shellcheck` see the same rules this gate does.
+shellcheck_all() {
+  # Every tracked file that is a shell script by shebang or by extension, found
+  # rather than listed — a list would silently stop covering a new script, and
+  # a gate that quietly narrows is the failure mode this whole file exists to
+  # prevent.
+  files=$(git ls-files -- '*.sh' 'install.sh' 'npm/tl/bin/tl' 2>/dev/null)
+  if [ -z "$files" ]; then
+    echo "::error::found no shell files to analyse — the discovery pattern in shellcheck_all matches nothing, so this gate would pass over everything." >&2
+    return 1
+  fi
+  # shellcheck disable=SC2086
+  shellcheck -S warning $files
+}
+
 version_gate() {
   if [ -n "$tag" ]; then
     ./scripts/check-release-version.sh --tag "$tag"
@@ -127,6 +146,7 @@ release-policy gates, in order:
   release identity discriminates      scripts/check-release-identity.sh
   embedded-copy drift selftest        scripts/check-embedded-copies.sh --selftest
   embedded-copy drift                 scripts/check-embedded-copies.sh
+  shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
   SBOM generator selftest             scripts/gen-sbom.sh --selftest
   release manifest selftest           scripts/gen-release-manifest.sh --selftest
@@ -134,6 +154,7 @@ release-policy gates, in order:
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   npm package selftest                scripts/npm-pack.sh --selftest
   npm publisher selftest              scripts/npm-publish.sh --selftest
+  npm bootstrap selftest              scripts/npm-bootstrap.sh --selftest
   installer selftest                  sh install.sh --selftest
   Homebrew formula generator selftest scripts/gen-homebrew-formula.sh --selftest
   the Homebrew formula parses         ruby -c Formula/tl.rb            (needs ruby)
@@ -165,6 +186,19 @@ gate "release identity discriminates" ./scripts/check-release-identity.sh
 gate "embedded-copy drift selftest" ./scripts/check-embedded-copies.sh --selftest
 gate "embedded-copy drift" ./scripts/check-embedded-copies.sh
 
+# Every shell file in the repository, not only the snippets embedded in
+# workflows. actionlint runs ShellCheck over `run:` blocks and nothing else, so
+# install.sh — the file users pipe into a shell — and the release scripts had
+# no static analysis at all. It found two real defects on the commit that added
+# this gate: a `[ -e "$dir/.tl.install."* ]` test that misbehaves on more than
+# one match, and a comment beginning with the tool's own name, which ShellCheck
+# reads as a malformed directive and treats as an error.
+if command -v shellcheck >/dev/null 2>&1; then
+  gate "shell static analysis" shellcheck_all
+else
+  skip_gate "shell static analysis" "shellcheck is not on PATH"
+fi
+
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
 gate "SBOM generator selftest" ./scripts/gen-sbom.sh --selftest
 gate "release manifest selftest" ./scripts/gen-release-manifest.sh --selftest
@@ -179,9 +213,13 @@ if command -v npm >/dev/null 2>&1; then
   # The publisher's refusals are the ones that matter most: an npm version
   # cannot be reissued, so a mistake here is not correctable after the fact.
   gate "npm publisher selftest" ./scripts/npm-publish.sh --selftest
+  # The one-time bootstrap is the only manual step before the first release,
+  # and the only one that publishes an immutable version by hand.
+  gate "npm bootstrap selftest" ./scripts/npm-bootstrap.sh --selftest
 else
   skip_gate "npm package selftest" "npm is not on PATH"
   skip_gate "npm publisher selftest" "npm is not on PATH"
+  skip_gate "npm bootstrap selftest" "npm is not on PATH"
 fi
 
 # The installer is piped into a shell by people who cannot inspect it first, so
@@ -202,13 +240,18 @@ fi
 if ! command -v actionlint >/dev/null 2>&1; then
   skip_gate "workflow lint" "actionlint is not on PATH"
 elif ! command -v shellcheck >/dev/null 2>&1; then
-  # actionlint shells out to shellcheck for every `run:` block and silently
+  # actionlint shells out to ShellCheck for every `run:` block and silently
   # does without it when it is absent — so on a machine with actionlint and no
-  # shellcheck the gate passes having checked only the YAML. That is how three
-  # real shell defects in these two workflows survived: the runner has
-  # shellcheck preinstalled, so the gate would have failed in CI while passing
-  # everywhere it was tried. Naming the shortfall is the difference between a
-  # gate that is not running and a gate that is running clean.
+  # ShellCheck the gate passes having checked only the YAML. That is how three
+  # real shell defects in these two workflows survived: the runner has it
+  # preinstalled, so the gate would have failed in CI while passing everywhere
+  # it was tried. Naming the shortfall is the difference between a gate that is
+  # not running and a gate that is running clean.
+  #
+  # (Capitalised deliberately. A comment whose first word after `#` is the
+  # lowercase tool name is parsed as a ShellCheck *directive*, and an
+  # unparseable directive is an error that fails the file — which is what this
+  # very comment used to do.)
   skip_gate "workflow lint" "actionlint is present but shellcheck is not, and without it actionlint checks the YAML only"
 else
   # A workflow cannot validate itself: if GitHub refuses to load release.yml,

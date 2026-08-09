@@ -46,11 +46,36 @@ identity_field() {
 }
 
 audit() {
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
   repository=$(identity_field repository)
   npm_package=$(identity_field npmPackage)
   scope=${npm_package%%/*}
 
   echo "release prerequisites for ${repository}:"
+
+  # --- the repository must be public -------------------------------------
+  #
+  # First, because everything else assumes it. GitHub Releases are the source
+  # of truth for artifacts, and a private repository serves its assets only to
+  # authenticated clients: install.sh, the Homebrew formula and every step in
+  # VERIFYING.md get a 404. The document said so; nothing checked it, so the
+  # audit reported seven missing prerequisites while the eighth — the one that
+  # makes the other seven pointless — went unmentioned.
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    unchecked_row "the repository is public" \
+      "gh is not on PATH or not authenticated, so the repository's visibility could not be read."
+  elif visibility=$(gh api "repos/${repository}" --jq '.visibility' 2>/dev/null); then
+    if [ "$visibility" = public ]; then
+      pass "the repository is public, so release assets are downloadable"
+    else
+      fail_row "the repository is ${visibility}, not public" \
+        "A private repository serves release assets only to authenticated clients — an anonymous fetch of /releases/latest is a 404 — so install.sh, 'brew install tl' and the whole of VERIFYING.md cannot work. Deployment protection rules are also a paid feature on private repositories. Make it public, or record an npm-only release in ADR-0006 deliberately: that retires the installer, the tap and the published verification procedure."
+    fi
+  else
+    unchecked_row "the repository is public" \
+      "the repository metadata could not be read; check 'gh api repos/${repository}'."
+  fi
 
   # --- npm ---------------------------------------------------------------
   if ! command -v npm >/dev/null 2>&1; then
@@ -87,40 +112,119 @@ audit() {
     return 0
   fi
 
-  if gh api "repos/${repository}/environments/release" >/dev/null 2>&1; then
-    pass "the 'release' environment exists"
-    # Protection rules need admin scope to read. Report the shortfall rather
-    # than reading an empty list as "no rules configured", which would be the
-    # same output as a genuinely unprotected environment.
-    if rules=$(gh api "repos/${repository}/environments/release" \
-                 --jq '.protection_rules | length' 2>/dev/null); then
-      if [ "${rules:-0}" -gt 0 ]; then
-        pass "the 'release' environment carries $rules protection rule(s)"
-      else
-        fail_row "the 'release' environment has no protection rules" \
-          "Without required reviewers and a v* deployment-tag rule, anyone who can create a tag can make this workflow sign whatever that tag points at. Configure them per docs/release-prerequisites.md."
-      fi
-    else
-      unchecked_row "the 'release' environment's protection rules" \
-        "Reading them needs a token with admin scope, which this check deliberately does not require."
-    fi
+  # The *properties* the security model needs, not proxies for them. A count
+  # of protection rules is satisfied by a wait timer, and a count of rulesets
+  # by an unrelated branch rule — both would have passed while required
+  # reviewers and protected tag creation were absent, which is the whole thing
+  # this row exists to establish.
+  #
+  # A 404 is a missing environment; anything else is an unreadable one, and the
+  # two must not collapse into the same verdict.
+  env_json="$work/environment.json"
+  # `status=$(cmd; echo $?)` does not work here: `set -e` applies inside the
+  # command-substitution subshell, so a failing `gh` ends it before `echo`
+  # runs and the status comes back empty. An `if` suppresses errexit for its
+  # condition, which is the whole point of writing it this way.
+  if gh api "repos/${repository}/environments/release" --cache 0s \
+       > "$env_json" 2>"$work/env.err"; then
+    env_status=0
   else
+    env_status=$?
+  fi
+  if [ "$env_status" -eq 0 ]; then
+    pass "the 'release' environment exists"
+    reviewers=$(python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+rules = data.get("protection_rules") or []
+for rule in rules:
+    if rule.get("type") == "required_reviewers":
+        print(len(rule.get("reviewers") or []))
+        break
+else:
+    print(-1)
+' "$env_json")
+    if [ "$reviewers" -gt 0 ] 2>/dev/null; then
+      pass "the 'release' environment requires $reviewers reviewer(s)"
+    elif [ "$reviewers" = 0 ]; then
+      fail_row "the 'release' environment has a required-reviewers rule with nobody in it" \
+        "An empty reviewer list approves itself. Add at least one reviewer per docs/release-prerequisites.md."
+    else
+      fail_row "the 'release' environment has no required-reviewers rule" \
+        "Its other rules — a wait timer, a branch policy — do not gate approval. Without required reviewers, anyone who can create a tag can make this workflow sign whatever that tag points at."
+    fi
+    if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+sys.exit(0 if data.get("deployment_branch_policy") else 1)
+' "$env_json"; then
+      # A custom policy exists; check that its patterns are tag patterns and
+      # that they are the v* shape this pipeline releases under.
+      policy=$(gh api "repos/${repository}/environments/release/deployment-branch-policies" \
+                 --jq '[.branch_policies[] | select(.type == "tag") | .name] | join(",")' 2>/dev/null || echo '')
+      case ",$policy," in
+        *,v\**,*) pass "the 'release' environment restricts deployments to v* tags ($policy)" ;;
+        ,,) fail_row "the 'release' environment has a deployment policy with no tag patterns" \
+              "Only a tag policy matching v* keeps a branch push out of the environment that can sign." ;;
+        *) fail_row "the 'release' environment's tag patterns are '$policy', not v*" \
+             "The pattern must cover exactly the tags this pipeline releases under." ;;
+      esac
+    else
+      fail_row "the 'release' environment allows deployments from any ref" \
+        "Set a deployment-tag policy of v*, so a branch push cannot enter the environment that can sign."
+    fi
+  elif grep -q '404\|Not Found' "$work/env.err" 2>/dev/null; then
     fail_row "the 'release' environment does not exist" \
-      "The sign job declares 'environment: release', and that declaration is inert until the environment exists with protection rules. Create it per docs/release-prerequisites.md."
+      "The sign and publish-npm jobs declare 'environment: release', and that declaration is inert until the environment exists with protection rules. Create it per docs/release-prerequisites.md."
+  else
+    unchecked_row "the 'release' environment" \
+      "the API call failed for a reason other than 'not found' ($(tr -d '\n' < "$work/env.err" | cut -c1-120)); this is not evidence that it is missing."
   fi
 
-  if rulesets=$(gh api "repos/${repository}/rulesets" --jq 'length' 2>/dev/null); then
-    if [ "${rulesets:-0}" -gt 0 ]; then
-      pass "the repository has $rulesets ruleset(s) configured"
-      unchecked_row "a ruleset restricts who may create v* tags" \
-        "Whether a ruleset *targets tags matching v\\** and restricts creation needs the per-ruleset detail, which needs admin scope; confirm it in repository settings."
-    else
-      fail_row "the repository has no rulesets" \
-        "A v* tag ruleset is what stops a tag being created outside review. The sign job's ancestry check is a backstop: it sees what the tag points at, never who pushed it."
-    fi
+  rules_json="$work/rulesets.json"
+  if gh api "repos/${repository}/rulesets" --cache 0s \
+       > "$rules_json" 2>"$work/rules.err"; then
+    rules_status=0
   else
-    unchecked_row "the v* tag ruleset" \
-      "Reading rulesets needs a token with admin scope."
+    rules_status=$?
+  fi
+  if [ "$rules_status" -ne 0 ]; then
+    unchecked_row "a ruleset restricts who may create v* tags" \
+      "the rulesets API call failed ($(tr -d '\n' < "$work/rules.err" | cut -c1-120))."
+  else
+    # Each ruleset's detail, not just the count: the target must be `tag`, it
+    # must be actively enforced, its conditions must cover v*, and it must
+    # actually restrict creation.
+    tag_ruleset=''
+    for id in $(python3 -c '
+import json, sys
+for entry in json.load(open(sys.argv[1])):
+    if entry.get("target") == "tag":
+        print(entry["id"])
+' "$rules_json"); do
+      detail="$work/ruleset-$id.json"
+      gh api "repos/${repository}/rulesets/$id" --cache 0s > "$detail" 2>/dev/null || continue
+      if python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+if data.get("enforcement") != "active":
+    sys.exit(1)
+patterns = (((data.get("conditions") or {}).get("ref_name") or {}).get("include")) or []
+if not any(p in ("~ALL", "refs/tags/v*") or p.startswith("refs/tags/v") for p in patterns):
+    sys.exit(1)
+kinds = {r.get("type") for r in (data.get("rules") or [])}
+sys.exit(0 if "creation" in kinds else 1)
+' "$detail"; then
+        tag_ruleset=$id
+        break
+      fi
+    done
+    if [ -n "$tag_ruleset" ]; then
+      pass "an active tag ruleset (#$tag_ruleset) restricts creation of v* tags"
+    else
+      fail_row "no active ruleset restricts creation of v* tags" \
+        "A ruleset that exists but targets branches, is in evaluate mode, does not cover v*, or carries no creation restriction leaves tag creation open. The sign job's ancestry check is a backstop: it sees what the tag points at, never who pushed it."
+    fi
   fi
 
   tap="${repository%%/*}/homebrew-tap"
@@ -141,9 +245,7 @@ selftest() {
   # exists to prevent, one level up.
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
-  rc_selftest_begin "check-release-prereqs"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_selftest_begin "check-release-prereqs" "$work"
 
   ok=0; bad=0; unchecked=0
   pass "a verified row" >/dev/null

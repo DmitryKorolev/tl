@@ -206,9 +206,7 @@ selftest() {
   trap 'rm -rf "$work"' EXIT
   self=$script_dir/$(basename -- "$0")
 
-  rc_selftest_begin "verify-release-artifacts"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_selftest_begin "verify-release-artifacts" "$work"
 
   rc_write_stub_cosign "$work/bin" "$identity_file" "$work"
 

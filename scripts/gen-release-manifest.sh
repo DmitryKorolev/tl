@@ -86,6 +86,13 @@ def read(rel):
 
 
 version = tag[1:]
+manifest_digest = hashlib.sha256(
+    open(os.path.join(root, "lake-manifest.json"), "rb").read()
+).hexdigest()
+# GITHUB_WORKFLOW_REF is absent outside Actions (the selftest), so an empty
+# value means "cannot compare" rather than "compare against nothing".
+workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
+run_id = None
 
 # Which platform binaries actually arrived, and which are legitimately absent.
 # The tier policy is applied once, here, rather than in each consumer.
@@ -108,24 +115,96 @@ for target in required + optional:
     # Each leg's own record of what it built, carried out of the build job with
     # the binary. Comparing it here is what makes `sign` sign the bytes that
     # were smoke-tested, rather than whatever the artifact store returned.
-    build = None
+    #
+    # Mandatory, not "checked when present". Written the other way this was
+    # fail-open in the worst direction: delete the metadata and every binary
+    # publishes with `"build": null` and no comparison at all, so the check
+    # that exists to prove the signed bytes were smoke-tested was satisfied by
+    # removing the evidence. Absence is now a refusal.
     metadata_path = os.path.join(dist, f"build-metadata-{target}.json")
-    if os.path.isfile(metadata_path):
+    if not os.path.isfile(metadata_path):
+        die(
+            f"{asset} is present but build-metadata-{target}.json is not. Every published target "
+            "must carry the record its own build leg wrote — that record is the only thing tying "
+            "the signed bytes to the leg that smoke-tested them, so its absence is a refusal "
+            "rather than a check that gets skipped. Fix the upload in the build job."
+        )
+    audit_path = os.path.join(dist, f"link-audit-{target}.txt")
+    if not os.path.isfile(audit_path):
+        die(
+            f"{asset} is present but link-audit-{target}.txt is not. ADR-0006 requires the "
+            "link-time audit for every binary release, and it is produced per target by the leg "
+            "that built it. Fix the upload in the build job."
+        )
+    try:
         with open(metadata_path, encoding="utf-8") as handle:
             build = json.load(handle)
-        actual = digest(path)
-        if build.get("sha256") != actual:
+    except json.JSONDecodeError as exc:
+        die(f"build-metadata-{target}.json is not valid JSON ({exc}).")
+    if not isinstance(build, dict):
+        die(f"build-metadata-{target}.json is not a JSON object.")
+
+    # Every field the leg is supposed to have recorded, checked against what
+    # this job independently knows. A record that merely exists proves nothing;
+    # one whose fields are absent would compare `None` against `None` and pass.
+    for field in ("target", "sha256", "commit", "tier", "runner", "toolchain",
+                  "lakeManifestSha256", "workflowRef", "runId"):
+        if not build.get(field):
             die(
-                f"{asset} hashes to {actual}, but the {target} build leg recorded "
-                f"{build.get('sha256')}. The binary that arrived is not the one that was built "
-                "and smoke-tested — the artifact was replaced in transit or the wrong one was "
-                "uploaded. Nothing is signed."
+                f"build-metadata-{target}.json has no {field!r}. The record is incomplete, so it "
+                "cannot establish what it is here to establish; fix the recording step in the "
+                "build job rather than relaxing this check."
             )
-        if build.get("commit") != commit:
-            die(
-                f"the {target} build leg recorded commit {build.get('commit')}, but this release "
-                f"is {commit}. The legs did not all build the same source."
-            )
+    actual = digest(path)
+    if build["sha256"] != actual:
+        die(
+            f"{asset} hashes to {actual}, but the {target} build leg recorded "
+            f"{build['sha256']}. The binary that arrived is not the one that was built "
+            "and smoke-tested — the artifact was replaced in transit or the wrong one was "
+            "uploaded. Nothing is signed."
+        )
+    if build["commit"] != commit:
+        die(
+            f"the {target} build leg recorded commit {build['commit']}, but this release "
+            f"is {commit}. The legs did not all build the same source."
+        )
+    if build["target"] != target:
+        die(
+            f"build-metadata-{target}.json records target {build['target']!r}. The records were "
+            "crossed between legs, so none of them can be trusted to describe its own binary."
+        )
+    if build["tier"] != tier:
+        die(
+            f"the {target} leg recorded tier {build['tier']!r}, but release/targets.json says "
+            f"{tier!r}. The tier decides whether a missing binary blocks the release, so the two "
+            "must agree."
+        )
+    if build["toolchain"] != read("lean-toolchain").strip():
+        die(
+            f"the {target} leg built with toolchain {build['toolchain']!r}, but this checkout "
+            f"pins {read('lean-toolchain').strip()!r}. The artifacts do not all come from the "
+            "pinned toolchain."
+        )
+    if build["lakeManifestSha256"] != manifest_digest:
+        die(
+            f"the {target} leg recorded a lake-manifest digest of "
+            f"{build['lakeManifestSha256']}, but this checkout's is {manifest_digest}. The legs "
+            "did not all build against the same dependency set."
+        )
+    # All legs belong to one workflow run; a record from another run means an
+    # artifact was carried in from somewhere else.
+    if run_id is None:
+        run_id = build["runId"]
+    elif build["runId"] != run_id:
+        die(
+            f"the {target} leg records run {build['runId']}, but another leg records {run_id}. "
+            "These binaries were not produced by one run of this workflow."
+        )
+    if workflow_ref and build["workflowRef"] != workflow_ref:
+        die(
+            f"the {target} leg records workflow {build['workflowRef']!r}, but this job is "
+            f"{workflow_ref!r}. The record did not come from this workflow."
+        )
     targets.append({
         "target": target,
         "tier": tier,
@@ -178,9 +257,7 @@ manifest = {
     "commit": commit,
     "repository": identity["repository"],
     "toolchain": read("lean-toolchain").strip(),
-    "lakeManifestSha256": hashlib.sha256(
-        open(os.path.join(root, "lake-manifest.json"), "rb").read()
-    ).hexdigest(),
+    "lakeManifestSha256": manifest_digest,
     "signing": {
         "certificateOidcIssuer": identity["certificateOidcIssuer"],
         "certificateIdentityRegexp": identity["certificateIdentityRegexp"],
@@ -290,9 +367,7 @@ PYEOF
 selftest() {
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
-  rc_selftest_begin "gen-release-manifest"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_selftest_begin "gen-release-manifest" "$work"
 
   commit=1111111111111111111111111111111111111111
   build_dist() {
@@ -302,15 +377,25 @@ selftest() {
     mkdir -p "$d"
     for target in "$@"; do
       printf 'binary for %s\n' "$target" > "$d/tl-$target"
+      # The same shape the build leg writes. Kept complete on purpose: a
+      # fixture that omits fields the generator requires would make every
+      # refusal row pass for the wrong reason.
       python3 -c '
 import hashlib, json, sys
-path, target, commit, out = sys.argv[1:5]
+path, target, commit, tier, toolchain, manifest_digest, out = sys.argv[1:8]
 with open(path, "rb") as handle:
     digest = hashlib.sha256(handle.read()).hexdigest()
-json.dump({"target": target, "sha256": digest, "commit": commit,
-           "runner": "ubuntu-latest", "toolchain": "leanprover/lean4:v4.32.2"},
+json.dump({"target": target, "sha256": digest, "commit": commit, "tier": tier,
+           "runner": "ubuntu-latest", "runnerOs": "Linux", "runnerArch": "X64",
+           "containerImage": "", "toolchain": toolchain,
+           "lakeManifestSha256": manifest_digest,
+           "workflowRef": "DmitryKorolev/tl/.github/workflows/release.yml@refs/tags/v1.2.3",
+           "runId": "42", "runAttempt": "1"},
           open(out, "w"), indent=2, sort_keys=True)
-' "$d/tl-$target" "$target" "$commit" "$d/build-metadata-$target.json"
+' "$d/tl-$target" "$target" "$commit" "$(rc_target_tier "$target")" \
+  "$(tr -d ' \t\r\n' < "$repo_root/lean-toolchain")" \
+  "$(rc_sha256_of "$repo_root/lake-manifest.json")" \
+  "$d/build-metadata-$target.json"
       printf 'link audit for %s\n' "$target" > "$d/link-audit-$target.txt"
     done
     printf 'notice\n' > "$d/THIRD-PARTY-LICENSES"
@@ -347,10 +432,89 @@ json.dump({"target": target, "sha256": digest, "commit": commit,
   # shellcheck disable=SC2086
   build_dist "$tampered" $all_targets
   a_target=$(printf '%s' "$all_targets" | cut -d' ' -f1)
+  an_optional=$(rc_targets best-effort | cut -d' ' -f1)
   printf 'replaced\n' > "$tampered/tl-$a_target"
   rc_expect_output 1 "not the one that was built" \
     "a binary that differs from what its build leg recorded is refused" \
     "$0" "$tampered" v1.2.3 "$commit" "$work/o1"
+
+  # The evidence must be *mandatory*. Written as "check it when the file
+  # happens to exist", deleting the metadata published every binary with
+  # "build": null and no comparison at all — the check was satisfied by
+  # removing what it checks.
+  nometa="$work/nometa"
+  # shellcheck disable=SC2086
+  build_dist "$nometa" $all_targets
+  rm "$nometa"/build-metadata-*.json
+  rc_expect_output 1 "is not. Every published target" \
+    "a published binary with no build metadata is refused, not published with a null record" \
+    "$0" "$nometa" v1.2.3 "$commit" "$work/o-nometa"
+  rc_note "$([ ! -e "$work/o-nometa" ] && echo 0 || echo 1)" \
+    "no manifest is written when the evidence is missing"
+
+  noaudit="$work/noaudit"
+  # shellcheck disable=SC2086
+  build_dist "$noaudit" $all_targets
+  rm "$noaudit"/link-audit-*.txt
+  rc_expect_output 1 "link-audit" "a published binary with no link audit is refused" \
+    "$0" "$noaudit" v1.2.3 "$commit" "$work/o-noaudit"
+
+  # A record that exists but is hollow must not pass by comparing None to None.
+  for field in target sha256 commit tier runner toolchain lakeManifestSha256 workflowRef runId; do
+    hollow="$work/hollow-$field"
+    # shellcheck disable=SC2086
+    build_dist "$hollow" $all_targets
+    python3 -c '
+import json, sys
+path, field = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+del data[field]
+json.dump(data, open(path, "w"), indent=2, sort_keys=True)
+' "$hollow/build-metadata-$a_target.json" "$field"
+    rc_expect_output 1 "has no '$field'" "a record missing $field is refused" \
+      "$0" "$hollow" v1.2.3 "$commit" "$work/o-hollow-$field"
+  done
+
+  # Crossed, mismatched and foreign records.
+  crossed="$work/crossed"
+  # shellcheck disable=SC2086
+  build_dist "$crossed" $all_targets
+  python3 -c '
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["target"] = sys.argv[2]
+json.dump(data, open(path, "w"), indent=2, sort_keys=True)
+' "$crossed/build-metadata-$a_target.json" "$an_optional"
+  rc_expect_output 1 "crossed between legs" "a record naming another target is refused" \
+    "$0" "$crossed" v1.2.3 "$commit" "$work/o-crossed"
+
+  drifted_tc="$work/drifted-toolchain"
+  # shellcheck disable=SC2086
+  build_dist "$drifted_tc" $all_targets
+  python3 -c '
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["toolchain"] = "leanprover/lean4:v0.0.0"
+json.dump(data, open(path, "w"), indent=2, sort_keys=True)
+' "$drifted_tc/build-metadata-$a_target.json"
+  rc_expect_output 1 "pinned toolchain" "a leg that built with another toolchain is refused" \
+    "$0" "$drifted_tc" v1.2.3 "$commit" "$work/o-tc"
+
+  tworuns="$work/tworuns"
+  # shellcheck disable=SC2086
+  build_dist "$tworuns" $all_targets
+  python3 -c '
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["runId"] = "99"
+json.dump(data, open(path, "w"), indent=2, sort_keys=True)
+' "$tworuns/build-metadata-$an_optional.json"
+  rc_expect_output 1 "not produced by one run" \
+    "records from two different workflow runs are refused" \
+    "$0" "$tworuns" v1.2.3 "$commit" "$work/o-tworuns"
 
   mixed="$work/mixed"
   # shellcheck disable=SC2086
@@ -368,9 +532,11 @@ json.dump(data, open(path, "w"), indent=2, sort_keys=True)
 
   # Tiers: a missing Best-effort target is recorded as unpublished; a missing
   # Supported one stops the release.
-  an_optional=$(rc_targets best-effort | cut -d' ' -f1)
   partial="$work/partial"
   # shellcheck disable=SC2086
+  # Word splitting is the point: rc_targets prints a space-separated list and
+  # build_dist takes one target per argument.
+  # shellcheck disable=SC2046
   build_dist "$partial" $(rc_targets supported)
   ppart="$work/partial.json"
   rc_expect_status 0 "a missing Best-effort target still produces a manifest" \

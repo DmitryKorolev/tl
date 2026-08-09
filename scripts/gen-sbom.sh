@@ -240,9 +240,7 @@ PYEOF
 selftest() {
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
-  rc_selftest_begin "gen-sbom"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_selftest_begin "gen-sbom" "$work"
 
   out="$work/sbom.spdx.json"
   rc_expect_status 0 "the repository's inputs produce an SBOM" "$0" 1.2.3 "$out"

@@ -281,11 +281,21 @@ Binary distribution is gated on a verifiable release pipeline:
   launcher pins each platform package by exact version, and npm verifies the
   registry-supplied tarball integrity. The package has no lifecycle script and
   never downloads arbitrary URLs during installation.
-- Builds are made reproducible where the platform toolchain allows: pinned
-  Lean + lake dependencies, deterministic timestamps/paths, and a documented
-  independent rebuilder that can verify binary-to-source correspondence.
-  Reproducibility proves "this binary came from this source"; the Lean proofs
-  still prove the source-level correctness claims.
+- Reproducible builds are the **open** item, and this bullet is the goal rather
+  than a description of what ships. Present tense here contradicted the honest
+  answer three other documents already gave, so it is written as the target it
+  is: pinned Lean + lake dependencies, deterministic timestamps/paths, and a
+  documented independent rebuilder that can verify binary-to-source
+  correspondence. Reproducibility would prove "this binary came from this
+  source"; the Lean proofs prove the source-level correctness claims either way.
+
+  What exists today is the first half. Every release records the inputs —
+  `build-metadata-<target>.json`, the SBOM, `tl version --json` — so a
+  rebuilder can confirm *which* toolchain and dependency set produced a binary.
+  What does not exist is a rebuild that comes out bit-identical, so nobody
+  outside this workflow can re-derive the artifact. `REBUILDING.md`, shipped
+  with each release, states that boundary to users; the remaining work is
+  tracked in docs/design-backlog.md.
 - Every binary release includes an SBOM and the full link-time dependency audit
   required by the licensing section below. **Built**: `scripts/gen-sbom.sh`
   emits SPDX 2.3 derived from `lean-toolchain` and `lake-manifest.json` (no
@@ -301,8 +311,18 @@ Binary distribution is gated on a verifiable release pipeline:
   cost of changing every asset name and every consumer of them; the companion
   set keeps the download a single unpacked file, and the identity comes instead
   from `release-manifest.json` — the canonical description of the release,
-  listed in `SHA256SUMS` and signed with everything else, which each downstream
-  job verifies and then reads instead of re-deriving the asset and target sets.
+  listed in `SHA256SUMS` and signed with everything else, and verified by each
+  downstream job before it does anything with the directory. Being precise
+  about what that buys today: the manifest is the single *authoritative*
+  description and the point at which a mismatched, missing or undescribed asset
+  is caught, and generating it is where each binary is checked against the
+  digest its own build leg recorded. The jobs downstream of it still derive
+  their own working lists — the Homebrew generator from `SHA256SUMS`, the npm
+  staging from the files present, the dist-tag from the tag — rather than
+  reading the manifest's `targets` and `npm` blocks. Those derivations now all
+  run against a directory the manifest has vouched for, which is what removes
+  the disagreement; consuming the manifest's own decisions directly is the
+  remaining step, tracked in docs/design-backlog.md.
   The installer places the notice beside the binary and the formula installs it
   to `doc`; both skip it with a message on a release that publishes none, since
   refusing a good binary over a missing sidecar is the wrong trade.
@@ -342,8 +362,9 @@ Binary distribution is gated on a verifiable release pipeline:
   open-source relink) — a packaging checklist, detailed below.
 - Supply-chain trust is explicit. Users trust the Lean compiler/checker,
   GitHub release infrastructure, the signing identity, and the pinned build
-  workflow; signatures and reproducibility make that trust auditable rather
-  than implicit (ADR-0014).
+  workflow; signatures make that trust auditable rather than implicit today,
+  and reproducibility would extend the audit below the signature to the bytes
+  themselves once it exists (ADR-0014).
 
 ## Licensing boundary (GMP / LGPL)
 
@@ -397,8 +418,9 @@ Adopt Lean's own posture verbatim —
   — propagating Lean's GMP/LGPLv3 entry plus `tl`'s own deps — in every
   artifact;
 - §4 relink via open source: because `tl` stays Apache open-source and
-  reproducibly buildable (release-integrity section), the LGPLv3 §4 "swap GMP and
-  relink" obligation is met the same way Lean meets it — the full source + pinned
+  buildable from a pinned toolchain and manifest (release-integrity section —
+  buildable, which §4 requires; not yet *reproducible*, which it does not), the
+  LGPLv3 §4 "swap GMP and relink" obligation is met the same way Lean meets it — the full source + pinned
   build system + the GMP upstream pointer are public, so any recipient can rebuild
   and relink. No separate object-file drop is required while `tl` is open.
 

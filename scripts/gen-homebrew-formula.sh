@@ -244,9 +244,7 @@ PYEOF
 selftest() {
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
-  rc_selftest_begin "gen-homebrew-formula"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_selftest_begin "gen-homebrew-formula" "$work"
 
   # The template is copied into the fixture, and every case runs against the
   # copy. Nothing here can touch the checkout's own Formula/tl.rb — which is

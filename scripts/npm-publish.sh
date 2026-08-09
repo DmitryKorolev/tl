@@ -147,15 +147,28 @@ publish_one() {
       if [ "$(content_digest "$staged_unpacked/package")" = "$(content_digest "$remote_unpacked/package")" ]; then
         echo "  ${po_name}@${po_version} is already published and matches this staging tree"
         # The dist-tag is separate state and can lag behind a partial run, so
-        # it is re-asserted rather than assumed. Converging every channel to
-        # the manifest means the tag too, not only the version.
-        if [ "$po_plan" -eq 1 ]; then
-          echo "    would re-assert the '${po_tag}' dist-tag"
-        elif npm dist-tag add "${po_name}@${po_version}" "$po_tag" >"$RC_OUT" 2>"$RC_ERR"; then
-          echo "    '${po_tag}' points at ${po_version}"
+        # it is checked rather than assumed. **Read, not written**: OIDC
+        # trusted publishing authorizes `npm publish` and nothing else, so
+        # `npm dist-tag add` has no credential in this job and would fail on
+        # every resumed run — turning the one path that exists to recover a
+        # partial publish into a guaranteed failure. On the first publish the
+        # tag is set by `npm publish --tag`, which is why this case only ever
+        # arises on a retry.
+        #
+        # Reading it is a public registry GET and needs no credential. If it
+        # already points where it should, the channel has converged and there
+        # is nothing to do. If it does not, this script cannot fix it and says
+        # so with the exact command a human can run under 2FA.
+        current=''
+        if npm view "$po_name" "dist-tags.${po_tag}" >"$RC_OUT" 2>"$RC_ERR"; then
+          current=$(tr -d ' \t\r\n' < "$RC_OUT")
+        fi
+        if [ "$current" = "$po_version" ]; then
+          echo "    '${po_tag}' already points at ${po_version}"
+        elif [ "$po_plan" -eq 1 ]; then
+          echo "    '${po_tag}' points at '${current:-<unset>}', not ${po_version} — would need a manual dist-tag repair"
         else
-          sed 's/^/    /' "$RC_ERR" >&2
-          fail "${po_name}@${po_version} is published but the '${po_tag}' dist-tag could not be set. Users resolving that tag would get an older version; set it by hand with 'npm dist-tag add ${po_name}@${po_version} ${po_tag}'."
+          fail "${po_name}@${po_version} is published, but the '${po_tag}' dist-tag points at '${current:-<unset>}'. Users resolving that tag get the wrong version. This job publishes over OIDC trusted publishing, which authorizes 'npm publish' and no other registry mutation, so it cannot move the tag: run it by hand under 2FA — 'npm dist-tag add ${po_name}@${po_version} ${po_tag}' — and re-run this job to confirm."
         fi
         skipped=$((skipped + 1))
         return 0
@@ -185,8 +198,7 @@ run() {
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   mkdir -p "$work/packed" "$work/staged" "$work/remote"
-  RC_OUT="$work/out"
-  RC_ERR="$work/err"
+  rc_capture_into "$work"
 
   published=0
   skipped=0
@@ -214,9 +226,7 @@ run() {
 selftest() {
   work_outer=$(mktemp -d)
   trap 'rm -rf "$work_outer"' EXIT
-  rc_selftest_begin "npm-publish"
-  RC_OUT="$work_outer/out"
-  RC_ERR="$work_outer/err"
+  rc_selftest_begin "npm-publish" "$work_outer"
 
   # A stub npm. It records what it was asked to do and answers from a fixture
   # registry laid out as <registry>/<escaped name>/<version>/package/…, so the
@@ -232,6 +242,17 @@ esc() { printf '%s' "\$1" | tr '/@' '__'; }
 case "\$1" in
   view)
     spec=\$2
+    field=\${3:-version}
+    case "\$field" in
+      dist-tags.*)
+        tag=\${field#dist-tags.}
+        if [ -f "\$registry/\$(esc "\$spec")/tag-\$tag" ]; then
+          cat "\$registry/\$(esc "\$spec")/tag-\$tag"
+          exit 0
+        fi
+        exit 1
+        ;;
+    esac
     name=\${spec%@*}
     version=\${spec##*@}
     if [ -d "\$registry/\$(esc "\$name")/\$version" ]; then
@@ -250,6 +271,16 @@ case "\$1" in
     dest="\$registry/\$(esc "\$name")/\$version/package"
     mkdir -p "\$dest"
     ( cd "\$dir" && tar -cf - . ) | ( cd "\$dest" && tar -xf - )
+    # publish --tag X sets the dist-tag as part of publishing, which is the
+    # only way this job can set one at all.
+    want_tag=latest
+    prev=''
+    for a in "\$@"; do
+      [ "\$prev" = "--tag" ] && want_tag=\$a
+      prev=\$a
+    done
+    mkdir -p "\$registry/\$(esc "\$name")"
+    printf '%s\n' "\$version" > "\$registry/\$(esc "\$name")/tag-\$want_tag"
     echo "+ \$name@\$version"
     exit 0
     ;;
@@ -283,8 +314,16 @@ case "\$1" in
     exit 0
     ;;
   dist-tag)
-    [ -n "\${NPM_STUB_DISTTAG_FAILS:-}" ] && { echo "npm error code E403" >&2; exit 1; }
-    exit 0
+    # Modelled on what OIDC trusted publishing actually authorizes: the
+    # publish verb, and no other registry mutation. The previous stub answered
+    # success here, which is why a script that ran dist-tag add on every
+    # resumed run looked correct in the selftest and would have failed on the
+    # first real retry. A mock must not be able to do something production
+    # cannot. (No backticks anywhere in this heredoc: it is unquoted, so a
+    # backtick in a comment is command substitution and runs.)
+    echo "npm error code ENEEDAUTH" >&2
+    echo "npm error need auth This command requires you to be logged in to https://registry.npmjs.org/" >&2
+    exit 1
     ;;
 esac
 exit 0
@@ -326,8 +365,10 @@ STUB
   rc_expect_status 0 "a re-run over an already-published version succeeds" pub "$staging" latest
   rc_note "$(! grep -q '^publish ' "$work_outer/npm-log" && echo 0 || echo 1)" \
     "a re-run publishes nothing a second time"
-  rc_note "$(grep -q '^dist-tag add' "$work_outer/npm-log" && echo 0 || echo 1)" \
-    "a re-run still re-asserts the dist-tag, which is separate state"
+  rc_note "$(! grep -q '^dist-tag' "$work_outer/npm-log" && echo 0 || echo 1)" \
+    "a re-run never calls dist-tag, which OIDC cannot authorize"
+  rc_note "$(grep -q 'dist-tags.latest' "$work_outer/npm-log" && echo 0 || echo 1)" \
+    "a re-run reads the dist-tag instead, which needs no credential"
 
   # A partial failure, then a resume. This is the scenario that used to strand
   # the version permanently.
@@ -370,12 +411,32 @@ STUB
     env NPM_STUB_PUBLISH_FAILS=1 NPM_STUB_PUBLISH_ERROR="npm error code E500" \
         PATH="$bin:$PATH" "$0" "$fresh" latest
 
-  # A dist-tag that cannot be set is not a silent partial success: users
-  # resolving that tag would keep getting the previous version.
+  # A published version whose dist-tag points elsewhere is not a silent partial
+  # success: users resolving that tag keep getting the previous version. It is
+  # also not something this job can repair — OIDC authorizes `npm publish` and
+  # no other registry mutation — so it must stop and hand over the exact
+  # command a human can run under 2FA.
   rm -rf "$work_outer/registry"
   PATH="$bin:$PATH" "$0" "$fresh" latest >/dev/null 2>&1
-  rc_expect_output 1 "dist-tag could not be set" "a dist-tag failure on a re-run is reported" \
-    env NPM_STUB_DISTTAG_FAILS=1 PATH="$bin:$PATH" "$0" "$fresh" latest
+  a_pkg=$(ls -d "$fresh"/tl-bin-* | head -1)
+  a_name=$(manifest_field "$a_pkg" name)
+  printf '9.9.9\n' > "$work_outer/registry/$(printf '%s' "$a_name" | tr '/@' '__')/tag-latest"
+  rc_expect_output 1 "dist-tag points at '9.9.9'" \
+    "a published version whose dist-tag points elsewhere stops the run" \
+    pub "$fresh" latest
+  rc_expect_output 1 "npm dist-tag add" \
+    "the dist-tag message hands over the exact manual command" \
+    pub "$fresh" latest
+  rc_expect_output 1 "no other registry mutation" \
+    "the message says why this job cannot fix it itself" \
+    pub "$fresh" latest
+
+  # And the capability model is load-bearing: if the script ever calls
+  # `dist-tag` again, the stub refuses it the way OIDC does, so the row above
+  # cannot quietly start passing for the wrong reason.
+  rc_run env PATH="$bin:$PATH" npm dist-tag add "x@1.0.0" latest
+  rc_note "$([ "$RC_STATUS" -ne 0 ] && echo 0 || echo 1)" \
+    "the stub refuses dist-tag, as OIDC trusted publishing does"
 
   # An unreadable registry answer must not be read as "absent" and turned into
   # a publish attempt against a version that may already exist.

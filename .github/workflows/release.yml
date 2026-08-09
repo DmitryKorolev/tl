@@ -1038,6 +1038,19 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The same environment the signing job uses, and not decoration: npm treats
+    # the environment as part of a trusted publisher's configuration, and
+    # GitHub only puts an environment into the OIDC subject for a job that
+    # references one. docs/release-prerequisites.md tells the operator to
+    # register `release` against each package, so without this line the token
+    # this job presents would not match what they configured and every publish
+    # would fail to authenticate — after the GitHub Release is already public.
+    #
+    # It also narrows the capability. This job holds `id-token: write` and
+    # shares one `job_workflow_ref` with the signing job, so a certificate
+    # minted here already satisfies the release pin; putting it behind the same
+    # protected environment means the same approval gates both.
+    environment: release
     permissions:
       contents: read
       id-token: write

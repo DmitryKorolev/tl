@@ -606,8 +606,9 @@ UNAME
   run 1 "a non-file where the binary belongs refuses" IGNORE=1
   note "$(grep -q 'not a regular file' "$work/err" && echo 0 || echo 1)" \
     "the occupied-destination message names the remedy"
-  note "$([ ! -e "$work/dest/tl/.tl.install."* ] 2>/dev/null && echo 0 || echo 1)" \
-    "the binary is not buried inside the directory that occupies its name"
+  buried=$(find "$work/dest/tl" -maxdepth 1 -name '.tl.install.*' 2>/dev/null | wc -l | tr -d ' ')
+  note "$([ "$buried" -eq 0 ] && echo 0 || echo 1)" \
+    "the binary is not buried inside the directory that occupies its name (found $buried)"
   leftover=$(find "$work/dest" -name '.tl.install.*' 2>/dev/null | wc -l | tr -d ' ')
   note "$([ "$leftover" -eq 0 ] && echo 0 || echo 1)" \
     "no .tl.install.<pid> temporary survives a failed install (found $leftover)"
