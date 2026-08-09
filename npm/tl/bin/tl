@@ -74,15 +74,50 @@ pkg="tl-bin-$os-$arch"
 # Two layouts, because installers disagree about where an optional dependency
 # lands: npm hoists it beside us under node_modules/@taskloop/, while a version
 # conflict or a nesting installer can put it under our own node_modules/.
+# glibc, not musl: the Linux binaries are dynamically linked against glibc, and
+# the manifests declare "libc": ["glibc"], which npm honours by *skipping* the
+# platform package on musl. So on Alpine the install succeeds and there is
+# simply no binary — meaning musl is the reason the search below fails, and it
+# has to be reported before the missing-package advice, not after. Behind that
+# advice the message was unreachable, and "reinstall without omitting optional
+# dependencies" is a loop: reinstalling installs nothing on musl either.
+on_musl() {
+  [ "$os" = linux ] || return 1
+  # A glibc loader present settles it; otherwise look for a musl one.
+  if [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then
+    return 1
+  fi
+  for musl in /lib/ld-musl-*.so.1; do
+    [ -e "$musl" ] && return 0
+  done
+  return 1
+}
+
 binary=''
+unusable=''
 for candidate in \
   "$root/../$pkg/bin/tl" \
   "$root/node_modules/@taskloop/$pkg/bin/tl"; do
   if [ -x "$candidate" ]; then
     binary=$candidate
     break
+  elif [ -e "$candidate" ]; then
+    # Present but not executable. Reporting this as "not installed" sends the
+    # user to reinstall a package that is already there; the fix is a chmod or
+    # a package manager that preserved the mode.
+    unusable=$candidate
   fi
 done
+
+if [ -z "$binary" ] && on_musl; then
+  echo "tl: this system uses musl libc, and the published Linux binaries are linked against glibc. tl has no musl build yet, and npm honours the packages' \"libc\": [\"glibc\"] constraint by skipping them — so the platform package was never installed and reinstalling will not install it. Use a glibc-based image (for example node:22-slim rather than node:22-alpine), or build from source with Lean 4." >&2
+  exit 1
+fi
+
+if [ -z "$binary" ] && [ -n "$unusable" ]; then
+  echo "tl: $unusable exists but is not executable, so tl cannot run it. The package is installed; only its mode is wrong. Run 'chmod +x $unusable', or reinstall with a client that preserves file modes." >&2
+  exit 1
+fi
 
 if [ -z "$binary" ]; then
   # Say which of the several causes this is, rather than one message that fits
@@ -105,18 +140,13 @@ if [ -z "$binary" ]; then
   exit 1
 fi
 
-# glibc, not musl: the Linux binaries are dynamically linked against glibc, and
-# the manifests declare "libc": ["glibc"] so npm refuses the install on musl.
-# A package manager that ignores that field would otherwise reach `exec`, where
-# a missing ELF interpreter surfaces as "not found" naming a file that plainly
-# exists.
-if [ "$os" = linux ] && [ ! -e /lib64/ld-linux-x86-64.so.2 ] && [ ! -e /lib/ld-linux-aarch64.so.1 ]; then
-  for musl in /lib/ld-musl-*.so.1; do
-    if [ -e "$musl" ]; then
-      echo "tl: this system uses musl libc, and the published Linux binaries are linked against glibc. tl has no musl build yet. Use a glibc-based image (for example node:22-slim rather than node:22-alpine), or build from source with Lean 4." >&2
-      exit 1
-    fi
-  done
+# A package manager that ignores `libc` would install the glibc package on musl
+# and reach here, where `exec` fails on a missing ELF interpreter and reports
+# "not found" naming a file that plainly exists. Same message, checked again
+# because the path above only runs when no binary was found at all.
+if on_musl; then
+  echo "tl: this system uses musl libc, and the published Linux binaries are linked against glibc. tl has no musl build yet. Use a glibc-based image (for example node:22-slim rather than node:22-alpine), or build from source with Lean 4." >&2
+  exit 1
 fi
 
 exec "$binary" "$@"

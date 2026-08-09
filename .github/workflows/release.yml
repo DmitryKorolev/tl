@@ -958,15 +958,19 @@ jobs:
             *-*) dist_tag=next ;;
             *) dist_tag=latest ;;
           esac
-          echo "publishing under the '${dist_tag}' dist-tag"
-          # Platform packages first: the launcher declares them as exact-version
-          # optional dependencies, and publishing it first would leave a window
-          # where installing it resolves nothing to run.
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            if [ ! -f "dist/tl-${target}" ]; then
-              echo "::warning::no binary for ${target} — skipping @taskloop/tl-bin-${target}. The launcher still lists it as an optional dependency, so users on that platform get the missing-package error rather than a broken binary."
-              continue
-            fi
-            npm publish "npm-staging/tl-bin-${target}" --provenance --access public --tag "$dist_tag"
-          done
-          npm publish npm-staging/tl --provenance --access public --tag "$dist_tag"
+          # scripts/npm-publish.sh rather than a loop of `npm publish`. npm
+          # versions are immutable, so a loop that dies half way through
+          # strands the version permanently: the packages that went out cannot
+          # be replaced, the launcher that publishes last never went out at
+          # all, and a re-run dies on E403 for the first package. The script
+          # asks the registry what is already there, publishes what is missing,
+          # accepts what matches, and stops on a version whose contents differ
+          # — so re-running this job is always safe and always converges.
+          #
+          # Which packages exist in the staging tree is npm-pack.sh's decision,
+          # taken from the ADR-0006 tiers: a Best-effort target that did not
+          # build is absent from the tree *and* dropped from the launcher's
+          # optionalDependencies. The loop this replaces warned that the
+          # launcher "still lists it as an optional dependency", which was the
+          # opposite of what was published.
+          ./scripts/npm-publish.sh npm-staging "$dist_tag"

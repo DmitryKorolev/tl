@@ -17,13 +17,20 @@ set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
+RC_LIB_SELF="$script_dir/lib/release-common.sh"
+# shellcheck source=lib/release-common.sh
+. "$RC_LIB_SELF"
 
 # The Supported tier is release-blocking; macOS x86-64 is Best-effort, so a
 # release may legitimately ship without it (ADR-0006). Staging follows that
 # policy rather than demanding all four: a Best-effort binary that never got
 # built must not stop the other four packages from being published.
-REQUIRED_TARGETS='darwin-arm64 linux-arm64 linux-x64'
-OPTIONAL_TARGETS='darwin-x64'
+#
+# Read from release/targets.json rather than written out here. The same split
+# used to be spelled independently in this script, the Homebrew generator and
+# the release workflow, with nothing checking that the three agreed.
+REQUIRED_TARGETS=$(rc_targets supported)
+OPTIONAL_TARGETS=$(rc_targets best-effort)
 TARGETS="$REQUIRED_TARGETS $OPTIONAL_TARGETS"
 
 usage() {
@@ -49,6 +56,20 @@ stage() {
   assets=$2
   require_assets=$3
 
+  # A fresh directory, always. `cp -R src dest` with an existing `dest` copies
+  # *into* it, so re-staging over a previous run produced `tl/tl/…` nested
+  # trees and then packed whichever layout npm happened to find — a wrong
+  # tarball rather than a refusal.
+  if [ -e "$staging" ]; then
+    if [ ! -d "$staging" ]; then
+      echo "npm-pack: '$staging' exists and is not a directory. Pass a path this script may create." >&2
+      exit 1
+    fi
+    if [ -n "$(ls -A "$staging" 2>/dev/null)" ]; then
+      echo "npm-pack: '$staging' already exists and is not empty. Staging into it would nest the package trees inside the previous run's, and publish whichever layout npm found first. Remove it, or pass a fresh path." >&2
+      exit 1
+    fi
+  fi
   mkdir -p "$staging"
   cp -R "$repo_root/npm/tl" "$staging/tl"
   chmod +x "$staging/tl/bin/tl"
@@ -104,8 +125,12 @@ PYEOF
 }
 
 check_versions() {
-  staging=$1
-  python3 - "$staging" "$repo_root" <<'PYEOF'
+  # A distinct name, not the shared `staging`. Shell functions have no locals
+  # here, so `staging=$1` reached back into the caller's variable — harmless on
+  # the one path that calls stage() then check_versions() in order, and
+  # silently destructive anywhere that checks a second tree.
+  cv_staging=$1
+  python3 - "$cv_staging" "$repo_root" <<'PYEOF'
 import json, pathlib, re, sys
 
 staging, repo_root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -162,6 +187,17 @@ def check_common(manifest, name):
                 f"{name} does not ship {required}; ADR-0006 requires the notice to travel in "
                 "every distribution artifact"
             )
+    # The platform packages have no `bin` field, so npm's always-included set
+    # (package.json, README, LICENSE, and whatever `main`/`bin` name) does not
+    # cover the binary: it ships only because `files` lists it. Dropping that
+    # one entry produces a package that installs cleanly and contains no tl,
+    # and the selftest packs only the host platform's tarball, so three of the
+    # four had nothing proving otherwise.
+    if name != launcher["name"] and "bin/tl" not in manifest.get("files", []):
+        problems.append(
+            f"{name} does not list bin/tl in `files`. A platform package carries the binary and "
+            "nothing else, and without that entry npm publishes a tarball with no binary in it."
+        )
 
 
 check_common(launcher, "@taskloop/tl")
@@ -222,13 +258,13 @@ PYEOF
 # in place, they are the ones this release built, and they run. Distinct from
 # --selftest, which exercises the package *sources* with stub binaries.
 check_staged() {
-  staging=$1
+  cs_staging=$1
   expect_commit=$2
-  [ -d "$staging" ] || {
-    echo "npm-pack: '$staging' is not a directory — stage the packages first with '$0 <staging-dir> <assets-dir>'." >&2
+  [ -d "$cs_staging" ] || {
+    echo "npm-pack: '$cs_staging' is not a directory — stage the packages first with '$0 <staging-dir> <assets-dir>'." >&2
     exit 1
   }
-  check_versions "$staging"
+  check_versions "$cs_staging"
 
   case $(uname -s) in
     Darwin) host_os=darwin ;;
@@ -246,7 +282,7 @@ check_staged() {
       exit 2
       ;;
   esac
-  host="$staging/tl-bin-${host_os}-${host_arch}/bin/tl"
+  host="$cs_staging/tl-bin-${host_os}-${host_arch}/bin/tl"
   [ -x "$host" ] || {
     echo "npm-pack: $host is missing or not executable, so the staged package for this platform would install and then fail to run." >&2
     exit 1
@@ -278,7 +314,7 @@ if build.get("kind") != "clean":
     )
 print(f"npm-pack: the staged binary is tl {data['version']} from {build['commit']}")
 PYEOF
-  echo "npm-pack: the staging tree in $staging is ready to publish"
+  echo "npm-pack: the staging tree in $cs_staging is ready to publish"
 }
 
 selftest() {
@@ -302,8 +338,14 @@ selftest() {
 
   staging="$work/staging"
   stage "$staging" "$work/no-assets" 0
-  check_versions "$staging"
-  note $? "the five manifests agree on one version and pin exactly"
+  # `status=0; cmd || status=$?` rather than `cmd; note $?`. Under `set -e` the
+  # bare form never reaches `note`: a failure aborts the whole script, so the
+  # row printed ok on success and nothing at all on failure — no FAIL line, no
+  # captured diagnostic, no summary. Five rows here were written that way.
+  status=0
+  check_versions "$staging" >"$work/out" 2>"$work/err" || status=$?
+  note "$status" "the manifests agree on one version and pin exactly"
+  [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
 
   # Host platform, for the "this platform resolves" cases below.
   case $(uname -s) in
@@ -324,11 +366,16 @@ selftest() {
   # the platform packages are installed explicitly alongside instead.
   packed="$work/packed"
   mkdir -p "$packed"
-  ( cd "$staging/tl" && npm pack --pack-destination "$packed" >/dev/null 2>&1 )
-  note $? "@taskloop/tl packs"
+  status=0
+  ( cd "$staging/tl" && npm pack --pack-destination "$packed" ) >"$work/out" 2>"$work/err" || status=$?
+  note "$status" "@taskloop/tl packs"
+  [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
   for target in $TARGETS; do
-    ( cd "$staging/tl-bin-$target" && npm pack --pack-destination "$packed" >/dev/null 2>&1 )
-    note $? "@taskloop/tl-bin-$target packs"
+    status=0
+    ( cd "$staging/tl-bin-$target" && npm pack --pack-destination "$packed" ) \
+      >"$work/out" 2>"$work/err" || status=$?
+    note "$status" "@taskloop/tl-bin-$target packs"
+    [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
   done
 
   # Exact tarball names, not globs: `taskloop-tl-*.tgz` also matches the four
@@ -352,10 +399,12 @@ selftest() {
   # Local-style install: node_modules/.bin/tl, the layout a project gets.
   local_dir="$work/local"
   mkdir -p "$local_dir"
-  ( cd "$local_dir" && npm init -y >/dev/null 2>&1 \
+  status=0
+  ( cd "$local_dir" && npm init -y >/dev/null \
       && npm install --no-audit --no-fund --silent \
-           "$launcher_tgz" "$host_tgz" >/dev/null 2>&1 )
-  note $? "a local-style install succeeds"
+           "$launcher_tgz" "$host_tgz" ) >"$work/out" 2>"$work/err" || status=$?
+  note "$status" "a local-style install succeeds"
+  [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
   out=$("$local_dir/node_modules/.bin/tl" hello 2>&1) || out="<failed> $out"
   case $out in
     *"stub tl for $host_target"*) note 0 "the local .bin/tl symlink execs the host platform's binary" ;;
@@ -365,9 +414,11 @@ selftest() {
   # Global-style install: a prefix with bin/tl, the layout `npm i -g` gets.
   global_dir="$work/global"
   mkdir -p "$global_dir"
+  status=0
   ( npm install --no-audit --no-fund --silent --prefix "$global_dir" --global \
-      "$launcher_tgz" "$host_tgz" >/dev/null 2>&1 )
-  note $? "a global-style install succeeds"
+      "$launcher_tgz" "$host_tgz" ) >"$work/out" 2>"$work/err" || status=$?
+  note "$status" "a global-style install succeeds"
+  [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
   out=$("$global_dir/bin/tl" hello 2>&1) || out="<failed> $out"
   case $out in
     *"stub tl for $host_target"*) note 0 "the global bin/tl symlink execs the host platform's binary" ;;
@@ -506,15 +557,65 @@ UNAME
   # The tarballs must carry the license files ADR-0006 requires in every
   # distribution artifact. npm picks up a LICENSE only when one sits in the
   # package directory, so this is a property of staging, not of the manifest.
-  for tgz in "$launcher_tgz" "$host_tgz"; do
+  #
+  # Every platform tarball, not just the host's. The binary is in the tarball
+  # only because `files` lists `bin/tl` — there is no `bin` field, so npm's
+  # always-included set does not cover it — and packing only the host platform
+  # left three of the four packages with nothing proving they contain a binary
+  # at all. A package that installs and contains no tl is the worst shape to
+  # publish, because npm versions are immutable.
+  for target in $TARGETS; do
+    tgz="$packed/taskloop-tl-bin-$target-$version.tgz"
+    if [ ! -f "$tgz" ]; then
+      note 1 "the $target tarball exists to be inspected"
+      continue
+    fi
     listing=$(tar -tzf "$tgz")
-    for required in package/LICENSE package/THIRD-PARTY-LICENSES; do
+    for required in package/bin/tl package/LICENSE package/THIRD-PARTY-LICENSES; do
       case $listing in
-        *"$required"*) note 0 "$(basename -- "$tgz") ships ${required#package/}" ;;
-        *) note 1 "$(basename -- "$tgz") ships ${required#package/}" ;;
+        *"$required"*) note 0 "the $target tarball ships ${required#package/}" ;;
+        *) note 1 "the $target tarball ships ${required#package/}" ;;
       esac
     done
   done
+  listing=$(tar -tzf "$launcher_tgz")
+  for required in package/LICENSE package/THIRD-PARTY-LICENSES; do
+    case $listing in
+      *"$required"*) note 0 "the launcher tarball ships ${required#package/}" ;;
+      *) note 1 "the launcher tarball ships ${required#package/}" ;;
+    esac
+  done
+
+  # …and the manifest check that keeps `files` honest must itself refuse a
+  # dropped `bin/tl`, or the tarball rows above are the only thing standing
+  # between a mistake and an immutable published version.
+  nobin="$work/nobin"
+  mkdir -p "$nobin"
+  cp -R "$staging/tl" "$nobin/tl"
+  a_target=$(printf '%s' "$TARGETS" | cut -d' ' -f1)
+  cp -R "$staging/tl-bin-$a_target" "$nobin/tl-bin-$a_target"
+  python3 - "$nobin/tl-bin-$a_target/package.json" <<'PYEOF'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+manifest["files"] = [f for f in manifest["files"] if f != "bin/tl"]
+path.write_text(json.dumps(manifest, indent=2) + "\n")
+PYEOF
+  status=0
+  check_versions "$nobin" >"$work/out" 2>"$work/err" || status=$?
+  note "$([ "$status" -ne 0 ] && echo 0 || echo 1)" \
+    "a platform manifest that stopped listing bin/tl is refused"
+  note "$(grep -q 'bin/tl' "$work/err" && echo 0 || echo 1)" \
+    "the dropped-binary message names the missing entry"
+
+  # Staging into a directory that already holds a previous run must refuse, not
+  # nest `tl/tl/…` inside it and pack whichever layout npm found first.
+  status=0
+  "$0" "$staging" "$work/no-assets" >"$work/out" 2>"$work/err" || status=$?
+  note "$([ "$status" -eq 1 ] && echo 0 || echo 1)" \
+    "staging over a non-empty directory refuses (exit $status)"
+  note "$(grep -q 'nest the package trees' "$work/err" && echo 0 || echo 1)" \
+    "the re-staging message explains what would have happened"
 
   # Staging follows the ADR-0006 tiers: a missing Best-effort binary is skipped
   # with a warning, a missing Supported one aborts. Both arms, because a policy
@@ -553,6 +654,60 @@ UNAME
   got=0
   ( "$0" --check-staged "$work/nonexistent" deadbeef >/dev/null 2>&1 ) || got=$?
   note "$([ "$got" -eq 1 ] && echo 0 || echo 1)" "--check-staged on a missing directory refuses (exit $got)"
+
+  # --check-staged is the last gate between the staged tree and `npm publish`,
+  # and its success path and both provenance refusals were exercised only
+  # during a real tag run — that is, first exercised while publishing. Driven
+  # here against a staging tree whose host binary reports a chosen provenance.
+  staged_probe() {
+    # staged_probe <kind> <commit> — a staging tree whose host binary reports
+    # exactly that `tl version --json`.
+    probe_dir="$work/staged-$1"
+    rm -rf "$probe_dir"
+    mkdir -p "$probe_dir/tl" "$probe_dir/tl-bin-$host_target/bin"
+    cp -R "$staging/tl/." "$probe_dir/tl/"
+    for t in $TARGETS; do
+      [ "$t" = "$host_target" ] || {
+        mkdir -p "$probe_dir/tl-bin-$t"
+        cp -R "$staging/tl-bin-$t/." "$probe_dir/tl-bin-$t/"
+      }
+    done
+    cp -R "$staging/tl-bin-$host_target/." "$probe_dir/tl-bin-$host_target/"
+    cat > "$probe_dir/tl-bin-$host_target/bin/tl" <<PROBE
+#!/bin/sh
+printf '%s\n' '{"schemaVersion":3,"ok":true,"data":{"version":"$version","logFormat":2,"build":{"kind":"$1","commit":$2,"dirty":false,"toolchain":"leanprover/lean4:v4.32.2","manifestDigest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}'
+PROBE
+    chmod +x "$probe_dir/tl-bin-$host_target/bin/tl"
+    echo "$probe_dir"
+  }
+
+  good_commit=1111111111111111111111111111111111111111
+  d=$(staged_probe clean "\"$good_commit\"")
+  status=0
+  "$0" --check-staged "$d" "$good_commit" >"$work/out" 2>"$work/err" || status=$?
+  note "$status" "--check-staged accepts a staging tree carrying this release's binary"
+  [ "$status" -eq 0 ] || sed 's/^/    /' "$work/err" >&2
+
+  status=0
+  "$0" --check-staged "$d" 2222222222222222222222222222222222222222 >"$work/out" 2>"$work/err" || status=$?
+  note "$([ "$status" -ne 0 ] && echo 0 || echo 1)" \
+    "--check-staged refuses a binary built from another commit"
+  note "$(grep -q 'other than the one the release signed' "$work/err" && echo 0 || echo 1)" \
+    "the wrong-commit message says the npm packages would ship the wrong binary"
+
+  d=$(staged_probe dirty "\"$good_commit\"")
+  status=0
+  "$0" --check-staged "$d" "$good_commit" >"$work/out" 2>"$work/err" || status=$?
+  note "$([ "$status" -ne 0 ] && echo 0 || echo 1)" \
+    "--check-staged refuses a binary that reports a dirty build"
+  note "$(grep -q "not 'clean'" "$work/err" && echo 0 || echo 1)" \
+    "the dirty-build message names the required kind"
+
+  d=$(staged_probe development null)
+  status=0
+  "$0" --check-staged "$d" "$good_commit" >"$work/out" 2>"$work/err" || status=$?
+  note "$([ "$status" -ne 0 ] && echo 0 || echo 1)" \
+    "--check-staged refuses an unstamped development build"
 
   if [ "$failures" -ne 0 ]; then
     echo "npm-pack: --selftest found $failures broken case(s). Do not publish these packages." >&2

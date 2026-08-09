@@ -128,6 +128,7 @@ release-policy gates, in order:
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   npm package selftest                scripts/npm-pack.sh --selftest
+  npm publisher selftest              scripts/npm-publish.sh --selftest
   installer selftest                  sh install.sh --selftest
   Homebrew formula generator selftest scripts/gen-homebrew-formula.sh --selftest
   the Homebrew formula parses         ruby -c Formula/tl.rb            (needs ruby)
@@ -160,8 +161,12 @@ gate "artifact verifier selftest" ./scripts/verify-release-artifacts.sh --selfte
 
 if command -v npm >/dev/null 2>&1; then
   gate "npm package selftest" ./scripts/npm-pack.sh --selftest
+  # The publisher's refusals are the ones that matter most: an npm version
+  # cannot be reissued, so a mistake here is not correctable after the fact.
+  gate "npm publisher selftest" ./scripts/npm-publish.sh --selftest
 else
   skip_gate "npm package selftest" "npm is not on PATH"
+  skip_gate "npm publisher selftest" "npm is not on PATH"
 fi
 
 # The installer is piped into a shell by people who cannot inspect it first, so
