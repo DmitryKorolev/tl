@@ -42,6 +42,40 @@ forever-contract surface that freezes on first implementation.
 
 ## Distribution (before release)
 
+- Known defects in the release shell, pending the Lean port [high] — seven
+  confirmed findings are deliberately unfixed in shell, because the files that
+  contain them are being replaced and patching-then-deleting would be wasted
+  work. They are inert today: no release is possible until the repository is
+  public, the npm packages exist and the tap and `release` environment are
+  configured. Recorded here rather than left to the tracker, so a reader of
+  this branch can see what is known-broken.
+
+  In the manifest generator: a failing target-list read is swallowed by a shell
+  assignment prefix, so the generator writes a manifest with an empty target
+  list and exits 0, skipping every build-metadata check; and the build run id
+  is compared only between legs, never against the run actually executing, so a
+  self-consistent artifact set from a different run would pass.
+
+  In the prerequisite audit: an API failure collapses into an empty policy and
+  is reported as a *missing* prerequisite, which aborts a legitimate release
+  with a remedy telling the operator to fix something already correct; and the
+  tag-ruleset check accepts any include pattern beginning `refs/tags/v`, so a
+  ruleset covering one specific tag reads as restricting every `v*` tag. That
+  second one has been a proxy for the property in three consecutive reviews —
+  first a count of rulesets, then a prefix — which is the argument for stating
+  it as a typed predicate rather than guarding it once more.
+
+  In the npm channel: package-content comparison is blind to symlinks and file
+  modes, so a published package whose launcher lost its executable bit compares
+  equal to a staged one that has it; nothing establishes that the `latest`
+  dist-tag is not the bootstrap placeholder, which matters because a
+  prerelease-first launch publishes under `next` and leaves `latest` where the
+  bootstrap put it; and a bracket-class typo makes the selftest row guarding
+  that unfireable.
+
+  The fixes land with the port; the tasks that absorb each are named in the
+  tracker. Deleting this entry without them would leave the defects recorded
+  nowhere, which is what happened to reproducible builds once already.
 - Reproducible builds [medium] — the one ADR-0006 release-integrity item still
   open, and the only bullet under ADR-0014 T3 not built. The inputs are already
   pinned and recorded per release (`build-metadata-<target>.json`, the SBOM,
