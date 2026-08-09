@@ -93,8 +93,14 @@ def releaseIdentityTests : IO (List Outcome) := do
     ("workflow", workflow), ("OIDC issuer", issuer), ("certificate identity", identity)]
   let verifierPins := [("repository", repository), ("OIDC issuer", issuer),
     ("certificate identity", identity)]
+  -- The Homebrew formula is the fourth home of the same pin, and the one a
+  -- `brew install` user relies on. Like the installer it is a verifier, so it
+  -- carries the verifier pins.
+  let formulaRaw ← readRequired ("Formula/tl.rb" : FilePath)
+  outs := outs ++ [check "release identity: the Homebrew formula exists" formulaRaw.isOk s!"{formulaRaw}"]
   let docs := [("VERIFYING.md", verifyingRaw, allPins), ("ADR-0006", distributionRaw, allPins),
-    ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, verifierPins)]
+    ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, verifierPins),
+    ("Formula/tl.rb", formulaRaw, verifierPins)]
   for (name, raw, pins) in docs do
     match raw with
     | .error _ => pure ()

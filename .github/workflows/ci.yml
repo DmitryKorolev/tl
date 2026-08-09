@@ -85,6 +85,9 @@ jobs:
       - name: installer selftest
         run: sh install.sh --selftest
 
+      - name: Homebrew formula generator selftest
+        run: ./scripts/gen-homebrew-formula.sh --selftest
+
       # A workflow cannot validate itself: if GitHub refuses to load
       # release.yml, nothing runs to say so, and the failure surfaces only when
       # someone pushes a tag. actionlint parses both workflows here — expression

@@ -99,9 +99,17 @@ as the downstream `math/lean4` port (build-from-source).
   and exit status; it uses no JavaScript process and no lifecycle hook. In
   particular, no `postinstall` download reaches an arbitrary URL. Native
   Windows npm installation is refused; npm under WSL selects Linux normally.
-- Homebrew tap — fast-follow; a formula that downloads the Release
-  artifact per platform (not build-from-source, which would require users to
-  have Lean).
+- Homebrew tap — `DmitryKorolev/homebrew-tap`; a formula that downloads the
+  Release artifact per platform (not build-from-source, which would require
+  users to have Lean). The formula's source of truth is `Formula/tl.rb` in this
+  repository, beside `release/identity.json`, so the release-identity drift
+  guard covers it; the release workflow fills in the version and the four
+  digests from the *verified* `SHA256SUMS` and pushes the result to the tap.
+  Two independent fail-closed checks and no bypass: Homebrew's own `sha256` on
+  each url, and a cosign verification against the pinned identity in `install`,
+  with `cosign` a hard dependency rather than an optional one. Homebrew has no
+  equivalent of the installer's signature-only escape — on a machine that
+  cannot run cosign, `brew` would simply install it first.
 - Skip `go install` / `cargo` (wrong ecosystems). FreeBSD via Ports.
 
 ### Runtime prerequisites and signing
