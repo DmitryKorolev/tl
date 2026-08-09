@@ -466,7 +466,44 @@ trusted writer, and the cache is a discardable rot-check, not a security
 surface, ADR-0014); worst case is bounded — a wrong *cache*, never wrong
 log bytes, discarded by any later rebuild;
 clocks/IDs/actor entering as data — each discharged by a test or trusted by
-construction when implementation begins.
+construction when implementation begins;
+**release authorization and the publication channels** (ADR-0006;
+[release-prerequisites.md](release-prerequisites.md)) — the release pipeline
+rests on state configured outside this repository, which no gate here creates
+and only some of which a gate here can read. Writing `environment: release` in
+a workflow does not make the environment exist or protect it, and declaring
+trusted publishing in a comment does not register it with npm.
+`scripts/check-release-prereqs.sh` runs before anything is signed and verifies
+what it can — that each of the five npm packages exists, that the `release`
+environment exists and carries protection rules where its token may read them,
+that a ruleset is configured, that the tap exists. Four things it cannot see
+are carried here rather than assumed silently: that the environment's required
+reviewers are configured and distinct from the tag pusher; that the `v*` tag
+ruleset actually restricts tag *creation*; that each npm package's trusted
+publisher names this repository, this workflow and this environment, with no
+classic token still able to publish; and that `HOMEBREW_TAP_TOKEN` grants write
+access to the tap and nothing more. The first two need a token with admin
+scope, which a release run deliberately does not hold; the npm ones have no
+public API; a secret's scope is not readable from a workflow. Each is a *live*
+assumption — protection rules and trusted publishers can be reconfigured
+without any commit here — so the audit is re-run before every release and after
+any permission change, not once. What follows if one fails is bounded and
+stated: without the environment protections, anyone able to create a `v*` tag
+can make this workflow sign, with an identity every verifier accepts, whatever
+commit that tag points at; the ancestry check in the `sign` job is a backstop
+that sees what the tag points at and never who pushed it.
+
+A user-facing claim the binary makes also enters here. `tl version` reporting
+`clean build — commit X` asserts that the binary corresponds exactly to that
+source commit, and nothing in the artifact can establish that: the stamp is
+generated from git state before compilation, and reproducible builds — which
+would let a third party check binary-to-source correspondence — remain the open
+item ADR-0006 records. What the claim rests on is the release workflow stamping
+a clean checkout of the tagged commit and the Sigstore certificate identity
+binding those artifacts to this workflow, so the honest reading is "this binary
+was built by that workflow from that commit", not "these bytes are derivable
+from that source". The binary deliberately has no `release` kind for the same
+reason (ADR-0006): anyone can stamp a commit and build.
 
 On the efficiency axis (ADR-0023/0024), the analogous tier-3 carried assumption is
 **constant factors and the per-operation → wall-clock gap**: cache locality,

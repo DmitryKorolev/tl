@@ -576,6 +576,22 @@ jobs:
           ./scripts/check-release-identity.sh --selftest
           ./scripts/check-release-identity.sh
 
+      # The external state this pipeline depends on, audited before anything is
+      # signed: the five npm packages must exist (trusted publishing is
+      # configured per package and only for one that already does, so the first
+      # release cannot authenticate otherwise), the `release` environment must
+      # carry protection rules, and the tap must exist. None of that is created
+      # by declaring it in this file, and until now none of it was checked —
+      # the first tag would have published GitHub assets and then failed at
+      # npm, with the artifacts already public.
+      #
+      # Rows the runner's token cannot read are reported as unchecked rather
+      # than passed, and carried as assumptions in docs/overview.md.
+      - name: the external prerequisites are in place
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/check-release-prereqs.sh
+
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
