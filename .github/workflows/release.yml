@@ -70,15 +70,33 @@ jobs:
       - name: task-id leakage
         run: ./scripts/check-task-ids.sh
 
-      # The pin this workflow's own signature will be checked against, and the
-      # generator the stamp job is about to run. Both are cheap and both are
-      # load-bearing for what this release publishes.
-      - name: release identity selftest
-        run: ./scripts/check-release-identity.sh --selftest
-      - name: release identity discriminates
-        run: ./scripts/check-release-identity.sh
-      - name: build-provenance generator selftest
-        run: ./scripts/gen-build-provenance.sh --selftest
+      - name: install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          curl -sSfL --retry 3 -o "$tmp/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+          install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
+
+      # The same command ci.yml runs, against the commit actually being
+      # released, plus the tag-agreement check that only makes sense here. This
+      # job used to run four of the policy's gates and describe itself as
+      # running them all, so the installer, the artifact verifier, the npm
+      # packages and the formula were never exercised on the tagged commit —
+      # the one commit where a stale gate becomes a published artifact.
+      #
+      # --strict: in CI a missing tool is a broken job, not a smaller policy.
+      - name: release policy, on the tagged commit
+        run: ./scripts/check-release-policy.sh --strict --tag "${GITHUB_REF_NAME}"
+        if: github.ref_type == 'tag'
+      - name: release policy
+        run: ./scripts/check-release-policy.sh --strict
+        if: github.ref_type != 'tag'
 
       # Restore-only. ci.yml's policy is that only protected main saves the
       # shared caches; a tag build consumes them and saves nothing.
@@ -399,6 +417,12 @@ jobs:
       # Smoke test: the artifact must run, report the provenance this release
       # claims, and complete a real task round-trip. `tl version` alone would
       # pass on a binary that cannot touch a repository.
+      #
+      # `--as 'done'` is quoted deliberately: unquoted, `done` is the shell's
+      # loop keyword, and shellcheck — which actionlint runs over every `run:`
+      # block, and which is preinstalled on the GitHub runners though not
+      # necessarily on a developer's machine — reads it as one and fails the
+      # whole script.
       - name: smoke-test the artifact
         run: |
           set -euo pipefail
@@ -425,7 +449,7 @@ jobs:
           "$asset" init --json | jq -e '.ok == true' > /dev/null
           id=$(TL_ACTOR=release-smoke "$asset" create "smoke" --json | jq -r '.data.id')
           TL_ACTOR=release-smoke "$asset" claim "$id" --json | jq -e '.data.claim.outcome == "won"' > /dev/null
-          TL_ACTOR=release-smoke "$asset" close "$id" --as done --json | jq -e '.ok == true' > /dev/null
+          TL_ACTOR=release-smoke "$asset" close "$id" --as 'done' --json | jq -e '.ok == true' > /dev/null
           "$asset" ready --json | jq -e '.data.count == 0' > /dev/null
           "$asset" doctor --json | jq -e '.data.healthy == true' > /dev/null
           echo "smoke test passed for ${{ matrix.target }}"
@@ -722,11 +746,20 @@ jobs:
           # --verify-tag: without it, gh creates a tag from the default branch
           # when the named one is missing, quietly turning "the tag vanished"
           # into "a release exists for a commit nobody tagged".
+          # An explicit array rather than an unquoted command substitution.
+          # actionlint runs every `run:` block through shellcheck, and the
+          # inline `$(if …)` form was the one place in this file that tripped
+          # SC2046 without a disable directive — so the workflow lint would
+          # have failed on the commit that introduced it.
+          prerelease=()
+          case "${GITHUB_REF_NAME}" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
           gh release create "${GITHUB_REF_NAME}" \
             --verify-tag \
             --title "${GITHUB_REF_NAME}" \
             --notes-file "$notes" \
-            $(if [ "${GITHUB_REF_NAME}" != "${GITHUB_REF_NAME%%-*}" ]; then echo --prerelease; fi) \
+            "${prerelease[@]}" \
             dist/*
 
   # ---------------------------------------------------------------------------

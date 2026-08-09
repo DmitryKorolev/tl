@@ -46,60 +46,16 @@ jobs:
   # one run.
   release-policy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # Tests/ReleaseTests.lean guards that every copy of the signing identity
-      # carries the same text. What the text *means* needs a regular-expression
-      # engine the Lean suite does not have, so it is checked here: an
-      # expression that is anchored and well-formed but matches the wrong
-      # repository would pass a text-equality guard while hollowing out the
-      # fail-closed verifier (ADR-0014 T3).
-      - name: release identity selftest
-        run: ./scripts/check-release-identity.sh --selftest
-      - name: release identity discriminates
-        run: ./scripts/check-release-identity.sh
-
-      - name: build-provenance generator selftest
-        run: ./scripts/gen-build-provenance.sh --selftest
-
-      # The artifact verifier is the code path behind VERIFYING.md, the
-      # installer, and the release workflow's pre-publish check. Its refusal
-      # paths are the whole point of it, so they are exercised on every commit
-      # rather than first discovered during a release.
-      - name: release artifact verifier selftest
-        run: ./scripts/verify-release-artifacts.sh --selftest
-
-      # The npm packages are five manifests that must agree on one version and
-      # a launcher whose whole job is picking the right binary. Both are
-      # checkable without publishing anything: this packs the packages, installs
-      # them from their tarballs, and drives the launcher through every platform
-      # branch, missing-package path, and exit-status and signal case.
-      - name: npm package selftest
-        run: ./scripts/npm-pack.sh --selftest
-
-      # The installer is piped into a shell by people who cannot inspect it
-      # first, so a check that silently stopped running would be invisible to
-      # exactly the users who most depend on it.
-      - name: installer selftest
-        run: sh install.sh --selftest
-
-      - name: Homebrew formula generator selftest
-        run: ./scripts/gen-homebrew-formula.sh --selftest
-
-      # Nothing else evaluates the formula: a syntax error would pass every
-      # other gate here and surface only when the tap tried to use it.
-      - name: the Homebrew formula parses
-        run: ruby -c Formula/tl.rb
-
-      # A workflow cannot validate itself: if GitHub refuses to load
-      # release.yml, nothing runs to say so, and the failure surfaces only when
-      # someone pushes a tag. actionlint parses both workflows here — expression
-      # syntax, unknown keys, runner labels, and the embedded shell — so a
-      # malformed release workflow fails on the commit that introduced it.
-      # Hash-pinned like every other downloaded tool in this repository.
-      - name: workflow lint (actionlint)
+      # actionlint is the one gate in the policy that needs a tool the runner
+      # does not ship. Installed here, hash-pinned like every other downloaded
+      # tool in this repository, and then found on PATH by the policy script —
+      # which refuses to skip it under --strict, so a broken download is a
+      # failed job rather than a quietly smaller policy.
+      - name: install actionlint
         env:
           ACTIONLINT_VERSION: "1.7.12"
           ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
@@ -110,22 +66,16 @@ jobs:
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  $tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
-          "$tmp/actionlint" -color .github/workflows/*.yml
+          install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
+          actionlint --version
 
-      # Tl/Build/Stamp.lean is generated, and three places state as fact that
-      # the checked-in copy is the *development* stamp. Nothing but this step
-      # enforces it: a stamped copy swept in by `git commit -a` would otherwise
-      # make every build from that tree report `clean build — commit <stale>`,
-      # an exact-correspondence claim that is false, while passing the whole
-      # suite. Deliberately a CI step rather than a tltest assertion, so the
-      # release job — which stamps on purpose — is unaffected.
-      - name: the checked-in build stamp is the development stamp
-        run: |
-          ./scripts/gen-build-provenance.sh
-          if ! git diff --exit-code -- Tl/Build/Stamp.lean; then
-            echo "::error::Tl/Build/Stamp.lean differs from what scripts/gen-build-provenance.sh produces. Either a stamped copy was committed (run the generator with no arguments and commit the result), or lean-toolchain / lake-manifest.json changed without regenerating it."
-            exit 1
-          fi
+      # The whole policy, from the one place that defines it. The release
+      # workflow runs this same command against the tagged commit; keeping the
+      # list in a script rather than in two `steps:` blocks is what stops the
+      # two definitions of "ready to release" from drifting apart, which is
+      # exactly what they had already done.
+      - name: release policy
+        run: ./scripts/check-release-policy.sh --strict
 
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including
@@ -345,7 +295,7 @@ jobs:
         run: |
           tar -xzf lake-package-licenses.tar.gz
           want=$(jq '.packages | length' lake-manifest.json)
-          got=$(ls .lake/packages/*/LICENSE 2>/dev/null | wc -l)
+          got=$(find .lake/packages -mindepth 2 -maxdepth 2 -name LICENSE -type f 2>/dev/null | wc -l | tr -d ' ')
           if [ "$got" -ne "$want" ]; then
             echo "::error::restored $got license files for $want manifest packages — the licenses artifact is out of step with lake-manifest.json. Repair the upload glob in the build job; the license row below would otherwise report this as an unlicensed dependency."
             exit 1
