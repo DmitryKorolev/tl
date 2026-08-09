@@ -25,7 +25,28 @@
 class Tl < Formula
   desc "Formally verified, git-native task tracker for AI agents"
   homepage "https://github.com/DmitryKorolev/tl"
-  version "0.0.0"
+  # The stable spec needs a url for *every* platform, not only the ones this
+  # release publishes a binary for. macOS x86-64 is Best-effort (ADR-0006), so
+  # a release whose Intel leg failed pins no binary there — and a formula whose
+  # stable spec has no url for the running platform makes Homebrew raise
+  # `formula requires at least a URL`, with a Ruby backtrace and "Please report
+  # this issue", on *load*: for `brew info`, `brew upgrade`, and any `brew
+  # update` that touches the tap, not just `brew install tl`. One broken
+  # Best-effort leg would take the whole tap down for every Intel Mac.
+  #
+  # So the top-level url is the release's SHA256SUMS, which every release
+  # publishes and whose digest this formula already knows. Each platform that
+  # *did* build overrides it below with its own binary. On a platform that did
+  # not, the spec still resolves, Homebrew downloads a few hundred bytes, and
+  # `install` refuses with an explanation naming the tier — a message instead of
+  # a crash report.
+  #
+  # There is deliberately no `version` line: Homebrew scans the version out of
+  # this url, and `brew audit` rejects an explicit one as redundant with it.
+  # The per-platform urls below interpolate that scanned value, so the tag is
+  # written in exactly one place.
+  url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/SHA256SUMS"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 
   depends_on "cosign"
@@ -39,16 +60,22 @@ class Tl < Formula
   # Tests/ReleaseTests.lean compares this against release/identity.json as
   # text, and a reader comparing the four copies by eye should see the same
   # bytes in each. A split literal would be equal at runtime and different on
-  # the page, which is the wrong trade for a pin.
-  # rubocop:disable Layout/LineLength
+  # the page, which is the wrong trade for a pin. `brew style` permits the
+  # length; it does not permit an inline rubocop directive, so there is none.
   CERTIFICATE_IDENTITY = '^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
-  # rubocop:enable Layout/LineLength
 
   # The asset names are composed from this prefix rather than written out.
   # The repository's task-ID lint reads a `tl-` affix followed by Crockford
   # digits as a tracker reference, and the macOS asset names match it;
   # release.yml builds its asset names the same way for the same reason.
   ASSET_PREFIX = "tl-"
+
+  # The targets this particular generated formula pins a binary for. The
+  # generator rewrites it, dropping any Best-effort target the release did not
+  # build, and `install` consults it before doing anything: without it the
+  # download would succeed (the fallback url above) and `bin.install` would
+  # then fail on a file that was never fetched.
+  PINNED_TARGETS = %w[darwin-arm64 darwin-x64 linux-arm64 linux-x64].freeze
 
   on_macos do
     on_arm do
@@ -72,28 +99,49 @@ class Tl < Formula
     end
   end
 
+  def target_name
+    os = OS.mac? ? "darwin" : "linux"
+    cpu = Hardware::CPU.arm? ? "arm64" : "x64"
+    "#{os}-#{cpu}"
+  end
+
   def asset_name
-    if OS.mac?
-      Hardware::CPU.arm? ? "#{ASSET_PREFIX}darwin-arm64" : "#{ASSET_PREFIX}darwin-x64"
-    else
-      Hardware::CPU.arm? ? "#{ASSET_PREFIX}linux-arm64" : "#{ASSET_PREFIX}linux-x64"
-    end
+    "#{ASSET_PREFIX}#{target_name}"
   end
 
   def install
+    unless PINNED_TARGETS.include?(target_name)
+      odie <<~MESSAGE
+        tl #{version} publishes no #{target_name} binary.
+        That target is Best-effort (ADR-0006): it is built and smoke-tested, but a
+        failing leg does not block a release, and this release shipped without it.
+        Install a later release once one is published, use the Supported build for
+        another platform, or build from source with Lean 4:
+          https://github.com/DmitryKorolev/tl
+      MESSAGE
+    end
+
     # Homebrew has already checked the digest of the downloaded file by the
     # time this runs. What it has not checked is who produced it, which is what
     # the bundle establishes: fetch the per-asset bundle from the same release
     # and verify it against the pinned identity before anything is installed.
+    #
+    # A raw curl rather than a `resource`: a resource must declare a sha256,
+    # and the bundle's digest is not knowable when this formula is generated —
+    # SHA256SUMS is written and signed before the per-asset bundles exist, so
+    # they are deliberately not listed in it. The bundle needs no digest pin
+    # anyway; its authenticity is exactly what cosign establishes against the
+    # certificate identity below, and a tampered bundle fails that check.
     bundle = "#{asset_name}.sigstore.json"
     system "curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3",
+           "--proto", "=https", "--proto-redir", "=https",
            "--output", bundle,
            "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{bundle}"
 
     # The staged copy, not `cached_download`: `bin.install` moves rather than
     # copies, so installing the cached file would empty Homebrew's download
     # cache and make a later reinstall or prefetch fetch it again.
-    system Formula["cosign"].opt_bin/"cosign", "verify-blob", asset_name,
+    system formula_opt_bin("cosign")/"cosign", "verify-blob", asset_name,
            "--bundle", bundle,
            "--certificate-oidc-issuer", OIDC_ISSUER,
            "--certificate-identity-regexp", CERTIFICATE_IDENTITY

@@ -77,6 +77,70 @@ jobs:
       - name: release policy
         run: ./scripts/check-release-policy.sh --strict
 
+  # The formula, judged by Homebrew rather than by us.
+  #
+  # `ruby -c` proves the file parses; it says nothing about whether Homebrew
+  # will accept it. The gap was not theoretical: a generated formula that
+  # dropped its Best-effort block had no url for Intel macOS, and a stable spec
+  # with no url for the running platform makes Homebrew raise
+  # `formula requires at least a URL` when the formula is *loaded* — for `brew
+  # info`, `brew upgrade`, and any `brew update` that touches the tap, with a
+  # Ruby backtrace and "Please report this issue". Every gate in this
+  # repository passed that formula.
+  #
+  # So this job loads and audits three formulae with real Homebrew: the
+  # committed placeholder template, a fully-pinned generated one, and one with
+  # the Best-effort target dropped. Loading is the check that matters most —
+  # `brew info` fails on exactly the class above.
+  homebrew-formula:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: generate the formulae to audit
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          # A fixture sums file, digests distinct per target so a substitution
+          # that drifted to a neighbouring block would be visible.
+          i=1
+          : > fixture/SHA256SUMS
+          targets=$(python3 -c 'import json,sys; print(" ".join(t["target"] for t in json.load(open(sys.argv[1]))["targets"]))' release/targets.json)
+          for target in $targets; do
+            printf '%063d%d  tl-%s\n' 0 "$i" "$target" >> fixture/SHA256SUMS
+            i=$((i + 1))
+          done
+          grep -v 'darwin-x64' fixture/SHA256SUMS > fixture/SHA256SUMS.no-best-effort
+          ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS fixture/full.rb
+          ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS.no-best-effort fixture/dropped.rb
+
+      - name: audit them as Homebrew would
+        run: |
+          set -euo pipefail
+          brew tap-new tlci/formula --no-git
+          tap=$(brew --repository tlci/formula)
+          failures=0
+          for candidate in Formula/tl.rb fixture/full.rb fixture/dropped.rb; do
+            echo "── $candidate"
+            cp "$candidate" "$tap/Formula/tl.rb"
+            # Load first: this is the check that catches a spec with no url for
+            # the running platform, which every other gate passes.
+            if ! brew info --formula tlci/formula/tl > /dev/null; then
+              echo "::error::$candidate does not load in Homebrew. A formula that raises on load breaks every brew command for users of the tap, not only 'brew install tl'."
+              failures=$((failures + 1))
+              continue
+            fi
+            brew style tlci/formula/tl || { echo "::error::brew style rejected $candidate"; failures=$((failures + 1)); }
+            brew audit --formula --skip-style tlci/formula/tl || { echo "::error::brew audit rejected $candidate"; failures=$((failures + 1)); }
+          done
+          brew untap tlci/formula
+          if [ "$failures" -ne 0 ]; then
+            echo "::error::$failures formula(e) were rejected by Homebrew's own checks."
+            exit 1
+          fi
+          echo "all three formulae load, style and audit cleanly"
+
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including
   # cache-replayed ones) into failure — this is the warning-free-build gate.

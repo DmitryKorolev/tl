@@ -667,7 +667,7 @@ jobs:
           set -euo pipefail
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh dist $(cat asset-names)
+          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
 
       # The signed set travels to the publishing job as one artifact, so the
       # job that creates the release never holds an OIDC token and cannot mint
@@ -714,7 +714,7 @@ jobs:
           set -euo pipefail
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh dist $(cat asset-names)
+          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
 
       - name: the tag still points at the built commit
         run: |
@@ -793,8 +793,35 @@ jobs:
       - name: verify the sums file before copying digests out of it
         run: |
           set -euo pipefail
+          # The selftest first, like every other consumer of the signed set: a
+          # verifier that has stopped refusing would otherwise be trusted here
+          # on the strength of having exited zero.
+          ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh dist $(cat asset-names)
+          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
+
+      # A stable tag must not reach this job without somewhere to push. The
+      # token is checked *before* the formula is generated, so a missing
+      # credential fails while nothing has been produced that a maintainer
+      # might mistake for a published one. `secrets` is not available in a step
+      # `if:`, so the token is read into the environment and the step decides.
+      #
+      # This used to warn and exit 0 further down, which meant a green stable
+      # release did not imply the Homebrew channel it promises had been
+      # updated. A channel this pipeline advertises is either updated or the
+      # release says it failed; "published, except for the part nobody
+      # noticed" is not an outcome worth having.
+      - name: a stable release must be able to reach the tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not configured, so this stable release cannot update DmitryKorolev/homebrew-tap — and ADR-0006 lists Homebrew as a published channel. Add the secret (a token with write access to the tap repository) and re-run this job. To release without the Homebrew channel deliberately, remove it from ADR-0006 in the same change rather than letting the push fail quietly."
+            exit 1
+          fi
+          echo "the tap credential is present"
 
       - name: generate the formula
         run: |
@@ -803,22 +830,21 @@ jobs:
           ./scripts/gen-homebrew-formula.sh "${GITHUB_REF_NAME#v}" dist/SHA256SUMS Formula/tl.rb
           cat Formula/tl.rb
 
-      # Pushing to the tap needs a token with write access to a *different*
-      # repository, which GITHUB_TOKEN does not grant. Until that secret is
-      # configured the formula is produced and attached to the run, so the tap
-      # can be updated by hand without anyone re-deriving the digests.
+      # Deliberately not `if: always()`. The checkout's Formula/tl.rb is the
+      # placeholder template until the step above rewrites it, so on any earlier
+      # failure `always()` attached that template under the same artifact name a
+      # good formula uses — `version "0.0.0"`, four all-zero digests, and
+      # `if-no-files-found: error` satisfied. The comment below tells a
+      # maintainer this artifact exists so the tap can be updated by hand, and
+      # following that instruction with the placeholder publishes a formula
+      # whose urls point at a release that does not exist.
       - name: upload the generated formula
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tl-homebrew-formula
           path: Formula/tl.rb
           if-no-files-found: error
 
-      # `secrets` is not available in a step `if:`, so the token is read into
-      # the environment and the step decides for itself. It is a skip rather
-      # than a failure: the formula is already uploaded above, so a tap that is
-      # not yet configured costs a manual copy, not a broken release.
       # A tap carries one formula, so pushing a prerelease would make
       # `brew install tl` resolve to it. The formula is still generated and
       # uploaded above; only the push is skipped.
@@ -828,10 +854,6 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not configured, so the tap was not updated. The generated formula is attached to this run as tl-homebrew-formula; copy it into DmitryKorolev/homebrew-tap by hand, or add the secret to automate it."
-            exit 0
-          fi
           tap=$(mktemp -d)
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/DmitryKorolev/homebrew-tap.git" "$tap"
           mkdir -p "$tap/Formula"
@@ -914,7 +936,7 @@ jobs:
           set -euo pipefail
           ./scripts/verify-release-artifacts.sh --selftest
           # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh dist $(cat asset-names)
+          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
 
       - name: stage the npm packages around the signed binaries
         run: ./scripts/npm-pack.sh npm-staging dist
