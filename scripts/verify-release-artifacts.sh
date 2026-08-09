@@ -135,6 +135,9 @@ verify_dir() {
     *) fail "the pinned certificateIdentityRegexp is not anchored at \$ ('${identity}'). cosign matches unanchored, so an expression without a tail anchor accepts any certificate identity that merely *begins* with this one — a tag name may contain '/', so trailing content is reachable. Repair release/identity.json." ;;
   esac
 
+  scratch=$(mktemp -d) || fail "could not create a temporary directory for this run's scratch files."
+  trap 'rm -rf "$scratch"' EXIT INT TERM
+
   sums="$dir/SHA256SUMS"
   [ -f "$sums" ] || fail "$sums not found — download SHA256SUMS from the same GitHub Release as the assets."
 
@@ -167,15 +170,25 @@ verify_dir() {
     # Pull this asset's line out of the sums file by exact name, and prove it
     # is a digest. Shared with the installer through the library, because the
     # two copies of this had already diverged on what they accepted.
-    expected=$(rc_sums_digest "$sums" "$asset" 2>"$dir/.rc-sums-err") || {
-      fail "$(cat "$dir/.rc-sums-err")"
+    # The scratch file goes in a temp directory, not beside the assets. Written
+    # into $dir it fails on read-only media — an immutable artifact mount, a
+    # root-owned download directory — and the refusal that followed was a bare
+    # "verify-release-artifacts: " with no message at all, for a release that
+    # was perfectly good. This file exists to keep a broken checker from
+    # reading as a bad artifact; that applies to its own scratch space too.
+    expected=$(rc_sums_digest "$sums" "$asset" 2>"$scratch/sums-err") || {
+      fail "$(cat "$scratch/sums-err")"
     }
-    rm -f "$dir/.rc-sums-err"
 
-    # Both sides lowercased: `rc_sha256_of` always produces lowercase, and the
-    # sums file may legitimately carry uppercase, which the hex check accepts.
-    actual=$(rc_lower "$(rc_sha256_of "$path")") \
+    # Two statements, not one. Nested, `$(rc_lower "$(rc_sha256_of …)")`
+    # captures rc_lower's status — which succeeds on empty input — so a host
+    # with neither sha256sum nor shasum produced an empty digest, skipped the
+    # "digest check is mandatory" refusal entirely, and reported a missing tool
+    # as "digest mismatch … hashes to  but SHA256SUMS says …". That is the one
+    # verdict this file must never get wrong, and the nesting hid it.
+    actual=$(rc_sha256_of "$path") \
       || fail "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)."
+    actual=$(rc_lower "$actual")
     if [ "$actual" != "$expected" ]; then
       fail "digest mismatch for '$asset': the file hashes to $actual but SHA256SUMS says $expected. Delete the download and fetch it again; if it still differs, do not run it."
     fi
@@ -297,6 +310,43 @@ selftest() {
   d=$(fixture no-cosign)
   rc_expect_output 1 "cosign not found" "a missing cosign is refused rather than skipped" \
     verify_bare "$d" tl-linux-x64
+
+  # A host with no digest tool must say so, not report the artifact as
+  # tampered. The two are the opposite diagnosis and send a reader to
+  # completely different places; a nested command substitution used to hide
+  # the difference by capturing the wrong status.
+  # An empty PATH is not the scenario — the script needs dirname and pwd to
+  # start at all. What is being modelled is a host where the digest tools
+  # specifically are absent, so they are shadowed by stubs that fail the way
+  # a missing command does.
+  d=$(fixture no-digest-tool)
+  nodigest="$work/nodigest"
+  mkdir -p "$nodigest"
+  for tool in sha256sum shasum; do
+    printf '#!/bin/sh\nexit 127\n' > "$nodigest/$tool"
+    chmod +x "$nodigest/$tool"
+  done
+  rc_expect_output 1 "digest check is mandatory" \
+    "a broken digest tool refuses rather than producing an empty digest" \
+    env PATH="$nodigest:$PATH" TL_INSTALL_SKIP_SIGNATURE=1 "$self" "$d" tl-linux-x64
+  rc_note "$(! grep -q 'digest mismatch' "$RC_ERR" && echo 0 || echo 1)" \
+    "the missing-tool refusal is not phrased as tampering"
+
+  # A read-only asset directory is a legitimate place to verify from: immutable
+  # media, a root-owned download. The verifier must not need to write there,
+  # and must not lose its own message when it cannot.
+  d=$(fixture read-only)
+  chmod a-w "$d"
+  rc_expect_output 0 "digest ok" "a read-only asset directory verifies" \
+    verify "$d" tl-linux-x64
+  printf 'not-a-digest  tl-linux-x64\n' > "$work/ro-sums" 2>/dev/null || true
+  chmod u+w "$d"
+  printf 'not-a-digest  tl-linux-x64\n' > "$d/SHA256SUMS"
+  chmod a-w "$d"
+  rc_expect_output 1 "not a hex digest" \
+    "a refusal from a read-only directory still carries its message" \
+    verify "$d" tl-linux-x64
+  chmod u+w "$d"
 
   # The pin itself. These run the script against a substituted identity file,
   # so they check what happens when the *pin* is broken rather than when an

@@ -58,9 +58,20 @@ generate() {
   [ -f "$template" ] || fail "$template not found — pass --template, or run this from a checkout that has Formula/tl.rb."
   [ -f "$sums" ] || fail "$sums not found. Pass the release's SHA256SUMS, and verify it first with scripts/verify-release-artifacts.sh: every digest written into the formula is copied from that file on trust."
 
-  required=$(rc_targets supported)
-  optional=$(rc_targets best-effort)
-  sums_digest=$(rc_lower "$(rc_sha256_of "$sums")")
+  required=$(rc_targets supported) || fail "could not read the target tiers from release/targets.json."
+  optional=$(rc_targets best-effort) || fail "could not read the target tiers from release/targets.json."
+  # Two statements. Nested inside rc_lower the digest tool's failure is masked
+  # by rc_lower succeeding on empty input, and the generator went on to write
+  # `sha256 ""` into the formula and report success — the placeholder guard
+  # passes, because the placeholder *was* replaced.
+  sums_digest=$(rc_sha256_of "$sums") \
+    || fail "could not digest $sums, so the fallback url cannot be pinned."
+  sums_digest=$(rc_lower "$sums_digest")
+  case $sums_digest in
+    *[!0-9a-f]* | '') fail "the digest computed for $sums is not lowercase hex ('$sums_digest')." ;;
+  esac
+  [ "${#sums_digest}" -eq 64 ] \
+    || fail "the digest computed for $sums is ${#sums_digest} characters, not 64."
 
   # Everything from here is one Python pass over the template. The previous
   # shape ran one interpreter per substitution against a shared temp file,
@@ -146,13 +157,20 @@ def substitute_once(pattern, replacement, what):
         )
 
 
-# The fallback url's tag. This is the *only* place the version is written: the
-# formula has no `version` line — Homebrew scans it from this url, and `brew
-# audit` rejects an explicit one as redundant — and the per-platform urls
-# interpolate the scanned value. The fallback also keeps the stable spec
-# resolvable on a platform this release published no binary for; without it
-# Homebrew raises `formula requires at least a URL` when the formula is
-# *loaded*, for every brew command, not just install.
+# The fallback url's tag. The fallback keeps the stable spec resolvable on a
+# platform this release published no binary for; without it Homebrew raises
+# `formula requires at least a URL` when the formula is *loaded*, for every
+# brew command, not just install.
+#
+# Whether an explicit `version` line is also needed depends on the version.
+# Homebrew scans a version out of this url and `brew audit` rejects an explicit
+# one as *redundant* — but its scanner drops a SemVer prerelease suffix:
+# `Version.detect(".../v1.2.3-rc.1/SHA256SUMS")` is `1.2.3`. Without a line,
+# every `v#{version}` url in a prerelease formula would therefore point at a
+# release that does not exist, and the formula would claim the stable version
+# number. So the line is emitted exactly when the scanned value would be wrong,
+# which is also exactly when `brew audit` does not call it redundant.
+scanned = version.split("-", 1)[0]
 substitute_once(
     re.compile(
         r'^  url "https://github\.com/DmitryKorolev/tl/releases/download/v[^"/]*/SHA256SUMS"$',
@@ -172,6 +190,19 @@ if count != 1:
     die(
         "could not find the placeholder digest under the fallback SHA256SUMS url. The template's "
         "header shape changed and this generator needs updating alongside it."
+    )
+
+if scanned != version:
+    # Between the url and the sha256, which is the order `brew style` wants.
+    anchor = f'  url "https://github.com/DmitryKorolev/tl/releases/download/v{version}/SHA256SUMS"\n'
+    if anchor not in text:
+        die("could not place the version line: the fallback url is not where this generator wrote it.")
+    text = text.replace(anchor, anchor + f'  version "{version}"\n', 1)
+elif re.search(r'^  version "', text, re.M):
+    die(
+        "the template already carries an explicit `version` line, and this release does not need "
+        "one — Homebrew scans the same value from the url, and `brew audit` rejects the "
+        "redundancy. Remove it from the template; the generator adds one only for a prerelease."
     )
 
 pinned = []
@@ -310,6 +341,36 @@ selftest() {
     "the committed formula still carries five placeholder digests"
   rc_note "$([ "$(rc_sha256_of "$repo_root/Formula/tl.rb")" = "$tracked_before" ] && echo 0 || echo 1)" \
     "the selftest leaves the checkout's own Formula/tl.rb byte-identical"
+
+  # A prerelease. Homebrew's version scanner drops the SemVer suffix, so
+  # without an explicit line every interpolated url points at a tag that does
+  # not exist and the formula claims the stable number. Every gate passed that
+  # formula, because nothing ever generated one at a prerelease version.
+  preout="$work/pre.rb"
+  rc_expect_status 0 "a prerelease version generates" gen 1.2.3-rc.1 "$sums" "$preout"
+  rc_note "$(grep -q '^  version "1.2.3-rc.1"$' "$preout" && echo 0 || echo 1)" \
+    "a prerelease formula carries an explicit version line"
+  rc_note "$(grep -q 'download/v1.2.3-rc.1/SHA256SUMS' "$preout" && echo 0 || echo 1)" \
+    "the prerelease fallback url names the prerelease tag"
+  rc_note "$(! grep -q 'download/v1.2.3/' "$preout" && echo 0 || echo 1)" \
+    "no url in the prerelease formula points at the stable tag"
+  rc_note "$(! grep -q '^  version "' "$out" && echo 0 || echo 1)" \
+    "a stable formula carries no version line, so brew audit stays quiet"
+  rc_note "$(command -v ruby >/dev/null 2>&1 && ruby -c "$preout" >/dev/null 2>&1 && echo 0 || echo 1)" \
+    "the prerelease formula parses as Ruby"
+
+  # A digest tool that is present but broken must refuse, not write an empty
+  # sha256 and report success.
+  nodigest="$work/nodigest"
+  mkdir -p "$nodigest"
+  for tool in sha256sum shasum; do
+    printf '#!/bin/sh\nexit 127\n' > "$nodigest/$tool"
+    chmod +x "$nodigest/$tool"
+  done
+  rc_expect_output 1 "cannot be pinned" "a broken digest tool refuses rather than pinning nothing" \
+    env PATH="$nodigest:$PATH" "$0" --template "$template" 1.2.3 "$sums" "$work/o-nodigest"
+  rc_note "$([ ! -e "$work/o-nodigest" ] && echo 0 || echo 1)" \
+    "no formula is written when the fallback digest cannot be computed"
 
   # The version argument is the injection surface: it reaches a Python
   # replacement string and Ruby source. Every one of these used to pass the

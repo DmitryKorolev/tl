@@ -116,13 +116,18 @@ detect_target() {
 # EMBEDDED-COPY-BEGIN sha256_of
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
+    digest_out=$(sha256sum "$1") || digest_out=''
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
+    digest_out=$(shasum -a 256 "$1") || digest_out=''
   else
     echo "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)." >&2
     return 1
   fi
+  if [ -z "$digest_out" ]; then
+    echo "the digest tool on PATH produced no output for '$1' — it is present but not working. The digest check is mandatory and cannot be skipped; repair the installation of coreutils or shasum." >&2
+    return 1
+  fi
+  printf '%s' "${digest_out%% *}"
 }
 # EMBEDDED-COPY-END sha256_of
 
@@ -186,6 +191,49 @@ resolve_version() {
     "https://github.com/${TL_REPO}/releases/latest" 2>/dev/null) \
     || die "could not reach GitHub to find the latest release. Check the network, or set TL_VERSION to install a specific tag."
   version=$(version_from_effective_url "$latest_url")
+}
+
+# Fetch, verify and place the third-party notice. Returns non-zero on any
+# problem, having said what happened; the caller does not treat that as fatal.
+#
+# The digest checks are the binary path's, not a shortened version of them: the
+# hex-shape and 64-character tests are what separate "this file is corrupt"
+# from "these bytes are not what was signed", and the first version of this
+# helper omitted both — so a truncated sums line told the user a signed-release
+# integrity check had failed.
+install_notice() {
+  notice=$1
+  expected=$2
+  case $expected in
+    *[!0-9a-fA-F]* | '')
+      echo "tl-install: the SHA256SUMS entry for ${notice} is not a hex digest, so the notice was not installed. The file is corrupt or truncated; the binary is installed and verified. 'tl licenses' prints the same content." >&2
+      return 1
+      ;;
+  esac
+  if [ "${#expected}" -ne 64 ]; then
+    echo "tl-install: the SHA256SUMS entry for ${notice} is ${#expected} characters, not the 64 of a SHA-256 digest, so the notice was not installed. The file is corrupt or truncated; the binary is installed and verified." >&2
+    return 1
+  fi
+  if ! curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https,file' \
+         -o "$work/$notice" "${base}/${notice}" 2>/dev/null; then
+    echo "tl-install: could not download ${notice}, so it was not installed. The binary is installed and verified; 'tl licenses' prints the same content." >&2
+    return 1
+  fi
+  actual=$(sha256_of "$work/$notice") || {
+    echo "tl-install: no sha256sum or shasum on PATH, so ${notice} could not be checked and was not installed." >&2
+    return 1
+  }
+  if [ "$(lower "$actual")" != "$(lower "$expected")" ]; then
+    echo "tl-install: digest mismatch for ${notice}: downloaded ${actual}, expected ${expected}. It was not installed. The binary itself is installed and was verified against this same signed sums file, so this is a problem with the notice asset alone — report it if it persists." >&2
+    return 1
+  fi
+  share_dir=${TL_INSTALL_SHARE_DIR:-"$(dirname -- "$install_dir")/share/tl"}
+  if mkdir -p "$share_dir" 2>/dev/null && cp "$work/$notice" "$share_dir/$notice" 2>/dev/null; then
+    echo "tl-install: ${notice} installed at ${share_dir}/${notice}"
+    return 0
+  fi
+  echo "tl-install: could not write ${share_dir}; the notice is not installed. It is published with the release, and 'tl licenses' prints the same content from the binary." >&2
+  return 1
 }
 
 main() {
@@ -291,21 +339,18 @@ main() {
   # Skipped, with a note, for a release that does not list it: `TL_VERSION` can
   # name an older tag, and refusing to install a perfectly good binary over a
   # missing notice would be the wrong trade.
+  # Nothing below may fail the install. The binary is already in place and
+  # verified by this point, so a problem with the sidecar is a *warning* about
+  # the sidecar — the previous shape called `fetch`, which dies, so a release
+  # that listed the notice but could not serve it exited 1 having installed the
+  # binary, printing neither the success line nor the PATH advice. A licence
+  # file the user can also get from `tl licenses` is not worth failing over.
   notice=THIRD-PARTY-LICENSES
-  if notice_expected=$(awk -v want="$notice" '$2 == want || $2 == "*" want { print $1; found = 1 } END { exit !found }' "$work/SHA256SUMS"); then
-    fetch "${base}/${notice}" "$work/$notice"
-    notice_actual=$(sha256_of "$work/$notice") \
-      || die "no sha256sum or shasum found; the digest check is mandatory."
-    [ "$(lower "$notice_actual")" = "$(lower "$notice_expected")" ] \
-      || die "digest mismatch for ${notice}: downloaded ${notice_actual}, expected ${notice_expected}. The binary is installed but the licence notice that must accompany it is not what this release signed; re-run, and report it if it persists."
-    share_dir=${TL_INSTALL_SHARE_DIR:-"$(dirname -- "$install_dir")/share/tl"}
-    if mkdir -p "$share_dir" 2>/dev/null && cp "$work/$notice" "$share_dir/$notice" 2>/dev/null; then
-      echo "tl-install: ${notice} installed at ${share_dir}/${notice}"
-    else
-      echo "tl-install: could not write ${share_dir}; the notice is not installed. It is published with the release, and 'tl licenses' prints the same content from the binary." >&2
-    fi
-  else
+  notice_expected=$(awk -v want="$notice" '$2 == want || $2 == "*" want { print $1; found = 1 } END { exit !found }' "$work/SHA256SUMS") || notice_expected=''
+  if [ -z "$notice_expected" ]; then
     echo "tl-install: ${version} publishes no ${notice} asset, so none was installed. 'tl licenses' prints the same content from the binary."
+  else
+    install_notice "$notice" "$notice_expected" || true
   fi
 
   echo "tl-install: installed ${install_dir}/tl"
@@ -552,12 +597,35 @@ UNAME
   run 0 "a release publishing the notice installs it" TL_INSTALL_SHARE_DIR="$work/share"
   note "$([ -f "$work/share/THIRD-PARTY-LICENSES" ] && echo 0 || echo 1)" \
     "the notice lands beside the binary"
-  # A tampered notice must be refused like anything else in the signed set.
+  # A notice whose digest does not match is refused *as a notice*: it is not
+  # installed and the mismatch is reported, but the install still succeeds,
+  # because the binary was already verified against the same signed sums file
+  # and is on disk. Failing here would exit 1 on a good install and skip the
+  # success line, the PATH advice and the version check.
   printf 'tampered\n' >> "$release/THIRD-PARTY-LICENSES"
   rm -rf "$work/dest" "$work/share"
-  run 1 "a notice whose digest does not match refuses" TL_INSTALL_SHARE_DIR="$work/share"
+  run 0 "a notice whose digest does not match does not fail the install" TL_INSTALL_SHARE_DIR="$work/share"
   note "$(grep -q 'digest mismatch for THIRD-PARTY-LICENSES' "$work/err" && echo 0 || echo 1)" \
-    "the message names the notice, not the binary"
+    "the mismatch is reported, and names the notice rather than the binary"
+  note "$([ ! -f "$work/share/THIRD-PARTY-LICENSES" ] && echo 0 || echo 1)" \
+    "the mismatched notice is not installed"
+  note "$([ -x "$work/dest/tl" ] && echo 0 || echo 1)" \
+    "the binary is installed regardless"
+  note "$(grep -q 'tl-install: installed' "$work/out" && echo 0 || echo 1)" \
+    "the success line and PATH advice still run"
+
+  # A truncated sums entry for the notice is a corrupt download, not tampering,
+  # and must not be reported as the latter — the same distinction the binary
+  # path makes twenty lines above, which the notice path originally omitted.
+  cp "$work/sums.lower" "$release/SHA256SUMS" 2>/dev/null || true
+  awk '$2 == "THIRD-PARTY-LICENSES" { print "abcdef  " $2; next } { print }' \
+    "$release/SHA256SUMS" > "$release/SHA256SUMS.trunc" && mv "$release/SHA256SUMS.trunc" "$release/SHA256SUMS"
+  rm -rf "$work/dest" "$work/share"
+  run 0 "a truncated notice digest does not fail the install" TL_INSTALL_SHARE_DIR="$work/share"
+  note "$(grep -q 'not the 64' "$work/err" && echo 0 || echo 1)" \
+    "the truncated notice entry is reported as corrupt, not as a mismatch"
+  note "$(! grep -q 'digest mismatch for THIRD-PARTY-LICENSES' "$work/err" && echo 0 || echo 1)"  \
+    "a truncated notice entry is not reported as tampering"
   rm -f "$release/THIRD-PARTY-LICENSES"
   ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
       && sha256sum "$host_asset" > SHA256SUMS \
@@ -615,41 +683,46 @@ UNAME
   rm -rf "$work/dest"
 
   # `resolve_version` is the branch a bare `curl … | sh` takes, and its three
-  # outcomes were previously unreachable from any test because they sat behind
-  # a network call. Sourcing the script exposes the pure half directly.
-  (
-    TL_INSTALL_SOURCE_ONLY=1
-    export TL_INSTALL_SOURCE_ONLY
-    # shellcheck source=/dev/null
-    . "$self"
-    got=$(version_from_effective_url "https://github.com/${TL_REPO}/releases/tag/v1.2.3" 2>/dev/null) || exit 10
-    [ "$got" = v1.2.3 ] || exit 11
-    got=$(version_from_effective_url "https://github.com/${TL_REPO}/releases/tag/v0.1.0-rc.1" 2>/dev/null) || exit 12
-    [ "$got" = v0.1.0-rc.1 ] || exit 13
-  ) >"$work/out" 2>"$work/err"
-  note $? "version_from_effective_url reads the tag out of a release redirect"
+  # outcomes sat behind a network call. The parsing half is driven here from a
+  # *copy* of this script with the dispatch stripped off, rather than through
+  # an environment variable that makes the shipped file return early: such a
+  # variable is readable by whatever environment the installer runs in, and
+  # under dash an inherited one made both a real install and this selftest
+  # exit 0 having done nothing. A test seam that can disable production from
+  # the ambient environment is worse than the coverage it buys.
+  probe="$work/probe.sh"
+  sed '/^case "${1-}" in$/,$d' "$self" > "$probe"
+  printf 'version_from_effective_url "$1"\n' >> "$probe"
+  note "$(grep -c 'version_from_effective_url' "$probe" | grep -qv '^0$' && echo 0 || echo 1)" \
+    "the probe carries the function under test (the dispatch strip still works)"
 
-  got=0
-  (
-    TL_INSTALL_SOURCE_ONLY=1
-    export TL_INSTALL_SOURCE_ONLY
-    # shellcheck source=/dev/null
-    . "$self"
-    version_from_effective_url "https://github.com/${TL_REPO}/releases"
-  ) >"$work/out" 2>"$work/err" || got=$?
+  drive() { sh "$probe" "$1"; }
+
+  out=$(drive "https://github.com/${TL_REPO}/releases/tag/v1.2.3" 2>"$work/err") && got=0 || got=$?
+  note "$([ "$got" -eq 0 ] && [ "$out" = v1.2.3 ] && echo 0 || echo 1)" \
+    "version_from_effective_url reads the tag out of a release redirect (got '$out')"
+  out=$(drive "https://github.com/${TL_REPO}/releases/tag/v0.1.0-rc.1" 2>"$work/err") && got=0 || got=$?
+  note "$([ "$got" -eq 0 ] && [ "$out" = v0.1.0-rc.1 ] && echo 0 || echo 1)" \
+    "a prerelease tag survives intact (got '$out')"
+
+  got=0; drive "https://github.com/${TL_REPO}/releases" >"$work/out" 2>"$work/err" || got=$?
   note "$([ "$got" -eq 1 ] && grep -q 'no stable release yet' "$work/err" && echo 0 || echo 1)" \
     "a prerelease-only repository is reported as 'nothing stable yet', not as a broken redirect"
 
-  got=0
-  (
-    TL_INSTALL_SOURCE_ONLY=1
-    export TL_INSTALL_SOURCE_ONLY
-    # shellcheck source=/dev/null
-    . "$self"
-    version_from_effective_url "https://github.com/${TL_REPO}/something/else"
-  ) >"$work/out" 2>"$work/err" || got=$?
+  got=0; drive "https://github.com/${TL_REPO}/something/else" >"$work/out" 2>"$work/err" || got=$?
   note "$([ "$got" -eq 1 ] && grep -q 'redirect changed shape' "$work/err" && echo 0 || echo 1)" \
     "an unrecognised redirect target refuses instead of installing a guessed tag"
+
+  # The early-return hatch is gone and must stay gone: while it existed, any
+  # environment carrying its name turned this whole selftest into a no-op that
+  # the release-policy gate read as a pass. Checked behaviourally rather than
+  # by grepping for a name — a textual check matches its own comment, and what
+  # matters is that no inherited variable can stop the installer working.
+  rm -rf "$work/dest" "$work/share"
+  run 0 "a polluted environment does not stop the installer" \
+    TL_INSTALL_SOURCE_ONLY=1 TL_INSTALL_SELFTEST=1 TL_SOURCE_ONLY=1
+  note "$([ -x "$work/dest/tl" ] && echo 0 || echo 1)" \
+    "the binary is installed even with an early-return-shaped variable set"
 
   if [ "$failures" -ne 0 ]; then
     echo "tl-install: --selftest found $failures broken case(s). Do not publish this installer — a user piping it into a shell has no way to notice a check that stopped running." >&2
@@ -658,14 +731,6 @@ UNAME
   echo "tl-install: --selftest passed"
   exit 0
 }
-
-# Sourced by the selftest to drive the pure helpers (`version_from_effective_url`)
-# without a network. Only ever set by that caller: with it unset this file runs
-# exactly as a piped `curl … | sh` does. `return` is legal here only because
-# the guard is false unless the file was sourced.
-if [ -n "${TL_INSTALL_SOURCE_ONLY-}" ]; then
-  return 0
-fi
 
 case "${1-}" in
   '') main ;;

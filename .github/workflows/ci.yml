@@ -120,6 +120,10 @@ jobs:
           grep -v 'darwin-x64' fixture/SHA256SUMS > fixture/SHA256SUMS.no-best-effort
           ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS fixture/full.rb
           ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS.no-best-effort fixture/dropped.rb
+          # A prerelease too: Homebrew's version scanner drops the SemVer
+          # suffix, so this shape resolves its urls differently from the
+          # others and nothing generated one until it was found to be broken.
+          ./scripts/gen-homebrew-formula.sh 1.2.3-rc.1 fixture/SHA256SUMS fixture/prerelease.rb
 
       - name: audit them as Homebrew would
         run: |
@@ -127,7 +131,7 @@ jobs:
           brew tap-new tlci/formula --no-git
           tap=$(brew --repository tlci/formula)
           failures=0
-          for candidate in Formula/tl.rb fixture/full.rb fixture/dropped.rb; do
+          for candidate in Formula/tl.rb fixture/full.rb fixture/dropped.rb fixture/prerelease.rb; do
             echo "── $candidate"
             cp "$candidate" "$tap/Formula/tl.rb"
             # Load first: this is the check that catches a spec with no url for
@@ -139,13 +143,24 @@ jobs:
             fi
             brew style tlci/formula/tl || { echo "::error::brew style rejected $candidate"; failures=$((failures + 1)); }
             brew audit --formula --skip-style tlci/formula/tl || { echo "::error::brew audit rejected $candidate"; failures=$((failures + 1)); }
+            # The resolved url must name the tag the formula was generated for.
+            resolved=$(brew info --json=v2 --formula tlci/formula/tl | python3 -c 'import json,sys; print(json.load(sys.stdin)["formulae"][0]["urls"]["stable"]["url"])')
+            case "$candidate" in
+              *prerelease*) want=v1.2.3-rc.1 ;;
+              Formula/tl.rb) want=v0.0.0 ;;
+              *) want=v1.2.3 ;;
+            esac
+            case "$resolved" in
+              *"/download/$want/"*) ;;
+              *) echo "::error::$candidate resolves to $resolved, which does not name $want — Homebrew scanned a different version than the formula was generated for."; failures=$((failures + 1)) ;;
+            esac
           done
           brew untap tlci/formula
           if [ "$failures" -ne 0 ]; then
             echo "::error::$failures formula(e) were rejected by Homebrew's own checks."
             exit 1
           fi
-          echo "all three formulae load, style and audit cleanly"
+          echo "all four formulae load, style, audit, and resolve to the tag they name"
 
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including

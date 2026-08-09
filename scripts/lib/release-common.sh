@@ -46,15 +46,27 @@ rc_lower() {
 
 # SHA-256 of a file, lowercase hex. coreutils ships sha256sum; macOS ships
 # shasum. Both print "<hex>  <name>", so the first field is the digest.
+#
+# Deliberately not `sha256sum "$1" | cut -d' ' -f1`. A pipeline's status is its
+# *last* command's, so `cut` returning 0 masked a digest tool that was present
+# on PATH but broken — the caller got an empty string and a success status, and
+# reported it downstream as "the file hashes to  but SHA256SUMS says …", which
+# is a tampering verdict for a broken toolchain. Substitution first, status
+# checked, field taken afterwards.
 rc_sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
+    rc__digest_out=$(sha256sum "$1") || rc__digest_out=''
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
+    rc__digest_out=$(shasum -a 256 "$1") || rc__digest_out=''
   else
     echo "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)." >&2
     return 1
   fi
+  if [ -z "$rc__digest_out" ]; then
+    echo "the digest tool on PATH produced no output for '$1' — it is present but not working. The digest check is mandatory and cannot be skipped; repair the installation of coreutils or shasum." >&2
+    return 1
+  fi
+  printf '%s' "${rc__digest_out%% *}"
 }
 
 # Pull one asset's digest out of a sums file by exact name, and prove it is a

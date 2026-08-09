@@ -41,10 +41,13 @@ class Tl < Formula
   # `install` refuses with an explanation naming the tier — a message instead of
   # a crash report.
   #
-  # There is deliberately no `version` line: Homebrew scans the version out of
-  # this url, and `brew audit` rejects an explicit one as redundant with it.
-  # The per-platform urls below interpolate that scanned value, so the tag is
-  # written in exactly one place.
+  # There is deliberately no `version` line *in the template*: Homebrew scans
+  # the version out of this url, and `brew audit` rejects an explicit one as
+  # redundant with it. The generator adds one only for a prerelease, because
+  # Homebrew's scanner drops the SemVer suffix — `Version.detect` on a
+  # `…/v1.2.3-rc.1/SHA256SUMS` url returns `1.2.3` — so without it every
+  # `v#{version}` url below would point at a release that does not exist, and
+  # the formula would claim the stable version number.
   url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/SHA256SUMS"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
@@ -160,11 +163,17 @@ class Tl < Formula
     # A release that does not publish it still installs: `tl licenses` prints
     # the same content from the binary, and refusing a good binary over a
     # missing sidecar would be the wrong trade.
+    # `quiet_system`, not `system`. Homebrew's `Formula#system` *raises*
+    # BuildError on a non-zero exit — its signature is `.void`, so it never
+    # returns a falsy value — which made the `else` branch below unreachable
+    # and turned a release without this optional asset, or one transient 404
+    # on it, into a failed install with a Homebrew crash report, after the
+    # binary had already been placed. `quiet_system` is the boolean form.
     notice = "THIRD-PARTY-LICENSES"
-    if system "curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3",
-              "--proto", "=https", "--proto-redir", "=https",
-              "--output", notice,
-              "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{notice}"
+    if quiet_system "curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3",
+                    "--proto", "=https", "--proto-redir", "=https",
+                    "--output", notice,
+                    "https://github.com/DmitryKorolev/tl/releases/download/v#{version}/#{notice}"
       doc.install notice
     else
       opoo "tl #{version} publishes no #{notice}; run `tl licenses` for the same content."
