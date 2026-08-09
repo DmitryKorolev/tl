@@ -40,6 +40,7 @@ def releaseIdentityTests : IO (List Outcome) := do
   let verifyingPath : FilePath := "VERIFYING.md"
   let distributionPath : FilePath := "docs/adr/ADR-0006-distribution-and-platforms.md"
   let threatPath : FilePath := "docs/adr/ADR-0014-threat-model.md"
+  let installerPath : FilePath := "install.sh"
   let configRaw ← readRequired configPath
   let verifyingRaw ← readRequired verifyingPath
   let distributionRaw ← readRequired distributionPath
@@ -75,17 +76,58 @@ def releaseIdentityTests : IO (List Outcome) := do
     check "release identity: certificate expression is end-anchored" (identity.endsWith "$") identity,
     check "release identity: certificate expression fixes repository and workflow"
       (has identity "DmitryKorolev/tl/\\.github/workflows/release\\.yml@refs/tags/v") identity ]
-  let docs := [("VERIFYING.md", verifyingRaw), ("ADR-0006", distributionRaw),
-    ("ADR-0014", threatRaw)]
-  for (name, raw) in docs do
+  -- The installer is a piped shell script: it cannot read release/identity.json
+  -- out of a checkout, so it carries its own copy of the issuer and the
+  -- certificate expression. That copy is the one users actually verify
+  -- against, which makes drift here a silent downgrade of the check rather
+  -- than a documentation lapse.
+  let installerRaw ← readRequired (installerPath : FilePath)
+  outs := outs ++ [check "release identity: the installer exists" installerRaw.isOk s!"{installerRaw}"]
+  -- Per-file expectations rather than one list applied everywhere. The prose
+  -- documents describe the whole arrangement, so they carry every pin; the
+  -- installer is a verifier, so it carries the values a verifier acts on. It
+  -- has no reason to name the npm package, and it holds the workflow path only
+  -- inside the (escaped) certificate expression, so demanding the plain string
+  -- there would be a coincidence to satisfy rather than an invariant to keep.
+  let allPins := [("repository", repository), ("npm package", npmPackage),
+    ("workflow", workflow), ("OIDC issuer", issuer), ("certificate identity", identity)]
+  let verifierPins := [("repository", repository), ("OIDC issuer", issuer),
+    ("certificate identity", identity)]
+  let docs := [("VERIFYING.md", verifyingRaw, allPins), ("ADR-0006", distributionRaw, allPins),
+    ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, verifierPins)]
+  for (name, raw, pins) in docs do
     match raw with
     | .error _ => pure ()
     | .ok content =>
-        for (label, value) in [("repository", repository), ("npm package", npmPackage),
-            ("workflow", workflow), ("OIDC issuer", issuer),
-            ("certificate identity", identity)] do
+        for (label, value) in pins do
           outs := outs ++ [check s!"release identity: {name} carries {label} pin"
             (has content value) s!"{name} does not contain canonical {label} value {value}"]
+  -- The escape hatch has one name. Two spellings across the installer and the
+  -- scripted procedure would leave a user who read the documented one silently
+  -- running the check they meant to skip, or vice versa.
+  let verifierScriptRaw ← readRequired ("scripts/verify-release-artifacts.sh" : FilePath)
+  for (name, raw) in [("install.sh", installerRaw),
+      ("scripts/verify-release-artifacts.sh", verifierScriptRaw)] do
+    match raw with
+    | .error e => outs := outs ++ [check s!"release identity: {name} is readable" false e]
+    | .ok content =>
+        outs := outs ++ [
+          check s!"release identity: {name} uses the documented skip variable"
+            (has content "TL_INSTALL_SKIP_SIGNATURE")
+            s!"{name} does not mention TL_INSTALL_SKIP_SIGNATURE, the escape hatch ADR-0006 and VERIFYING.md name",
+          check s!"release identity: {name} has no second name for the skip variable"
+            (!has content "TL_VERIFY_SKIP_SIGNATURE")
+            s!"{name} still mentions TL_VERIFY_SKIP_SIGNATURE — one escape hatch, one name"]
+  -- No transparency-log bypass in the installer. Only the installer is checked
+  -- textually: `scripts/verify-release-artifacts.sh` mentions the flag inside
+  -- its stub cosign, which *rejects* it, and that script asserts the same
+  -- property behaviourally against the arguments it really passed.
+  match installerRaw with
+  | .error _ => pure ()
+  | .ok content =>
+      outs := outs ++ [check "release identity: install.sh never bypasses the transparency log"
+        (!has content "insecure-ignore-tlog")
+        "install.sh passes a transparency-log bypass to cosign; the inclusion proof is what makes the bundle worth checking"]
   return outs
 
 /-! ## Build provenance (`tl version`, ADR-0006 "Tool versioning") -/

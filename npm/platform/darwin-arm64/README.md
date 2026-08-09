@@ -7,7 +7,7 @@ binary rather than all four. Install [`@taskloop/tl`](https://www.npmjs.com/pack
 instead; npm selects this package through `os`/`cpu` constraints and the
 launcher in that package execs the binary below.
 
-The binary here is byte-identical to the correspondingly named asset on the
-[GitHub Release](https://github.com/DmitryKorolev/tl/releases) (`tl-darwin-arm64`),
-which carries a Sigstore signature you can verify independently — see
+The binary here is byte-identical to this platform's asset on the matching
+[GitHub Release](https://github.com/DmitryKorolev/tl/releases), which carries a
+Sigstore signature you can verify independently — see
 [VERIFYING.md](https://github.com/DmitryKorolev/tl/blob/main/VERIFYING.md).

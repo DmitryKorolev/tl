@@ -1,21 +1,40 @@
 {
   "name": "@taskloop/tl",
   "version": "0.1.0",
-  "description": "tl — a formally verified, git-native task tracker for AI agents",
-  "keywords": ["task", "tracker", "cli", "agents", "git", "crdt", "lean"],
+  "description": "tl \u2014 a formally verified, git-native task tracker for AI agents",
+  "keywords": [
+    "task",
+    "tracker",
+    "cli",
+    "agents",
+    "git",
+    "crdt",
+    "lean"
+  ],
   "homepage": "https://github.com/DmitryKorolev/tl#readme",
   "bugs": "https://github.com/DmitryKorolev/tl/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DmitryKorolev/tl.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bin": {
     "tl": "bin/tl"
   },
-  "files": ["bin/tl", "README.md"],
-  "os": ["darwin", "linux"],
-  "cpu": ["arm64", "x64"],
+  "files": [
+    "bin/tl",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
   "engines": {
     "node": ">=18"
   },

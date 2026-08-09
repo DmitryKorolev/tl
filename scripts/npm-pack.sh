@@ -18,17 +18,32 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
 
-TARGETS='darwin-arm64 darwin-x64 linux-arm64 linux-x64'
+# The Supported tier is release-blocking; macOS x86-64 is Best-effort, so a
+# release may legitimately ship without it (ADR-0006). Staging follows that
+# policy rather than demanding all four: a Best-effort binary that never got
+# built must not stop the other four packages from being published.
+REQUIRED_TARGETS='darwin-arm64 linux-arm64 linux-x64'
+OPTIONAL_TARGETS='darwin-x64'
+TARGETS="$REQUIRED_TARGETS $OPTIONAL_TARGETS"
 
 usage() {
-  echo "usage: $0 <staging-dir> <assets-dir> | $0 --selftest" >&2
+  echo "usage: $0 <staging-dir> <assets-dir> | $0 --check-staged <staging-dir> <commit> | $0 --selftest" >&2
   exit 2
+}
+
+# ADR-0006: the license notice travels in every distribution artifact. npm
+# includes a LICENSE file automatically only when one sits in the package
+# directory, and neither file is checked into npm/ — they belong to the
+# repository root, and a second copy in git would be a second thing to drift.
+copy_license_files() {
+  cp "$repo_root/LICENSE" "$1/LICENSE"
+  cp "$repo_root/THIRD-PARTY-LICENSES" "$1/THIRD-PARTY-LICENSES"
 }
 
 # Copy the package sources into <staging>, with each platform package's binary
 # taken from <assets>/tl-<target>. <require_assets>=0 fabricates a stub binary
-# for any target with no asset, which is what the selftest wants and what a
-# release must never do.
+# for every target, which is what the selftest wants and what a release must
+# never do. Writes the staged platform target names to <staging>/.staged.
 stage() {
   staging=$1
   assets=$2
@@ -37,31 +52,61 @@ stage() {
   mkdir -p "$staging"
   cp -R "$repo_root/npm/tl" "$staging/tl"
   chmod +x "$staging/tl/bin/tl"
+  copy_license_files "$staging/tl"
+  : > "$staging/.staged"
 
   for target in $TARGETS; do
     dest="$staging/tl-bin-$target"
+    if [ "$require_assets" -eq 1 ] && [ ! -f "$assets/tl-$target" ]; then
+      case " $REQUIRED_TARGETS " in
+        *" $target "*)
+          echo "npm-pack: $assets/tl-$target not found, and $target is a Supported target. Publishing without it would leave users there with a package that installs and then cannot run. Build the missing target, or move it out of REQUIRED_TARGETS deliberately and record that in ADR-0006." >&2
+          exit 1
+          ;;
+        *)
+          echo "npm-pack: no binary for $target — skipping @taskloop/tl-bin-$target. It is a Best-effort target (ADR-0006), so its absence does not block the release; users there get the launcher's missing-package message."
+          continue
+          ;;
+      esac
+    fi
     cp -R "$repo_root/npm/platform/$target" "$dest"
     mkdir -p "$dest/bin"
     if [ -f "$assets/tl-$target" ]; then
       cp "$assets/tl-$target" "$dest/bin/tl"
-    elif [ "$require_assets" -eq 1 ]; then
-      echo "npm-pack: $assets/tl-$target not found. Every platform package needs its release binary; publishing one without it would give users a package that installs and then cannot run. Build the missing target or drop it from TARGETS deliberately." >&2
-      exit 1
     else
       printf '#!/bin/sh\necho "stub tl for %s: $*"\nexit 0\n' "$target" > "$dest/bin/tl"
     fi
     chmod +x "$dest/bin/tl"
+    copy_license_files "$dest"
+    echo "$target" >> "$staging/.staged"
   done
+
+  # The staged launcher pins exactly the platform packages this release
+  # publishes. A pin for a package that was skipped would have npm try to
+  # resolve something the registry never received; dropping it means a user on
+  # that platform gets the launcher's teaching message instead of an install
+  # warning about a missing dependency.
+  python3 - "$staging" <<'PYEOF'
+import json, pathlib, sys
+
+staging = pathlib.Path(sys.argv[1])
+staged = [t for t in staging.joinpath(".staged").read_text().split() if t]
+manifest_path = staging / "tl" / "package.json"
+manifest = json.loads(manifest_path.read_text())
+version = manifest["version"]
+kept = {f"@taskloop/tl-bin-{t}": version for t in staged}
+dropped = sorted(set(manifest.get("optionalDependencies", {})) - set(kept))
+manifest["optionalDependencies"] = {k: kept[k] for k in sorted(kept)}
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+for name in dropped:
+    print(f"npm-pack: dropped the optionalDependency on {name}; it is not in this release")
+PYEOF
 }
 
-# The five manifests carry the version in six places (each `version`, plus the
-# launcher's four exact optionalDependencies pins). They are published as one
-# release, so they must agree; a mismatch would make npm resolve a platform
-# package from a different release than the launcher.
 check_versions() {
   staging=$1
-  python3 - "$staging" "$repo_root" <<'PY'
-import json, pathlib, sys
+  python3 - "$staging" "$repo_root" <<'PYEOF'
+import json, pathlib, re, sys
 
 staging, repo_root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 
@@ -78,17 +123,60 @@ if product is None:
 if product != version:
     sys.exit(
         f"npm-pack: @taskloop/tl is version {version} but the binary reports {product} "
-        f"(productVersion in Tl/Cli/Commands.lean). Bring npm/tl/package.json, the four "
+        f"(productVersion in Tl/Cli/Commands.lean). Bring npm/tl/package.json, the "
         f"npm/platform/*/package.json files, and the lakefile package version to {product}."
     )
 
+# The SPDX id the repository actually publishes under, read from LICENSE rather
+# than written here. The manifest `license` field is the machine-readable
+# license of record for the registry, and an npm version cannot be republished
+# once it is wrong.
+license_head = (repo_root / "LICENSE").read_text()[:400]
+if "Apache License" in license_head and "Version 2.0" in license_head:
+    spdx = "Apache-2.0"
+elif re.search(r"\bMIT License\b", license_head):
+    spdx = "MIT"
+else:
+    sys.exit(
+        "npm-pack: could not identify the repository LICENSE. Teach this check the new license "
+        "before publishing, so the manifests cannot claim one the repository does not use."
+    )
+
 deps = launcher.get("optionalDependencies", {})
+staged_paths = sorted(staging.glob("tl-bin-*/package.json"))
+staged_names = {json.loads(p.read_text())["name"] for p in staged_paths}
 problems = []
-for path in sorted((staging).glob("tl-bin-*/package.json")):
-    manifest = json.loads(path.read_text())
-    name = manifest["name"]
+
+
+def check_common(manifest, name):
     if manifest["version"] != version:
         problems.append(f"{name} is version {manifest['version']}, not {version}")
+    if manifest.get("license") != spdx:
+        problems.append(
+            f"{name} declares license {manifest.get('license')!r} but the repository LICENSE is "
+            f"{spdx}; the registry would record the wrong license permanently"
+        )
+    for required in ("LICENSE", "THIRD-PARTY-LICENSES"):
+        if required not in manifest.get("files", []):
+            problems.append(
+                f"{name} does not ship {required}; ADR-0006 requires the notice to travel in "
+                "every distribution artifact"
+            )
+
+
+check_common(launcher, "@taskloop/tl")
+if launcher.get("scripts"):
+    problems.append(
+        "@taskloop/tl declares scripts. A lifecycle script runs with the user's privileges at "
+        "install time; the launcher must have none (ADR-0014 T3)."
+    )
+
+for path in staged_paths:
+    manifest = json.loads(path.read_text())
+    name = manifest["name"]
+    target = path.parent.name[len("tl-bin-"):]
+    expect_os, expect_cpu = target.split("-", 1)
+    check_common(manifest, name)
     pin = deps.get(name)
     if pin is None:
         problems.append(f"{name} is not an optionalDependency of @taskloop/tl")
@@ -96,24 +184,101 @@ for path in sorted((staging).glob("tl-bin-*/package.json")):
         problems.append(
             f"@taskloop/tl pins {name} at {pin!r}, which is not the exact version {version}"
         )
+    # os/cpu decide which package npm installs where. Constraints that disagree
+    # with the binary the package carries would select it on a platform it
+    # cannot run on.
+    if manifest.get("os") != [expect_os]:
+        problems.append(f"{name} declares os {manifest.get('os')!r}, not ['{expect_os}']")
+    if manifest.get("cpu") != [expect_cpu]:
+        problems.append(f"{name} declares cpu {manifest.get('cpu')!r}, not ['{expect_cpu}']")
+    if expect_os == "linux" and manifest.get("libc") != ["glibc"]:
+        problems.append(
+            f"{name} does not declare libc ['glibc']; the Linux binaries are glibc-linked, and "
+            "without the constraint npm installs them on musl where they cannot exec"
+        )
     if manifest.get("publishConfig", {}).get("access") != "public":
         problems.append(f"{name} is not marked publishConfig.access=public")
-    if not manifest.get("os") or not manifest.get("cpu"):
-        problems.append(f"{name} has no os/cpu constraint, so npm would install it everywhere")
     for forbidden in ("scripts", "dependencies"):
         if manifest.get(forbidden):
-            problems.append(f"{name} declares {forbidden}; platform packages carry a binary and nothing else")
+            problems.append(
+                f"{name} declares {forbidden}; platform packages carry a binary and nothing else"
+            )
 
-extra = set(deps) - {f"@taskloop/tl-bin-{t}" for t in sys.argv[3:]} if len(sys.argv) > 3 else set()
-if launcher.get("scripts"):
+# A pin left behind after a platform package is dropped would make npm try to
+# resolve a package this release never publishes.
+for name in sorted(set(deps) - staged_names):
     problems.append(
-        "@taskloop/tl declares scripts. A lifecycle script runs with the user's privileges at "
-        "install time; the launcher must have none (ADR-0014 T3)."
+        f"@taskloop/tl pins {name}, which is not among the staged platform packages "
+        f"({', '.join(sorted(staged_names)) or 'none'})"
     )
+
 if problems:
     sys.exit("npm-pack: manifest problems:\n  " + "\n  ".join(problems))
-print(f"npm-pack: five manifests agree at version {version}")
-PY
+print(f"npm-pack: {1 + len(staged_paths)} manifests agree at version {version}, license {spdx}")
+PYEOF
+}
+
+# Validate a staging tree that is about to be published: the real binaries are
+# in place, they are the ones this release built, and they run. Distinct from
+# --selftest, which exercises the package *sources* with stub binaries.
+check_staged() {
+  staging=$1
+  expect_commit=$2
+  [ -d "$staging" ] || {
+    echo "npm-pack: '$staging' is not a directory — stage the packages first with '$0 <staging-dir> <assets-dir>'." >&2
+    exit 1
+  }
+  check_versions "$staging"
+
+  case $(uname -s) in
+    Darwin) host_os=darwin ;;
+    Linux) host_os=linux ;;
+    *)
+      echo "npm-pack: --check-staged runs the host platform's staged binary and does not know this OS ($(uname -s))." >&2
+      exit 2
+      ;;
+  esac
+  case $(uname -m) in
+    arm64 | aarch64) host_arch=arm64 ;;
+    x86_64 | amd64) host_arch=x64 ;;
+    *)
+      echo "npm-pack: --check-staged runs the host platform's staged binary and does not know this architecture ($(uname -m))." >&2
+      exit 2
+      ;;
+  esac
+  host="$staging/tl-bin-${host_os}-${host_arch}/bin/tl"
+  [ -x "$host" ] || {
+    echo "npm-pack: $host is missing or not executable, so the staged package for this platform would install and then fail to run." >&2
+    exit 1
+  }
+
+  # Comparing the provenance the binary reports against the commit the release
+  # names is what turns "a binary is present" into "the right binary is here".
+  got=$("$host" version --json) || {
+    echo "npm-pack: the staged binary for ${host_os}-${host_arch} did not run. Do not publish it." >&2
+    exit 1
+  }
+  echo "$got"
+  python3 - "$got" "$expect_commit" <<'PYEOF'
+import json, sys
+
+data = json.loads(sys.argv[1])["data"]
+want = sys.argv[2]
+build = data.get("build", {})
+if build.get("commit") != want:
+    sys.exit(
+        f"npm-pack: the staged binary reports commit {build.get('commit')!r}, but this release is "
+        f"built from {want!r}. The npm packages would ship a binary other than the one the release "
+        "signed."
+    )
+if build.get("kind") != "clean":
+    sys.exit(
+        f"npm-pack: the staged binary reports a {build.get('kind')!r} build, not 'clean'. Only a "
+        "binary corresponding exactly to the tagged commit may be published."
+    )
+print(f"npm-pack: the staged binary is tl {data['version']} from {build['commit']}")
+PYEOF
+  echo "npm-pack: the staging tree in $staging is ready to publish"
 }
 
 selftest() {
@@ -338,6 +503,57 @@ UNAME
     esac
   done
 
+  # The tarballs must carry the license files ADR-0006 requires in every
+  # distribution artifact. npm picks up a LICENSE only when one sits in the
+  # package directory, so this is a property of staging, not of the manifest.
+  for tgz in "$launcher_tgz" "$host_tgz"; do
+    listing=$(tar -tzf "$tgz")
+    for required in package/LICENSE package/THIRD-PARTY-LICENSES; do
+      case $listing in
+        *"$required"*) note 0 "$(basename -- "$tgz") ships ${required#package/}" ;;
+        *) note 1 "$(basename -- "$tgz") ships ${required#package/}" ;;
+      esac
+    done
+  done
+
+  # Staging follows the ADR-0006 tiers: a missing Best-effort binary is skipped
+  # with a warning, a missing Supported one aborts. Both arms, because a policy
+  # only one of which is exercised is a policy half-implemented.
+  assets="$work/assets"
+  mkdir -p "$assets"
+  for t in darwin-arm64 linux-arm64 linux-x64; do
+    printf '#!/bin/sh\necho real\n' > "$assets/tl-$t"
+    chmod +x "$assets/tl-$t"
+  done
+  tiered="$work/tiered"
+  if "$0" "$tiered" "$assets" >"$work/out" 2>"$work/err"; then
+    note 0 "a missing Best-effort binary is skipped, not fatal"
+  else
+    note 1 "a missing Best-effort binary is skipped, not fatal"
+    sed 's/^/    /' "$work/err" >&2
+  fi
+  note "$([ ! -d "$tiered/tl-bin-darwin-x64" ] && echo 0 || echo 1)" \
+    "the skipped Best-effort package is absent from the staging tree"
+  rm -f "$assets/tl-linux-x64"
+  if "$0" "$work/tiered2" "$assets" >"$work/out" 2>"$work/err"; then
+    note 1 "a missing Supported binary aborts staging"
+  else
+    note 0 "a missing Supported binary aborts staging"
+  fi
+  note "$(grep -q 'Supported target' "$work/err" && echo 0 || echo 1)" \
+    "the missing-Supported-binary message names the tier"
+
+  # Usage and argument handling.
+  for args in "" "--bogus" "--selftest extra" "--check-staged onearg"; do
+    got=0
+    # shellcheck disable=SC2086
+    ( "$0" $args >/dev/null 2>&1 ) || got=$?
+    note "$([ "$got" -eq 2 ] && echo 0 || echo 1)" "'$args' is a usage error (exit $got)"
+  done
+  got=0
+  ( "$0" --check-staged "$work/nonexistent" deadbeef >/dev/null 2>&1 ) || got=$?
+  note "$([ "$got" -eq 1 ] && echo 0 || echo 1)" "--check-staged on a missing directory refuses (exit $got)"
+
   if [ "$failures" -ne 0 ]; then
     echo "npm-pack: --selftest found $failures broken case(s). Do not publish these packages." >&2
     exit 1
@@ -352,11 +568,15 @@ case "${1-}" in
     [ "$#" -eq 1 ] || usage
     selftest
     ;;
+  --check-staged)
+    [ "$#" -eq 3 ] || usage
+    check_staged "$2" "$3"
+    ;;
   -*) usage ;;
   *)
     [ "$#" -eq 2 ] || usage
     stage "$1" "$2" 1
     check_versions "$1"
-    echo "npm-pack: staged @taskloop/tl and four platform packages in $1"
+    echo "npm-pack: staged @taskloop/tl and $(wc -l < "$1/.staged" | tr -d ' ') platform package(s) in $1"
     ;;
 esac

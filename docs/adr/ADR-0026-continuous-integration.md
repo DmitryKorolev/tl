@@ -52,20 +52,37 @@ express:
   refusal paths.
 - `scripts/verify-release-artifacts.sh --selftest` exercises the artifact
   verifier's, against fabricated missing, malformed, mismatched, and
-  rejected-signature inputs. That script is the VERIFYING.md procedure as code,
-  shared by the installer and by the release workflow's pre-publish check, so
-  the documented steps are the executed ones and a release cannot ship
-  artifacts its own published procedure would reject.
+  rejected-signature inputs, and against a verifier that cannot run — which
+  must not be reported as tampering. That script is the VERIFYING.md procedure
+  as code, run by the release workflow before publishing, so the documented
+  steps are the executed ones and a release cannot ship artifacts its own
+  published procedure would reject. `install.sh` performs the same checks with
+  its own embedded copy of the pin, because a piped installer has no checkout
+  to read; `Tests/ReleaseTests.lean` guards that copy against drift.
 - A regeneration diff on `Tl/Build/Stamp.lean`. Three places state as fact that
   the checked-in copy is the development stamp; without this step a stamped
   copy swept in by `git commit -a` would make every build from that tree claim
   `clean build — commit <stale>` while passing the whole suite. It is a CI step
   rather than a `tltest` assertion so the release job, which stamps on purpose,
   is unaffected.
+- `scripts/npm-pack.sh --selftest` stages the npm packages, packs and really
+  installs them (global-style and local-style), and drives the launcher through
+  every platform selection, the missing-package path, native Windows, an
+  unsupported OS and CPU, argument passing, exit status, and signals. It also
+  checks that the manifests agree on one version, pin each platform package
+  exactly, declare the SPDX id read from the repository `LICENSE`, ship the
+  notice files, and carry no lifecycle script.
+- `install.sh --selftest` runs the installer against a fabricated local
+  release, covering each refusal path including a rejected signature, a digest
+  mismatch, a missing bundle, an unwritable install directory, and every
+  unsupported platform.
+- actionlint over both workflow files. A workflow cannot validate itself: if
+  GitHub refuses to load `release.yml`, nothing runs to say so, and the failure
+  would surface only when someone pushed a tag.
 
-Both scripts carry a `--selftest` arm on the same reasoning as the task-ID
-lint: a checker that quietly stopped detecting would pass forever, so it proves
-it can still fail before its silence is believed.
+Each of those scripts carries a `--selftest` arm on the same reasoning as the
+task-ID lint: a checker that quietly stopped detecting would pass forever, so
+it proves it can still fail before its silence is believed.
 
 `.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
 tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs these

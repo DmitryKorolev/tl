@@ -60,17 +60,22 @@ there is no second copy of the pin to drift:
 scripts/verify-release-artifacts.sh <download-dir> tl-linux-x64
 ```
 
-It is the same code the installer and the release workflow use. The workflow
-runs it over the candidate artifacts before creating the GitHub Release, so
-nothing is published that this procedure would reject; `--selftest` runs it
+It is the code the release workflow itself runs, over the candidate artifacts
+before creating the GitHub Release, so nothing is published that this procedure
+would reject; `--selftest` runs it
 against fabricated missing, malformed, mismatched, and rejected-signature
 inputs on every commit. A procedure that is documented but never executed is a
 procedure nobody has tested.
 
-`TL_VERIFY_SKIP_SIGNATURE=1` is its equivalent of the installer's escape: it
-drops the Sigstore checks and keeps SHA-256 mandatory. Without cosign on `PATH`
-and without that variable, it refuses rather than quietly degrading to a
-digest-only check.
+It honours the same `TL_INSTALL_SKIP_SIGNATURE=1` escape as the installer —
+one hatch, one name, so a reader who sets the documented variable cannot end up
+running the check they meant to skip. Without cosign on `PATH` and without that
+variable, it refuses rather than quietly degrading to a digest-only check.
+
+`install.sh` performs the same checks but does not call this script: it is
+piped straight into a shell with no checkout to read, so it embeds its own copy
+of the issuer and the certificate expression. `Tests/ReleaseTests.lean` fails if
+that copy drifts from `release/identity.json`.
 
 ## Identity history and rotation
 

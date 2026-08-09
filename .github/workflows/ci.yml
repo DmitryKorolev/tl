@@ -79,6 +79,12 @@ jobs:
       - name: npm package selftest
         run: ./scripts/npm-pack.sh --selftest
 
+      # The installer is piped into a shell by people who cannot inspect it
+      # first, so a check that silently stopped running would be invisible to
+      # exactly the users who most depend on it.
+      - name: installer selftest
+        run: sh install.sh --selftest
+
       # A workflow cannot validate itself: if GitHub refuses to load
       # release.yml, nothing runs to say so, and the failure surfaces only when
       # someone pushes a tag. actionlint parses both workflows here — expression

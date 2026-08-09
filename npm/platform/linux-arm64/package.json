@@ -8,16 +8,21 @@
     "type": "git",
     "url": "git+https://github.com/DmitryKorolev/tl.git"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "files": [
     "bin/tl",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES"
   ],
   "os": [
     "linux"
   ],
   "cpu": [
     "arm64"
+  ],
+  "libc": [
+    "glibc"
   ],
   "publishConfig": {
     "access": "public",

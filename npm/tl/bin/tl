@@ -75,12 +75,38 @@ for candidate in \
 done
 
 if [ -z "$binary" ]; then
-  # The optional dependency for this platform is missing. The usual causes are
-  # an --omit=optional install, or a lockfile produced on a different platform
-  # and installed with --ignore-optional.
-  echo "tl: the binary for $os-$arch is not installed (looked for @taskloop/$pkg)." >&2
-  echo "tl: reinstall without omitting optional dependencies — 'npm install @taskloop/tl' installs exactly one platform package, and that is where the binary lives." >&2
+  # Say which of the several causes this is, rather than one message that fits
+  # none of them. The common ones: --omit=optional; a lockfile resolved on
+  # another platform; and npm having selected by the architecture of the Node
+  # that ran the install, which need not be this shell's architecture (an x64
+  # Node under Rosetta on an arm64 Mac installs the x64 package).
+  installed=''
+  for candidate in "$root"/../tl-bin-*/bin/tl "$root"/node_modules/@taskloop/tl-bin-*/bin/tl; do
+    [ -x "$candidate" ] || continue
+    name=$(basename -- "$(dirname -- "$(dirname -- "$candidate")")")
+    installed="$installed $name"
+  done
+  echo "tl: no binary for $os-$arch — @taskloop/$pkg is not installed." >&2
+  if [ -n "$installed" ]; then
+    echo "tl: what is installed:${installed}. npm selects a platform package using the architecture of the Node process that ran the install, which is not necessarily this shell's; reinstall using a Node built for $os-$arch (on macOS, check whether Node is running under Rosetta with 'node -p process.arch')." >&2
+  else
+    echo "tl: reinstall without omitting optional dependencies — 'npm install @taskloop/tl' pulls in exactly one platform package, and that is where the binary lives." >&2
+  fi
   exit 1
+fi
+
+# glibc, not musl: the Linux binaries are dynamically linked against glibc, and
+# the manifests declare "libc": ["glibc"] so npm refuses the install on musl.
+# A package manager that ignores that field would otherwise reach `exec`, where
+# a missing ELF interpreter surfaces as "not found" naming a file that plainly
+# exists.
+if [ "$os" = linux ] && [ ! -e /lib64/ld-linux-x86-64.so.2 ] && [ ! -e /lib/ld-linux-aarch64.so.1 ]; then
+  for musl in /lib/ld-musl-*.so.1; do
+    if [ -e "$musl" ]; then
+      echo "tl: this system uses musl libc, and the published Linux binaries are linked against glibc. tl has no musl build yet. Use a glibc-based image (for example node:22-slim rather than node:22-alpine), or build from source with Lean 4." >&2
+      exit 1
+    fi
+  done
 fi
 
 exec "$binary" "$@"
