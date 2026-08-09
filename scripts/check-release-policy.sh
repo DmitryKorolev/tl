@@ -119,6 +119,8 @@ version_gate() {
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 release-policy gates, in order:
+  task-id lint selftest               scripts/check-task-ids.sh --selftest
+  task-id leakage                     scripts/check-task-ids.sh
   version consistency selftest        scripts/check-release-version.sh --selftest
   version consistency                 scripts/check-release-version.sh [--tag]
   release identity selftest           scripts/check-release-identity.sh --selftest
@@ -143,6 +145,13 @@ GATES
 fi
 
 echo "release policy: $(if [ -n "$tag" ]; then echo "tag $tag"; else echo "working tree"; fi)$(if [ "$strict" -eq 1 ]; then echo ", strict"; fi)"
+
+# The task-id lint. ci.yml runs it as its own job so a lint failure and a build
+# failure are separately visible, but it belongs in "the whole release policy"
+# too — without it this script can be green on a commit CI will reject, which
+# is exactly what happened to the commit that introduced this file.
+gate "task-id lint selftest" ./scripts/check-task-ids.sh --selftest
+gate "task-id leakage" ./scripts/check-task-ids.sh
 
 # Each gate proves it can still fail before its silence is believed, then runs.
 # The selftest/real pairing is the discipline the identity gate established;

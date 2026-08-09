@@ -5,7 +5,16 @@ artifacts. The npm package is `@taskloop/tl`; its platform packages contain the
 same binaries rather than independent builds.
 
 No release has shipped yet. The commands below pin the identity the first
-release will use; the release workflow will fill in the final asset names.
+release will use.
+
+Each release publishes, besides the per-target binaries: `SHA256SUMS` and its
+Sigstore bundle, a bundle per asset, `release-manifest.json` (the canonical
+description of the release — its assets and their digests, which targets were
+published and at which tier, the npm packages and dist-tag, the toolchain and
+`lake-manifest.json` digest), `LICENSE`, `THIRD-PARTY-LICENSES`, an SPDX SBOM,
+`REBUILDING.md`, and per target a `link-audit-<target>.txt` and a
+`build-metadata-<target>.json`. Every one of them is listed in `SHA256SUMS`, so
+the procedure below covers the whole release and not only the binaries.
 
 ## Required checks
 
@@ -86,12 +95,33 @@ that copy drifts from `release/identity.json`.
 A repository transfer or rename, or a release-workflow path change, creates a
 new signing identity. Before signing under it, a protected change must update
 `release/identity.json`, this table, ADR-0006, the installer, and the Homebrew
-formula together. Historical rows stay here so old artifacts are verified
-against the identity that signed them; old releases are not re-signed under a
-new identity. A compromise records the affected release interval, withdraws
-those artifacts, and rotates the repository/workflow identity before another
-release.
+formula together. Old releases are not re-signed under a new identity.
 
-`release/identity.json` is the machine-readable current pin. The test suite
-keeps its values synchronized with this document and the ADR; when the installer
-and formula land, the same guard expands to cover their operative copies.
+Historical rows stay here because they are what you verify an old artifact
+*with* — by hand. Every shipped verifier carries exactly one pin, the current
+one: `install.sh` embeds it, `Formula/tl.rb` embeds it, and
+`scripts/verify-release-artifacts.sh` reads `release/identity.json`. After a
+rotation, an artifact signed under a superseded identity is still verifiable,
+but not by those: take its row's issuer and expression from this table and run
+the two `cosign verify-blob` commands above with them. Saying so is the point —
+the alternative is a reader running the scripted procedure against an old
+release, watching it fail, and concluding the artifact is bad.
+
+A compromise records the affected release interval, withdraws those artifacts,
+and rotates the repository/workflow identity before another release.
+
+`release/identity.json` is the machine-readable current pin.
+`Tests/ReleaseTests.lean` keeps its values synchronized with this document,
+ADR-0006, ADR-0014, `install.sh` and `Formula/tl.rb` — every operative copy —
+and `scripts/check-release-identity.sh` checks that the expression still
+discriminates, which a text-equality guard cannot.
+
+## Before a release is tagged
+
+`docs/release-prerequisites.md` records the state this pipeline depends on that
+lives outside the repository: the npm packages must exist before trusted
+publishing can be configured for them, the `release` environment must carry its
+protection rules, the `v*` tag ruleset must be active, and the tap credential
+must be present. `scripts/check-release-prereqs.sh` audits what can be audited
+and runs in the signing job before anything is signed; what it cannot read is
+carried in [docs/overview.md](docs/overview.md) as an explicit assumption.

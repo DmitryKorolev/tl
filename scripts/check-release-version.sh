@@ -292,7 +292,7 @@ if mode == "selftest":
         restore("Tl/Cli/Commands.lean")
 
         # The published package name.
-        rewrite("npm/tl/package.json", '"name": "@taskloop/tl"', '"name": "@taskloop/tl-renamed"')
+        rewrite("npm/tl/package.json", '"name": "@taskloop/tl"', '"name": "@taskloop/cli"')
         note(drifts(fixture), "a launcher package name that contradicts release/identity.json is caught")
         restore("npm/tl/package.json")
     finally:

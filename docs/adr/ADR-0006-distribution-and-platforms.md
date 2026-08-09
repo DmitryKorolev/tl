@@ -255,8 +255,20 @@ Binary distribution is gated on a verifiable release pipeline:
   the installer, and the Homebrew formula together. The history table retains
   the old identity for old releases; artifacts are never re-signed to rewrite
   history. A compromise records and withdraws the affected release interval
-  before rotating. The release-identity drift test covers every operative copy
-  that exists, growing to include the installer and formula when they land.
+  before rotating. `Tests/ReleaseTests.lean` compares every operative copy as
+  text — `release/identity.json`, VERIFYING.md, this ADR, ADR-0014,
+  `install.sh` and `Formula/tl.rb` — and
+  `scripts/check-release-identity.sh` checks what the expression *means*
+  against adversarial candidates, which a text-equality guard cannot.
+
+  One limitation, stated rather than implied: every shipped verifier reads the
+  *current* pin only. The history table in VERIFYING.md is how a reader
+  verifies an artifact signed under a superseded identity — by hand, with that
+  row's issuer and expression — because `install.sh`, `Formula/tl.rb` and
+  `scripts/verify-release-artifacts.sh` each carry exactly one. Rotating
+  therefore makes older artifacts unverifiable *by the shipped tooling*, not
+  unverifiable as such; a rotation that needed the tooling to accept both
+  would have to add that deliberately.
 
 - Every GitHub Release publishes per-asset SHA-256 digests, a signed
   `SHA256SUMS`, and per-asset signatures. The `curl | sh` installer and
@@ -275,7 +287,41 @@ Binary distribution is gated on a verifiable release pipeline:
   Reproducibility proves "this binary came from this source"; the Lean proofs
   still prove the source-level correctness claims.
 - Every binary release includes an SBOM and the full link-time dependency audit
-  required by the licensing section below.
+  required by the licensing section below. **Built**: `scripts/gen-sbom.sh`
+  emits SPDX 2.3 derived from `lean-toolchain` and `lake-manifest.json` (no
+  generation timestamp, so two runs for one release agree byte for byte), and
+  each build leg writes `link-audit-<target>.txt` from `ldd`/`otool -L` plus a
+  symbol scan of the actual candidate — the one drift the license generator
+  cannot see, since a newly bundled library appears in the binary without
+  appearing in any manifest.
+
+  These, `LICENSE`, `THIRD-PARTY-LICENSES` and `REBUILDING.md` ship as
+  *companion assets* rather than by wrapping each binary in a per-platform
+  archive. The archive would buy one artifact identity across channels at the
+  cost of changing every asset name and every consumer of them; the companion
+  set keeps the download a single unpacked file, and the identity comes instead
+  from `release-manifest.json` — the canonical description of the release,
+  listed in `SHA256SUMS` and signed with everything else, which each downstream
+  job verifies and then reads instead of re-deriving the asset and target sets.
+  The installer places the notice beside the binary and the formula installs it
+  to `doc`; both skip it with a message on a release that publishes none, since
+  refusing a good binary over a missing sidecar is the wrong trade.
+- Each build leg records what it built — `build-metadata-<target>.json`: the
+  candidate's digest, the source commit, the runner and container image, the
+  toolchain and the manifest digest — and the signing job refuses a binary that
+  does not match its own leg's record. That is the build→sign boundary, which
+  otherwise had no re-verification: the signing job downloads from the artifact
+  store and would sign whatever arrived. Provenance evidence travels this way
+  rather than by attesting per leg, because attesting per leg means granting
+  `id-token: write` to four more jobs, and every job defined inline in the
+  release workflow shares one `job_workflow_ref` — each could then mint a
+  certificate every verifier accepts.
+- The external state this pipeline rests on — the `release` environment and its
+  protection rules, the `v*` tag ruleset, npm's per-package trusted publishers,
+  the tap credential — is neither created nor implied by declaring it in the
+  workflow. `docs/release-prerequisites.md` is the procedure,
+  `scripts/check-release-prereqs.sh` audits what it can before anything is
+  signed, and what it cannot read is carried in docs/overview.md.
 
 ## Consequences
 
@@ -356,10 +402,14 @@ Adopt Lean's own posture verbatim —
   build system + the GMP upstream pointer are public, so any recipient can rebuild
   and relink. No separate object-file drop is required while `tl` is open.
 
-The residual is therefore a packaging checklist:
-confirm the notices file actually travels into the Release tarball, the npm
-package, and the brew bottle, and that the rebuild/relink path is documented.
-This is a release gate, not an MVP implementation blocker. (A *closed-source* fork
+The residual was a packaging checklist — confirm the notices file actually
+travels into the Release assets, the npm package and the brew install, and that
+the rebuild/relink path is documented — and it is discharged. The notice is a
+signed companion asset placed by `install.sh` and by the formula, it is bundled
+in all five npm packages (`scripts/npm-pack.sh` refuses a manifest that stops
+listing it, and its selftest inspects every platform tarball rather than only
+the host's), and `REBUILDING.md` ships with every release documenting both the
+rebuild and the LGPLv3 §4 relink. (A *closed-source* fork
 would instead owe §4 object files — out of scope here; confirm with counsel before
 any such distribution.)
 
@@ -410,12 +460,13 @@ checklist, not an unresolved licensing risk.
   npm package, Homebrew bottle — since compliance attaches to distribution.
 - `tl` published under Apache-2.0.
 - Do not patch GMP → nothing to publish beyond the upstream pointer.
-- Before the first binary release, confirm the bundled notices file ships in all
-  three channels and document the open-source rebuild/relink path (GMP is
-  static — see *Binary distribution strategy*): point to `tl`'s source + pinned
-  toolchain + GMP upstream, which together let a recipient rebuild and relink.
-- Audit the full link-time dependency set once the build exists, rather
-  than assuming GMP is the only copyleft component.
+- **Done.** The bundled notices file ships in all three channels, and the
+  open-source rebuild/relink path is documented in `REBUILDING.md`, which
+  travels with every release: `tl`'s source + pinned toolchain + the GMP
+  upstream pointer, which together let a recipient rebuild and relink.
+- **Done.** The full link-time dependency set is audited per target on each
+  actual candidate (`link-audit-<target>.txt`), rather than assuming GMP is the
+  only copyleft component.
 
 ## Alternatives considered
 

@@ -208,16 +208,61 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- gen-build-provenance.sh (writes Tl/Build/Stamp.lean;
                         -- fails closed on anything it cannot establish),
                         -- verify-release-artifacts.sh (the VERIFYING.md
-                        -- procedure as code — one implementation shared by the
-                        -- installer, the release workflow's pre-publish check,
-                        -- and the selftest, so the documented steps are the
-                        -- executed ones),
+                        -- procedure as code, run by the release workflow's
+                        -- pre-publish check and by its own selftest, so the
+                        -- documented steps are the executed ones;
+                        -- --require-signature is the gate mode, where the
+                        -- TL_INSTALL_SKIP_SIGNATURE escape is refused rather
+                        -- than honoured. install.sh does NOT call it — piped
+                        -- from curl it has no checkout — and carries its own
+                        -- copy of the pin and the shared helpers, guarded by
+                        -- Tests/ReleaseTests.lean and check-embedded-copies.sh),
                         -- npm-pack.sh (stages the npm packages around the
                         -- signed binaries; --selftest packs, installs and
                         -- drives the launcher),
                         -- gen-homebrew-formula.sh (fills Formula/tl.rb in from
                         -- a verified SHA256SUMS; the committed copy keeps
-                        -- placeholder digests so it cannot be installed)
+                        -- placeholder digests so it cannot be installed; the
+                        -- <version> argument is held to SemVer before it is
+                        -- interpolated into Ruby the tap will execute),
+                        -- npm-publish.sh (idempotent publication: query, then
+                        -- publish / accept-if-identical / refuse a differing
+                        -- version, since npm versions are immutable and a
+                        -- partial run must be resumable),
+                        -- gen-sbom.sh (SPDX from lean-toolchain and
+                        -- lake-manifest.json; refuses rather than emitting an
+                        -- empty document, and carries no timestamp so two
+                        -- generations of one release agree),
+                        -- gen-release-manifest.sh (the canonical description
+                        -- of a release, signed with it; --verify is what the
+                        -- downstream jobs read instead of re-deriving the
+                        -- asset and target sets, and generating it is where
+                        -- each binary is checked against the digest its own
+                        -- build leg recorded),
+                        -- check-release-version.sh (one version across the
+                        -- tag, productVersion, the lakefile, the pinned test
+                        -- literal and the five npm manifests),
+                        -- check-embedded-copies.sh (guards the copies of
+                        -- lib/release-common.sh that cannot source it),
+                        -- check-release-prereqs.sh (the external state: npm
+                        -- packages, the release environment, rulesets, the
+                        -- tap; unreadable rows are reported, never passed),
+                        -- check-release-policy.sh (all of the above as one
+                        -- command, called identically by ci.yml and by the
+                        -- release workflow against the tagged commit)
+
+scripts/lib/            -- shared by the release scripts
+  release-common.sh     --   digests, the SHA256SUMS lookup, the uname mapping,
+                        --   the ADR-0006 tiers from release/targets.json, the
+                        --   stub cosign and the selftest harness. install.sh
+                        --   and npm/tl/bin/tl carry marked copies of the parts
+                        --   they need, because neither can source a file from
+                        --   this repository at the moment it runs
+
+release/                -- what a release is, machine-readable
+  identity.json         --   the signing pin every verifier checks against
+  targets.json          --   the distributed targets and their ADR-0006 tiers,
+                        --   read by every consumer instead of being repeated
 
 install.sh              -- the curl-pipe installer; embeds its own copy of the
                         -- signing pin because it has no checkout to read

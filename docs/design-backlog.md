@@ -42,6 +42,16 @@ forever-contract surface that freezes on first implementation.
 
 ## Distribution (before release)
 
+- Reproducible builds [medium] — the one ADR-0006 release-integrity item still
+  open, and the only bullet under ADR-0014 T3 not built. The inputs are already
+  pinned and recorded per release (`build-metadata-<target>.json`, the SBOM,
+  `tl version --json`), so a rebuilder can confirm *which* toolchain and
+  dependency set a binary was built from; what is missing is a build that comes
+  out bit-identical, which is what would let a third party re-derive the
+  artifact rather than take the workflow's word for it. Until then the honest
+  claim is "built by that workflow from that commit", and `REBUILDING.md` says
+  exactly that rather than letting the signature imply more. Deleting this entry
+  without building it would leave the ADR promising something nothing tracks.
 - Native-Windows gating test pass [low] — the gating test pass for native
   Windows is open, spec'd only if it is promoted from Deferred (WSL is the
   Supported Windows path). The Win32 FS/git-shell-out *design* is in ADR-0015

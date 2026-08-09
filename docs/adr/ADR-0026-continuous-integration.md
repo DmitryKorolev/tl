@@ -35,7 +35,18 @@ Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
 of the build so a lexical or policy failure and a build failure are both
 visible from one run, and they fail in seconds rather than after the matrix.
 
-`release-policy` holds the release-machinery gates that the Lean suite cannot
+`release-policy` runs one command — `scripts/check-release-policy.sh --strict`
+— and that script *is* the gate list. It was previously a `steps:` block, and
+`release.yml`'s own `gates` job was a second, shorter one that described itself
+as running the same policy: four gates against the tagged commit where CI ran
+nine, so the installer, the artifact verifier, the npm packages and the formula
+were never exercised on the commit actually being released. One script called
+identically by both workflows is what stops the two definitions of "ready to
+release" from drifting again; `--strict` makes a gate whose tool is missing a
+failure rather than a quietly smaller policy, and a skipped gate is never
+counted as a passing one.
+
+The gates it holds are the release-machinery checks the Lean suite cannot
 express:
 
 - `scripts/check-release-identity.sh` checks what the pinned cosign
@@ -76,19 +87,57 @@ express:
   release, covering each refusal path including a rejected signature, a digest
   mismatch, a missing bundle, an unwritable install directory, and every
   unsupported platform.
+- `scripts/check-release-version.sh` compares every place the release version
+  is written: the tag, `productVersion`, the Lake package version, the pinned
+  literal in `Tests/ReleaseTests.lean`, and the five npm manifests. Nothing
+  compared them before, though two error messages instructed the operator to
+  keep the lakefile in lockstep with a value neither of them read.
+- `scripts/check-embedded-copies.sh` guards the copies of
+  `scripts/lib/release-common.sh` that cannot source it — `install.sh`, piped
+  from curl, and the npm launcher, which ships inside a published package.
+  Textually where the code can be identical, and by classification for the
+  uname mapping, where the wording differs legitimately but a disagreement
+  about which system is which would ship the wrong binary.
+- `scripts/npm-publish.sh --selftest` drives the publisher against a fixture
+  registry: a first publish, a re-run that publishes nothing, a resume after a
+  partial failure, and an already-published version whose contents differ,
+  which must stop rather than retry. npm versions are immutable, so this is the
+  one gate whose failure cannot be corrected afterwards.
+- `scripts/gen-sbom.sh --selftest` and `scripts/gen-release-manifest.sh
+  --selftest` exercise the two generators whose output is signed: the SBOM must
+  refuse rather than emit an empty document, and the manifest must refuse a
+  candidate whose digest disagrees with what its build leg recorded.
+- `scripts/check-release-prereqs.sh --selftest` checks the *reporting* of the
+  external-state audit — that an unreadable row is counted as unchecked and
+  never as a pass. The audit itself is deliberately not in this gate: it talks
+  to npm and to the GitHub API, and a network check on every commit would make
+  CI flaky and teach people to ignore it. It runs in the release workflow
+  instead, before anything is signed.
 - actionlint over both workflow files. A workflow cannot validate itself: if
   GitHub refuses to load `release.yml`, nothing runs to say so, and the failure
-  would surface only when someone pushed a tag.
+  would surface only when someone pushed a tag. actionlint shells out to
+  shellcheck for every `run:` block and silently does without it when it is
+  absent, so the policy script reports a present actionlint with no shellcheck
+  as a *skip* rather than a pass — three real shell defects in these workflows
+  survived precisely because the runner has shellcheck and the machines they
+  were tried on did not.
+- A separate `homebrew-formula` job loads, styles and audits three formulae
+  with real Homebrew: the committed template, a fully-pinned generated one, and
+  one with the Best-effort target dropped. `ruby -c` proves a formula parses
+  and says nothing about whether Homebrew accepts it — a formula whose stable
+  spec has no url for the running platform passes `ruby -c` and makes Homebrew
+  raise on *load*, for every brew command against the tap.
 
 Each of those scripts carries a `--selftest` arm on the same reasoning as the
 task-ID lint: a checker that quietly stopped detecting would pass forever, so
 it proves it can still fail before its silence is believed.
 
 `.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
-tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs these
-gates against the tagged commit rather than trusting that the tag happens to
-point at a commit CI already saw, then builds the four native artifacts and
-signs them. Signing runs directly in that workflow because GitHub's OIDC
+tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs the whole
+policy — the same script, plus `--tag`, which additionally checks the tag
+against every copy of the version — against the tagged commit rather than
+trusting that the tag happens to point at a commit CI already saw, then builds
+the four native artifacts and signs them. Signing runs directly in that workflow because GitHub's OIDC
 certificate names the workflow that requested it, and `release/identity.json`
 pins that name — indirection through a reusable workflow would change the
 identity every verifier checks.

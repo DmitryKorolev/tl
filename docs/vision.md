@@ -486,8 +486,10 @@ binary is built natively per target in a CI matrix, and the install
 channels (Releases, `curl|sh`, npm, Homebrew) are thin veneers over those
 prebuilt binaries. Supported targets are Linux x86-64/aarch64, macOS
 aarch64, and Windows via WSL2 (the Linux binary, recommended Windows path);
-native Windows x86-64 and macOS x86-64 are best-effort; FreeBSD is a community
-port. `git` is a runtime prerequisite (ADR-0001).
+macOS x86-64 is best-effort. Native Windows is deferred and no binary is
+published for it — the filesystem shim returns `ENOSYS` there, so a binary
+would start but could not safely create or mutate task state. FreeBSD is a
+community port. `git` is a runtime prerequisite (ADR-0001).
 See ADR-0006 for the full matrix, glibc floors, and the GMP/LGPL licensing
 boundary.
 

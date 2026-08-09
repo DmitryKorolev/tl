@@ -151,7 +151,11 @@ Release/Homebrew artifact, npm scope/token takeover for the per-platform
 launcher packages, and a gap between "the artifact you run" and "the artifact
 proved" if binary provenance and reproducibility are not enforced.
 
-Stance: mitigate — DONE (ADR-0006).
+Stance: mitigate — built, with one bullet outstanding (ADR-0006). The
+signing, verification, npm and Homebrew machinery below is implemented and
+gated; **reproducible builds are not**, and are tracked as the remaining item.
+Everything here is stated as what it is: a bullet that reads as done and is not
+is worse than an open one, because nothing goes looking for it.
 
 - Per-Release signed `SHA256SUMS` + per-asset signatures; `curl|sh` and
   `brew` verify and fail closed (no default `--force` bypass). Keyless
@@ -162,7 +166,14 @@ Stance: mitigate — DONE (ADR-0006).
   confusion); publish-only OIDC trusted-publishing tokens (no long-lived
   secrets), 2FA, `npm --provenance`, exact platform-package versions, and
   npm's registry-supplied tarball integrity verification. The launcher package
-  has no lifecycle script.
+  has no lifecycle script. What the launcher does *not* carry is its own
+  integrity pin for each platform package: npm resolves an exact version and
+  checks the registry-supplied tarball integrity, so the check exists but its
+  root of trust is the registry rather than this repository. A user who wants a
+  check anchored here compares the npm binary against the GitHub Release asset
+  and verifies that asset's Sigstore bundle — the packages carry the same bytes
+  the release signed, which is why the npm job stages from the verified set
+  rather than rebuilding. Carried, not silently dropped.
 - The fail-closed Sigstore pin is the direct
   `.github/workflows/release.yml` workflow in `DmitryKorolev/tl`, with issuer
   `https://token.actions.githubusercontent.com` and anchored identity
@@ -170,13 +181,22 @@ Stance: mitigate — DONE (ADR-0006).
   Per-asset bundles must carry a Rekor inclusion proof. `VERIFYING.md` records
   historical identities and ADR-0006 owns rotation, the mandatory SHA-256
   check, and the explicit signature-only escape.
-- Reproducible builds (pinned toolchain hash, pinned `lake-manifest`,
-  deterministic timestamps/paths/linking) + an independent rebuilder so
-  binary↔source is verifiable — this is what makes "artifact = proof" honest
-  below the source level.
+- **Outstanding.** Reproducible builds (pinned toolchain hash, pinned
+  `lake-manifest`, deterministic timestamps/paths/linking) + an independent
+  rebuilder so binary↔source is verifiable — this is what makes "artifact =
+  proof" honest below the source level. The pins exist and every release
+  records them (`build-metadata-<target>.json`, the SBOM, `tl version --json`);
+  what does not exist is a rebuild that comes out bit-identical, so a third
+  party can confirm the workflow's inputs but not re-derive its output.
+  `REBUILDING.md` ships with each release and says so plainly rather than
+  letting the signature imply more than it establishes.
 - Pin `batteries` and every lake dependency to immutable commit hashes in a
-  checked-in manifest, verified in CI; complete the ADR-0006 link-time GMP
-  audit; ship an SBOM (extend THIRD-PARTY-LICENSES with digests).
+  checked-in manifest, verified in CI. **Built**: the ADR-0006 link-time audit
+  runs per target on the actual candidate (`link-audit-<target>.txt`), and an
+  SPDX SBOM derived from `lean-toolchain` and `lake-manifest.json` ships with
+  every release. Both are companion assets listed in the signed `SHA256SUMS`,
+  so they are covered by the same verification as the binaries — an unsigned
+  SBOM would be a description from nobody in particular.
 - Carried assumption: the Lean compiler + checker, GitHub release infra, and
   the signing identity remain trusted. Reproducibility binds *binary→source*,
   not *source→correctness* (that is the proofs' job).
@@ -196,8 +216,10 @@ ADR-0015 pins it: a per-working-copy mutation lock; atomic `O_APPEND` records;
 each with named Windows equivalents (`LockFileEx`, `MoveFileEx`/`ReplaceFile`,
 reparse-point checks). The Supported Windows path is WSL (= Linux, fully
 covered); native Windows is deferred and not distributed until those Win32
-bindings exist and have a smoke-test pass (ADR-0006), so the local-FS
-hardening is therefore best-effort on native Windows.
+bindings exist and have a smoke-test pass (ADR-0006). The local-FS hardening is
+therefore not *weaker* on native Windows — it is absent, because no native
+Windows binary is distributed at all. There is nothing there to harden until
+the primitives land.
 
 ### T5. Confidentiality & privacy — accepted by design, documented
 
