@@ -98,9 +98,15 @@ def releaseIdentityTests : IO (List Outcome) := do
   -- carries the verifier pins.
   let formulaRaw ← readRequired ("Formula/tl.rb" : FilePath)
   outs := outs ++ [check "release identity: the Homebrew formula exists" formulaRaw.isOk s!"{formulaRaw}"]
+  -- The fifth home of the pin, and the one the scripted verifier actually
+  -- reads: two inert lines a POSIX shell can take without a JSON parser. It
+  -- carries the verifier pins for the same reason install.sh does.
+  let pinRaw ← readRequired ("release/identity.pin" : FilePath)
+  outs := outs ++ [check "release identity: the two-line pin exists" pinRaw.isOk s!"{pinRaw}"]
   let docs := [("VERIFYING.md", verifyingRaw, allPins), ("ADR-0006", distributionRaw, allPins),
     ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, verifierPins),
-    ("Formula/tl.rb", formulaRaw, verifierPins)]
+    ("Formula/tl.rb", formulaRaw, verifierPins),
+    ("release/identity.pin", pinRaw, verifierPins)]
   for (name, raw, pins) in docs do
     match raw with
     | .error _ => pure ()

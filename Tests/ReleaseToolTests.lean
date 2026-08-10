@@ -278,14 +278,74 @@ private def defaultPlanRows : List String :=
   [planRow "github-release" true none, planRow "installer" true none,
    planRow "npm" false (some "\"0.2.0\""), planRow "homebrew" false (some "\"0.2.0\"")]
 
+/-- Malformations of the two-line pin, each one thing wrong with an otherwise
+    valid file. These are the same refusals `scripts/verify-release-artifacts.sh`
+    applies to the file it reads; keeping both definitions in step is why the
+    generator reads its own output back before writing it. -/
+private def validExpression : String := "^https://github.com/x$"
+
+/-- An identity carrying only the two fields a pin is made of; the rest are
+    irrelevant here and stated once rather than at every call site. -/
+private def identityOf (issuer expression : String) : Identity :=
+  { repository := "r", npmPackage := "n", releaseWorkflow := "w"
+    certificateOidcIssuer := issuer, certificateIdentityRegexp := expression }
+
 private def documentTests : IO (List Outcome) := do
   let targetsText ← IO.FS.readFile "release/targets.json"
   let planText ← IO.FS.readFile "release/plan.json"
   let identityText ← IO.FS.readFile "release/identity.json"
+  let pinText ← IO.FS.readFile "release/identity.pin"
   let targets := Targets.parse "release/targets.json" targetsText
   let plan := ReleasePlan.parse "release/plan.json" planText
   let identity := Identity.parse "release/identity.json" identityText
+  let expectedPin := identity >>= renderPin
   let mut outs := [
+    -- The drift guard. `release/identity.pin` is what the scripted verifier
+    -- and the installer selftest actually read, so a stale one is a signature
+    -- check against the wrong identity — which looks like a verification
+    -- failure rather than a broken verifier.
+    checkEq "pin: the committed pin is exactly what the identity produces"
+      pinText (okOr "<the identity itself was refused>" expectedPin),
+    check "pin: the committed pin reads back through the verifier's own rules"
+      (parsePin "release/identity.pin" pinText).toOption.isSome
+      (errorOf (parsePin "release/identity.pin" pinText)),
+    -- Generation refusals: a pin that cannot be read back unambiguously is
+    -- never written, because the moment to catch it is generation.
+    check "pin: an identity with an empty issuer produces no pin"
+      (mentions (renderPin (identityOf "" validExpression)) "is empty"),
+    check "pin: an issuer containing a line break produces no pin"
+      (mentions (renderPin (identityOf "https://a\nhttps://b" validExpression)) "contains a line break"),
+    check "pin: a line break is refused because it would change what the file says"
+      (mentions (renderPin (identityOf "https://a\nhttps://b" validExpression)) "exactly two lines"),
+    check "pin: a carriage return produces no pin"
+      (mentions (renderPin (identityOf "https://a\r" validExpression))
+        "contains a line break"),
+    check "pin: an expression unanchored at the head produces no pin"
+      (mentions (renderPin (identityOf "https://a" "https://github.com/x$"))
+        "not anchored at ^"),
+    check "pin: an expression unanchored at the tail produces no pin"
+      (mentions (renderPin (identityOf "https://a" "^https://github.com/x"))
+        "not anchored at $"),
+    -- Reading refusals, matching the shell's one for one.
+    check "pin: an empty pin is refused"
+      (mentions (parsePin "p" "") "the pin is exactly two"),
+    check "pin: a pin with only one line is refused"
+      (mentions (parsePin "p" "https://a\n") "the pin is exactly two"),
+    check "pin: a pin with three lines is refused"
+      (mentions (parsePin "p" s!"https://a\n{validExpression}\nhttps://evil\n") "exactly two"),
+    check "pin: a third line says why it is not merely ignored"
+      (mentions (parsePin "p" s!"https://a\n{validExpression}\nhttps://evil\n")
+        "a second, different pin"),
+    check "pin: a pin with no trailing newline is refused"
+      (mentions (parsePin "p" s!"https://a\n{validExpression}") "does not end with a newline"),
+    check "pin: a pin with an empty first line is refused"
+      (mentions (parsePin "p" s!"\n{validExpression}\n") "is empty"),
+    check "pin: a pin with an unanchored expression is refused"
+      (mentions (parsePin "p" "https://a\nhttps://github.com/x\n") "not anchored"),
+    check "pin: a well-formed pin yields the issuer and the expression"
+      ((parsePin "p" s!"https://a\n{validExpression}\n").toOption.map
+        (fun i => (i.certificateOidcIssuer, i.certificateIdentityRegexp))
+        == some ("https://a", validExpression)),
     -- The committed files, against the model that is about to decide over them.
     check "documents: the committed targets file parses" targets.toOption.isSome
       (errorOf targets),

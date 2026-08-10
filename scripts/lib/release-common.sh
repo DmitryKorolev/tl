@@ -325,7 +325,14 @@ rc_selftest_end() {
 # would stay green while its caller passed a mangled expression — the failure
 # that reaches users as "every genuine release is rejected".
 #
-# rc_write_stub_cosign <bin-dir> <identity-file> <log-dir>
+# rc_write_stub_cosign <bin-dir> <identity-pin> <log-dir>
+#
+# <identity-pin> is release/identity.pin — the two inert lines a verifier
+# actually reads, not release/identity.json. The stub compares what its caller
+# passed against the same file the caller was supposed to read, so a verifier
+# that quietly used a different pin fails here. Reading it the same way the
+# verifier does (one descriptor, `IFS= read -r`) is also what keeps `python3`
+# off the selftest path, which is itself part of the release policy.
 #   COSIGN_STUB_VERDICT=ok|bad|broken   the verdict for every call
 #   COSIGN_STUB_FAIL_ON=<basename>      fail one named blob only
 # Writes <log-dir>/cosign-argv and <log-dir>/cosign-blobs.
@@ -340,8 +347,12 @@ rc_write_stub_cosign() {
 pin='$rc__pin'
 log='$rc__log'
 printf '%s\n' "\$*" >> "\$log/cosign-argv"
-want_issuer=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateOidcIssuer"])' "\$pin")
-want_identity=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["certificateIdentityRegexp"])' "\$pin")
+want_issuer=''
+want_identity=''
+{
+  IFS= read -r want_issuer || true
+  IFS= read -r want_identity || true
+} < "\$pin"
 blob=''
 got_issuer=''
 got_identity=''

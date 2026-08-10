@@ -81,7 +81,8 @@ lean_lib Tooling where
     Batteries only, which also keeps it independent of the ADR-0009 Mathlib
     escape hatch. -/
 lean_lib ReleaseCore where
-  roots := #[`release.Json, `release.Model, `release.Cli]
+  roots := #[`release.Command, `release.Json, `release.Model, `release.Identity,
+    `release.Cli]
 
 /-- A default target so `lake build --wfail` holds the release tool to the same
     warning-free standard as everything else. `release.Main` is a three-line

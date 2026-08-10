@@ -366,12 +366,12 @@ main() {
 # checkout: `sh install.sh --selftest`.
 # ---------------------------------------------------------------------------
 selftest() {
-  # The selftest runs from a checkout, so the stub can read the canonical pin
+  # The selftest runs from a checkout, so the stub can read the published pin
   # and compare it against what install.sh actually passes. install.sh itself
   # keeps its embedded copy: it has no checkout when piped from curl.
-  TL_IDENTITY_FILE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/release/identity.json
+  TL_IDENTITY_FILE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/release/identity.pin
   [ -f "$TL_IDENTITY_FILE" ] || {
-    echo "tl-install: --selftest needs release/identity.json beside this script (looked at $TL_IDENTITY_FILE) — run it from a checkout." >&2
+    echo "tl-install: --selftest needs release/identity.pin beside this script (looked at $TL_IDENTITY_FILE) — run it from a checkout." >&2
     exit 2
   }
   # The selftest runs from a checkout, so unlike `main` it *can* use the shared

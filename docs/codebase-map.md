@@ -660,7 +660,17 @@ release/                -- `lake exe tlrelease`, and its inputs
   Main.lean             --   the three-line root defining `main`, kept separate
                         --   so tests can import the decisions in-process
                         --   (two top-level `main`s cannot share a closure)
+  Identity.lean         --   writes and drift-guards release/identity.pin: the
+                        --   pin in a form a POSIX shell reads without a JSON
+                        --   parser, so checking a signature needs no
+                        --   interpreter. Refuses to write a pin its own reader
+                        --   would reject
   identity.json         --   (data) the signing pin every verifier checks against
+  identity.pin          --   (data, GENERATED) the same pin as two inert lines,
+                        --   issuer then expression. Never sourced, never
+                        --   evaluated; read with `IFS= read -r` from one
+                        --   opened descriptor so two reads cannot be handed
+                        --   one line each from two different pins
   targets.json          --   (data) the distributed targets and their tiers
   plan.json             --   (data) the channels this release publishes through
 ```

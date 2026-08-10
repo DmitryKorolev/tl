@@ -41,25 +41,17 @@ precompiled verifier must not become the only way to authenticate the release
 that contains it.
 -/
 
-import release.Json
-import release.Model
+import release.Identity
 
 namespace Release
 
-/-- One subcommand: how it is invoked and what it decides. -/
-structure Command where
-  name : String
-  arguments : String
-  summary : String
-  run : List String → IO UInt32
+/-- Every subcommand `tlrelease` offers, contributed by the module that owns
+    each decision.
 
-/-- Every subcommand `tlrelease` offers.
-
-    Empty until the decisions move here one task at a time. It is a table
-    rather than a `match` so `help` is generated from the same list dispatch
-    reads: a subcommand that exists but is undocumented, or documented but
-    unreachable, is not representable. -/
-def commands : List Command := []
+    A table rather than a `match`, so `help` is generated from the same list
+    dispatch reads: a subcommand that exists but is undocumented, or documented
+    but unreachable, is not representable. -/
+def commands : List Command := identityCommands
 
 def usage : String :=
   let header :=

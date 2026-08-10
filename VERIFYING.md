@@ -76,7 +76,7 @@ run, not a weaker default.
 ## The same checks, scripted
 
 `scripts/verify-release-artifacts.sh` in this repository performs exactly the
-steps above, reading the issuer and identity from `release/identity.json` so
+steps above, reading the issuer and identity from `release/identity.pin` so
 there is no second copy of the pin to drift:
 
 ```sh
@@ -89,6 +89,17 @@ would reject; `--selftest` runs it
 against fabricated missing, malformed, mismatched, and rejected-signature
 inputs on every commit. A procedure that is documented but never executed is a
 procedure nobody has tested.
+
+`release/identity.pin` is exactly two lines — the issuer, then the certificate
+identity expression — because checking a signature must not require an
+interpreter. Reading those two strings out of JSON needed `python3`: the
+expression contains `\.`, which JSON stores as `\\.`, so a text scrape would
+hand cosign a pattern meaning "a backslash followed by any character", matching
+no real certificate and rejecting every genuine signature while looking exactly
+like tampering. The pin is data — never sourced, never evaluated, read with
+`IFS= read -r` from one opened descriptor and passed to cosign as arguments. It
+is generated from `release/identity.json` by `tlrelease write-pin` and a test
+fails if the two disagree, so there is still one place the pin is decided.
 
 It honours the same `TL_INSTALL_SKIP_SIGNATURE=1` escape as the installer —
 one hatch, one name, so a reader who sets the documented variable cannot end up
@@ -114,7 +125,7 @@ formula together. Old releases are not re-signed under a new identity.
 Historical rows stay here because they are what you verify an old artifact
 *with* — by hand. Every shipped verifier carries exactly one pin, the current
 one: `install.sh` embeds it, `Formula/tl.rb` embeds it, and
-`scripts/verify-release-artifacts.sh` reads `release/identity.json`. After a
+`scripts/verify-release-artifacts.sh` reads `release/identity.pin`. After a
 rotation, an artifact signed under a superseded identity is still verifiable,
 but not by those: take its row's issuer and expression from this table and run
 the two `cosign verify-blob` commands above with them. Saying so is the point —

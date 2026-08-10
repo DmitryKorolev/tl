@@ -53,26 +53,28 @@ usage() {
   exit 2
 }
 
-# Locate release/identity.json relative to this script, so the installer can
-# run from anywhere.
-identity_file="$script_dir/../release/identity.json"
+# Locate release/identity.pin relative to this script, so it can run from
+# anywhere.
+#
+# The pin, not release/identity.json. This script is what VERIFYING.md tells a
+# reader to run, and it used to need `python3` for exactly one thing: reading
+# two strings out of JSON. It could not scrape them — the certificate
+# expression contains `\.`, which JSON stores as `\\.`, so a text scrape hands
+# cosign a pattern meaning "a literal backslash followed by any character".
+# That matches no real certificate, and the failure is silent in the worst
+# direction: it rejects every genuine signature while looking exactly like
+# tampering rather than like a broken verifier.
+#
+# So the pin is published in a form that needs no parser: two inert lines, the
+# issuer then the expression, generated from release/identity.json by
+# `tlrelease write-pin` and drift-guarded against it. Requiring an interpreter
+# to check a signature was a dependency this project chose for its own
+# convenience and charged to the user.
+pin_file="$script_dir/../release/identity.pin"
 
 fail() {
   echo "verify-release-artifacts: $1" >&2
   exit 1
-}
-
-# Read a string field from release/identity.json.
-#
-# Through a JSON parser, not sed. The certificate expression contains escaped
-# dots, which JSON stores as `\\.` — a text scrape hands cosign a pattern
-# meaning "a literal backslash followed by any character", which matches no
-# real certificate at all. That failure is silent in the worst direction: it
-# rejects every genuine signature, and it looks exactly like a verification
-# failure rather than like a broken verifier.
-identity_field() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
-    "$identity_file" "$1" 2>/dev/null
 }
 
 # Run cosign and distinguish two very different outcomes. A verification
@@ -109,16 +111,51 @@ verify_dir() {
   [ -d "$dir" ] || fail "'$dir' is not a directory. Pass the directory the release assets were downloaded into, then the asset names within it — for example 'scripts/verify-release-artifacts.sh ~/Downloads tl-linux-x64'."
   [ "$#" -gt 0 ] || usage
 
-  [ -f "$identity_file" ] || fail "release/identity.json not found next to this script (looked at $identity_file) — without the pinned issuer and certificate identity a signature check would accept any valid Sigstore certificate, which is no check at all."
-  command -v python3 >/dev/null 2>&1 \
-    || fail "python3 not found — it reads the pinned identity out of release/identity.json. A text scrape would mangle the escapes in the certificate expression and silently reject every genuine signature, so there is no fallback. Install python3, or verify by hand with the commands in VERIFYING.md."
+  [ -f "$pin_file" ] || fail "release/identity.pin not found next to this script (looked at $pin_file) — without the pinned issuer and certificate identity a signature check would accept any valid Sigstore certificate, which is no check at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  [ -r "$pin_file" ] || fail "release/identity.pin is not readable (looked at $pin_file). A pin that cannot be read is not a weaker check, it is no check; fix the permissions rather than verifying without it."
 
-  issuer=$(identity_field certificateOidcIssuer) \
-    || fail "release/identity.json has no certificateOidcIssuer, or is not valid JSON — repair the pin before verifying anything against it."
-  identity=$(identity_field certificateIdentityRegexp) \
-    || fail "release/identity.json has no certificateIdentityRegexp, or is not valid JSON — repair the pin before verifying anything against it."
-  [ -n "$issuer" ] || fail "release/identity.json has an empty certificateOidcIssuer — an empty issuer would not constrain the certificate at all."
-  [ -n "$identity" ] || fail "release/identity.json has an empty certificateIdentityRegexp — an empty expression matches every certificate, which is no check at all."
+  # One opened descriptor for the whole file, so both lines come from a single
+  # read of a single file: two separate reads could be handed one line each
+  # from two different pins.
+  #
+  # `IFS= read -r` is what makes the expression survive. Without `-r`, `read`
+  # interprets the backslashes in `\.` and hands cosign an expression matching
+  # nothing; without the empty `IFS`, leading and trailing whitespace is
+  # stripped from a value that is passed verbatim to a matcher.
+  #
+  # The file is *data*. It is never sourced and never evaluated — the values
+  # only ever become arguments — so nothing in it can execute.
+  pin_issuer=''
+  pin_identity=''
+  pin_extra=''
+  pin_extra_present=0
+  {
+    IFS= read -r pin_issuer || true
+    IFS= read -r pin_identity || true
+    if IFS= read -r pin_extra; then pin_extra_present=1; fi
+  } < "$pin_file"
+
+  issuer=$pin_issuer
+  identity=$pin_identity
+
+  [ -n "$issuer" ] || fail "release/identity.pin has no issuer on its first line — an empty issuer would not constrain the certificate at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  [ -n "$identity" ] || fail "release/identity.pin has no certificate identity expression on its second line — an empty expression matches every certificate, which is no check at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  # A third line is refused rather than ignored: a reader that skipped it could
+  # be handed a second, different pin below the one it used. Both an empty
+  # third line and trailing data without a newline are caught, because the two
+  # look the same to a reader that only counts non-empty lines.
+  if [ "$pin_extra_present" -eq 1 ] || [ -n "$pin_extra" ]; then
+    fail "release/identity.pin has more than two lines. The pin is exactly two — the issuer, then the certificate identity expression — and extra content is refused rather than ignored, because a reader that skipped it could be handed a second, different pin below the one it used."
+  fi
+  # Anything outside printable ASCII, which in practice means a carriage
+  # return from a file with Windows line endings. A CR rides into the value
+  # cosign is given and makes the expression match nothing — the same silent
+  # rejection of genuine signatures that the JSON scrape would have caused.
+  case $issuer$identity in
+    *[![:print:]]*)
+      fail "release/identity.pin contains a non-printable character — a carriage return is the usual cause, from a file saved with Windows line endings. The pin is passed to cosign verbatim, so it would silently match nothing; rewrite it with Unix line endings."
+      ;;
+  esac
   # Both anchors, not just the head. cosign matches unanchored, so a missing
   # `^` accepts a certificate whose identity merely *contains* the pinned one —
   # and a missing `$` accepts one that merely *begins* with it, which is not
@@ -128,7 +165,7 @@ verify_dir() {
   # this verifier checked only the first half.
   case $identity in
     '^'*) ;;
-    *) fail "the pinned certificateIdentityRegexp is not anchored at ^ ('${identity}'). cosign matches unanchored, so an unanchored expression would accept a certificate whose identity merely *contains* this repository's — repair release/identity.json." ;;
+    *) fail "the pinned certificateIdentityRegexp is not anchored at ^ ('${identity}'). cosign matches unanchored, so an unanchored expression would accept a certificate whose identity merely *contains* this repository's — repair release/identity.pin by regenerating it from release/identity.json." ;;
   esac
   case $identity in
     *'$') ;;
@@ -221,7 +258,7 @@ selftest() {
 
   rc_selftest_begin "verify-release-artifacts" "$work"
 
-  rc_write_stub_cosign "$work/bin" "$identity_file" "$work"
+  rc_write_stub_cosign "$work/bin" "$pin_file" "$work"
 
   # A release directory that verifies cleanly.
   fixture() {
@@ -351,34 +388,97 @@ selftest() {
   # The pin itself. These run the script against a substituted identity file,
   # so they check what happens when the *pin* is broken rather than when an
   # artifact is.
+  # `pin_bytes` is written with `printf '%s'` and no trailing newline of its
+  # own, so each case controls the file's bytes exactly — including whether it
+  # ends in a newline, which is one of the malformations under test.
   pin_case() {
-    # pin_case <name> <expected-status> <needle> <identity-json-content>
+    # pin_case <name> <expected-status> <needle> <pin-bytes>
     name=$1; want=$2; needle=$3; content=$4
     d=$(fixture "pin-$(echo "$name" | tr ' /$^' '____')")
     alt_root="$work/alt-$(echo "$name" | tr ' /$^' '____')"
     mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
     cp "$self" "$alt_root/scripts/"
     cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
-    printf '%s\n' "$content" > "$alt_root/release/identity.json"
+    printf '%s' "$content" > "$alt_root/release/identity.pin"
     rc_expect_output "$want" "$needle" "$name" \
       env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
   }
-  pin_case "a malformed identity.json is refused" 1 "repair the pin" '{ not json'
-  pin_case "an identity.json without the issuer is refused" 1 "certificateOidcIssuer" \
-    '{"certificateIdentityRegexp": "^x$"}'
-  pin_case "an identity.json without the expression is refused" 1 "certificateIdentityRegexp" \
-    '{"certificateOidcIssuer": "https://example.invalid"}'
-  pin_case "an empty certificate expression is refused" 1 "empty certificateIdentityRegexp" \
-    '{"certificateOidcIssuer": "https://example.invalid", "certificateIdentityRegexp": ""}'
+  valid_expr='^https://github.com/x$'
+  pin_case "an empty pin is refused" 1 "no issuer on its first line" ''
+  pin_case "a pin with only an issuer is refused" 1 "no certificate identity expression" \
+    'https://example.invalid
+'
+  pin_case "a pin with an empty issuer line is refused" 1 "no issuer on its first line" \
+    "
+$valid_expr
+"
+  pin_case "a pin with an empty expression line is refused" 1 "no certificate identity expression" \
+    'https://example.invalid
+
+'
+  # A third line is refused rather than ignored: a reader that skipped it could
+  # be handed a second, different pin below the one it used.
+  pin_case "a pin with a third line is refused" 1 "more than two lines" \
+    "https://example.invalid
+$valid_expr
+https://evil.invalid
+"
+  pin_case "a pin with an empty third line is refused" 1 "more than two lines" \
+    "https://example.invalid
+$valid_expr
+
+"
+  pin_case "a pin with trailing data and no newline is refused" 1 "more than two lines" \
+    "https://example.invalid
+$valid_expr
+trailing"
+  # A carriage return rides into the value cosign is given and makes the
+  # expression match nothing — a silent rejection of every genuine signature,
+  # which looks exactly like tampering.
+  pin_case "a pin with Windows line endings is refused" 1 "non-printable character" \
+    "$(printf 'https://example.invalid\r\n%s\r\n' "$valid_expr")"
   # An unanchored expression is the failure a text-equality drift guard cannot
   # see: it is well-formed, it verifies real artifacts, and it also accepts a
   # certificate whose identity merely contains this repository's.
   pin_case "an expression unanchored at the head is refused" 1 "not anchored at ^" \
-    '{"certificateOidcIssuer": "https://example.invalid", "certificateIdentityRegexp": "https://github.com/x$"}'
+    'https://example.invalid
+https://github.com/x$
+'
   # The tail anchor is the half this verifier used to drop. A tag name may
   # contain a slash, so trailing content past the pinned identity is reachable.
   pin_case "an expression unanchored at the tail is refused" 1 "not anchored at" \
-    '{"certificateOidcIssuer": "https://example.invalid", "certificateIdentityRegexp": "^https://github.com/x"}'
+    'https://example.invalid
+^https://github.com/x
+'
+  # The pin is data, never sourced. A line that would be a command
+  # substitution if it were ever evaluated must reach cosign as literal text —
+  # so it is refused for its shape, not executed.
+  pin_case "a pin whose expression is not anchored cannot execute either" 1 "not anchored at" \
+    'https://example.invalid
+$(touch '"$work"'/pin-was-evaluated)
+'
+  rc_expect_status 1 "no pin file was evaluated while being read" \
+    test -e "$work/pin-was-evaluated"
+
+  # The missing and unreadable pin, which is the difference between a check
+  # that is weaker and a check that is absent.
+  d=$(fixture pin-missing)
+  alt_root="$work/alt-pin-missing"
+  mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
+  cp "$self" "$alt_root/scripts/"
+  cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
+  rc_expect_output 1 "identity.pin not found" "a missing pin is refused" \
+    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
+  printf '%s\n' 'https://example.invalid' "$valid_expr" > "$alt_root/release/identity.pin"
+  chmod a-r "$alt_root/release/identity.pin"
+  # root ignores the mode bit, so this row only means something unprivileged.
+  if [ -r "$alt_root/release/identity.pin" ]; then
+    echo "  ok   an unreadable pin is refused (skipped: this user can read a mode-000 file)"
+  else
+    rc_expect_output 1 "is not readable" "an unreadable pin is refused" \
+      env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
+  fi
+  chmod u+r "$alt_root/release/identity.pin"
 
   # A verifier that cannot run must not be reported as tampering: the two
   # outcomes send a reader to entirely different places.
