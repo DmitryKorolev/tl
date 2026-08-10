@@ -263,6 +263,13 @@ release/                -- what a release is, machine-readable
   identity.json         --   the signing pin every verifier checks against
   targets.json          --   the distributed targets and their ADR-0006 tiers,
                         --   read by every consumer instead of being repeated
+  plan.json             --   which channels this release actually publishes.
+                        --   ADR-0006 describes how each channel works; this
+                        --   says which are switched on, and the applicable
+                        --   prerequisites, the enabled jobs and the release
+                        --   profile's gate list are all derived from it. A
+                        --   disabled channel is absent from each, never
+                        --   reported missing
 
 install.sh              -- the curl-pipe installer; embeds its own copy of the
                         -- signing pin because it has no checkout to read
@@ -567,7 +574,12 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   `tl version` renderings (exercised through explicit
                         --   Provenance values, since the compiled stamp is
                         --   fixed) and a drift guard binding the stamped
-                        --   toolchain/manifest pins to the files on disk
+                        --   toolchain/manifest pins to the files on disk;
+                        --   plus release/plan.json's enabled channels and the
+                        --   VERIFYING.md sentence stating them, and the rule
+                        --   that every privileged release job needs a pushed
+                        --   tag — stated over what makes a job privileged, so
+                        --   a privileged job added later is covered
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,

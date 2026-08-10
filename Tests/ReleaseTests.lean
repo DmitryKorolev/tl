@@ -131,6 +131,67 @@ def releaseIdentityTests : IO (List Outcome) := do
   -- arguments actually passed, which is the property that matters.
   return outs
 
+/-! ## The release plan, and the documents that describe it
+
+`release/plan.json` is where "which channels does a release actually publish"
+is written, and several documents now state the answer in prose. This guards
+the two things that would silently diverge: the file's own shape, and whether
+VERIFYING.md still tells a user the same thing the file says.
+
+`enabled` and `plannedFor` are exclusive by construction — an enabled channel
+has no future version to name, and a deferred one must name the release it is
+planned for so deferral cannot decay into abandonment. -/
+
+def releasePlanTests : IO (List Outcome) := do
+  let raw ← readRequired ("release/plan.json" : FilePath)
+  let some text := raw.toOption
+    | return [check "release plan: release/plan.json exists" false s!"{raw}"]
+  let some plan := (Json.parse text).toOption
+    | return [check "release plan: release/plan.json parses as JSON" false text]
+  let rows := jArr plan "channels"
+  let named (name : String) : Option Json :=
+    rows.find? fun row => jStr row "channel" == some name
+  let mut outs := [
+    check "release plan: release/plan.json parses as JSON" true,
+    checkEq "release plan: every ADR-0006 channel has exactly one row" rows.length 4]
+  -- v0.1.0 publishes through these two and defers the other two. The values are
+  -- pinned rather than merely read: VERIFYING.md tells users npm and Homebrew
+  -- are not published, and flipping a channel on without revisiting that
+  -- sentence would make the document wrong in the direction users act on.
+  for (channel, wantEnabled) in
+      [("github-release", true), ("installer", true), ("npm", false), ("homebrew", false)] do
+    match named channel with
+    | none => outs := outs ++ [check s!"release plan: '{channel}' has a row" false
+        s!"release/plan.json has no row for the channel {channel}"]
+    | some row =>
+        let enabled := (row.getObjVal? "enabled" |>.toOption).bind (·.getBool?.toOption)
+        let plannedFor := jStr row "plannedFor"
+        -- Read off the row's own two fields, not off `wantEnabled`. Comparing
+        -- against the expectation would make this row restate the one above it
+        -- and say nothing about the file: an `enabled` channel that still
+        -- carried a `plannedFor` passed it.
+        let exclusive := match enabled, plannedFor with
+          | some true, none => true
+          | some false, some _ => true
+          | _, _ => false
+        outs := outs ++ [
+          checkEq s!"release plan: '{channel}' is {if wantEnabled then "enabled" else "deferred"}"
+            enabled (some wantEnabled),
+          check s!"release plan: '{channel}' names a target release iff it is deferred"
+            exclusive
+            s!"channel {channel} has enabled={enabled} and plannedFor={plannedFor}; a deferred channel must name the release it is planned for, an enabled one must not, and every row must state `enabled`"]
+  -- The user-facing half. A reader deciding how to install tl reads this
+  -- sentence, so it is the one that must not outlive the decision behind it.
+  let verifying ← readRequired ("VERIFYING.md" : FilePath)
+  match verifying with
+  | .error e => outs := outs ++ [check "release plan: VERIFYING.md is readable" false e]
+  | .ok content =>
+      outs := outs ++ [
+        check "release plan: VERIFYING.md says npm and Homebrew are not published yet"
+          (has content "npm and Homebrew are **not published in v0.1.0**")
+          "VERIFYING.md no longer states which channels v0.1.0 publishes through"]
+  return outs
+
 /-! ## Privileged release jobs are reachable only from a pushed tag
 
 `github.ref_type == 'tag'` is satisfied by a `workflow_dispatch` against a tag

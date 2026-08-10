@@ -77,6 +77,72 @@ as the downstream `math/lean4` port (build-from-source).
 
 ### Channels
 
+The four below are the channel *designs*. Which of them a given release
+actually publishes is a separate, machine-readable answer in
+`release/plan.json`, and that file is the only place it is written.
+
+Before that file existed, "designed" and "published" had no distinguishing
+mark, and the difference was not cosmetic: the prerequisite audit demanded five
+npm packages and a Homebrew tap before anything could be signed, the release
+policy ran their gates, and the workflow held jobs for them. A first release
+through the GitHub channel alone was therefore blocked by external state that
+nothing about it needed. A channel that is off is *absent* from the applicable
+prerequisites, from the enabled jobs, and from the strict release policy —
+never reported as missing or unchecked. "Missing" is a defect report, and a
+channel nobody is publishing has no defect.
+
+### v0.1.0 channel scope
+
+**Enabled**: GitHub Releases and the `curl | sh` installer, with
+`scripts/verify-release-artifacts.sh` as the standalone verification path for
+the same assets. A v0.1.0 release publishes the signed binaries, `SHA256SUMS`,
+a Sigstore bundle per asset, `release-manifest.json`, the SBOM, the compliance
+set, and per-target build metadata and link audits.
+
+**Deferred to v0.2.0**: npm and Homebrew. Neither is missing work in this
+repository — both channels are implemented — and both are blocked on a manual
+bootstrap that is unrelated to publishing a GitHub Release:
+
+- npm's trusted publishing is configured per package, and npm only offers it
+  for a package that already exists. The first release cannot authenticate, so
+  enabling npm means publishing an immutable placeholder version of all five
+  packages by hand and then registering the publisher. That is a decision about
+  the npm namespace, not about whether the binaries are ready.
+- Homebrew needs the tap repository to exist and a credential that can write to
+  it. `Formula/tl.rb` stays here as the source of truth and stays inside the
+  identity drift guard, so enabling the channel later is a tap plus a secret
+  rather than new code.
+
+Deferring them is what makes the first release reachable at all. It is recorded
+here rather than left implicit because three separate mechanisms were treating
+their absence as a fault.
+
+### Dependency budget for the enabled channels
+
+No path reachable from the GitHub-release workflow, `install.sh`,
+`scripts/verify-release-artifacts.sh`, or the strict release policy may invoke
+`python`, `python3`, `ruby`, `brew`, `node`, or `npm`. Lean owns JSON parsing,
+typed decisions, manifest and metadata generation, prerequisite classification,
+SBOM generation and identity-pin generation, through the separately built
+`tlrelease` executable; POSIX shell remains thin orchestration and the user
+bootstrap boundary.
+
+This is a statement about *this project's* dependencies, not a ban on
+channel-native runtimes. A Homebrew formula is necessarily a Ruby DSL and is
+validated with real `brew` using Homebrew-managed Ruby; npm operations
+necessarily use `node`/`npm`. Those runtimes belong to the channel that owns
+them and become reachable only when that channel is enabled — the formula
+rendering and the publish planning stay in Lean either way. What the budget
+forbids is a *user* of the enabled channels needing an interpreter this project
+chose for its own convenience, which is what a Python one-liner in the artifact
+verifier was.
+
+The boundary is enforced twice rather than documented: an inventory of the
+enabled entry points rejects a forbidden invocation in the first-party scripts
+they reach, and the policy, selftests and rehearsal run with failing
+PATH-precedence shims for all six commands, having first proved each shim can
+fire.
+
 - GitHub Releases — the source of truth. CI uploads the prebuilt
   binaries here; everything else wraps them.
 - `curl | sh` installer — universal baseline, no ecosystem dependency,
@@ -336,18 +402,28 @@ Binary distribution is gated on a verifiable release pipeline:
   `id-token: write` to four more jobs, and every job defined inline in the
   release workflow shares one `job_workflow_ref` — each could then mint a
   certificate every verifier accepts.
-- The external state this pipeline rests on — the `release` environment and its
-  protection rules, the `v*` tag ruleset, npm's per-package trusted publishers,
-  the tap credential — is neither created nor implied by declaring it in the
-  workflow. `docs/release-prerequisites.md` is the procedure,
-  `scripts/check-release-prereqs.sh` audits what it can before anything is
-  signed, and what it cannot read is carried in docs/overview.md.
+- The external state this pipeline rests on is neither created nor implied by
+  declaring it in the workflow, and *which* state applies is derived from
+  `release/plan.json` rather than fixed. For the channels v0.1.0 enables that
+  is: the repository being public, the `release` environment and its protection
+  rules, the `v*` tag ruleset, and the signing identity. npm's per-package
+  trusted publishers and the tap credential belong to their channels and
+  produce no rows at all while those channels are off — a disabled channel is
+  neither missing nor unchecked, because there is nothing it is supposed to
+  have. `docs/release-prerequisites.md` is the procedure, the audit runs before
+  anything is signed, and what it cannot read is carried in docs/overview.md.
+  An operational failure to *reach* the API is reported as exactly that and
+  never as an absent prerequisite: the two demand opposite responses, and
+  conflating them aborts a legitimate release with a remedy telling the
+  operator to fix something already correct.
 
 ## Consequences
 
 - The marginal cost of each channel is small; the cost is the per-target
-  build. Releases + curl + npm cover Linux and macOS, with WSL2 as the
-  Supported Windows path; brew is cheap to add.
+  build. Releases + curl already cover Linux and macOS, with WSL2 as the
+  Supported Windows path, which is why v0.1.0 ships those two and defers the
+  rest: npm and brew add reach, not coverage, and each carries a manual
+  bootstrap that has nothing to do with whether the binaries are ready.
 - Native Windows is a toolchain problem the project has not paid for, not an
   app-level one. Lean itself is Tier 1 there, but `ffi/tlsys.c` returns
   `ENOSYS` for every Win32 primitive, so the residual lift is the ADR-0015 §7
@@ -425,13 +501,22 @@ Adopt Lean's own posture verbatim —
   and relink. No separate object-file drop is required while `tl` is open.
 
 The residual was a packaging checklist — confirm the notices file actually
-travels into the Release assets, the npm package and the brew install, and that
-the rebuild/relink path is documented — and it is discharged. The notice is a
-signed companion asset placed by `install.sh` and by the formula, it is bundled
-in all five npm packages (`scripts/npm-pack.sh` refuses a manifest that stops
-listing it, and its selftest inspects every platform tarball rather than only
-the host's), and `REBUILDING.md` ships with every release documenting both the
-rebuild and the LGPLv3 §4 relink. (A *closed-source* fork
+travels into every channel a release publishes, and that the rebuild/relink
+path is documented — and it is discharged **per channel**, which is the only
+form the obligation takes: compliance attaches to distribution, so a channel
+that distributes nothing owes nothing.
+
+For the channels v0.1.0 enables, it is discharged now. The notice is a signed
+companion asset of the GitHub Release and `install.sh` places it beside the
+binary, and `REBUILDING.md` ships with every release documenting both the
+rebuild and the LGPLv3 §4 relink.
+
+For the deferred channels the mechanism exists and is gated with them: the
+formula installs the notice to `doc`, and it is bundled in all five npm
+packages (`scripts/npm-pack.sh` refuses a manifest that stops listing it, and
+its selftest inspects every platform tarball rather than only the host's).
+Those are covered by CI today and become live obligations on the release that
+turns each channel on. (A *closed-source* fork
 would instead owe §4 object files — out of scope here; confirm with counsel before
 any such distribution.)
 
@@ -478,14 +563,18 @@ checklist, not an unresolved licensing risk.
   is owed. If tl ever starts using Lean's networking, this flips: the check
   will show real `SSL_`/`EVP_`/`CRYPTO_` symbols and the notice must then
   add OpenSSL (Apache-2.0 for 3.x) the same way it carries libuv.
-- That file travels in every distribution artifact — Release tarball,
-  npm package, Homebrew bottle — since compliance attaches to distribution.
+- That file travels in every distribution artifact of every channel a release
+  publishes — Release asset, npm package, Homebrew bottle — since compliance
+  attaches to distribution, and a channel that is off distributes nothing.
 - `tl` published under Apache-2.0.
 - Do not patch GMP → nothing to publish beyond the upstream pointer.
-- **Done.** The bundled notices file ships in all three channels, and the
+- **Done for the enabled channels.** The bundled notices file is a signed
+  companion asset that `install.sh` places beside the binary, and the
   open-source rebuild/relink path is documented in `REBUILDING.md`, which
   travels with every release: `tl`'s source + pinned toolchain + the GMP
-  upstream pointer, which together let a recipient rebuild and relink.
+  upstream pointer, which together let a recipient rebuild and relink. The
+  npm and Homebrew carriers are built and CI-covered, and become live
+  obligations on the release that enables each channel.
 - **Done.** The full link-time dependency set is audited per target on each
   actual candidate (`link-audit-<target>.txt`), rather than assuming GMP is the
   only copyleft component.

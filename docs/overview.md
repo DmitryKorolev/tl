@@ -472,25 +472,31 @@ construction when implementation begins;
 rests on state configured outside this repository, which no gate here creates
 and only some of which a gate here can read. Writing `environment: release` in
 a workflow does not make the environment exist or protect it, and declaring
-trusted publishing in a comment does not register it with npm.
-`scripts/check-release-prereqs.sh` runs before anything is signed and verifies
-what it can — that each of the five npm packages exists, that the `release`
-environment exists and carries protection rules where its token may read them,
-that a ruleset is configured, that the tap exists. It inspects the actual rule
-types rather than counting them — a required-reviewers rule with somebody in
-it, a deployment policy whose tag patterns cover `v*`, and a tag ruleset that
+trusted publishing in a comment does not register it with npm. *Which* state
+applies is derived from the channels `release/plan.json` enables, so a channel
+that is switched off carries no assumption here: it has nothing it is supposed
+to have. For the channels v0.1.0 enables, the audit runs before anything is
+signed and verifies what it can — that the repository is public, that the
+`release` environment exists and carries protection rules where its token may
+read them, and that the `v*` tag ruleset is configured. It inspects the actual
+rule types rather than counting them — a required-reviewers rule with somebody
+in it, a deployment policy whose tag patterns cover `v*`, and a tag ruleset that
 is actively enforced and carries a creation restriction — because a count is
-satisfied by a wait timer or an unrelated branch rule. Three things it cannot
-see are carried here rather than assumed silently: that the required reviewer
+satisfied by a wait timer or an unrelated branch rule. One thing it cannot
+see is carried here rather than assumed silently: that the required reviewer
 is somebody other than whoever pushes the tag (the API exposes who may approve,
-not who will push, and on a single-maintainer repository the two coincide);
+not who will push, and on a single-maintainer repository the two coincide).
+Two more become live only with the channels that need them, and are recorded
+now so enabling a channel is not also a silent widening of what is trusted:
 that each npm package's trusted publisher names this repository, this workflow
 and this environment, with no classic token still able to publish; and that
 `HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing more. The npm
 ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after
-any permission change, not once. What follows if one fails is bounded and
+any permission change, not once. An audit that cannot reach the API reports an
+operational error and stops the release; it never reports the prerequisite as
+absent, because the two call for opposite responses. What follows if one fails is bounded and
 stated: without the environment protections, anyone able to create a `v*` tag
 can make this workflow sign, with an identity every verifier accepts, whatever
 commit that tag points at; the ancestry check in the `sign` job is a backstop

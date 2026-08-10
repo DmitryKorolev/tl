@@ -132,6 +132,34 @@ Each of those scripts carries a `--selftest` arm on the same reasoning as the
 task-ID lint: a checker that quietly stopped detecting would pass forever, so
 it proves it can still fail before its silence is believed.
 
+### The policy has two profiles, because it gates two different things
+
+`--profile v0.1` is the release gate: exactly the checks standing between a
+defect and a *published* artifact through the channels `release/plan.json`
+enables — the GitHub Release, the installer, and the artifact verifier. It is
+what `release.yml` runs on the tagged commit and what the local rehearsal runs.
+
+`--profile full` is repository hygiene: everything above plus the checks for
+channels that are built but switched off — the npm selftests and `ruby -c` on
+the formula. It is what `ci.yml` runs on every commit, so a deferred channel
+cannot rot while it waits.
+
+The split is a prerequisite of the dependency budget rather than a tidying of
+it. ADR-0006 forbids `python`, `python3`, `ruby`, `brew`, `node` and `npm` on
+any path reachable from an enabled channel, and the single `--strict` policy
+violated that boundary itself: it ran the npm selftests and `ruby -c`. One
+profile could not both enforce the budget and keep the deferred channels
+covered. A gate for a disabled channel is *absent* from the release profile
+rather than skipped-as-passing, because a skip is a report about this run and
+absence is a statement about the release.
+
+The budget is enforced twice, not documented once. An inventory of the enabled
+entry points rejects a forbidden invocation in the first-party scripts they
+reach; and the release profile, the installer and verifier selftests, and the
+rehearsal all run under failing PATH-precedence shims for the six commands.
+That second arm proves each shim can fire before a silent run is read as
+evidence — a shim that was never on `PATH` would make every run look clean.
+
 `.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
 tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs the whole
 policy — the same script, plus `--tag`, which additionally checks the tag

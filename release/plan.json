@@ -1,0 +1,49 @@
+{
+  "comment": [
+    "Which distribution channels this release actually publishes, machine-readable.",
+    "ADR-0006 describes how each channel works; this file says which of them are",
+    "switched on right now, and it is the only place that answer is written.",
+    "",
+    "It exists because 'designed' and 'published' had no distinguishing mark. The",
+    "prerequisite audit demanded five npm packages and a Homebrew tap before any",
+    "release could proceed, the release policy ran their gates, and the workflow",
+    "held jobs for them — so a GitHub-only first release was blocked by state that",
+    "nothing about it needed. A disabled channel must be *absent* from all three,",
+    "not reported as a missing or unchecked prerequisite: 'missing' is a defect",
+    "report, and a channel nobody is publishing has no defect.",
+    "",
+    "Read by tlrelease, which derives the applicable prerequisites, the enabled",
+    "workflow jobs, and the strict v0.1 policy's gate list from it. Enabling a",
+    "channel is therefore one edit here plus the manual bootstrap its own row",
+    "names, rather than an edit in each of those places.",
+    "",
+    "`enabled` and `plannedFor` are exclusive by construction: an enabled channel",
+    "is being published now and has no future version to name, and a disabled one",
+    "must name the release it is planned for so deferral cannot decay into",
+    "abandonment. tlrelease refuses a row carrying both or neither."
+  ],
+  "channels": [
+    {
+      "channel": "github-release",
+      "enabled": true,
+      "note": "The source of truth. Signed assets, SHA256SUMS, per-asset Sigstore bundles, release-manifest.json, the SBOM, the compliance set and per-target build metadata and link audits. Every other channel is a veneer over these bytes."
+    },
+    {
+      "channel": "installer",
+      "enabled": true,
+      "note": "install.sh, piped from curl. Needs no ecosystem and no repository state beyond the release itself, so it ships with the first release. scripts/verify-release-artifacts.sh is the same procedure for a user who wants to check the assets without installing them."
+    },
+    {
+      "channel": "npm",
+      "enabled": false,
+      "plannedFor": "0.2.0",
+      "note": "Deferred. Trusted publishing is configured per package and npm only allows it for a package that already exists, so the first release cannot authenticate: enabling this channel requires a five-package manual bootstrap (scripts/npm-bootstrap.sh) publishing an immutable placeholder version by hand, then registering this repository, workflow and environment as each package's trusted publisher. None of that is a prerequisite for publishing a GitHub Release."
+    },
+    {
+      "channel": "homebrew",
+      "enabled": false,
+      "plannedFor": "0.2.0",
+      "note": "Deferred. Requires the DmitryKorolev/homebrew-tap repository to exist and a HOMEBREW_TAP_TOKEN secret granting write access to it. Formula/tl.rb stays in this repository as the source of truth and stays covered by the identity drift guard while the channel is off, so turning it on is a tap plus a credential rather than new code."
+    }
+  ]
+}

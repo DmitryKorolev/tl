@@ -45,19 +45,32 @@ forever-contract surface that freezes on first implementation.
 - Known defects in the release shell, pending the Lean port [high] — seven
   confirmed findings are deliberately unfixed in shell, because the files that
   contain them are being replaced and patching-then-deleting would be wasted
-  work. They are inert today: no release is possible until the repository is
-  public, the npm packages exist and the tap and `release` environment are
-  configured. Recorded here rather than left to the tracker, so a reader of
-  this branch can see what is known-broken.
+  work. Recorded here rather than left to the tracker, so a reader of this
+  branch can see what is known-broken.
 
-  In the manifest generator: a failing target-list read is swallowed by a shell
-  assignment prefix, so the generator writes a manifest with an empty target
-  list and exits 0, skipping every build-metadata check; and the build run id
-  is compared only between legs, never against the run actually executing, so a
-  self-consistent artifact set from a different run would pass.
+  **Four of them are active blockers for the first release, not inert.** That
+  correction matters: the entry previously said all seven were inert because
+  "no release is possible until the repository is public, the npm packages
+  exist and the tap and `release` environment are configured" — but v0.1.0
+  publishes through the GitHub Release and the installer only (ADR-0006,
+  `release/plan.json`), so the npm packages and the tap are not prerequisites
+  of it at all. Removing them from the critical path does not make the
+  remaining defects inert; it exposes them. The manifest is signed and every
+  downstream job verifies it, and the prerequisite audit runs in the signing
+  job before anything is signed — both on the GitHub-only path.
 
-  In the prerequisite audit: an API failure collapses into an empty policy and
-  is reported as a *missing* prerequisite, which aborts a legitimate release
+  Only the three npm findings are genuinely inert, and they stay inert until
+  that channel is enabled for v0.2.0.
+
+  In the manifest generator (**active**): a failing target-list read is
+  swallowed by a shell assignment prefix, so the generator writes a manifest
+  with an empty target list and exits 0, skipping every build-metadata check;
+  and the build run id is compared only between legs, never against the run
+  actually executing, so a self-consistent artifact set from a different run
+  would pass.
+
+  In the prerequisite audit (**active**): an API failure collapses into an
+  empty policy and is reported as a *missing* prerequisite, which aborts a legitimate release
   with a remedy telling the operator to fix something already correct; and the
   tag-ruleset check accepts any include pattern beginning `refs/tags/v`, so a
   ruleset covering one specific tag reads as restricting every `v*` tag. That
@@ -65,7 +78,8 @@ forever-contract surface that freezes on first implementation.
   first a count of rulesets, then a prefix — which is the argument for stating
   it as a typed predicate rather than guarding it once more.
 
-  In the npm channel: package-content comparison is blind to symlinks and file
+  In the npm channel (**inert until npm is enabled**): package-content
+  comparison is blind to symlinks and file
   modes, so a published package whose launcher lost its executable bit compares
   equal to a staged one that has it; nothing establishes that the `latest`
   dist-tag is not the bootstrap placeholder, which matters because a

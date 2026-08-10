@@ -6,11 +6,26 @@ protected environment; declaring trusted publishing in a comment does not
 register it with npm. Each item below is state configured somewhere else, and
 the pipeline is only as strong as the weakest of them.
 
-`scripts/check-release-prereqs.sh` checks what can be checked from a shell with
-`gh` authenticated. What it cannot check is listed here with an owner and a
-procedure, and carried in the Trusted section of
-[overview.md](overview.md) — a dependency that is neither verified nor
-recorded is the one that fails at the worst moment.
+The audit checks what can be checked from a shell with `gh` authenticated. What
+it cannot check is listed here with an owner and a procedure, and carried in the
+Trusted section of [overview.md](overview.md) — a dependency that is neither
+verified nor recorded is the one that fails at the worst moment.
+
+## Which of these apply
+
+Not all of them, and not always the same ones. A prerequisite belongs to a
+distribution channel, and `release/plan.json` says which channels a release
+publishes. The audit derives its applicable rows from that file: a section
+below whose channel is disabled produces **no rows at all** — not a row reading
+*missing*, and not one reading *unchecked*. "Missing" is a defect report, and a
+channel nobody is publishing has no defect.
+
+For **v0.1.0** — the GitHub Release and the installer (ADR-0006) — that means
+sections 0, 2 and 3 apply. Section 1 (npm) and section 4 (the Homebrew tap)
+belong to channels deferred to v0.2.0 and are not prerequisites of the first
+release. They are written up now because enabling a channel is exactly the
+moment its bootstrap has to be done, and a procedure discovered then is a
+procedure improvised.
 
 ## Before the first release, once
 
@@ -28,29 +43,35 @@ not a configuration detail, it is the whole distribution story —
   the same place, so `brew install tl` cannot work.
 - `VERIFYING.md` tells a user to download the asset, `SHA256SUMS` and the
   bundles. They cannot.
-- The npm packages would still install — npm does not care where the binaries
-  came from — but the release they are meant to be checkable against would be
-  unreachable, which removes the property the npm job exists to preserve.
+- Once npm is enabled, its packages would still install — npm does not care
+  where the binaries came from — but the release they are meant to be checkable
+  against would be unreachable, which removes the property the npm job exists
+  to preserve.
 
 Deployment protection rules are also a paid feature on private repositories
 (free on public ones), so the `release` environment's required reviewers and
 `v*` deployment-tag rule — the whole of section 2 — may not be configurable at
 all while the repository is private. Confirm that before relying on them.
 
-So: make the repository public, or decide deliberately that this release is
-npm-only and record that decision in ADR-0006 — it would retire the installer,
-the Homebrew tap and the published verification procedure, which is a change to
-what tl distributes rather than a deferral.
+So: make the repository public. This one has no alternative under the v0.1.0
+plan, because both enabled channels serve from the release assets — there is no
+release without it. It is the single prerequisite the audit cannot work around
+and the first thing to do.
 
-### 1. Bootstrap the five npm packages
+### 1. Bootstrap the five npm packages — *only when the npm channel is enabled*
+
+Not a prerequisite of v0.1.0: `release/plan.json` has npm disabled, so the
+release workflow runs no npm job and the audit emits no npm rows. This section
+is the procedure for the release that turns the channel on.
 
 npm configures trusted publishing **per package**, and only for a package that
 already exists. None of `@taskloop/tl`, `@taskloop/tl-bin-darwin-arm64`,
 `@taskloop/tl-bin-darwin-x64`, `@taskloop/tl-bin-linux-arm64` or
-`@taskloop/tl-bin-linux-x64` exists yet, so the first tagged release cannot
-authenticate: it would publish the GitHub Release and the Homebrew formula and
+`@taskloop/tl-bin-linux-x64` exists yet, so the first tagged release with this
+channel enabled cannot authenticate: it would publish the GitHub Release and
 then fail at `npm publish`, leaving the release red with its artifacts already
-public.
+public. Deferring the channel rather than racing that bootstrap is what keeps
+the first release from carrying an unrelated way to fail.
 
 There is no way to pre-register trust for a name that does not exist, so the
 2FA publish is manual. Everything around it is not:
@@ -123,7 +144,10 @@ Independently of the environment, a repository ruleset targeting tags matching
 ancestry check — that the tagged commit is on `origin/main` — is a backstop and
 not a substitute: it sees what the tag points at, never who pushed it.
 
-### 4. Create the Homebrew tap and its credential
+### 4. Create the Homebrew tap and its credential — *only when the Homebrew channel is enabled*
+
+Not a prerequisite of v0.1.0, for the same reason as section 1: with the
+channel disabled there is no `publish-homebrew` job and no tap row to audit.
 
 `DmitryKorolev/homebrew-tap` must exist with a `Formula/` directory, and the
 `HOMEBREW_TAP_TOKEN` secret must hold a token with write access to it.
@@ -155,15 +179,21 @@ read", so an API failure is reported as unchecked rather than as absent.
 
 What remains genuinely out of reach:
 
-| Assumption | Why it cannot be checked here | Owner |
-|---|---|---|
-| The required reviewer is not the same person who pushes the tag | The API exposes who may approve, not who will push; on a single-maintainer repository the two coincide by definition | repository admin |
-| Each npm package's trusted publisher names *this* workflow and environment | npm exposes no public API for a package's trusted-publisher configuration | npm org owner |
-| No classic automation token can still publish the packages | Same | npm org owner |
-| `HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing else | A secret's scope is not readable from a workflow | repository admin |
-| GitHub Actions, npm and Sigstore behave as documented | Third-party infrastructure (ADR-0014) | — |
+The `Applies` column follows the same rule as the sections: an assumption
+belonging to a disabled channel is not being carried, because nothing is
+relying on it.
+
+| Assumption | Why it cannot be checked here | Owner | Applies |
+|---|---|---|---|
+| The required reviewer is not the same person who pushes the tag | The API exposes who may approve, not who will push; on a single-maintainer repository the two coincide by definition | repository admin | always |
+| Each npm package's trusted publisher names *this* workflow and environment | npm exposes no public API for a package's trusted-publisher configuration | npm org owner | npm enabled |
+| No classic automation token can still publish the packages | Same | npm org owner | npm enabled |
+| `HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing else | A secret's scope is not readable from a workflow | repository admin | Homebrew enabled |
+| GitHub Actions and Sigstore behave as documented | Third-party infrastructure (ADR-0014) | — | always |
+| npm behaves as documented | Third-party infrastructure (ADR-0014) | — | npm enabled |
 
 Each is a *live* assumption, not a one-time one: an environment's protection
 rules can be removed, and a trusted publisher can be reconfigured, without
-anything in this repository changing. Re-run the audit in section 1–4 whenever
-repository or npm-organization permissions change.
+anything in this repository changing. Re-run the audit whenever repository or
+npm-organization permissions change — and on the release that enables a
+channel, because that is when its rows start being carried.

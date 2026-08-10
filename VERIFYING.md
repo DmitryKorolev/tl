@@ -1,18 +1,32 @@
 # Verifying tl releases
 
 GitHub Releases from `DmitryKorolev/tl` are the source of truth for native
-artifacts. The npm package is `@taskloop/tl`; its platform packages contain the
-same binaries rather than independent builds.
+artifacts. No release has shipped yet. The commands below pin the identity the
+first release will use.
 
-No release has shipped yet. The commands below pin the identity the first
-release will use.
+## How you can get tl in v0.1.0, and how you check it
+
+Two paths, and no others. `release/plan.json` is the machine-readable statement
+of which channels a release publishes; for v0.1.0 it enables these two:
+
+- **Download from the GitHub Release** and verify it yourself, with the `cosign`
+  commands below or with `scripts/verify-release-artifacts.sh`.
+- **`install.sh`, piped from curl**, which performs the same two checks before
+  it installs anything.
+
+npm and Homebrew are **not published in v0.1.0**. `@taskloop/tl` and the
+`DmitryKorolev/homebrew-tap` formula are implemented and CI-covered here but
+deferred to v0.2.0 (ADR-0006 records why: each needs a manual bootstrap
+unrelated to whether the binaries are ready). If you find a `tl` package on
+either of those in the meantime, it is not this project's — check the GitHub
+Release, which is the only thing signed with the identity below.
 
 Each release publishes, besides the per-target binaries: `SHA256SUMS` and its
 Sigstore bundle, a bundle per asset, `release-manifest.json` (the canonical
 description of the release — its assets and their digests, which targets were
-published and at which tier, the npm packages and dist-tag, the toolchain and
-`lake-manifest.json` digest), `LICENSE`, `THIRD-PARTY-LICENSES`, an SPDX SBOM,
-`REBUILDING.md`, and per target a `link-audit-<target>.txt` and a
+published and at which tier, which channels it publishes through, the toolchain
+and `lake-manifest.json` digest), `LICENSE`, `THIRD-PARTY-LICENSES`, an SPDX
+SBOM, `REBUILDING.md`, and per target a `link-audit-<target>.txt` and a
 `build-metadata-<target>.json`. Every one of them is listed in `SHA256SUMS`, so
 the procedure below covers the whole release and not only the binaries.
 
@@ -119,9 +133,14 @@ discriminates, which a text-equality guard cannot.
 ## Before a release is tagged
 
 `docs/release-prerequisites.md` records the state this pipeline depends on that
-lives outside the repository: the npm packages must exist before trusted
-publishing can be configured for them, the `release` environment must carry its
-protection rules, the `v*` tag ruleset must be active, and the tap credential
-must be present. `scripts/check-release-prereqs.sh` audits what can be audited
-and runs in the signing job before anything is signed; what it cannot read is
-carried in [docs/overview.md](docs/overview.md) as an explicit assumption.
+lives outside the repository. Which of it applies is derived from the channels
+`release/plan.json` enables, so the list is not fixed: for v0.1.0 the
+repository must be public, the `release` environment must carry its protection
+rules, and the `v*` tag ruleset must be active. The npm packages and the tap
+credential belong to the deferred channels and are not prerequisites of this
+release — they produce no rows at all, rather than rows reading *missing*.
+
+The audit runs in the signing job before anything is signed. What it cannot
+read is carried in [docs/overview.md](docs/overview.md) as an explicit
+assumption; what it could not *reach* is reported as an operational error and
+stops the release without claiming the prerequisite is absent.
