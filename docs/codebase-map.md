@@ -639,6 +639,20 @@ The `tlrelease` decision layer is the seventh audited scope, and shares the
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
+  Json.lean             --   typed access (every read returns Except with the
+                        --   document and path in the message, where the Python
+                        --   it replaces raised tracebacks) and deterministic
+                        --   rendering — byte-for-byte Python's
+                        --   json.dump(indent=2, sort_keys=True), because the
+                        --   manifest and SBOM are hashed into SHA256SUMS and
+                        --   signed, so their bytes must be a function of their
+                        --   content and nothing else
+  Model.lean            --   what a release is: Sha256/Commit/Version opaque
+                        --   behind parsers, Tier and Channel closed, a
+                        --   PublishedTarget carrying its leg's record by
+                        --   construction, ChannelStatus making enabled and
+                        --   plannedFor exclusive, and AuditOutcome separating
+                        --   missing from could-not-check
   Cli.lean              --   the subcommand table and dispatch. `help` is
                         --   generated from the same list dispatch reads, so a
                         --   command that exists but is undocumented — or is
@@ -646,7 +660,19 @@ release/                -- `lake exe tlrelease`, and its inputs
   Main.lean             --   the three-line root defining `main`, kept separate
                         --   so tests can import the decisions in-process
                         --   (two top-level `main`s cannot share a closure)
+  identity.json         --   (data) the signing pin every verifier checks against
+  targets.json          --   (data) the distributed targets and their tiers
+  plan.json             --   (data) the channels this release publishes through
 ```
+
+Each type in `Model.lean` exists because the shell could hold a value that
+should not exist and held it silently: uppercase hex compared against lowercase
+output and read as tampering, a digest nothing length-checked, "is this a
+prerelease" recomputed by searching for `-`, build metadata modelled as an
+option and then checked in nine places one of which an empty target list could
+skip, and *missing* indistinguishable from *could not check* — the last of
+which aborts a legitimate release with a remedy telling the operator to fix
+something already correct.
 
 Lowercase, like `scripts/`, and for a stronger reason: the directory already
 held this release's machine-readable data, and on a case-insensitive

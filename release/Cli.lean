@@ -41,6 +41,9 @@ precompiled verifier must not become the only way to authenticate the release
 that contains it.
 -/
 
+import release.Json
+import release.Model
+
 namespace Release
 
 /-- One subcommand: how it is invoked and what it decides. -/

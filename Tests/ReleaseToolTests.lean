@@ -18,7 +18,125 @@ import release.Cli
 
 namespace Tl.Tests
 
+open Lean (Json)
 open Release
+
+/-! ## JSON: typed access and deterministic rendering -/
+
+private def cur : Cursor := { document := "fixture.json" }
+
+private def errorOf : Except String α → String
+  | .error message => message
+  | .ok _ => "<no error>"
+
+private def okOr (fallback : String) : Except String String → String
+  | .ok value => value
+  | .error _ => fallback
+
+private def mentions (result : Except String α) (needle : String) : Bool :=
+  ((errorOf result).splitOn needle).length > 1
+
+/-- The exact bytes `json.dump(sample, indent=2, sort_keys=True)` writes,
+    followed by a newline — checked against real Python once, pinned here so
+    the property survives without a Python dependency at test time. It covers
+    sorted keys, two-space indent, empty containers, and every escape class:
+    quote, backslash, tab, newline, carriage return, backspace, form feed, a
+    C0 control, DEL, and non-ASCII.
+
+    Byte-stability is the point. The manifest and the SBOM are hashed into
+    `SHA256SUMS` and signed, so their bytes must be a function of their content
+    and of nothing else. -/
+private def goldenRender : String :=
+  "{\n  \"alpha\": [\n    \"a\",\n    42,\n    true,\n    null\n  ],\n" ++
+  "  \"backspaceFormfeed\": \"\\b\\f\",\n" ++
+  "  \"deep\": [\n    {\n      \"x\": [\n        0\n      ]\n    }\n  ],\n" ++
+  "  \"empty\": \"\",\n" ++
+  "  \"escapes\": \"quote\\\" back\\\\slash tab\\tnew\\nret\\rctrl\\u0001 del\\u007f\",\n" ++
+  "  \"nested\": {\n    \"a\": [],\n    \"b\": {}\n  },\n" ++
+  "  \"unicode\": \"caf\\u00e9 \\u2014 na\\u00efve \\u2713\",\n" ++
+  "  \"zeta\": 1\n}\n"
+
+private def goldenSample : Json := Json.mkObj [
+  ("zeta", Json.num 1),
+  ("alpha", Json.arr #[Json.str "a", Json.num 42, Json.bool true, Json.null]),
+  ("nested", Json.mkObj [("b", Json.mkObj []), ("a", Json.arr #[])]),
+  ("escapes", Json.str "quote\" back\\slash tab\tnew\nret\rctrl\x01 del\x7f"),
+  ("unicode", Json.str "caf\u00e9 \u2014 na\u00efve \u2713"),
+  ("backspaceFormfeed", Json.str "\x08\x0c"),
+  ("empty", Json.str ""),
+  ("deep", Json.arr #[Json.mkObj [("x", Json.arr #[Json.num 0])]])]
+
+private def jsonTests : List Outcome :=
+  let obj := Json.mkObj [("name", Json.str "tl"), ("count", Json.num 2),
+    ("flag", Json.bool true), ("blank", Json.str ""),
+    ("list", Json.arr #[Json.str "a", Json.str "b"])]
+  [ -- Rendering.
+    checkEq "json: rendering is byte-for-byte the pinned document"
+      (okOr "<error>" (render goldenSample)) goldenRender,
+    -- The determinism that matters is not that a pure function repeats
+    -- itself, but that the bytes do not depend on the order the object was
+    -- built in. A signed manifest whose bytes tracked insertion order would
+    -- hash differently for the same release.
+    checkEq "json: the bytes do not depend on the order keys were inserted"
+      (okOr "<a>" (render (Json.mkObj [("b", Json.num 2), ("a", Json.num 1)])))
+      (okOr "<b>" (render (Json.mkObj [("a", Json.num 1), ("b", Json.num 2)]))),
+    checkEq "json: an empty object renders inline" (okOr "" (render (Json.mkObj []))) "{}\n",
+    checkEq "json: an empty array renders inline" (okOr "" (render (Json.arr #[]))) "[]\n",
+    -- A non-integer number and an astral character are refused rather than
+    -- guessed at: both would need a format decision this encoder should not
+    -- make silently, and no release document contains either.
+    check "json: a non-integer number is refused, not approximated"
+      (mentions (render (Json.num ⟨15, 1⟩)) "only integers"),
+    check "json: a character outside the BMP is refused rather than mis-encoded"
+      (mentions (render (Json.str (String.singleton (Char.ofNat 0x1f600))))
+        "Basic Multilingual Plane"),
+    -- Reading: the happy paths.
+    checkEq "json: a document parses" ((parseDocument cur "{\"a\": 1}").toOption.isSome) true,
+    checkEq "json: a string field reads" (okOr "" (stringField cur obj "name")) "tl",
+    checkEq "json: an absent optional field is none" (field? obj "absent").isNone true,
+    checkEq "json: a present optional field is some" (field? obj "name").isSome true,
+    check "json: an array field reads its elements"
+      (match field cur obj "list" with
+       | .ok (inner, found) => (asArray inner found).toOption.map (·.length) == some 2
+       | .error _ => false),
+    check "json: a boolean field reads"
+      (match field cur obj "flag" with
+       | .ok (inner, found) => (asBool inner found).toOption == some true
+       | .error _ => false),
+    check "json: an object reads as its fields"
+      ((getObj cur obj).toOption.map (·.length) == some 5),
+    -- Reading: every refusal, each naming the document and the path.
+    check "json: malformed input is refused as invalid JSON"
+      (mentions (parseDocument cur "{ not json") "is not valid JSON"),
+    check "json: a malformed document says how to fix it"
+      (mentions (parseDocument cur "{ not json") "Regenerate it"),
+    check "json: an absent required field is named"
+      (mentions (stringField cur obj "missing") "has no 'missing' field"),
+    check "json: a refusal carries the document it came from"
+      (mentions (stringField cur obj "missing") "fixture.json"),
+    check "json: a field of the wrong type is refused"
+      (mentions (stringField cur obj "count") "is not a string"),
+    check "json: a wrong-type refusal carries the path to the field"
+      (mentions (stringField cur obj "count") "fixture.json at count"),
+    check "json: a non-object is refused where an object is required"
+      (mentions (getObj cur (Json.str "not an object")) "is not a JSON object"),
+    check "json: reading a field of a non-object is refused"
+      (mentions (stringField cur (Json.arr #[]) "name") "is not a JSON object"),
+    check "json: a non-boolean is refused where a boolean is required"
+      (mentions (asBool cur (Json.str "true")) "is not a boolean"),
+    check "json: a non-array is refused where an array is required"
+      (mentions (asArray cur (Json.str "a")) "is not an array"),
+    -- Empty is distinguished from absent: the shell's `not build.get(field)`
+    -- could not tell them apart, so a hollowed-out record and a missing one
+    -- produced the same message and the same non-diagnosis.
+    check "json: an empty required string is refused"
+      (mentions (nonEmptyStringField cur obj "blank") "is empty"),
+    check "json: an empty string is refused differently from an absent one"
+      (errorOf (nonEmptyStringField cur obj "blank")
+        != errorOf (nonEmptyStringField cur obj "missing")),
+    checkEq "json: a cursor with no path names just the document" cur.render "fixture.json",
+    checkEq "json: a cursor path is rendered dotted"
+      ((cur.at "targets").at "[0]").render "fixture.json at targets.[0]"]
 
 /-- Run a dispatch and capture what it told each stream. Both are captured,
     because *which* stream a message reaches is part of the contract: usage
@@ -32,6 +150,264 @@ private def dispatchCaptured (args : List String) : IO (UInt32 × String × Stri
   return (status, String.fromUTF8! (← out.get).data, String.fromUTF8! (← err.get).data)
 
 private def contains (hay needle : String) : Bool := (hay.splitOn needle).length > 1
+
+/-! ## The typed model
+
+Every constructor that can refuse has a row for each way it refuses. These are
+the types that exist because the shell could hold a value that should not
+exist, so a parser that quietly accepted one would put the whole port back
+where it started. -/
+
+private def modelTests : List Outcome :=
+  let digest := String.ofList (List.replicate 64 'a')
+  let commit := String.ofList (List.replicate 40 'b')
+  let version (text : String) := Version.parse "v" text
+  let rendered (text : String) : String :=
+    match Version.parse "v" text with
+    | .ok parsed => parsed.render
+    | .error _ => "<refused>"
+  [ -- Digests.
+    check "model: a well-formed digest parses" (Sha256.parse "d" digest).toOption.isSome,
+    check "model: a short digest is refused with its length"
+      (mentions (Sha256.parse "d" "abc") "it is 3 characters"),
+    check "model: a long digest is refused" (mentions (Sha256.parse "d" (digest ++ "a")) "65 characters"),
+    check "model: an uppercase digest is refused rather than folded"
+      (mentions (Sha256.parse "d" (String.ofList (List.replicate 64 'A'))) "lowercase"),
+    check "model: a digest refusal says why folding is not done"
+      (mentions (Sha256.parse "d" (String.ofList (List.replicate 64 'A')))
+        "this pipeline does not control"),
+    check "model: a non-hex digest is refused"
+      (mentions (Sha256.parse "d" (String.ofList (List.replicate 64 'z'))) "hexadecimal"),
+    -- Commits.
+    check "model: a full object id parses" (Commit.parse "c" commit).toOption.isSome,
+    check "model: an abbreviated commit is refused"
+      (mentions (Commit.parse "c" "bbbbbbb") "40"),
+    check "model: an abbreviated commit says why a prefix is not enough"
+      (mentions (Commit.parse "c" "bbbbbbb") "agree on the whole commit"),
+    check "model: a non-hex commit is refused"
+      (mentions (Commit.parse "c" (String.ofList (List.replicate 40 'g'))) "hexadecimal"),
+    -- Versions. The accepted shape is the pinned certificate expression's, so
+    -- a version this refuses is one whose artifacts could not be signed.
+    checkEq "model: a plain version round-trips" (rendered "1.2.3") "1.2.3",
+    checkEq "model: a dot-separated prerelease round-trips" (rendered "1.2.3-rc.1") "1.2.3-rc.1",
+    checkEq "model: a dash-separated prerelease round-trips" (rendered "1.2.3-rc-1") "1.2.3-rc-1",
+    checkEq "model: an uppercase prerelease round-trips" (rendered "1.2.3-RC.1") "1.2.3-RC.1",
+    checkEq "model: a zero version round-trips" (rendered "0.0.0") "0.0.0",
+    check "model: a plain version is not a prerelease"
+      ((version "1.2.3").toOption.map (·.isPrerelease) == some false),
+    check "model: a suffixed version is a prerelease"
+      ((version "1.2.3-rc.1").toOption.map (·.isPrerelease) == some true),
+    check "model: a leading zero is refused" (mentions (version "01.2.3") "leading zero"),
+    check "model: a two-component version is refused"
+      (mentions (version "1.2") "not a release version"),
+    check "model: a four-component version is refused"
+      (mentions (version "1.2.3.4") "not a release version"),
+    check "model: a non-numeric component is refused" (mentions (version "1.x.3") "not a number"),
+    check "model: an empty prerelease is refused" (mentions (version "1.2.3-") "prerelease suffix"),
+    check "model: build metadata is refused" (mentions (version "1.2.3+build") "build metadata"),
+    check "model: build metadata says nothing could be signed"
+      (mentions (version "1.2.3+build") "could be signed"),
+    checkEq "model: a version renders back as a tag"
+      (match Version.parseTag "t" "v1.2.3-rc.1" with
+       | .ok parsed => parsed.tag
+       | .error _ => "<refused>") "v1.2.3-rc.1",
+    check "model: a tag without the leading v is refused"
+      (mentions (Version.parseTag "t" "1.2.3") "does not begin with 'v'"),
+    check "model: an uppercase V is refused"
+      (mentions (Version.parseTag "t" "V1.2.3") "does not begin with 'v'"),
+    -- Tiers and targets.
+    checkEq "model: the supported tier parses" (Tier.parse "t" "supported").toOption (some .supported),
+    checkEq "model: the best-effort tier parses"
+      (Tier.parse "t" "best-effort").toOption (some .bestEffort),
+    check "model: an unknown tier is refused" (mentions (Tier.parse "t" "maybe") "not a support tier"),
+    check "model: only the supported tier is release-blocking"
+      (Tier.supported.releaseBlocking && !Tier.bestEffort.releaseBlocking),
+    -- Channels.
+    check "model: every channel's wire name parses back to it"
+      (Channel.all.all fun channel => (Channel.parse "c" channel.wire).toOption == some channel),
+    check "model: an unknown channel is refused"
+      (mentions (Channel.parse "c" "flatpak") "not a distribution channel"),
+    check "model: an unknown channel lists the ones that exist"
+      (mentions (Channel.parse "c" "flatpak") "github-release"),
+    -- Audit outcomes: the distinction the shell did not have.
+    check "model: a verified prerequisite permits release" AuditOutcome.verified.permitsRelease,
+    check "model: a carried assumption permits release"
+      (AuditOutcome.carried "reviewer identity").permitsRelease,
+    check "model: a missing prerequisite does not permit release"
+      (!(AuditOutcome.missing "create it").permitsRelease),
+    check "model: an operational error does not permit release"
+      (!(AuditOutcome.operationalError "gh timed out").permitsRelease),
+    check "model: an operational error is labelled differently from a missing one"
+      ((AuditOutcome.operationalError "x").label != (AuditOutcome.missing "y").label)]
+
+/-! ## The documents, real and fabricated
+
+The real `release/*.json` files are parsed, because a model that no longer
+describes them is a model of nothing. The refusals are driven with fabricated
+text, because the point is to reach branches the committed files cannot. -/
+
+private def digest64 : String := String.ofList (List.replicate 64 'a')
+private def commit40 : String := String.ofList (List.replicate 40 'b')
+
+/-- A complete build-metadata record. Fields are removed and corrupted from
+    this one at a time, so every row differs from a passing document in exactly
+    one way. -/
+private def buildMetadataFields : List (String × String) :=
+  [("target", "\"linux-x64\""), ("sha256", s!"\"{digest64}\""),
+   ("commit", s!"\"{commit40}\""), ("tier", "\"supported\""),
+   ("runner", "\"ubuntu-latest\""), ("toolchain", "\"leanprover/lean4:v4.32.2\""),
+   ("lakeManifestSha256", s!"\"{digest64}\""),
+   ("workflowRef", "\"owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3\""),
+   ("runId", "\"42\"")]
+
+private def objectOf (fields : List (String × String)) : String :=
+  "{" ++ String.intercalate "," (fields.map fun (key, value) => s!"\"{key}\": {value}") ++ "}"
+
+private def completeBuildMetadata : String := objectOf buildMetadataFields
+
+private def planRow (channel : String) (enabled : Bool) (plannedFor : Option String) : String :=
+  let base := s!"\"channel\": \"{channel}\", \"enabled\": {if enabled then "true" else "false"}"
+  match plannedFor with
+  | none => "{" ++ base ++ "}"
+  | some planned => "{" ++ base ++ s!", \"plannedFor\": {planned}" ++ "}"
+
+private def planOf (rows : List String) : String :=
+  "{\"channels\": [" ++ String.intercalate "," rows ++ "]}"
+
+private def defaultPlanRows : List String :=
+  [planRow "github-release" true none, planRow "installer" true none,
+   planRow "npm" false (some "\"0.2.0\""), planRow "homebrew" false (some "\"0.2.0\"")]
+
+private def documentTests : IO (List Outcome) := do
+  let targetsText ← IO.FS.readFile "release/targets.json"
+  let planText ← IO.FS.readFile "release/plan.json"
+  let identityText ← IO.FS.readFile "release/identity.json"
+  let targets := Targets.parse "release/targets.json" targetsText
+  let plan := ReleasePlan.parse "release/plan.json" planText
+  let identity := Identity.parse "release/identity.json" identityText
+  let mut outs := [
+    -- The committed files, against the model that is about to decide over them.
+    check "documents: the committed targets file parses" targets.toOption.isSome
+      (errorOf targets),
+    check "documents: it lists the four ADR-0006 targets"
+      (targets.toOption.map (·.targets.length) == some 4),
+    check "documents: three targets are release-blocking and one is not"
+      (targets.toOption.map (fun t => (t.ofTier .supported).length) == some 3 &&
+       targets.toOption.map (fun t => (t.ofTier .bestEffort).length) == some 1),
+    -- Composed, never written out: the asset prefix followed by a target name
+    -- reads as a tracker id to the task-ID lint, which is why the target file
+    -- stores names bare and one function knows how an asset is spelled.
+    check "documents: an asset name is the prefix composed with the target"
+      (match targets.toOption.bind (·.find? "linux-x64") with
+       | some target => target.asset == "tl" ++ "-" ++ "linux-x64"
+       | none => false),
+    check "documents: an unknown target is not found"
+      (targets.toOption.bind (·.find? "solaris-sparc") |>.isNone),
+    check "documents: the committed plan parses" plan.toOption.isSome (errorOf plan),
+    check "documents: the plan enables exactly the GitHub release and the installer"
+      (plan.toOption.map (·.enabledChannels) == some [.githubRelease, .installer]),
+    check "documents: npm and Homebrew are deferred in the committed plan"
+      (plan.toOption.map (fun p => p.enabled .npm || p.enabled .homebrew) == some false),
+    check "documents: the committed identity parses" identity.toOption.isSome (errorOf identity),
+    check "documents: the identity's owner is the tap namespace"
+      (identity.toOption.map (·.owner) == some "DmitryKorolev"),
+    -- Targets: the refusals.
+    check "documents: a targets file with no rows is refused"
+      (mentions (Targets.parse "t" "{\"targets\": []}") "lists no targets"),
+    check "documents: an empty target list says why it is not a smaller release"
+      (mentions (Targets.parse "t" "{\"targets\": []}") "builds nothing"),
+    check "documents: a targets file with no targets key is refused"
+      (mentions (Targets.parse "t" "{}") "has no 'targets' field"),
+    check "documents: a malformed targets file is refused"
+      (mentions (Targets.parse "t" "not json") "is not valid JSON"),
+    check "documents: a target row missing its name is refused"
+      (mentions (Targets.parse "t" "{\"targets\": [{\"tier\": \"supported\"}]}") "has no 'target' field"),
+    check "documents: a target row with an unknown tier is refused"
+      (mentions (Targets.parse "t"
+        "{\"targets\": [{\"target\": \"x\", \"tier\": \"best\", \"os\": \"l\", \"cpu\": \"c\"}]}")
+        "not a support tier"),
+    -- The plan: exclusivity, completeness, and uniqueness.
+    check "documents: a plan enabling a channel that also names a target release is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" true (some "\"0.3.0\""), planRow "installer" true none,
+         planRow "npm" false (some "\"0.2.0\""), planRow "homebrew" false (some "\"0.2.0\"")]))
+        "both enabled and carrying plannedFor"),
+    check "documents: a plan deferring a channel with no target release is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" true none, planRow "installer" true none,
+         planRow "npm" false none, planRow "homebrew" false (some "\"0.2.0\"")]))
+        "cannot decay into abandonment"),
+    check "documents: a plan deferring a channel to an empty release is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" true none, planRow "installer" true none,
+         planRow "npm" false (some "\"\""), planRow "homebrew" false (some "\"0.2.0\"")]))
+        "deferred to an empty release"),
+    check "documents: a plan whose plannedFor is not a string is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" true none, planRow "installer" true none,
+         planRow "npm" false (some "2"), planRow "homebrew" false (some "\"0.2.0\"")]))
+        "is not a string"),
+    check "documents: a plan missing a channel row is refused"
+      (mentions (ReleasePlan.parse "p" (planOf defaultPlanRows.dropLast)) "has no row for the 'homebrew' channel"),
+    check "documents: a missing row says why absence is not disablement"
+      (mentions (ReleasePlan.parse "p" (planOf defaultPlanRows.dropLast)) "rather than merely absent"),
+    check "documents: a plan with two rows for one channel is refused"
+      (mentions (ReleasePlan.parse "p" (planOf (defaultPlanRows ++ [planRow "npm" true none])))
+        "2 rows for the 'npm' channel"),
+    check "documents: a duplicate row says why order must not decide"
+      (mentions (ReleasePlan.parse "p" (planOf (defaultPlanRows ++ [planRow "npm" true none])))
+        "depends on lookup order"),
+    check "documents: a plan naming an unknown channel is refused"
+      (mentions (ReleasePlan.parse "p" (planOf (defaultPlanRows ++ [planRow "flatpak" true none])))
+        "not a distribution channel"),
+    check "documents: a plan row with no enabled field is refused"
+      (mentions (ReleasePlan.parse "p" "{\"channels\": [{\"channel\": \"npm\"}]}")
+        "has no 'enabled' field"),
+    check "documents: a plan row whose enabled is not a boolean is refused"
+      (mentions (ReleasePlan.parse "p" "{\"channels\": [{\"channel\": \"npm\", \"enabled\": \"yes\"}]}")
+        "is not a boolean"),
+    -- Identity.
+    check "documents: an identity missing a field is refused"
+      (mentions (Identity.parse "i" "{\"repository\": \"a/b\"}") "has no 'npmPackage' field"),
+    check "documents: an identity with an empty field is refused"
+      (mentions (Identity.parse "i" "{\"repository\": \"\"}") "is empty"),
+    -- Build metadata: the complete record, then every way to hollow it out.
+    check "documents: a complete build-metadata record parses"
+      (BuildMetadata.parse "b" completeBuildMetadata).toOption.isSome
+      (errorOf (BuildMetadata.parse "b" completeBuildMetadata)),
+    check "documents: absent optional fields default to empty rather than failing"
+      ((BuildMetadata.parse "b" completeBuildMetadata).toOption.map (·.runnerOs) == some ""),
+    check "documents: a non-object build-metadata record is refused"
+      (mentions (BuildMetadata.parse "b" "[]") "is not a JSON object"),
+    check "documents: a malformed build-metadata record is refused"
+      (mentions (BuildMetadata.parse "b" "{") "is not valid JSON"),
+    check "documents: a build-metadata record with a bad digest is refused"
+      (mentions (BuildMetadata.parse "b"
+        (objectOf (buildMetadataFields.map fun (k, v) => if k == "sha256" then (k, "\"abc\"") else (k, v))))
+        "is not a SHA-256 digest"),
+    check "documents: a build-metadata record with a bad commit is refused"
+      (mentions (BuildMetadata.parse "b"
+        (objectOf (buildMetadataFields.map fun (k, v) => if k == "commit" then (k, "\"abc\"") else (k, v))))
+        "not a full git object id"),
+    check "documents: a build-metadata record with an unknown tier is refused"
+      (mentions (BuildMetadata.parse "b"
+        (objectOf (buildMetadataFields.map fun (k, v) => if k == "tier" then (k, "\"gold\"") else (k, v))))
+        "not a support tier")]
+  -- One row per required field, absent and then blank. The shell tested all
+  -- nine with `not build.get(field)`, which cannot tell those two apart — so a
+  -- record blanked in either way produced one indistinguishable message.
+  for (name, _) in buildMetadataFields do
+    let without := objectOf (buildMetadataFields.filter fun (key, _) => key != name)
+    let blanked := objectOf (buildMetadataFields.map fun (key, value) =>
+      if key == name then (key, "\"\"") else (key, value))
+    outs := outs ++ [
+      check s!"documents: build metadata without '{name}' is refused"
+        (mentions (BuildMetadata.parse "b" without) s!"has no '{name}' field"),
+      check s!"documents: build metadata with a blank '{name}' is refused"
+        (mentions (BuildMetadata.parse "b" blanked) "is empty"),
+      check s!"documents: a blank '{name}' is refused differently from an absent one"
+        (errorOf (BuildMetadata.parse "b" without) != errorOf (BuildMetadata.parse "b" blanked))]
+  return outs
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
@@ -81,6 +457,6 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return outs
+  return jsonTests ++ modelTests ++ outs ++ (← documentTests)
 
 end Tl.Tests
