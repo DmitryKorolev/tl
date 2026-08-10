@@ -131,6 +131,105 @@ def releaseIdentityTests : IO (List Outcome) := do
   -- arguments actually passed, which is the property that matters.
   return outs
 
+/-! ## Privileged release jobs are reachable only from a pushed tag
+
+`github.ref_type == 'tag'` is satisfied by a `workflow_dispatch` against a tag
+ref, and by any trigger added later that can name one. The `stamp` job refuses
+that particular combination, but a rehearsal should be *incapable* of signing
+rather than dependent on an upstream job having refused first — so every job
+that mints an OIDC token, writes to the repository, or reads a secret carries
+the full `push` + tag condition.
+
+The guard is stated over what makes a job privileged rather than over a list of
+job names, so a privileged job added later is covered without anyone
+remembering to extend this test. -/
+
+/-- The `permissions:` grants and secret reads that make a job privileged. -/
+private def privilegeGrants : List String :=
+  ["id-token: write", "contents: write", "attestations: write", "packages: write"]
+
+private def dropIndent (line : String) : String :=
+  String.ofList (line.toList.dropWhile (· == ' '))
+
+/-- Whether a workflow line actually *grants* privilege, as opposed to
+    discussing it. Both files reason about `id-token: write` in prose — the
+    build job's comment explains why it does not take one — so a substring scan
+    over the block would report every commented job as privileged and the guard
+    would pass by accident. -/
+private def grantsPrivilege (line : String) : Bool :=
+  let body := dropIndent line
+  if body.startsWith "#" then false
+  else privilegeGrants.contains body || has body "secrets."
+
+/-- A top-level job block: the job's name and the lines belonging to it. -/
+private structure JobBlock where
+  name : String
+  lines : List String
+
+/-- A top-level job header — indented exactly two spaces, ending in `:`. -/
+private def jobHeader? (line : String) : Option String :=
+  if line.startsWith "  " && !line.startsWith "   " && line.endsWith ":"
+      && !(dropIndent line).startsWith "#" then
+    some (String.ofList ((line.toList.drop 2).dropLast))
+  else none
+
+/-- Split a workflow file into its top-level job blocks: everything after the
+    column-zero `jobs:` key, up to the next column-zero key. -/
+private def jobBlocks (content : String) : List JobBlock := Id.run do
+  let mut inJobs := false
+  let mut blocks : List JobBlock := []
+  let mut current : Option (String × List String) := none
+  for line in content.splitOn "\n" do
+    if !inJobs then
+      if line == "jobs:" then inJobs := true
+      continue
+    -- A column-zero key ends the `jobs:` mapping.
+    if line != "" && !line.startsWith " " && !line.startsWith "#" then
+      break
+    match jobHeader? line with
+    | some name =>
+        if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
+        current := some (name, [])
+    | none =>
+        if let some (n, ls) := current then current := some (n, line :: ls)
+  if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
+  return blocks
+
+/-- The job's own `if:` — indented four spaces, so a step's `if:` is not it. -/
+private def jobLevelIf? (block : JobBlock) : Option String :=
+  (block.lines.filter (·.startsWith "    if:")).head?
+
+def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
+  let path : FilePath := ".github/workflows/release.yml"
+  let raw ← readRequired path
+  let some content := raw.toOption
+    | return [check "release workflow: the workflow is readable" false s!"{raw}"]
+  let blocks := jobBlocks content
+  let names := blocks.map (·.name)
+  let privileged := blocks.filter fun b => b.lines.any grantsPrivilege
+  let privilegedNames := privileged.map (·.name)
+  let guard := "    if: github.event_name == 'push' && github.ref_type == 'tag'"
+  -- Non-vacuity first. Every assertion below is universally quantified over a
+  -- list this parser produced, so a parser that silently found nothing would
+  -- report a clean sweep over an empty set.
+  let mut outs := [
+    check "release workflow: the job scan finds the build matrix"
+      (names.contains "build") s!"parsed job names: {names}",
+    check "release workflow: the privilege scan finds the signing job"
+      (privilegedNames.contains "sign") s!"jobs found privileged: {privilegedNames}",
+    check "release workflow: the privilege scan finds the publishing job"
+      (privilegedNames.contains "publish-release") s!"jobs found privileged: {privilegedNames}",
+    -- The build job reasons about `id-token: write` in a comment and takes
+    -- none. If it ever reads as privileged, `grantsPrivilege` has regressed to
+    -- a substring scan and the checks below stop meaning anything.
+    check "release workflow: discussing a permission does not grant it"
+      (!privilegedNames.contains "build") s!"jobs found privileged: {privilegedNames}"]
+  for block in privileged do
+    outs := outs ++ [
+      checkEq s!"release workflow: privileged job '{block.name}' runs only on a pushed tag"
+        (jobLevelIf? block |>.getD "<no job-level if:>") guard]
+  return outs
+
 /-! ## Build provenance (`tl version`, ADR-0006 "Tool versioning") -/
 
 open Tl.Build (Provenance Kind)

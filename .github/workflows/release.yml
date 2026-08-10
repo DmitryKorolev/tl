@@ -559,13 +559,21 @@ jobs:
   # release/identity.json is for — and why this job refuses to sign at all
   # unless its own identity matches that pin.
   #
-  # Tag runs only. A workflow_dispatch rehearsal produces artifacts and stops:
-  # its certificate would name a branch ref, which no verifier accepts, so
-  # signing one would only manufacture unverifiable files.
+  # Pushed tags only. A workflow_dispatch rehearsal produces artifacts and
+  # stops: its certificate would name a branch ref, which no verifier accepts,
+  # so signing one would only manufacture unverifiable files.
+  #
+  # Both halves of that condition are load-bearing. `ref_type == 'tag'` alone is
+  # satisfied by a dispatch against a tag ref, and by any trigger added later
+  # that can name one; the `stamp` job refuses that combination, but a rehearsal
+  # should be *incapable* of signing rather than dependent on an upstream job
+  # having refused first. Requiring the push event as well is what makes every
+  # privileged job below unreachable from a trigger nobody has thought about
+  # yet — which is the property a rehearsal needs before it is worth running.
   # ---------------------------------------------------------------------------
   sign:
     needs: [stamp, build]
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # A named environment so the signing identity is not simply whatever a tag
@@ -834,7 +842,10 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-release:
     needs: [stamp, sign]
-    if: github.ref_type == 'tag'
+    # Pushed tags only, for the reason spelled out on `sign`: a job holding
+    # `contents: write` should be unreachable from a dispatch, not merely
+    # downstream of one that is.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -918,7 +929,8 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-homebrew:
     needs: [stamp, publish-release]
-    if: github.ref_type == 'tag'
+    # Pushed tags only: this job holds the tap credential.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1035,7 +1047,8 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-npm:
     needs: [stamp, publish-release]
-    if: github.ref_type == 'tag'
+    # Pushed tags only: this job mints an OIDC token npm accepts as a publisher.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # The same environment the signing job uses, and not decoration: npm treats
