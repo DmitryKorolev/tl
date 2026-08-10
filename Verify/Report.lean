@@ -83,16 +83,17 @@ structure AuditedReports where
   supervisor : Report
   testSupervisor : Report
   tooling : Report
+  release : Report
 
 def AuditedReports.errors (reports : AuditedReports) : Array String :=
   #[reports.production, reports.tests, reports.verifier, reports.supervisor,
-    reports.testSupervisor, reports.tooling].flatMap (·.errors)
+    reports.testSupervisor, reports.tooling, reports.release].flatMap (·.errors)
 
 def unclaimedSourceError? (unclaimed : Array String) : Option String :=
   if unclaimed.isEmpty then none else
     some s!"trust verification: {unclaimed.size} Lean source location(s) belong to no audited scope:\n\
       {summarize (unclaimed.map fun name => s!"  {name}")}\n\
-      Move regular sources under an audited directory (Tl/, Tests/, Verify/, VerifyFixture/, scripts/), register an in-tree location with its owning typed source scope in Verify/Environment.lean, or replace a symbolic-link source location with regular in-tree files; a source no scope loads is built but never inspected, and a linked directory cannot be audited without following paths outside the checkout."
+      Move regular sources under an audited directory (Tl/, Tests/, Verify/, VerifyFixture/, scripts/, release/), register an in-tree location with its owning typed source scope in Verify/Environment.lean, or replace a symbolic-link source location with regular in-tree files; a source no scope loads is built but never inspected, and a linked directory cannot be audited without following paths outside the checkout."
 
 /-- Every class of evidence required for the worker's final verdict. New audit
     classes must become fields here, so the final decision cannot forget to
@@ -265,20 +266,20 @@ def workerVerdict (summary marker : String) (evidence : GateEvidence) : WorkerVe
   if errors.isEmpty then { diagnostics := #[], report := #[summary, marker], status := 0 }
   else { diagnostics := errors, report := #[], status := 1 }
 
-/-- Assemble the whole run's evidence from the six scope observations and the
+/-- Assemble the whole run's evidence from the seven scope observations and the
     two inventory scans. The worker calls exactly this, so the verdict the
     theorems in `Verify.Proofs` characterise is the verdict it ships: a scope
     audited twice, or one left out *of this function*, makes
     `analyzedGateEvidence_clean_iff` false rather than merely unproved, so the
     build cannot go green on it.
 
-    What that does not cover is the call site. The six parameters share a type,
+    What that does not cover is the call site. The seven parameters share a type,
     so passing `testObservation` into `production` compiles, leaves a scope
     unaudited, and no theorem or test sees it — named arguments at the call site
     are the mitigation, and the residual is the recorded verifier-bootstrap
     assumption in docs/overview.md, not something proved here. -/
 def gateEvidenceOf (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (production tests verifier supervisor testSupervisor tooling release : Observation)
     (inventoryErrors unclaimedSources : Array String) : GateEvidence :=
   { reports :=
       { production := analyze cfg production
@@ -286,7 +287,8 @@ def gateEvidenceOf (cfg : Config)
         verifier := analyze cfg verifier
         supervisor := analyze cfg supervisor
         testSupervisor := analyze cfg testSupervisor
-        tooling := analyze cfg tooling }
+        tooling := analyze cfg tooling
+        release := analyze cfg release }
     inventoryErrors
     unclaimedSources }
 

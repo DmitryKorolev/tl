@@ -580,6 +580,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   that every privileged release job needs a pushed
                         --   tag — stated over what makes a job privileged, so
                         --   a privileged job added later is covered
+  ReleaseToolTests.lean --   tlrelease: dispatch, the generated usage, and the
+                        --   refusals. Driven in-process against release.Cli;
+                        --   a refusal must never share an exit status with
+                        --   success, which is the failure the port exists to
+                        --   prevent
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
@@ -629,6 +634,39 @@ VerifyFixture/          -- compiled hostile-initializer fixture; never executed
 scripts/GenLicenses.lean -- executable Lean tooling, audited as a separate root
 ```
 
+The `tlrelease` decision layer is the seventh audited scope, and shares the
+`release/` directory with the data it decides over:
+
+```
+release/                -- `lake exe tlrelease`, and its inputs
+  Cli.lean              --   the subcommand table and dispatch. `help` is
+                        --   generated from the same list dispatch reads, so a
+                        --   command that exists but is undocumented — or is
+                        --   documented but unreachable — is not representable
+  Main.lean             --   the three-line root defining `main`, kept separate
+                        --   so tests can import the decisions in-process
+                        --   (two top-level `main`s cannot share a closure)
+```
+
+Lowercase, like `scripts/`, and for a stronger reason: the directory already
+held this release's machine-readable data, and on a case-insensitive
+filesystem a sibling `Release/` *is* `release/`. The trust gate compares claim
+paths as strings, so a `Release` claim would scan a directory it had not
+claimed and report every module in it as an unclaimed source on macOS while
+Linux saw two directories and disagreed — `Tests/VerifyTests.lean` pins that,
+stated as "a miscased claim never derives the module name Lake builds" so the
+row holds on both filesystems.
+
+Nothing under `release/` may import `Tl.*`: release administration is not part
+of the shipped product, and this is enforced rather than asked for — such an
+import lands the product modules in the release scope's environment, where the
+gate reports them as modules outside the declared scope. Being written in Lean
+buys `Except` and totality, not membership in the TCB; almost all of it is
+tested I/O-shell code (ADR-0004), with theorems only on the small pure verdict
+functions whose failure mode is a silent false negative. It carries no
+landmarks and no docs/overview.md row, for the same reason `Verify/Proofs.lean`
+does not: landmarks guard the product's proved claims.
+
 Mapping to the boundary: `Tl/Crdt/` and `Tl/Kernel/` are proved
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)); `Tl/Error`,
 `Tl/Format`, `Tl/Hash`, `Tl/Store` (+ `ffi/tlsys.c`), `Tl/Clock`, `Tl/Sync`,
@@ -659,7 +697,7 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   unconditionally for the diagnostics — so `runChecked` needs no branch of its
   own and neither arm can grow an emission no theorem sees.
   `workerVerdict_marker_iff_clean` composes it with `analyze_clean_iff` into the
-  whole decision: the marker is printed exactly when all six scopes are
+  whole decision: the marker is printed exactly when all seven scopes are
   `GateClean` and both inventory scans are silent.
 - **Stored-body axiom propagation is proved**, in the same file.
   `propagatedAxioms` deliberately reimplements Lean's `collectAxioms` rather

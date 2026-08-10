@@ -472,7 +472,8 @@ theorem auditedReports_errors_eq_empty_iff (reports : AuditedReports) :
     reports.errors = #[] ↔
       reports.production.errors = #[] ∧ reports.tests.errors = #[]
         ∧ reports.verifier.errors = #[] ∧ reports.supervisor.errors = #[]
-        ∧ reports.testSupervisor.errors = #[] ∧ reports.tooling.errors = #[] := by
+        ∧ reports.testSupervisor.errors = #[] ∧ reports.tooling.errors = #[]
+        ∧ reports.release.errors = #[] := by
   unfold AuditedReports.errors
   rw [Array.flatMap_eq_empty_iff]
   simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false,
@@ -507,16 +508,17 @@ theorem gateEvidence_errors_eq_empty_iff (evidence : GateEvidence) :
     rw [(unclaimedSourceError?_eq_none_iff _).mpr hempty] at hunclaimed
     exact absurd hunclaimed nofun
 
-/-- The same verdict with the six scope reports expanded: nothing between an
+/-- The same verdict with the seven scope reports expanded: nothing between an
     individual scope's findings and the gate's exit status can absorb them. -/
 theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
     evidence.errors = #[] ↔
       evidence.reports.production.errors = #[] ∧ evidence.reports.tests.errors = #[]
         ∧ evidence.reports.verifier.errors = #[] ∧ evidence.reports.supervisor.errors = #[]
         ∧ evidence.reports.testSupervisor.errors = #[] ∧ evidence.reports.tooling.errors = #[]
+        ∧ evidence.reports.release.errors = #[]
         ∧ evidence.inventoryErrors = #[] ∧ evidence.unclaimedSources = #[] := by
   rw [gateEvidence_errors_eq_empty_iff, auditedReports_errors_eq_empty_iff, and_assoc,
-    and_assoc, and_assoc, and_assoc, and_assoc]
+    and_assoc, and_assoc, and_assoc, and_assoc, and_assoc]
 
 /-- The finding array the worker builds is empty exactly when all six audited
     scopes satisfy `GateClean` and neither the source inventory nor the
@@ -531,17 +533,17 @@ theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
     and `verdict.report` to stdout and returning `verdict.status` — plus the
     supervisor's handling of that marker. -/
 theorem analyzedGateEvidence_clean_iff (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (production tests verifier supervisor testSupervisor tooling release : Observation)
     (inventoryErrors unclaimedSources : Array String) :
-    (gateEvidenceOf cfg production tests verifier supervisor testSupervisor tooling
+    (gateEvidenceOf cfg production tests verifier supervisor testSupervisor tooling release
       inventoryErrors unclaimedSources).errors = #[] ↔
       GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
         ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor
-        ∧ GateClean cfg tooling
+        ∧ GateClean cfg tooling ∧ GateClean cfg release
         ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
   rw [gateEvidenceOf, gateEvidence_errors_eq_empty_iff_scopes]
   rw [analyze_clean_iff, analyze_clean_iff, analyze_clean_iff, analyze_clean_iff,
-    analyze_clean_iff, analyze_clean_iff]
+    analyze_clean_iff, analyze_clean_iff, analyze_clean_iff]
 
 /-! ### The worker's verdict-to-exit decision
 
@@ -607,12 +609,13 @@ theorem workerVerdict_report_empty (summary marker : String) (evidence : GateEvi
     marker is printed exactly when all six scopes are `GateClean` and both
     inventory scans are silent. -/
 theorem workerVerdict_marker_iff_clean (summary marker : String) (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling : Observation)
+    (production tests verifier supervisor testSupervisor tooling release : Observation)
     (inventoryErrors unclaimedSources : Array String) :
     marker ∈ (workerVerdict summary marker (gateEvidenceOf cfg production tests verifier
-        supervisor testSupervisor tooling inventoryErrors unclaimedSources)).report ↔
+        supervisor testSupervisor tooling release inventoryErrors unclaimedSources)).report ↔
       GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
         ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor ∧ GateClean cfg tooling
+        ∧ GateClean cfg release
         ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
   rw [workerVerdict_marker_iff, analyzedGateEvidence_clean_iff]
 

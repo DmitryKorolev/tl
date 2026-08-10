@@ -72,6 +72,24 @@ lean_lib VerifyCore where
 lean_lib Tooling where
   roots := #[`scripts.GenLicenses]
 
+/-- The release decision layer.
+
+    It is deliberately *not* reachable from `Tl`: release administration must
+    not become part of the shipped product, so nothing here is in the binary
+    users run, and nothing here may import `Tl.*` — the trust gate's `release`
+    scope reports such an import as a module outside the declared scope.
+    Batteries only, which also keeps it independent of the ADR-0009 Mathlib
+    escape hatch. -/
+lean_lib ReleaseCore where
+  roots := #[`release.Cli]
+
+/-- A default target so `lake build --wfail` holds the release tool to the same
+    warning-free standard as everything else. `release.Main` is a three-line
+    root defining `main`, kept separate so tests can import the decisions. -/
+@[default_target] lean_exe tlrelease where
+  root := `release.Main
+  needs := #[ReleaseCore]
+
 /-- Minimal test supervisor: status zero is insufficient unless the worker
     reaches the assertion harness's final completion marker. -/
 @[default_target] lean_exe tltest where
@@ -80,7 +98,7 @@ lean_lib Tooling where
 
 lean_exe tlverifyWorker where
   root := `Verify.Main
-  needs := #[Tl, Tests, VerifyCore, VerifyFixtures, Tooling, tl, tltest]
+  needs := #[Tl, Tests, VerifyCore, VerifyFixtures, Tooling, ReleaseCore, tl, tltest, tlrelease]
 
 /-- Minimal supervisor: status zero is insufficient unless the audited worker
     reaches and emits its final structured completion marker. -/

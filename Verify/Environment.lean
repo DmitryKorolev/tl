@@ -16,6 +16,12 @@ inductive AuditScope where
   | tests
   | verifier
   | tooling
+  /-- Release administration: the `tlrelease` decision layer. Its own scope
+      rather than a corner of `tooling` because its root defines `main`, and
+      roots inside one array load into one environment where two `main`s
+      collide. Deliberately not under `Tl/` — satisfying the root-import rule
+      that way would import release administration into the shipped product. -/
+  | release
   deriving DecidableEq, Repr, Inhabited
 
 structure ScopedSourceDirectory where
@@ -41,6 +47,7 @@ structure AuditLayout where
   supervisorRoots : Array Name
   testSupervisorRoots : Array Name
   toolingRoots : Array Name
+  releaseRoots : Array Name
   supervisorModules : Array Name
   testSupervisorModules : Array Name
   sourceDirectories : Array ScopedSourceDirectory
@@ -53,6 +60,7 @@ def auditLayout : AuditLayout := {
   supervisorRoots := #[`Verify.Launcher]
   testSupervisorRoots := #[`Verify.TestLauncher]
   toolingRoots := #[`scripts.GenLicenses]
+  releaseRoots := #[`release.Main]
   supervisorModules := #[`Verify.Launcher, `Verify.Supervise]
   testSupervisorModules := #[`Verify.TestLauncher, `Verify.Supervise]
   sourceDirectories := #[
@@ -60,7 +68,13 @@ def auditLayout : AuditLayout := {
     { scope := .tests, path := "Tests", modulePrefix := `Tests },
     { scope := .verifier, path := "Verify", modulePrefix := `Verify },
     { scope := .tests, path := "VerifyFixture", modulePrefix := `VerifyFixture },
-    { scope := .tooling, path := "scripts", modulePrefix := `scripts }
+    { scope := .tooling, path := "scripts", modulePrefix := `scripts },
+    -- Lowercase, like `scripts`, and the same reason: the directory predates
+    -- the Lean in it and already holds this release's machine-readable data.
+    -- On a case-insensitive filesystem a `Release/` claim would not match the
+    -- `release` this scan reports, so every module here would be an unclaimed
+    -- source on macOS and claimed on Linux.
+    { scope := .release, path := "release", modulePrefix := `release }
   ]
   rootSources := #[
     { scope := .production, path := "Tl.lean", module := `Tl },

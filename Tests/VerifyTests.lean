@@ -139,9 +139,9 @@ private def reportTests : List Outcome :=
   -- both reach it as `= #[]`, so nothing in it pins which becomes the inventory
   -- arm and which the unclaimed-source arm; and the findings themselves — that
   -- each observation reaches the verdict at all, labelled with its own scope.
-  -- A pure permutation of the six observations is invisible to both: each
+  -- A pure permutation of the seven observations is invisible to both: each
   -- finding carries the scope from the observation it was built from, and the
-  -- six are only flattened, never read per field.
+  -- seven are only flattened, never read per field.
   let inventoryFinding :=
     ({ refusedSymlinks := #["Tl/Linked"] } : SourceInventory).errors "production"
       "Replace it with a regular in-tree directory or .lean file in the production source scope."
@@ -153,6 +153,7 @@ private def reportTests : List Outcome :=
     (verifier := scopeFailure "verifier") (supervisor := scopeFailure "supervisor")
     (testSupervisor := scopeFailure "test supervisor")
     (tooling := scopeFailure "tooling")
+    (release := scopeFailure "release")
     (inventoryErrors := #["inventory sentinel"])
     (unclaimedSources := #["Bench"])).errors
   [ checkEq "the base fixture is clean, so every row below isolates its own defect"
@@ -186,9 +187,10 @@ private def reportTests : List Outcome :=
     check "a scope mismatch uses its scope-specific repair instruction"
       (mentions customRemedy "edit the typed scope registry"),
     checkEq "the shipped assembly retains all scope, inventory, and claim findings"
-      gateErrors.size 8,
+      gateErrors.size 9,
     check "the shipped assembly audits each observation under its own scope name"
-      (["production", "tests", "verifier", "supervisor", "test supervisor", "tooling"].all fun scope =>
+      (["production", "tests", "verifier", "supervisor", "test supervisor", "tooling",
+        "release"].all fun scope =>
         gateErrors.any fun error =>
           error.contains s!"trust verification ({scope}): {scope} sentinel"),
     check "the shipped assembly retains inventory and unclaimed-source findings"
@@ -462,6 +464,13 @@ private def inventoryScopeTests : IO (List Outcome) := do
   IO.FS.createDirAll (base / "Bench")
   IO.FS.writeFile (base / "Bench" / "Sneaky.lean") "def y := 2\n"
   IO.FS.writeFile (base / "Loose.lean") "def z := 3\n"
+  -- A lowercase directory carrying both data and Lean, like the real
+  -- `release/` and `scripts/`. Worth its own row: the claim's `path` is
+  -- matched as a string, so a claim whose case does not match the directory
+  -- on disk silently stops covering it.
+  IO.FS.createDirAll (base / "release")
+  IO.FS.writeFile (base / "release" / "Plan.lean") "def plan := 6\n"
+  IO.FS.writeFile (base / "release" / "plan.json") "{}\n"
   IO.FS.createDirAll (targets / "linked-directory")
   IO.FS.writeFile (targets / "Linked.lean") "def linked := 4\n"
   IO.FS.writeFile (targets / "notes.md") "not a Lean module\n"
@@ -486,6 +495,7 @@ private def inventoryScopeTests : IO (List Outcome) := do
   let scopedLayout := { layout with
     sourceDirectories := layout.sourceDirectories.push
       { scope := .production, path := "Bench", modulePrefix := `Bench }
+      |>.push { scope := .release, path := "release", modulePrefix := `release }
     rootSources := layout.rootSources.push
       { scope := .production, path := "Loose.lean", module := `Loose }
       |>.push { scope := .verifier, path := "VerifierRoot.lean", module := `VerifierRoot } }
@@ -493,6 +503,16 @@ private def inventoryScopeTests : IO (List Outcome) := do
   let scopedInventories ← collectSourceInventories base scopedLayout
   let scopedExpected := scopedLayout.expectedSourceModules .production scopedInventories
   let verifierExpected := scopedLayout.expectedSourceModules .verifier scopedInventories
+  let releaseExpected := scopedLayout.expectedSourceModules .release scopedInventories
+  -- The wrong-case claim, checked rather than argued: on a case-insensitive
+  -- filesystem `Release/` and `release/` are one directory, so this is the
+  -- shape a `Release` claim would actually have taken.
+  let miscasedLayout := { layout with
+    sourceDirectories := layout.sourceDirectories.push
+      { scope := .release, path := "Release", modulePrefix := `Release } }
+  let miscasedInventories ← collectSourceInventories base miscasedLayout
+  let miscasedExpected := miscasedLayout.expectedSourceModules .release miscasedInventories
+  let miscasedUnclaimed ← unclaimedSources base miscasedLayout
   let scopedUnclaimed ← unclaimedSources base scopedLayout
   IO.FS.removeDirAll base
   IO.FS.removeDirAll targets
@@ -525,12 +545,27 @@ private def inventoryScopeTests : IO (List Outcome) := do
       (scopedExpected.contains `Loose),
     check "a verifier root-source claim feeds the verifier expected module set"
       (verifierExpected.contains `VerifierRoot),
+    check "a lowercase directory claim feeds its scope's expected module set"
+      (releaseExpected.contains `release.Plan),
+    check "a claimed directory's non-Lean data is not inventoried as a module"
+      (!releaseExpected.any fun name => name.toString.endsWith "plan"),
+    -- Stated as "never the name Lake builds", because the two filesystems
+    -- fail differently and both must be covered: case-insensitively the claim
+    -- reads the directory and derives `Release.Plan`, a module no target
+    -- produces; case-sensitively it reads nothing at all. Asserting either
+    -- specific outcome would pass on one CI leg and fail on the other.
+    check "a directory claim whose case does not match the tree never derives the built module"
+      (!miscasedExpected.contains `release.Plan)
+      s!"a `Release` claim covered the `release` directory: {miscasedExpected}",
+    check "a miscased claim leaves the real directory unclaimed rather than silently covered"
+      (miscasedUnclaimed.contains "release")
+      s!"unclaimed under the miscased layout: {miscasedUnclaimed}",
     check "typed source entries derive the corresponding top-level claims"
       (!scopedUnclaimed.contains "Bench" && !scopedUnclaimed.contains "Loose.lean" &&
-       !scopedUnclaimed.contains "VerifierRoot.lean"),
+       !scopedUnclaimed.contains "VerifierRoot.lean" && !scopedUnclaimed.contains "release"),
     check "Lake configuration is exempt without masquerading as an audited root module"
       (!layout.rootSources.any fun source => source.path == lakeConfigurationSource),
-    checkEq "nothing else is reported" unclaimed.size 8,
+    checkEq "nothing else is reported" unclaimed.size 9,
     check "a directory carrying no Lean sources is not reported"
       (!unclaimed.contains "docs")
   ]

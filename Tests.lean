@@ -12,5 +12,6 @@ import Tests.RecordTests
 import Tests.CacheTests
 import Tests.PerfTests
 import Tests.ReleaseTests
+import Tests.ReleaseToolTests
 import Tests.VerifyLoadedTests
 import Tests.Main

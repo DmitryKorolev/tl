@@ -17,6 +17,7 @@ import Tests.SanitizeTests
 import Tests.GrammarTests
 import Tests.DocGrammarTests
 import Tests.ReleaseTests
+import Tests.ReleaseToolTests
 import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
@@ -41,6 +42,7 @@ unsafe def main : IO UInt32 := do
   let docGrammar ← docGrammarTests
   let releaseIdentity ← releaseIdentityTests
   let releasePlan ← releasePlanTests
+  let releaseTool ← releaseToolTests
   let releaseWorkflowPrivilege ← releaseWorkflowPrivilegeTests
   let buildProvenance ← buildProvenanceTests
   let sync ← syncTests
@@ -74,6 +76,7 @@ unsafe def main : IO UInt32 := do
     ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
     ("Release identity: repository/workflow/npm pins do not drift", releaseIdentity),
     ("Release plan: enabled channels, and the documents that state them", releasePlan),
+    ("tlrelease: dispatch, usage, and the two refusals", releaseTool),
     ("Release workflow: privileged jobs need a pushed tag", releaseWorkflowPrivilege),
     ("Build provenance: tl version kinds, renderings, and stamp drift", buildProvenance),
     ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
