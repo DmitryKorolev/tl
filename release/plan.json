@@ -23,7 +23,19 @@
     "`enabled` and `plannedFor` are exclusive by construction: an enabled channel",
     "is being published now and has no future version to name, and a disabled one",
     "must name the release it is planned for so deferral cannot decay into",
-    "abandonment. tlrelease refuses a row carrying both or neither."
+    "abandonment. tlrelease refuses a row carrying both or neither, and",
+    "`plannedFor` must parse as a version — 'later' and 'banana' are non-empty",
+    "strings and neither is a commitment anything can be checked against.",
+    "",
+    "`github-release` is a row but not a switch: tlrelease refuses a plan that",
+    "disables it. Every other channel serves the same bytes it publishes, so",
+    "turning it off would not describe a smaller release, it would describe none",
+    "and leave the other channels pointing at artifacts nothing published.",
+    "",
+    "`installer` has no publish job, because install.sh is served from this",
+    "repository rather than pushed anywhere. Its row records that the path is",
+    "offered and documented; VERIFYING.md and the installer's own presence are",
+    "what a test checks it against."
   ],
   "channels": [
     {

@@ -413,7 +413,22 @@ private def documentTests : IO (List Outcome) := do
       (mentions (ReleasePlan.parse "p" (planOf
         [planRow "github-release" true none, planRow "installer" true none,
          planRow "npm" false (some "\"\""), planRow "homebrew" false (some "\"0.2.0\"")]))
-        "deferred to an empty release"),
+        "not a release version"),
+    -- A deferral has to name a release, not a mood. Both are non-empty
+    -- strings; only one of them is a commitment anything can be checked
+    -- against.
+    check "documents: a plan deferring a channel to a non-version is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" true none, planRow "installer" true none,
+         planRow "npm" false (some "\"banana\""), planRow "homebrew" false (some "\"0.2.0\"")]))
+        "not a release version"),
+    -- The GitHub Release is not a toggle: every other channel serves the same
+    -- bytes, so switching it off describes no release rather than a smaller one.
+    check "documents: a plan disabling the GitHub Release is refused"
+      (mentions (ReleasePlan.parse "p" (planOf
+        [planRow "github-release" false (some "\"9.9.9\""), planRow "installer" true none,
+         planRow "npm" false (some "\"0.2.0\""), planRow "homebrew" false (some "\"0.2.0\"")]))
+        "source of truth"),
     check "documents: a plan whose plannedFor is not a string is refused"
       (mentions (ReleasePlan.parse "p" (planOf
         [planRow "github-release" true none, planRow "installer" true none,
@@ -480,6 +495,53 @@ private def documentTests : IO (List Outcome) := do
       check s!"documents: a blank '{name}' is refused differently from an absent one"
         (errorOf (BuildMetadata.parse "b" without) != errorOf (BuildMetadata.parse "b" blanked))]
   return outs
+
+/-- Deletion guard for the release tool's verdict-logic theorems, on the same
+    reasoning as `pinnedVerdictLogicTheorems` in Tests/VerifyTests.lean: they
+    carry no landmark by design, because landmarks guard the *product's* proved
+    claims and this is release administration. Naming them here makes retiring
+    one a compile error rather than a silent deletion. -/
+private def pinnedReleaseVerdictTheorems : Unit :=
+  let _ := @Release.channelDecisions_eq
+  let _ := @Release.channelDecisions_lookup
+  ()
+
+/-! ## The publication decision, end to end
+
+`renderChannelOutputs` decides whether an immutable publication job runs, so
+the four lines it emits are pinned exactly, for every combination of enabled
+channels the plan can express. The theorems above characterise the decision;
+these check that the rendering carries it unchanged to the workflow. -/
+
+private def planTextOf (npm brew : Bool) : String :=
+  let row (c : String) (on : Bool) (planned : Option String) :=
+    let base := s!"\"channel\": \"{c}\", \"enabled\": {if on then "true" else "false"}"
+    match planned with
+    | none => "{" ++ base ++ "}"
+    | some p => "{" ++ base ++ s!", \"plannedFor\": \"{p}\"" ++ "}"
+  "{\"channels\": [" ++ String.intercalate ","
+    [row "github-release" true none, row "installer" true none,
+     row "npm" npm (if npm then none else some "0.2.0"),
+     row "homebrew" brew (if brew then none else some "0.2.0")] ++ "]}"
+
+private def channelOutputTests : List Outcome :=
+  let expected (npm brew : Bool) : String :=
+    "github-release=true\ninstaller=true\n" ++
+    s!"npm={if npm then "true" else "false"}\nhomebrew={if brew then "true" else "false"}\n"
+  ([(false, false), (true, false), (false, true), (true, true)].map fun (npm, brew) =>
+    match ReleasePlan.parse "p" (planTextOf npm brew) with
+    | .error message =>
+        check s!"plan output: the plan with npm={npm} homebrew={brew} parses" false message
+    | .ok plan =>
+        checkEq s!"plan output: npm={npm} homebrew={brew} renders exactly four decided lines"
+          (renderChannelOutputs plan) (expected npm brew)) ++
+  [ -- Every channel appears, including the enabled ones. A workflow reading an
+    -- output that was never emitted gets the empty string, which compares
+    -- unequal to 'true' — so an omitted line disables a channel silently.
+    check "plan output: every channel is named, not only the disabled ones"
+      (match ReleasePlan.parse "p" (planTextOf false false) with
+       | .ok plan => Channel.all.all fun c => ((renderChannelOutputs plan).splitOn s!"{c.wire}=").length == 2
+       | .error _ => false)]
 
 /-! ## The pin commands, end to end
 
@@ -610,6 +672,6 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ outs ++ (← documentTests) ++ (← pinCommandTests)
+  return jsonTests ++ modelTests ++ channelOutputTests ++ outs ++ (← documentTests) ++ (← pinCommandTests)
 
 end Tl.Tests

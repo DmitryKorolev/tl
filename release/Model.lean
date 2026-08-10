@@ -126,6 +126,18 @@ def Version.render (version : Version) : String :=
 /-- The tag form, which is the version with a leading `v`. -/
 def Version.tag (version : Version) : String := "v" ++ version.render
 
+/-- Strictly later, comparing the release triple only.
+
+    Prerelease precedence is deliberately not modelled: SemVer's rules for it
+    are subtle, nothing here needs them, and a half-right ordering is worse
+    than an absent one. The one question asked of this is whether a deferral
+    names a release still ahead of the current one, and `0.2.0` versus `0.1.0`
+    answers that without ranking `1.0.0-rc.1` against `1.0.0-rc.2`. -/
+def Version.exceeds (later earlier : Version) : Bool :=
+  if later.major != earlier.major then later.major > earlier.major
+  else if later.minor != earlier.minor then later.minor > earlier.minor
+  else later.patch > earlier.patch
+
 private def semverShape : String :=
   "vMAJOR.MINOR.PATCH with no leading zeroes, optionally followed by a -prerelease suffix of alphanumeric parts separated by '.' or '-'"
 
@@ -240,6 +252,14 @@ def Targets.parse (document : String) (text : String) : Except String Targets :=
   let targets ← rows.mapM fun (rowCursor, row) => parseTarget rowCursor row
   if targets.isEmpty then
     inner.fail "lists no targets. A release with no targets is not a smaller release, it is a release that builds nothing — the empty list is refused rather than carried."
+  -- A repeated target name is refused rather than resolved. Every lookup here
+  -- takes the first match, so a duplicate makes the answer depend on file
+  -- order — and the two rows disagree about the tier, which decides whether a
+  -- missing artifact is release-blocking.
+  for target in targets do
+    let matching := targets.filter (·.name == target.name)
+    if matching.length > 1 then
+      inner.fail s!"lists the target '{target.name}' {matching.length} times. Each target appears once: with two rows every lookup silently takes the first, and if they disagree on the tier they disagree about whether a missing artifact blocks the release."
   return { targets }
 
 def Targets.ofTier (targets : Targets) (tier : Tier) : List Target :=
@@ -330,9 +350,11 @@ private def parseChannelRow (cursor : Cursor) (value : Json) : Except String Cha
   | false, some planned =>
       match planned.getStr? with
       | .ok text =>
-          if text.isEmpty then
-            cursor.fail s!"has channel '{channelText}' deferred to an empty release. Name the release it is planned for."
-          else return { channel, status := .deferred text }
+          -- A version, not a note. "later" and "banana" are both non-empty
+          -- strings, and only one of them is a commitment something can be
+          -- checked against.
+          let _ ← Version.parse (cursor.at "plannedFor").render text
+          return { channel, status := .deferred text }
       | .error _ => (cursor.at "plannedFor").fail "is not a string."
 
 def ReleasePlan.parse (document : String) (text : String) : Except String ReleasePlan := do
@@ -349,7 +371,19 @@ def ReleasePlan.parse (document : String) (text : String) : Except String Releas
       inner.fail s!"has no row for the '{channel.wire}' channel. Every channel needs a row, so that a channel nobody edited is deliberately off rather than merely absent."
     if matching.length > 1 then
       inner.fail s!"has {matching.length} rows for the '{channel.wire}' channel. Keep one row per channel; with two, which one applies depends on lookup order."
-  return ⟨rows⟩
+  let plan : ReleasePlan := ⟨rows⟩
+  -- The GitHub Release is not a toggle. ADR-0006 makes it the source of truth
+  -- and every other channel a veneer over the same bytes, so a plan that turns
+  -- it off does not describe a smaller release — it describes no release, and
+  -- leaves the other channels pointing at artifacts that were never published.
+  -- Refused here rather than ignored: a row whose value changes nothing is
+  -- worse than no row, because it reads as a decision.
+  unless plan.enabled .githubRelease do
+    inner.fail "disables the 'github-release' channel. That channel is the source of truth every other one serves the same bytes from (ADR-0006), so switching it off does not describe a smaller release — it describes none, and leaves any other enabled channel pointing at artifacts nothing published."
+  for channel in Channel.all do
+    if channel != .githubRelease && plan.enabled channel && !plan.enabled .githubRelease then
+      inner.fail s!"enables '{channel.wire}' while 'github-release' is off. Every channel distributes the artifacts the GitHub Release publishes; one without it has nothing to distribute."
+  return plan
 
 /-! ## The signing identity -/
 
@@ -407,8 +441,15 @@ def BuildMetadata.parse (document : String) (text : String) : Except String Buil
   let cursor : Cursor := { document }
   let root ← parseDocument cursor text
   let _ ← getObj cursor root
-  let optional (name : String) : String :=
-    ((field? root name).bind fun found => (found.getStr?).toOption).getD ""
+  -- Present-but-not-a-string is a malformed record, not an absent field. These
+  -- describe the machine rather than the artifact and no verdict reads them,
+  -- but reading a malformed one as absent is the same conflation that was just
+  -- removed from `libc` — and a record this generator cannot understand is not
+  -- one to copy through into a signed manifest.
+  let optional (name : String) : Except String String :=
+    match field? root name with
+    | none => .ok ""
+    | some found => asString (cursor.at name) found
   return {
     target := ← nonEmptyStringField cursor root "target"
     sha256 := ← Sha256.parse (cursor.at "sha256").render (← nonEmptyStringField cursor root "sha256")
@@ -420,20 +461,41 @@ def BuildMetadata.parse (document : String) (text : String) : Except String Buil
       (← nonEmptyStringField cursor root "lakeManifestSha256")
     workflowRef := ← nonEmptyStringField cursor root "workflowRef"
     runId := ← nonEmptyStringField cursor root "runId"
-    runnerOs := optional "runnerOs"
-    runnerArch := optional "runnerArch"
-    containerImage := optional "containerImage"
-    runAttempt := optional "runAttempt" }
+    runnerOs := ← optional "runnerOs"
+    runnerArch := ← optional "runnerArch"
+    containerImage := ← optional "containerImage"
+    runAttempt := ← optional "runAttempt" }
 
 /-- A target that was built and will be published. It carries its digest and
     its leg's complete record *by construction*, so no consumer can reach a
     published target whose evidence was never collected — which is exactly what
     an empty target list did to the shell generator's nine checks. -/
 structure PublishedTarget where
+  private mk ::
   target : Target
   digest : Sha256
   build : BuildMetadata
   deriving Repr
+
+/-- Pair a target with the evidence that it was built, refusing any pairing the
+    evidence does not support.
+
+    Private constructor, because the three fields are independently plausible
+    and only agree by accident otherwise: nothing in the types stops a record
+    from one leg being attached to another leg's target, or a digest from being
+    paired with metadata recording a different one. The shell checked exactly
+    these three things in three separate places, one of which an empty target
+    list could skip entirely — here there is no way to hold the value without
+    them having been checked. -/
+def PublishedTarget.of (target : Target) (digest : Sha256) (build : BuildMetadata) :
+    Except String PublishedTarget :=
+  if build.target != target.name then
+    .error s!"the build metadata for '{target.name}' records target '{build.target}'. The records were crossed between legs; each leg's record describes its own artifact."
+  else if build.tier != target.tier then
+    .error s!"the build metadata for '{target.name}' records tier '{build.tier.wire}', but release/targets.json says '{target.tier.wire}'. The tier decides whether a missing artifact blocks the release, so the two cannot disagree."
+  else if build.sha256 != digest then
+    .error s!"the artifact for '{target.name}' hashes to {digest.hex}, but its build leg recorded {build.sha256.hex}. These are not the bytes that leg built and smoke-tested. Nothing is signed."
+  else .ok ⟨target, digest, build⟩
 
 def PublishedTarget.asset (published : PublishedTarget) : String := published.target.asset
 

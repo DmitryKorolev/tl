@@ -21,6 +21,7 @@ import Tests.JsonUtil
 import Tl.Build.Provenance
 import Tl.Cli.Commands
 import Tl.Hash.Sha256
+import release.Model
 
 namespace Tl.Tests
 
@@ -186,6 +187,21 @@ def releasePlanTests : IO (List Outcome) := do
           check s!"release plan: '{channel}' names a target release iff it is deferred"
             exclusive
             s!"channel {channel} has enabled={enabled} and plannedFor={plannedFor}; a deferred channel must name the release it is planned for, an enabled one must not, and every row must state `enabled`"]
+  -- A deferral has to point forwards. `plannedFor` parses as a version, but a
+  -- version already shipped is not a deferral — it is a channel that quietly
+  -- missed its release and would keep saying "planned for 0.2.0" through 0.2.0
+  -- and everything after it. Compared against the product version here,
+  -- because this is the file that knows it.
+  for row in rows do
+    match jStr row "plannedFor", jStr row "channel" with
+    | some planned, some channel =>
+        outs := outs ++ [
+          check s!"release plan: '{channel}' is deferred to a release still ahead of {Tl.Cli.productVersion}"
+            (match Release.Version.parse "plannedFor" planned, Release.Version.parse "productVersion" Tl.Cli.productVersion with
+             | Except.ok later, Except.ok current => later.exceeds current
+             | _, _ => false)
+            s!"channel {channel} is deferred to {planned}, which is not later than the current product version {Tl.Cli.productVersion}; a deferral to a release that has shipped is a channel that was forgotten, not one that was postponed"]
+    | _, _ => pure ()
   -- The user-facing half. A reader deciding how to install tl reads this
   -- sentence, so it is the one that must not outlive the decision behind it.
   let verifying ← readRequired ("VERIFYING.md" : FilePath)
@@ -239,6 +255,10 @@ private def grantsPrivilege (line : String) : Bool :=
   -- The blanket grants, and a secret reaching the job by any route.
   else body == "permissions: write-all" || body == "write-all"
     || has body "secrets." || body == "secrets: inherit"
+    -- Flow style: `permissions: {contents: write}` on one line. Refused as a
+    -- grant whatever it contains, because this scan reads block style and a
+    -- form it cannot read must not pass for an absent one.
+    || (body.startsWith "permissions:" && has body "{")
 
 /-- A top-level job block: the job's name and the lines belonging to it. -/
 private structure JobBlock where
@@ -299,6 +319,26 @@ private def jobIf (block : JobBlock) : String :=
   let (collected, _) := block.lines.foldl step ([], false)
   String.intercalate " " (collected.map fun line => (dropIndent line))
 
+/-- The condition itself: the job's `if:` with the key, any block-scalar
+    indicator and any surrounding quotes removed, and runs of whitespace
+    collapsed. Normalising here is what lets the caller compare against one
+    canonical string instead of pattern-matching the ways YAML can spell it. -/
+private def conditionOf (block : JobBlock) : String :=
+  let raw := jobIf block
+  let body := if raw.startsWith "if:" then String.ofList (raw.toList.drop 3) else raw
+  let words := body.splitOn " " |>.filter fun w =>
+    !w.isEmpty && w != ">-" && w != ">" && w != "|" && w != "|-"
+  let joined := String.intercalate " " words
+  -- Only the quotes *around the whole scalar*, never the ones inside it: an
+  -- inverted condition has to be quoted, because `!` opens a YAML tag, and
+  -- unwrapping that is what exposes the `!` to the comparison. Stripping every
+  -- quote instead would also strip the literals in `== 'push'` and leave the
+  -- canonical form unmatchable.
+  if (joined.startsWith "\"" && joined.endsWith "\"")
+      || (joined.startsWith "'" && joined.endsWith "'") then
+    String.ofList ((joined.toList.drop 1).dropLast)
+  else joined
+
 def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   let path : FilePath := ".github/workflows/release.yml"
   let raw ← readRequired path
@@ -312,13 +352,25 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   -- Everything below reads only the `jobs:` mapping, so a workflow-level
   -- `permissions:` default — which applies to every job that declares none —
   -- would be invisible to it. Rather than model inheritance, require the
-  -- default to be the read-only one: then a job is privileged exactly when its
-  -- own block says so, which is the assumption the scan rests on.
+  -- default to be exactly the read-only one: then a job is privileged exactly
+  -- when its own block says so, which is the assumption the scan rests on.
+  --
+  -- Exactly, not "contains `contents: read`". Adding `id-token: write`
+  -- underneath leaves that substring intact and grants every job in the file a
+  -- signing token.
   let header := (content.splitOn "\njobs:\n").headD content
-  let headerPermissions := (header.splitOn "\n").filter fun line =>
-    line.startsWith "permissions:" || (line.startsWith "  " && !line.startsWith "   ")
-  let defaultIsReadOnly :=
-    has header "\npermissions:\n  contents: read\n" && !has header "write-all"
+  let headerLines := header.splitOn "\n"
+  let headerBlock : List String := Id.run do
+    let mut inside := false
+    let mut collected : List String := []
+    for line in headerLines do
+      if line == "permissions:" then inside := true
+      else if inside then
+        if line.startsWith "  " then collected := collected ++ [dropIndent line]
+        else if line.trimAscii.toString.isEmpty then pure ()
+        else inside := false
+    return collected
+  let defaultIsReadOnly := headerBlock == ["contents: read"]
   -- Non-vacuity first. Every assertion below is universally quantified over a
   -- list this parser produced, so a parser that silently found nothing would
   -- report a clean sweep over an empty set.
@@ -338,18 +390,19 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
     -- privileged by a default it never read.
     check "release workflow: the workflow-level permission default is read-only"
       defaultIsReadOnly
-      s!"the header before `jobs:` does not set exactly `permissions:\\n  contents: read`, so a job with no permissions block may still be privileged and this scan would not see it. Header permission lines: {headerPermissions}"]
+      s!"the header before `jobs:` does not set exactly `permissions:` / `contents: read`, so a job with no permissions block may still be privileged and this scan would not see it. It reads: {headerBlock}"]
   for block in privileged do
     outs := outs ++ [
+      -- A narrow canonical shape, and every other form rejected. A substring
+      -- test accepts `!(<guard>)`, which contains the guard and inverts it —
+      -- the job then runs everywhere *except* a pushed tag. It also accepts
+      -- `<guard> || github.event_name == 'schedule'`. The condition must
+      -- therefore *begin* with the guard and may only go on to narrow it with
+      -- `&&`; anything else is refused rather than interpreted, because the
+      -- alternative is writing an expression evaluator in a drift guard.
       check s!"release workflow: privileged job '{block.name}' runs only on a pushed tag"
-        (has (jobIf block) guard)
-        s!"job-level if: {jobIf block}",
-      -- A substring test alone would accept `<guard> || github.event_name ==
-      -- 'schedule'`, which reads as the guard and is not one. Conjunction is
-      -- the only way to narrow a condition; a disjunction can only widen it.
-      check s!"release workflow: privileged job '{block.name}' narrows its condition, never widens it"
-        (!has (jobIf block) "||")
-        s!"job-level if: {jobIf block} — a disjunction can only add a way in"]
+        (conditionOf block == guard || (conditionOf block).startsWith (guard ++ " &&"))
+        s!"job-level if: {conditionOf block} — it must be exactly `{guard}`, optionally narrowed with `&&`. Anything else (a negation, a disjunction, a quoted form, another clause first) is refused rather than interpreted."]
   -- The channels a release publishes through are decided in release/plan.json,
   -- and each deferred channel's publish job must be gated on that decision
   -- rather than merely expected not to run. Without this the workflow ran

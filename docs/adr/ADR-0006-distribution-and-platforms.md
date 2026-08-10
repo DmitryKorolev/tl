@@ -127,6 +127,24 @@ SBOM generation and identity-pin generation, through the separately built
 `tlrelease` executable; POSIX shell remains thin orchestration and the user
 bootstrap boundary.
 
+Three kinds of dependency, and the budget binds only the first:
+
+- **First-party** — what this project's own scripts and binaries invoke. This
+  is what the budget constrains, and the claim "no v0.1 path invokes node" is
+  about these.
+- **Channel-native** — what a distribution channel requires of anyone using it.
+  A Homebrew formula is a Ruby DSL; npm operations use `node` and `npm`. These
+  belong to the channel and become reachable only when it is enabled.
+- **CI infrastructure** — what the release *runner* needs, which a user never
+  installs and this budget says nothing about: Docker for the two glibc-floor
+  Linux legs, the Node runtime behind every JavaScript GitHub action, `gh`,
+  `jq`, `cosign`, and the platform inspection tools the link audit uses.
+
+That third category is why "no reachable path invokes Node" would be false if
+stated without qualification — every `actions/checkout` step runs on Node.
+What is true, and what the budget means, is that no first-party script on a
+v0.1 path invokes it.
+
 This is a statement about *this project's* dependencies, not a ban on
 channel-native runtimes. A Homebrew formula is necessarily a Ruby DSL and is
 validated with real `brew` using Homebrew-managed Ruby; npm operations

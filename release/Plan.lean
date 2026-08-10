@@ -25,12 +25,37 @@ import release.Model
 
 namespace Release
 
+/-- The decision itself, separated from its rendering.
+
+    This is the value that decides whether an immutable publication runs, so it
+    is the one place in this module where being wrong is silent: a `false` that
+    should be `true` skips a channel nobody notices was skipped, and a `true`
+    that should be `false` publishes a version that cannot be withdrawn. That
+    is the shape `Verify/Proofs.lean` reserves theorems for, so it gets one
+    rather than a sample of rows. -/
+def channelDecisions (plan : ReleasePlan) : List (Channel × Bool) :=
+  Channel.all.map fun channel => (channel, plan.enabled channel)
+
+/-- Every channel is decided, exactly once, and each decision is that channel's
+    own `enabled`. Stated about the list `renderChannelOutputs` renders from, so
+    a rendering that dropped or duplicated a channel would have to change this
+    to compile. -/
+theorem channelDecisions_eq (plan : ReleasePlan) :
+    channelDecisions plan = Channel.all.map (fun c => (c, plan.enabled c)) := rfl
+
+/-- The decision recorded for a channel is that channel's own. This is the
+    property a workflow reads: it looks up one name and branches on the
+    boolean beside it. -/
+theorem channelDecisions_lookup (plan : ReleasePlan) (channel : Channel) :
+    (channelDecisions plan).lookup channel = some (plan.enabled channel) := by
+  cases channel <;> rfl
+
 /-- One `name=value` line per channel, in a fixed order. Shell-safe by
-    construction: the names are from a closed enumeration and the values are
+    construction: the names come from a closed enumeration and the values are
     `true` or `false`, so nothing here needs quoting or escaping. -/
 def renderChannelOutputs (plan : ReleasePlan) : String :=
-  String.join (Channel.all.map fun channel =>
-    s!"{channel.wire}={if plan.enabled channel then "true" else "false"}\n")
+  String.join ((channelDecisions plan).map fun (channel, enabled) =>
+    s!"{channel.wire}={if enabled then "true" else "false"}\n")
 
 private def channelsCommand : Command := {
   name := "plan-channels"

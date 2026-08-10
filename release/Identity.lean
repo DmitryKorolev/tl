@@ -115,10 +115,19 @@ private def writePinCommand : Command := {
                     -- unreadable directory or a full disk would otherwise
                     -- escape as a Lean backtrace, which is the traceback-for-a-
                     -- message regression this port exists to remove.
+                    -- Written beside the target and renamed over it. The pin
+                    -- is a trust anchor: a partial write straight onto the
+                    -- path would leave a truncated file where a valid one had
+                    -- been, and the verifier would then refuse every genuine
+                    -- signature. `rename` within a directory is atomic, so a
+                    -- reader sees either the old pin or the new one.
+                    let temporary := outputPath ++ ".tmp"
                     match ← (try
-                        IO.FS.writeFile outputPath pin
+                        IO.FS.writeFile temporary pin
+                        IO.FS.rename temporary outputPath
                         pure (Except.ok ())
-                      catch error =>
+                      catch error => do
+                        try IO.FS.removeFile temporary catch _ => pure ()
                         pure (Except.error s!"could not write {outputPath}: {error}")) with
                     | .error message => refuse s!"tlrelease write-pin: {message}"
                     | .ok () =>

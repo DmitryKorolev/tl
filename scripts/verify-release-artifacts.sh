@@ -159,11 +159,21 @@ verify_dir() {
   # return from a file with Windows line endings. A CR rides into the value
   # cosign is given and makes the expression match nothing — the same silent
   # rejection of genuine signatures that the JSON scrape would have caused.
-  case $issuer$identity in
-    *[![:print:]]*)
-      fail "release/identity.pin contains a non-printable character — a carriage return is the usual cause, from a file saved with Windows line endings. The pin is passed to cosign verbatim, so it would silently match nothing; rewrite it with Unix line endings."
-      ;;
-  esac
+  # Under the C locale, so the class means "ASCII printable" rather than
+  # whatever the caller's locale considers printable. On a UTF-8 locale this
+  # host accepted a non-ASCII byte, which would then ride into the expression
+  # cosign is handed while `release/Identity.lean` refuses the same value —
+  # two readers of one pin disagreeing is the thing this pair exists to avoid.
+  # `tr` rather than a `case` glob, and with the locale pinned on the command
+  # itself: a bracket expression's idea of "printable" follows the caller's
+  # locale, and on a UTF-8 one this host accepted a non-ASCII byte. Deleting
+  # the printable-ASCII range leaves exactly the bytes that do not belong, so
+  # a non-empty remainder is the refusal. Emptiness is what is tested, not a
+  # status, so nothing here can be masked by a pipeline's last stage.
+  pin_stray_bytes=$(printf '%s' "$issuer$identity" | LC_ALL=C tr -d '\040-\176')
+  if [ -n "$pin_stray_bytes" ]; then
+    fail "release/identity.pin contains a byte outside printable ASCII — a carriage return from Windows line endings is the usual cause. The pin is passed to cosign verbatim, so it would silently match nothing; rewrite it with Unix line endings and ASCII only."
+  fi
   if [ "$pin_terminated" -ne 1 ]; then
     fail "release/identity.pin does not end with a newline, so its second line is truncated. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin' rather than repairing it by hand: a partially written pin is not a weaker check, it is a check against an unknown expression."
   fi
@@ -453,8 +463,13 @@ $valid_expr"
   # A carriage return rides into the value cosign is given and makes the
   # expression match nothing — a silent rejection of every genuine signature,
   # which looks exactly like tampering.
-  pin_case "a pin with Windows line endings is refused" 1 "non-printable character" \
+  pin_case "a pin with Windows line endings is refused" 1 "outside printable ASCII" \
     "$(printf 'https://example.invalid\r\n%s\r\n' "$valid_expr")"
+  # Non-ASCII. release/Identity.lean refuses anything above U+007E, and under a
+  # UTF-8 locale the shell's [[:print:]] does not — so this row is what shows
+  # the two readers of one pin actually agreeing.
+  pin_case "a pin carrying a non-ASCII byte is refused" 1 "outside printable ASCII" \
+    "$(printf 'https://ex\303\251mple.invalid\n%s\n' "$valid_expr")"
   # An unanchored expression is the failure a text-equality drift guard cannot
   # see: it is well-formed, it verifies real artifacts, and it also accepts a
   # certificate whose identity merely contains this repository's.

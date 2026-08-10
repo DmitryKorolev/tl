@@ -324,6 +324,19 @@ selftest() {
   }
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
+  # Hermetic npm state. Without this every row runs against the caller's
+  # ~/.npm cache and ~/.npmrc, so the gate's outcome depends on the machine it
+  # runs on rather than on the code — a cache in one state made this selftest
+  # fail on a reviewer's host and pass here. A gate whose verdict tracks the
+  # caller's home directory is not reporting on the release.
+  npm_config_cache="$work/npm-cache"
+  npm_config_userconfig="$work/npmrc"
+  npm_config_update_notifier=false
+  npm_config_fund=false
+  npm_config_audit=false
+  export npm_config_cache npm_config_userconfig npm_config_update_notifier \
+    npm_config_fund npm_config_audit
+  : > "$npm_config_userconfig"
   failures=0
   note() {
     if [ "$1" -eq 0 ]; then
