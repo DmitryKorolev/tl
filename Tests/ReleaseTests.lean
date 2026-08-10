@@ -211,34 +211,57 @@ The guard is stated over what makes a job privileged rather than over a list of
 job names, so a privileged job added later is covered without anyone
 remembering to extend this test. -/
 
-/-- The `permissions:` grants and secret reads that make a job privileged. -/
-private def privilegeGrants : List String :=
-  ["id-token: write", "contents: write", "attestations: write", "packages: write"]
-
 private def dropIndent (line : String) : String :=
   String.ofList (line.toList.dropWhile (· == ' '))
 
+/-- A bare YAML key: a job name or a permission name, with nothing quoted,
+    nested or flow-style about it. -/
+private def isBareKey (name : String) : Bool :=
+  !name.isEmpty && name.toList.all fun c =>
+    ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '-' || c == '_'
+
 /-- Whether a workflow line actually *grants* privilege, as opposed to
     discussing it. Both files reason about `id-token: write` in prose — the
-    build job's comment explains why it does not take one — so a substring scan
-    over the block would report every commented job as privileged and the guard
-    would pass by accident. -/
+    build job's comment explains why it takes none — so a substring scan over
+    the block would report every commented job as privileged and the guard
+    would pass by accident.
+
+    Stated over the *shape* of a grant rather than a list of four permission
+    names. An earlier version enumerated them, which left `write-all` and any
+    permission GitHub adds later invisible: a job could acquire a capability
+    and drop out of this guard in the same edit. -/
 private def grantsPrivilege (line : String) : Bool :=
   let body := dropIndent line
   if body.startsWith "#" then false
-  else privilegeGrants.contains body || has body "secrets."
+  -- `<name>: write`, whatever <name> is.
+  else if (body.splitOn ": ") matches [_, "write"] &&
+      isBareKey ((body.splitOn ": ").headD "") then true
+  -- The blanket grants, and a secret reaching the job by any route.
+  else body == "permissions: write-all" || body == "write-all"
+    || has body "secrets." || body == "secrets: inherit"
 
 /-- A top-level job block: the job's name and the lines belonging to it. -/
 private structure JobBlock where
   name : String
   lines : List String
 
-/-- A top-level job header — indented exactly two spaces, ending in `:`. -/
+/-- A top-level job header — indented exactly two spaces, a bare name, then
+    `:` and nothing but an optional comment. Tolerating the trailing comment
+    matters: without it such a header is not recognised, the job folds into the
+    preceding block, and it silently inherits that job's `if:` for the purposes
+    of every check below. -/
 private def jobHeader? (line : String) : Option String :=
-  if line.startsWith "  " && !line.startsWith "   " && line.endsWith ":"
-      && !(dropIndent line).startsWith "#" then
-    some (String.ofList ((line.toList.drop 2).dropLast))
-  else none
+  if !(line.startsWith "  ") || line.startsWith "   " then none
+  else
+    let body := dropIndent line
+    if body.startsWith "#" then none
+    else
+      match body.splitOn ":" with
+      | name :: rest =>
+          let tail := dropIndent (String.intercalate ":" rest)
+          if isBareKey name && (tail.isEmpty || tail.startsWith "#") then some name
+          else none
+      | [] => none
 
 /-- Split a workflow file into its top-level job blocks: everything after the
     column-zero `jobs:` key, up to the next column-zero key. -/
@@ -262,9 +285,19 @@ private def jobBlocks (content : String) : List JobBlock := Id.run do
   if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
   return blocks
 
-/-- The job's own `if:` — indented four spaces, so a step's `if:` is not it. -/
-private def jobLevelIf? (block : JobBlock) : Option String :=
-  (block.lines.filter (·.startsWith "    if:")).head?
+/-- The job's own `if:`, as one string — indented four spaces, so a step's `if:`
+    is not it, and folded continuations (`if: >-` and the more-indented lines
+    under it) are joined in. A condition too long for one line is exactly the
+    case worth reading correctly, since that is what a condition acquires when
+    it grows a second clause. -/
+private def jobIf (block : JobBlock) : String :=
+  let step := fun (acc : List String × Bool) (line : String) =>
+    let (collected, taking) := acc
+    if line.startsWith "    if:" then (collected ++ [line], true)
+    else if taking && line.startsWith "      " then (collected ++ [line], true)
+    else (collected, false)
+  let (collected, _) := block.lines.foldl step ([], false)
+  String.intercalate " " (collected.map fun line => (dropIndent line))
 
 def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   let path : FilePath := ".github/workflows/release.yml"
@@ -275,7 +308,17 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   let names := blocks.map (·.name)
   let privileged := blocks.filter fun b => b.lines.any grantsPrivilege
   let privilegedNames := privileged.map (·.name)
-  let guard := "    if: github.event_name == 'push' && github.ref_type == 'tag'"
+  let guard := "github.event_name == 'push' && github.ref_type == 'tag'"
+  -- Everything below reads only the `jobs:` mapping, so a workflow-level
+  -- `permissions:` default — which applies to every job that declares none —
+  -- would be invisible to it. Rather than model inheritance, require the
+  -- default to be the read-only one: then a job is privileged exactly when its
+  -- own block says so, which is the assumption the scan rests on.
+  let header := (content.splitOn "\njobs:\n").headD content
+  let headerPermissions := (header.splitOn "\n").filter fun line =>
+    line.startsWith "permissions:" || (line.startsWith "  " && !line.startsWith "   ")
+  let defaultIsReadOnly :=
+    has header "\npermissions:\n  contents: read\n" && !has header "write-all"
   -- Non-vacuity first. Every assertion below is universally quantified over a
   -- list this parser produced, so a parser that silently found nothing would
   -- report a clean sweep over an empty set.
@@ -290,11 +333,43 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
     -- none. If it ever reads as privileged, `grantsPrivilege` has regressed to
     -- a substring scan and the checks below stop meaning anything.
     check "release workflow: discussing a permission does not grant it"
-      (!privilegedNames.contains "build") s!"jobs found privileged: {privilegedNames}"]
+      (!privilegedNames.contains "build") s!"jobs found privileged: {privilegedNames}",
+    -- Without this, every check below could be scanning jobs that were already
+    -- privileged by a default it never read.
+    check "release workflow: the workflow-level permission default is read-only"
+      defaultIsReadOnly
+      s!"the header before `jobs:` does not set exactly `permissions:\\n  contents: read`, so a job with no permissions block may still be privileged and this scan would not see it. Header permission lines: {headerPermissions}"]
   for block in privileged do
     outs := outs ++ [
-      checkEq s!"release workflow: privileged job '{block.name}' runs only on a pushed tag"
-        (jobLevelIf? block |>.getD "<no job-level if:>") guard]
+      check s!"release workflow: privileged job '{block.name}' runs only on a pushed tag"
+        (has (jobIf block) guard)
+        s!"job-level if: {jobIf block}",
+      -- A substring test alone would accept `<guard> || github.event_name ==
+      -- 'schedule'`, which reads as the guard and is not one. Conjunction is
+      -- the only way to narrow a condition; a disjunction can only widen it.
+      check s!"release workflow: privileged job '{block.name}' narrows its condition, never widens it"
+        (!has (jobIf block) "||")
+        s!"job-level if: {jobIf block} — a disjunction can only add a way in"]
+  -- The channels a release publishes through are decided in release/plan.json,
+  -- and each deferred channel's publish job must be gated on that decision
+  -- rather than merely expected not to run. Without this the workflow ran
+  -- `publish-npm` and `publish-homebrew` on any pushed tag while four
+  -- documents said v0.1.0 published through neither: a v0.1.0 tag would have
+  -- published the GitHub Release and then failed for a tap credential the
+  -- release had deliberately deferred.
+  for (channel, job) in [("npm", "publish-npm"), ("homebrew", "publish-homebrew")] do
+    match blocks.find? (·.name == job) with
+    | none =>
+        outs := outs ++ [check s!"release workflow: the '{job}' job exists" false
+          s!"no job named {job}; if the channel was removed rather than deferred, drop this row with it"]
+    | some block =>
+        outs := outs ++ [
+          check s!"release workflow: '{job}' is gated on the plan's '{channel}' channel"
+            (has (jobIf block) s!"needs.gates.outputs.{channel} == 'true'")
+            s!"job-level if: {jobIf block} — a channel release/plan.json disables must have no job to run, not a job that is merely not expected to",
+          check s!"release workflow: '{job}' depends on the job that reads the plan"
+            (block.lines.any fun line => line.startsWith "    needs:" && has line "gates")
+            s!"{job} does not list `gates` in needs, so needs.gates.outputs is always empty — and an empty output compares unequal to 'true', which disables the channel for a reason nobody chose"]
   return outs
 
 /-! ## Build provenance (`tl version`, ADR-0006 "Tool versioning") -/

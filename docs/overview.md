@@ -494,9 +494,12 @@ and this environment, with no classic token still able to publish; and that
 ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after
-any permission change, not once. An audit that cannot reach the API reports an
-operational error and stops the release; it never reports the prerequisite as
-absent, because the two call for opposite responses. What follows if one fails is bounded and
+any permission change, not once. An audit that cannot reach the API must report
+an operational error and stop the release rather than report the prerequisite
+as absent, because the two call for opposite responses — a rule the current
+shell audit does not yet follow, since a failed API call there collapses into a
+*missing* row. That is a recorded defect against the audit's port, not a
+property to rely on today. What follows if one fails is bounded and
 stated: without the environment protections, anyone able to create a `v*` tag
 can make this workflow sign, with an identity every verifier accepts, whatever
 commit that tag points at; the ancestry check in the `sign` job is a backstop

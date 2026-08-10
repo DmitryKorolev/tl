@@ -38,11 +38,17 @@ private def isLowerHex (c : Char) : Bool :=
 
 private def allLowerHex (text : String) : Bool := text.toList.all isLowerHex
 
-/-- A SHA-256 digest: exactly 64 lowercase hex characters. -/
+/-- A SHA-256 digest: exactly 64 lowercase hex characters.
+
+    No `Inhabited`, deliberately. Deriving it manufactures `⟨""⟩` — a value
+    this type's own parser refuses — and hands it out through every `getD`,
+    `Array.get!` and `default` in reach, which is precisely the "malformed text
+    cannot inhabit this type" property the private constructor exists to give.
+    An opaque type with a derived default is not opaque. -/
 structure Sha256 where
   private mk ::
   hex : String
-  deriving DecidableEq, Repr, Inhabited
+  deriving DecidableEq, Repr
 
 /-- Lowercase is the canonical form and the only accepted one, deliberately.
     Case-folding on the way in would re-admit the confusion this type exists to
@@ -62,7 +68,7 @@ def Sha256.parse (what : String) (text : String) : Except String Sha256 :=
 structure Commit where
   private mk ::
   hex : String
-  deriving DecidableEq, Repr, Inhabited
+  deriving DecidableEq, Repr
 
 def Commit.parse (what : String) (text : String) : Except String Commit :=
   if text.length != 40 then
@@ -107,7 +113,7 @@ structure Version where
   minor : Nat
   patch : Nat
   prerelease : Option String
-  deriving DecidableEq, Repr, Inhabited
+  deriving DecidableEq, Repr
 
 def Version.isPrerelease (version : Version) : Bool := version.prerelease.isSome
 
@@ -207,7 +213,15 @@ def parseTarget (cursor : Cursor) (value : Json) : Except String Target := do
   let tier ← Tier.parse (cursor.at "tier").render (← stringField cursor value "tier")
   let os ← nonEmptyStringField cursor value "os"
   let cpu ← nonEmptyStringField cursor value "cpu"
-  let libc := (field? value "libc").bind fun found => (found.getStr?).toOption
+  -- Optional, but not optional-or-whatever: absent is a target with no libc
+  -- floor, and present-but-not-a-string is a malformed file. Reading the
+  -- second as the first is the absent/malformed conflation this whole module
+  -- exists to remove, and it was the one field here still doing it.
+  let libc ← match field? value "libc" with
+    | none => pure none
+    | some found => do
+        let text ← asString (cursor.at "libc") found
+        pure (some text)
   return { name, tier, os, cpu, libc }
 
 /-- The distributed target set, in file order. Order is part of the contract:
@@ -284,15 +298,15 @@ structure ChannelRow where
 structure ReleasePlan where
   private mk ::
   rows : List ChannelRow
-  deriving Inhabited
 
 def ReleasePlan.status (plan : ReleasePlan) (channel : Channel) : ChannelStatus :=
   match plan.rows.find? (·.channel == channel) with
   | some row => row.status
   -- Unreachable for a parsed plan: `ReleasePlan.parse` refuses one whose rows
-  -- do not cover every channel, and `mk` is private. Deferred is the
-  -- fail-closed answer if that ever stops being true — an unknown channel is
-  -- one nothing should publish through.
+  -- do not cover every channel, `mk` is private, and there is no `Inhabited`
+  -- instance to manufacture a rowless plan through a `default`. Deferred is
+  -- the fail-closed answer if that ever stops being true — an unknown channel
+  -- is one nothing should publish through.
   | none => .deferred "unknown"
 
 def ReleasePlan.enabled (plan : ReleasePlan) (channel : Channel) : Bool :=
@@ -387,7 +401,7 @@ structure BuildMetadata where
   runnerArch : String := ""
   containerImage : String := ""
   runAttempt : String := ""
-  deriving Repr, Inhabited
+  deriving Repr
 
 def BuildMetadata.parse (document : String) (text : String) : Except String BuildMetadata := do
   let cursor : Cursor := { document }
@@ -419,7 +433,7 @@ structure PublishedTarget where
   target : Target
   digest : Sha256
   build : BuildMetadata
-  deriving Repr, Inhabited
+  deriving Repr
 
 def PublishedTarget.asset (published : PublishedTarget) : String := published.target.asset
 
@@ -429,7 +443,7 @@ def PublishedTarget.asset (published : PublishedTarget) : String := published.ta
 inductive TargetOutcome where
   | published (details : PublishedTarget)
   | absent (target : Target)
-  deriving Repr, Inhabited
+  deriving Repr
 
 def TargetOutcome.target : TargetOutcome → Target
   | .published details => details.target

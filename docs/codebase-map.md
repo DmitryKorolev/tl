@@ -672,6 +672,13 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   opened descriptor so two reads cannot be handed
                         --   one line each from two different pins
   targets.json          --   (data) the distributed targets and their tiers
+  Plan.lean             --   `plan-channels` emits one channel=true|false line
+                        --   for the release workflow's gates job to publish as
+                        --   outputs, so each deferred channel's publish job is
+                        --   derived from the plan rather than expected not to
+                        --   run. Every channel is emitted, including enabled
+                        --   ones: a missing output reads as the empty string,
+                        --   which would disable a channel silently
   plan.json             --   (data) the channels this release publishes through
 ```
 

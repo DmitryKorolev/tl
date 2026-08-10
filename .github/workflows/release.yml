@@ -62,6 +62,15 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Which channels this release publishes through, read from
+    # release/plan.json rather than assumed. The privileged publish jobs gate
+    # on these, so a deferred channel has no job to skip — it has no job. Until
+    # this existed nothing read the plan, and a v0.1.0 tag would have published
+    # the GitHub Release and then failed at Homebrew for a credential the
+    # release had deliberately deferred.
+    outputs:
+      npm: ${{ steps.plan.outputs.npm }}
+      homebrew: ${{ steps.plan.outputs.homebrew }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -119,10 +128,24 @@ jobs:
 
       - name: build trust verifier warning-free
         run: lake build tlverify --wfail
+      - name: build the release tool warning-free
+        run: lake build tlrelease --wfail
       - name: trust boundary (lake exe tlverify)
         run: lake exe tlverify
       - name: test (lake exe tltest)
         run: lake exe tltest
+
+      # The enabled channels, for the publish jobs to gate on. Emitted for
+      # every channel including the enabled ones: a command that printed only
+      # what was on would make "off" and "this build does not know that
+      # channel" the same observation, and a workflow reading a missing output
+      # gets the empty string — which would silently disable a channel that was
+      # supposed to publish.
+      - name: which channels this release publishes through
+        id: plan
+        run: |
+          set -euo pipefail
+          ./.lake/build/bin/tlrelease plan-channels release/plan.json | tee -a "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # 2. One build stamp for the whole matrix.
@@ -928,9 +951,13 @@ jobs:
   # beside release/identity.json, so the identity drift guard can see it.
   # ---------------------------------------------------------------------------
   publish-homebrew:
-    needs: [stamp, publish-release]
-    # Pushed tags only: this job holds the tap credential.
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [gates, stamp, publish-release]
+    # Pushed tags only, and only when release/plan.json enables this channel.
+    # A deferred channel has no job to skip: it does not run, so it cannot fail
+    # for a credential this release deliberately does not have.
+    if: >-
+      github.event_name == 'push' && github.ref_type == 'tag'
+      && needs.gates.outputs.homebrew == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1046,9 +1073,14 @@ jobs:
   # with npm's own error rather than fall back to a token.
   # ---------------------------------------------------------------------------
   publish-npm:
-    needs: [stamp, publish-release]
-    # Pushed tags only: this job mints an OIDC token npm accepts as a publisher.
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [gates, stamp, publish-release]
+    # Pushed tags only, and only when release/plan.json enables this channel.
+    # This job mints an OIDC token npm accepts as a publisher, and npm versions
+    # are immutable — so a channel that is off must be unable to run at all,
+    # not merely expected not to.
+    if: >-
+      github.event_name == 'push' && github.ref_type == 'tag'
+      && needs.gates.outputs.npm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # The same environment the signing job uses, and not decoration: npm treats

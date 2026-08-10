@@ -69,18 +69,26 @@ forever-contract surface that freezes on first implementation.
   actually executing, so a self-consistent artifact set from a different run
   would pass.
 
-  Two more in the same file, found by running its selftest the way CI does
-  rather than the way a developer does. Its fixture hardcodes a `workflowRef`,
-  and the generator compares that field against `GITHUB_WORKFLOW_REF` whenever
-  the variable is non-empty — which inside Actions it always is. So the
-  selftest passes on every developer machine and fails in CI, and since both
-  workflows run it through the release policy, the first push would have failed
-  the gates job for a reason nothing local could show. The second is why that
-  failure is hard to read: one invocation is not wrapped in the harness, so
-  under `set -eu` a failure aborts the whole selftest with its diagnostic sent
-  to `/dev/null` — no failing row, no count, no remedy line. A selftest that
-  cannot report its own failure is the same defect class as a gate that cannot
-  fail, one level up.
+  Two more in the same file were found by running its selftest the way CI does
+  rather than the way a developer does, and **fixed in shell rather than left
+  for the port**, because the rule against patching code that is about to be
+  deleted is outranked by not leaving the branch unable to pass its own gates.
+  Its fixture hardcoded a `workflowRef`, and the generator compares that field
+  against `GITHUB_WORKFLOW_REF` whenever the variable is non-empty — which
+  inside Actions it always is. So the selftest passed on every developer
+  machine and failed in CI, and since both workflows run it through the release
+  policy, the first push would have failed the gates job for a reason nothing
+  local could show. The selftest now scrubs the variable, rather than adopting
+  it: a fixture that copied the ambient value would compare a thing with
+  itself, which is the check not running. Exercising that comparison properly
+  belongs with the port, where the run identity is an injected value.
+
+  The second is why that failure was hard to read: one invocation was not
+  wrapped in the harness, so under `set -eu` a failure aborted the whole
+  selftest with its diagnostic sent to `/dev/null` — no failing row, no count,
+  no remedy line. A selftest that cannot report its own failure is the same
+  defect class as a gate that cannot fail, one level up. It goes through the
+  harness now.
 
   In the prerequisite audit (**active**): an API failure collapses into an
   empty policy and is reported as a *missing* prerequisite, which aborts a legitimate release

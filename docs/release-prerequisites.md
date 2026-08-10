@@ -15,10 +15,19 @@ verified nor recorded is the one that fails at the worst moment.
 
 Not all of them, and not always the same ones. A prerequisite belongs to a
 distribution channel, and `release/plan.json` says which channels a release
-publishes. The audit derives its applicable rows from that file: a section
-below whose channel is disabled produces **no rows at all** — not a row reading
-*missing*, and not one reading *unchecked*. "Missing" is a defect report, and a
-channel nobody is publishing has no defect.
+publishes. A section below whose channel is disabled should produce **no rows
+at all** — not a row reading *missing*, and not one reading *unchecked*.
+"Missing" is a defect report, and a channel nobody is publishing has no defect.
+
+**That is the rule, and the audit does not implement it yet.**
+`scripts/check-release-prereqs.sh` does not read `release/plan.json`: it still
+emits five npm rows and a tap row, all reading *missing*, which would stop the
+signing job on a v0.1.0 release for channels that release does not publish
+through. The release workflow's deferred-channel jobs *are* derived from the
+plan, so nothing would be published to npm or Homebrew — but the audit would
+refuse first. Until the audit is ported, a v0.1.0 release needs those rows
+disregarded deliberately, and that is a manual judgement rather than something
+this document should let a reader assume away.
 
 For **v0.1.0** — the GitHub Release and the installer (ADR-0006) — that means
 sections 0, 2 and 3 apply. Section 1 (npm) and section 4 (the Homebrew tap)

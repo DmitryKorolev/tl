@@ -125,13 +125,21 @@ verify_dir() {
   #
   # The file is *data*. It is never sourced and never evaluated — the values
   # only ever become arguments — so nothing in it can execute.
+  #
+  # `read` returns non-zero at end of file *after* assigning what it managed to
+  # read, so a file whose last line has no terminating newline yields the value
+  # and a failure status. That is a truncated write, and it is refused rather
+  # than accepted: the two-line shape is what makes the file unambiguous, and a
+  # reader that tolerated a missing terminator would disagree with
+  # `release/Identity.lean`, which refuses it. One pin, two readers, one answer.
   pin_issuer=''
   pin_identity=''
   pin_extra=''
+  pin_terminated=0
   pin_extra_present=0
   {
     IFS= read -r pin_issuer || true
-    IFS= read -r pin_identity || true
+    if IFS= read -r pin_identity; then pin_terminated=1; fi
     if IFS= read -r pin_extra; then pin_extra_present=1; fi
   } < "$pin_file"
 
@@ -156,6 +164,9 @@ verify_dir() {
       fail "release/identity.pin contains a non-printable character — a carriage return is the usual cause, from a file saved with Windows line endings. The pin is passed to cosign verbatim, so it would silently match nothing; rewrite it with Unix line endings."
       ;;
   esac
+  if [ "$pin_terminated" -ne 1 ]; then
+    fail "release/identity.pin does not end with a newline, so its second line is truncated. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin' rather than repairing it by hand: a partially written pin is not a weaker check, it is a check against an unknown expression."
+  fi
   # Both anchors, not just the head. cosign matches unanchored, so a missing
   # `^` accepts a certificate whose identity merely *contains* the pinned one —
   # and a missing `$` accepts one that merely *begins* with it, which is not
@@ -432,6 +443,13 @@ $valid_expr
     "https://example.invalid
 $valid_expr
 trailing"
+  # A truncated write: two lines, but the second has no terminator. `read`
+  # assigns what it got and then reports end-of-file, so a reader that ignored
+  # its status would accept this — and disagree with release/Identity.lean,
+  # which refuses it.
+  pin_case "a pin whose last line is unterminated is refused" 1 "does not end with a newline" \
+    "https://example.invalid
+$valid_expr"
   # A carriage return rides into the value cosign is given and makes the
   # expression match nothing — a silent rejection of every genuine signature,
   # which looks exactly like tampering.

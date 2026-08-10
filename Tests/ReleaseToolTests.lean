@@ -87,6 +87,11 @@ private def jsonTests : List Outcome :=
     -- make silently, and no release document contains either.
     check "json: a non-integer number is refused, not approximated"
       (mentions (render (Json.num ⟨15, 1⟩)) "only integers"),
+    -- 100 spelled as 1000e-1. Refusing this would reject a perfectly good
+    -- integer for how it happened to be represented.
+    checkEq "json: an integer written with an exponent still renders as an integer"
+      (okOr "<refused>" (render (Json.num ⟨1000, 1⟩))) "100\n",
+    checkEq "json: a negative integer renders" (okOr "<refused>" (render (Json.num ⟨-7, 0⟩))) "-7\n",
     check "json: a character outside the BMP is refused rather than mis-encoded"
       (mentions (render (Json.str (String.singleton (Char.ofNat 0x1f600))))
         "Basic Multilingual Plane"),
@@ -382,6 +387,13 @@ private def documentTests : IO (List Outcome) := do
       (mentions (Targets.parse "t" "not json") "is not valid JSON"),
     check "documents: a target row missing its name is refused"
       (mentions (Targets.parse "t" "{\"targets\": [{\"tier\": \"supported\"}]}") "has no 'target' field"),
+    check "documents: a target row whose libc is not a string is refused, not read as absent"
+      (mentions (Targets.parse "t"
+        "{\"targets\": [{\"target\": \"x\", \"tier\": \"supported\", \"os\": \"l\", \"cpu\": \"c\", \"libc\": 2}]}")
+        "is not a string"),
+    check "documents: a target row with no libc is accepted"
+      (Targets.parse "t"
+        "{\"targets\": [{\"target\": \"x\", \"tier\": \"supported\", \"os\": \"l\", \"cpu\": \"c\"}]}").toOption.isSome,
     check "documents: a target row with an unknown tier is refused"
       (mentions (Targets.parse "t"
         "{\"targets\": [{\"target\": \"x\", \"tier\": \"best\", \"os\": \"l\", \"cpu\": \"c\"}]}")
@@ -469,6 +481,80 @@ private def documentTests : IO (List Outcome) := do
         (errorOf (BuildMetadata.parse "b" without) != errorOf (BuildMetadata.parse "b" blanked))]
   return outs
 
+/-! ## The pin commands, end to end
+
+`renderPin` and `parsePin` are covered above as functions. These drive the two
+subcommands through real files, because the parts between the function and the
+process — reading a path that is not there, writing one that cannot be written,
+and the exit status each produces — are where a release step actually meets
+this tool, and none of them is exercised by testing the pure core. -/
+
+private def pinCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let identityPath := (base / "identity.json").toString
+  let pinPath := (base / "identity.pin").toString
+  let realIdentity ← IO.FS.readFile "release/identity.json"
+  IO.FS.writeFile identityPath realIdentity
+  let run (name : String) (args : List String) : IO (UInt32 × String × String) := do
+    match commands.find? (·.name == name) with
+    | none => return (255, "", s!"no command named {name}")
+    | some command =>
+        let out ← IO.mkRef { : IO.FS.Stream.Buffer }
+        let err ← IO.mkRef { : IO.FS.Stream.Buffer }
+        let status ← IO.withStdout (IO.FS.Stream.ofBuffer out) <|
+          IO.withStderr (IO.FS.Stream.ofBuffer err) <| command.run args
+        return (status, String.fromUTF8! (← out.get).data, String.fromUTF8! (← err.get).data)
+  let (writeStatus, writeOut, _) ← run "write-pin" [identityPath, pinPath]
+  let written ← IO.FS.readFile pinPath
+  let (checkStatus, checkOut, _) ← run "check-pin" [identityPath, pinPath]
+  -- Drift, which is the whole reason check-pin exists.
+  IO.FS.writeFile pinPath "https://example.invalid\n^x$\n"
+  let (driftStatus, _, driftErr) ← run "check-pin" [identityPath, pinPath]
+  let (missingIdentity, _, missingIdentityErr) ←
+    run "write-pin" [(base / "absent.json").toString, pinPath]
+  let (missingPin, _, missingPinErr) ← run "check-pin" [identityPath, (base / "absent.pin").toString]
+  -- An identity anchored at the head but not the tail: the generator must
+  -- refuse rather than write a pin the verifier would reject. The tail is the
+  -- half that was historically dropped, and a tag name may contain '/', so
+  -- trailing content past the pinned identity is reachable.
+  let badIdentityPath := (base / "bad.json").toString
+  IO.FS.writeFile badIdentityPath
+    "{\"repository\":\"a/b\",\"npmPackage\":\"@a/b\",\"releaseWorkflow\":\"w\",\"certificateOidcIssuer\":\"https://i\",\"certificateIdentityRegexp\":\"^https://github.com/x\"}"
+  let unwrittenPath := (base / "never.pin").toString
+  let (badStatus, _, badErr) ← run "write-pin" [badIdentityPath, unwrittenPath]
+  let neverWritten := !(← System.FilePath.pathExists unwrittenPath)
+  -- Writing into a directory that does not exist: a refusal, not a backtrace.
+  let (unwritableStatus, _, unwritableErr) ←
+    run "write-pin" [identityPath, (base / "no-such-dir" / "p.pin").toString]
+  IO.FS.removeDirAll base
+  return [
+    checkEq "pin command: write-pin succeeds against the committed identity" writeStatus 0,
+    check "pin command: write-pin says where it wrote" (contains writeOut pinPath) writeOut,
+    checkEq "pin command: what it wrote is what renderPin produces"
+      written (okOr "<refused>" (Identity.parse "i" realIdentity >>= renderPin)),
+    checkEq "pin command: check-pin accepts the pin write-pin just wrote" checkStatus 0,
+    check "pin command: check-pin says the two agree" (contains checkOut "matches") checkOut,
+    checkEq "pin command: check-pin refuses a drifted pin" driftStatus 1,
+    check "pin command: a drifted pin is told how to regenerate"
+      (contains driftErr "write-pin") driftErr,
+    check "pin command: a drifted pin says what a stale one means"
+      (contains driftErr "wrong identity") driftErr,
+    checkEq "pin command: a missing identity file is a refusal" missingIdentity 1,
+    check "pin command: a missing identity file names the path"
+      (contains missingIdentityErr "could not read") missingIdentityErr,
+    checkEq "pin command: a missing pin file is a refusal" missingPin 1,
+    check "pin command: a missing pin file names the path"
+      (contains missingPinErr "could not read") missingPinErr,
+    checkEq "pin command: an unanchored expression is refused" badStatus 1,
+    check "pin command: the unanchored refusal says which anchor is missing"
+      (contains badErr "not anchored at $") badErr,
+    check "pin command: a refused pin is not written at all" neverWritten
+      "write-pin created a file it had already decided to refuse",
+    checkEq "pin command: an unwritable destination is a refusal, not an exception"
+      unwritableStatus 1,
+    check "pin command: an unwritable destination names the path"
+      (contains unwritableErr "could not write") unwritableErr]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -506,17 +592,24 @@ def releaseToolTests : IO (List Outcome) := do
   -- representable. These rows check that the table is actually the source of
   -- both, which is only observable once it is non-empty.
   for command in commands do
-    let (status, stdout, _) ← dispatchCaptured [command.name, "--help"]
+    let (status, _, stderr) ← dispatchCaptured [command.name]
     outs := outs ++ [
       check s!"tlrelease: '{command.name}' is listed in the usage"
         (contains helpOut command.name) helpOut,
-      check s!"tlrelease: '{command.name}' is reachable from dispatch"
-        (status != 2 || !contains stdout "unknown command")
-        s!"dispatching {command.name} reported it as unknown"]
+      -- Against stderr, which is where dispatch writes it. The first version
+      -- of this row searched stdout for a message that only ever goes to
+      -- stderr, so it held for every input and could not fail — a vacuous row
+      -- guarding the one property the command table exists to give.
+      check s!"tlrelease: '{command.name}' reaches its own handler, not the unknown-command path"
+        (!contains stderr "unknown command")
+        s!"dispatching '{command.name}' reported it as unknown; stderr was: {stderr}",
+      -- Invoked with no arguments every command must refuse, and refuse as a
+      -- usage error rather than by claiming to have done something.
+      checkEq s!"tlrelease: '{command.name}' with no arguments is a usage error" status 2]
   outs := outs ++ [
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ outs ++ (← documentTests)
+  return jsonTests ++ modelTests ++ outs ++ (← documentTests) ++ (← pinCommandTests)
 
 end Tl.Tests

@@ -24,7 +24,7 @@ Release, which is the only thing signed with the identity below.
 Each release publishes, besides the per-target binaries: `SHA256SUMS` and its
 Sigstore bundle, a bundle per asset, `release-manifest.json` (the canonical
 description of the release — its assets and their digests, which targets were
-published and at which tier, which channels it publishes through, the toolchain
+published and at which tier, the toolchain
 and `lake-manifest.json` digest), `LICENSE`, `THIRD-PARTY-LICENSES`, an SPDX
 SBOM, `REBUILDING.md`, and per target a `link-audit-<target>.txt` and a
 `build-metadata-<target>.json`. Every one of them is listed in `SHA256SUMS`, so
@@ -144,12 +144,15 @@ discriminates, which a text-equality guard cannot.
 ## Before a release is tagged
 
 `docs/release-prerequisites.md` records the state this pipeline depends on that
-lives outside the repository. Which of it applies is derived from the channels
-`release/plan.json` enables, so the list is not fixed: for v0.1.0 the
-repository must be public, the `release` environment must carry its protection
-rules, and the `v*` tag ruleset must be active. The npm packages and the tap
-credential belong to the deferred channels and are not prerequisites of this
-release — they produce no rows at all, rather than rows reading *missing*.
+lives outside the repository. Which of it applies follows from the channels
+`release/plan.json` enables: for v0.1.0 the repository must be public, the
+`release` environment must carry its protection rules, and the `v*` tag ruleset
+must be active. The npm packages and the tap credential belong to the deferred
+channels and are not prerequisites of this release.
+
+The audit does not know that yet — `scripts/check-release-prereqs.sh` still
+reports those channels' state as *missing* — so that document also records what
+a v0.1.0 release has to disregard deliberately, and why.
 
 The audit runs in the signing job before anything is signed. What it cannot
 read is carried in [docs/overview.md](docs/overview.md) as an explicit

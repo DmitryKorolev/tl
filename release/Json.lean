@@ -152,13 +152,19 @@ def escapeString (text : String) : Except String String := do
     out := out ++ (← escapeChar c)
   return out ++ "\""
 
-/-- Python renders an integral float as `1.0`, but every number these documents
-    carry is a `schemaVersion`-style integer, so an integral value renders
-    without a fractional part and anything else is refused rather than
-    guessed at. -/
+/-- Every number these documents carry is a `schemaVersion`-style integer, so
+    an integral value renders without a fractional part and anything else is
+    refused rather than guessed at — Python would print an integral float as
+    `1.0`, and matching its float formatting exactly is not a thing to guess.
+
+    Decided on the *value*, not on the representation. `JsonNumber` is a
+    mantissa and a decimal exponent, and `100` can arrive as `1000e-1`; an
+    earlier version tested `exponent == 0` and would have refused that — a
+    perfectly good integer rejected for how it was spelled. -/
 private def renderNumber (n : JsonNumber) : Except String String :=
-  if n.exponent == 0 then .ok (toString n.mantissa)
-  else .error s!"cannot render the non-integer number {n} — release documents carry only integers, and matching Python's float formatting exactly is not something to guess at."
+  let scale : Int := (10 : Int) ^ n.exponent
+  if n.mantissa % scale == 0 then .ok (toString (n.mantissa / scale))
+  else .error s!"cannot render {n.mantissa}e-{n.exponent}: it is not an integer, and release documents carry only integers. Matching Python's float formatting exactly is not something to guess at."
 
 private partial def renderAt (indent : Nat) (value : Json) : Except String String := do
   let pad (n : Nat) : String := String.ofList (List.replicate (n * 2) ' ')

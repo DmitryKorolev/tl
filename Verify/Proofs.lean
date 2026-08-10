@@ -14,7 +14,7 @@ What is characterised here, and how far:
   gate that fails on a clean checkout.
 * `workerVerdict` — the last non-IO step, findings in and (what to print, where,
   what to return) out — is characterised the same way, and composed with the
-  above so the path from six scope observations to the emitted completion marker
+  above so the path from seven scope observations to the emitted completion marker
   is proved end to end rather than sampled. Status zero and the marker each hold
   **exactly** when the evidence is empty; both output streams are pinned in
   **both** arms, so neither a clean run nor a failing one can start emitting a
@@ -466,7 +466,7 @@ theorem analyze_clean_iff (cfg : Config) (o : Observation) :
 
 /-! ### The whole gate verdict -/
 
-/-- All six audited scopes reach the final verdict: no scope's findings can be
+/-- All seven audited scopes reach the final verdict: no scope's findings can be
     lost in the flattening. -/
 theorem auditedReports_errors_eq_empty_iff (reports : AuditedReports) :
     reports.errors = #[] ↔
@@ -520,14 +520,14 @@ theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
   rw [gateEvidence_errors_eq_empty_iff, auditedReports_errors_eq_empty_iff, and_assoc,
     and_assoc, and_assoc, and_assoc, and_assoc, and_assoc]
 
-/-- The finding array the worker builds is empty exactly when all six audited
+/-- The finding array the worker builds is empty exactly when all seven audited
     scopes satisfy `GateClean` and neither the source inventory nor the
     unclaimed-source scan found anything.
 
     This is stated about `gateEvidenceOf`, the function `runChecked` calls, so a
     scope audited twice or left out of the assembly breaks this theorem instead
     of slipping past it. Composed with `workerVerdict_marker_iff` below it gives
-    `workerVerdict_marker_iff_clean`, so the decision from six observations to
+    `workerVerdict_marker_iff_clean`, so the decision from seven observations to
     the marker is proved rather than sampled. What remains IO and stays tested
     is only the emission — `runChecked` writing `verdict.diagnostics` to stderr
     and `verdict.report` to stdout and returning `verdict.status` — plus the
@@ -606,7 +606,7 @@ theorem workerVerdict_report_empty (summary marker : String) (evidence : GateEvi
   rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
 
 /-- The payoff: the gate's whole decision, end to end in the pure tier. The
-    marker is printed exactly when all six scopes are `GateClean` and both
+    marker is printed exactly when all seven scopes are `GateClean` and both
     inventory scans are silent. -/
 theorem workerVerdict_marker_iff_clean (summary marker : String) (cfg : Config)
     (production tests verifier supervisor testSupervisor tooling release : Observation)

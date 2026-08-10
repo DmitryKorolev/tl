@@ -365,6 +365,21 @@ PYEOF
 }
 
 selftest() {
+  # This selftest is not a workflow run, so the ambient GITHUB_WORKFLOW_REF is
+  # not the ref its fixtures were "built" by. `generate` compares each leg's
+  # recorded workflowRef against that variable whenever it is non-empty, and
+  # inside GitHub Actions it is *always* non-empty — so the fixture's fixed
+  # workflowRef could never match, and this selftest passed on every developer
+  # machine while failing in CI. Both workflows run it through the release
+  # policy, so the first push would have failed the gates job for a reason
+  # nothing local could reproduce.
+  #
+  # Scrubbed rather than adopted: making the fixture copy the ambient value
+  # would make the comparison compare a thing with itself, which is the check
+  # not running. Its real exercise belongs with the port, where the run
+  # identity is an injected value rather than an environment variable.
+  unset GITHUB_WORKFLOW_REF
+
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   rc_selftest_begin "gen-release-manifest" "$work"
@@ -418,8 +433,15 @@ json.dump({"target": target, "sha256": digest, "commit": commit, "tier": tier,
     "$0" --verify "$work/dist" "$out"
 
   # A prerelease reaches npm under `next`, and the tap is not pushed.
+  #
+  # Through the harness, not bare. Unwrapped and with its output discarded, a
+  # failure here aborted the entire selftest under `set -eu` — no failing row,
+  # no count, no remedy line, and the diagnostic sent to /dev/null. A selftest
+  # that cannot report its own failure is the same defect as a gate that cannot
+  # fail, one level up.
   pre="$work/pre.json"
-  "$0" "$work/dist" v1.2.3-rc.1 "$commit" "$pre" >/dev/null 2>&1
+  rc_expect_status 0 "a prerelease manifest is written at all" \
+    "$0" "$work/dist" v1.2.3-rc.1 "$commit" "$pre"
   rc_note "$(grep -qF '"distTag": "next"' "$pre" && echo 0 || echo 1)" \
     "a prerelease records the next dist-tag"
   rc_note "$(grep -qF '"push": false' "$pre" && echo 0 || echo 1)" \

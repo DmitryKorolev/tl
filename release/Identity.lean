@@ -111,9 +111,19 @@ private def writePinCommand : Command := {
                 | .error message =>
                     refuse s!"tlrelease write-pin: refusing to write a pin this reader would reject: {message}"
                 | .ok _ =>
-                    IO.FS.writeFile outputPath pin
-                    IO.println s!"tlrelease write-pin: wrote {outputPath}"
-                    return 0
+                    -- A failed write is a refusal, not an exception. An
+                    -- unreadable directory or a full disk would otherwise
+                    -- escape as a Lean backtrace, which is the traceback-for-a-
+                    -- message regression this port exists to remove.
+                    match ← (try
+                        IO.FS.writeFile outputPath pin
+                        pure (Except.ok ())
+                      catch error =>
+                        pure (Except.error s!"could not write {outputPath}: {error}")) with
+                    | .error message => refuse s!"tlrelease write-pin: {message}"
+                    | .ok () =>
+                        IO.println s!"tlrelease write-pin: wrote {outputPath}"
+                        return 0
     | _ => misuse "usage: tlrelease write-pin <identity.json> <output.pin>" }
 
 private def checkPinCommand : Command := {
