@@ -173,6 +173,12 @@ jobs:
     outputs:
       version: ${{ steps.stamp.outputs.version }}
       commit: ${{ steps.stamp.outputs.commit }}
+      # The digest of the exact bytes each leg must compile. Tl/Build/Stamp.lean
+      # is ordinary Lean source that ends up inside every released binary, and
+      # each leg used to admit it after finding one substring — so a file
+      # carrying the right stampCommit line plus any number of further
+      # declarations was accepted verbatim and compiled four times over.
+      stampDigest: ${{ steps.stamp.outputs.stampDigest }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -248,6 +254,12 @@ jobs:
           fi
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # Not `sha256sum … | cut`: a pipeline reports its last stage, and
+          # `cut` succeeds over empty input, so a digest tool that could not run
+          # would publish the empty string as the digest every leg then matched
+          # against — which matches nothing, but only after four builds.
+          stamp_line=$(sha256sum Tl/Build/Stamp.lean)
+          echo "stampDigest=${stamp_line%% *}" >> "$GITHUB_OUTPUT"
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
           cat Tl/Build/Stamp.lean
 
@@ -312,11 +324,27 @@ jobs:
           name: tl-build-stamp
           path: Tl/Build
 
-      - name: confirm the shared stamp landed
+      # The whole file, by digest, not one line of it. This is Lean source that
+      # is compiled into the released binary: a file carrying the expected
+      # `stampCommit` line *and* three more declarations satisfied a substring
+      # test and went into all four artifacts. Comparing the bytes the stamp
+      # job published leaves nothing for extra content to hide behind.
+      - name: confirm the shared stamp landed unchanged
         run: |
           set -euo pipefail
+          want='${{ needs.stamp.outputs.stampDigest }}'
+          if [ -z "$want" ]; then
+            echo "::error::the stamp job published no digest for Tl/Build/Stamp.lean, so this leg cannot tell whether it is compiling the shared stamp. An empty expectation must not pass for a matching one."
+            exit 1
+          fi
+          got_line=$(sha256sum Tl/Build/Stamp.lean)
+          got=${got_line%% *}
+          if [ "$got" != "$want" ]; then
+            echo "::error::this leg's Tl/Build/Stamp.lean hashes to ${got}, but the stamp job published ${want}. These are not the bytes every leg is supposed to compile — the download step overwrote the wrong path, the artifact is stale, or something wrote into the file between the two. Nothing is built from it."
+            exit 1
+          fi
           if ! grep -q "stampCommit : String := \"${{ needs.stamp.outputs.commit }}\"" Tl/Build/Stamp.lean; then
-            echo "::error::this leg's Tl/Build/Stamp.lean is not the stamp job's artifact — the download step overwrote the wrong path, or the artifact is stale. Every leg must compile the same stamp."
+            echo "::error::the shared stamp does not name commit ${{ needs.stamp.outputs.commit }}. The digest above matched, so the stamp job itself stamped the wrong commit."
             exit 1
           fi
 
@@ -500,6 +528,28 @@ jobs:
           set -euo pipefail
           asset="dist/${{ steps.stage.outputs.asset }}"
           audit="dist/link-audit-${{ matrix.target }}.txt"
+
+          # The symbol table first, into a file, with `nm`'s own status checked.
+          # Written inline as `nm -a "$asset" 2>/dev/null | grep -c " $prefix"
+          # || true` this step could not fail: `nm` sent its diagnostic to
+          # /dev/null, `grep -c` printed 0 over empty input, and `|| true`
+          # swallowed both statuses. The audit then recorded every prefix as 0,
+          # and that file is hashed into SHA256SUMS, signed, attested and
+          # published — signed evidence asserting this binary links none of GMP,
+          # libuv or OpenSSL, produced by a step that never read it.
+          symbols="${RUNNER_TEMP}/symbols-${{ matrix.target }}.txt"
+          if ! nm -a "$asset" > "$symbols" 2>"$symbols.err"; then
+            echo "::error::nm could not read ${asset}, so the link-time dependency audit cannot be produced: $(head -n 3 "$symbols.err" | tr '\n' ' ')"
+            echo "::error::This audit is what lets a recipient check THIRD-PARTY-LICENSES against the artifact, and it is published signed. An audit reporting no third-party symbols because nothing could be read is worse than none, so the release stops here rather than publishing it."
+            exit 1
+          fi
+          # A binary with no symbols at all is the same problem wearing a zero:
+          # every prefix would count 0 and the audit would look clean.
+          if [ ! -s "$symbols" ]; then
+            echo "::error::nm read ${asset} and reported no symbols at all. Every prefix below would count zero, which is indistinguishable from a binary that genuinely links none of them — the audit would be signed evidence for a claim nothing established. If the binary is now stripped, that is a deliberate change and this step needs a different source of truth (ADR-0006)."
+            exit 1
+          fi
+
           {
             echo "link-time dependency audit for ${{ matrix.target }}"
             echo "binary:    ${{ steps.stage.outputs.asset }}"
@@ -518,8 +568,11 @@ jobs:
             # entries ADR-0006's licensing section turns on. OpenSSL is checked
             # too: the v4.32.0 toolchain began bundling it, and the notice owes
             # an entry only if the linker did not dead-strip it.
+            #
+            # `grep -c` over a file that was read successfully: a zero here is a
+            # count, not a failure to look.
             for prefix in __gmp gmp_ uv_ SSL_ EVP_ CRYPTO_; do
-              count=$(nm -a "$asset" 2>/dev/null | grep -c " ${prefix}" || true)
+              count=$(grep -c " ${prefix}" "$symbols" || true)
               echo "${prefix}*: ${count}"
             done
           } > "$audit"

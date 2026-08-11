@@ -313,8 +313,20 @@ selftest() {
     "the fallback url names this release's tag"
   rc_note "$(grep -q "$(rc_sha256_of "$sums")" "$out" && echo 0 || echo 1)" \
     "the fallback url pins the sums file's own digest"
-  rc_note "$(command -v ruby >/dev/null 2>&1 && ruby -c "$out" >/dev/null 2>&1 && echo 0 || echo 1)" \
-    "the generated formula parses as Ruby"
+  # `ruby -c` where ruby exists, an explicit skip row where it does not.
+  # Written as `command -v ruby && ruby -c … || echo 1` the row reported FAIL on
+  # a machine with no ruby, so the whole release policy failed with a message
+  # naming no missing tool — two lines after the policy had correctly *skipped*
+  # its sibling "the Homebrew formula parses" gate for exactly that reason. A
+  # skip is a visible row, never a silent pass and never a failure.
+  parses_as_ruby() {
+    if ! command -v ruby >/dev/null 2>&1; then
+      echo "  skip $2 (ruby is not on PATH)"
+      return 0
+    fi
+    rc_note "$(ruby -c "$1" >/dev/null 2>&1 && echo 0 || echo 1)" "$2"
+  }
+  parses_as_ruby "$out" "the generated formula parses as Ruby"
   for target in $all_targets; do
     rc_note "$(grep -A1 "${target}\"" "$out" | grep -q 'sha256 "0*[0-9]' && echo 0 || echo 1)" \
       "tl-$target gets a digest"
@@ -356,8 +368,7 @@ selftest() {
     "no url in the prerelease formula points at the stable tag"
   rc_note "$(! grep -q '^  version "' "$out" && echo 0 || echo 1)" \
     "a stable formula carries no version line, so brew audit stays quiet"
-  rc_note "$(command -v ruby >/dev/null 2>&1 && ruby -c "$preout" >/dev/null 2>&1 && echo 0 || echo 1)" \
-    "the prerelease formula parses as Ruby"
+  parses_as_ruby "$preout" "the prerelease formula parses as Ruby"
 
   # A digest tool that is present but broken must refuse, not write an empty
   # sha256 and report success.
@@ -440,8 +451,7 @@ evil' "$sums" "$work/o-nl"
     "the formula with a dropped block pins three targets plus the fallback"
   rc_note "$(! grep -q "$PLACEHOLDER" "$out2" && echo 0 || echo 1)" \
     "the formula with a dropped block has no placeholder left"
-  rc_note "$(command -v ruby >/dev/null 2>&1 && ruby -c "$out2" >/dev/null 2>&1 && echo 0 || echo 1)" \
-    "the formula with a dropped block still parses as Ruby"
+  parses_as_ruby "$out2" "the formula with a dropped block still parses as Ruby"
   # The load-time failure this shape exists to prevent: a stable spec with no
   # url for the running platform makes Homebrew raise on *load*, for every brew
   # command. The fallback must survive the drop.

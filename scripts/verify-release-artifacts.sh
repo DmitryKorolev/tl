@@ -317,10 +317,37 @@ selftest() {
   verify() {
     PATH="$work/bin:$PATH" "$self" "$@"
   }
+  # A PATH with cosign genuinely absent, built by dropping every directory that
+  # holds one rather than by naming two that usually do not. `PATH=/usr/bin:/bin`
+  # is only cosign-free where cosign is not packaged there: on Fedora, Arch and
+  # Alpine it is, so the two rows that model "cosign is absent" instead drove
+  # the *real* cosign against fixture bundles containing `{}` — failing there
+  # and nowhere else, inside a gate documented as hermetic.
+  path_without_cosign() {
+    pwc__out=''
+    pwc__rest=$PATH
+    while [ -n "$pwc__rest" ]; do
+      case $pwc__rest in
+        *:*) pwc__dir=${pwc__rest%%:*}; pwc__rest=${pwc__rest#*:} ;;
+        *) pwc__dir=$pwc__rest; pwc__rest='' ;;
+      esac
+      [ -n "$pwc__dir" ] || continue
+      [ -x "$pwc__dir/cosign" ] && continue
+      if [ -z "$pwc__out" ]; then pwc__out=$pwc__dir; else pwc__out="$pwc__out:$pwc__dir"; fi
+    done
+    printf '%s' "$pwc__out"
+  }
+  bare_path=$(path_without_cosign)
   # …and without it, for the cases that must not find cosign at all.
   verify_bare() {
-    PATH="/usr/bin:/bin" "$self" "$@"
+    PATH="$bare_path" "$self" "$@"
   }
+  # The premise those rows rest on, checked rather than assumed. Without this
+  # they pass on a host where cosign is absent for an unrelated reason and stop
+  # meaning anything on one where it is not.
+  rc_run env PATH="$bare_path" sh -c 'command -v cosign'
+  rc_note "$([ "$RC_STATUS" -ne 0 ] && echo 0 || echo 1)" \
+    "the cosign-absent rows below really run without cosign on PATH"
 
   d=$(fixture happy)
   rc_expect_status 0 "a complete, consistent release verifies" verify "$d" tl-linux-x64
@@ -361,11 +388,11 @@ selftest() {
   # The escape hatch drops signatures and keeps digests.
   d=$(fixture skip-ok); rm "$d/SHA256SUMS.sigstore.json" "$d/tl-linux-x64.sigstore.json"
   rc_expect_status 0 "TL_INSTALL_SKIP_SIGNATURE=1 verifies without bundles" \
-    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="/usr/bin:/bin" "$self" "$d" tl-linux-x64
+    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="$bare_path" "$self" "$d" tl-linux-x64
   d=$(fixture skip-mismatch); rm "$d/SHA256SUMS.sigstore.json" "$d/tl-linux-x64.sigstore.json"
   printf 'tampered\n' >> "$d/tl-linux-x64"
   rc_expect_status 1 "TL_INSTALL_SKIP_SIGNATURE=1 still refuses a digest mismatch" \
-    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="/usr/bin:/bin" "$self" "$d" tl-linux-x64
+    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="$bare_path" "$self" "$d" tl-linux-x64
 
   # --require-signature is the release gate's mode: the escape is refused, not
   # honoured, because a gate that can be switched off by an inherited
@@ -378,7 +405,7 @@ selftest() {
   d=$(fixture require-no-cosign)
   rc_expect_output 1 "cannot fall back to a digest-only check" \
     "--require-signature refuses when cosign is absent" \
-    env PATH="/usr/bin:/bin" "$self" --require-signature "$d" tl-linux-x64
+    env PATH="$bare_path" "$self" --require-signature "$d" tl-linux-x64
   d=$(fixture require-happy)
   rc_expect_status 0 "--require-signature still verifies a good release" \
     verify --require-signature "$d" tl-linux-x64

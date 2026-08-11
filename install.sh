@@ -502,8 +502,30 @@ selftest() {
   printf '{}\n' > "$release/${host_asset}.sigstore.json"
 
   # No cosign and no explicit opt-out: refuse rather than silently degrade.
+  #
+  # The PATH is built by dropping every directory that holds a cosign, rather
+  # than by naming two that usually do not. `PATH=/usr/bin:/bin` is only
+  # cosign-free where cosign is not packaged there, and on Fedora, Arch and
+  # Alpine it is — so this row drove the *real* cosign against a fixture bundle
+  # containing `{}`, failing on those hosts and nowhere else.
+  bare_path=''
+  rest=$PATH
+  while [ -n "$rest" ]; do
+    case $rest in
+      *:*) dir=${rest%%:*}; rest=${rest#*:} ;;
+      *) dir=$rest; rest='' ;;
+    esac
+    [ -n "$dir" ] || continue
+    [ -x "$dir/cosign" ] && continue
+    if [ -z "$bare_path" ]; then bare_path=$dir; else bare_path="$bare_path:$dir"; fi
+  done
+  # The premise this row rests on, checked rather than assumed: without it the
+  # row passes on a host where cosign happens to be absent and says nothing on
+  # one where it is not.
+  note "$(PATH="$bare_path" command -v cosign >/dev/null 2>&1 && echo 1 || echo 0)" \
+    "the missing-cosign row below really runs without cosign on PATH"
   got=0
-  ( PATH="/usr/bin:/bin" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
+  ( PATH="$bare_path" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
       TL_INSTALL_DIR="$work/dest" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
   note "$([ "$got" -eq 1 ] && grep -q 'cosign not found' "$work/err" && echo 0 || echo 1)" \
     "a missing cosign refuses rather than skipping the check"
