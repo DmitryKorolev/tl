@@ -550,6 +550,32 @@ jobs:
             exit 1
           fi
 
+          # The symbol *names*, with leading underscores stripped.
+          #
+          # `nm` prints "<address> <type> <name>", and Mach-O prefixes C symbols
+          # with an underscore that ELF does not: the same GMP symbol is
+          # `__gmp_allocate_func` on Linux and `___gmp_allocate_func` on macOS.
+          # Matching ` __gmp` and ` uv_` against the whole line was therefore
+          # written for ELF and matched *nothing at all* on either macOS leg —
+          # a local rehearsal of the darwin-arm64 leg found 205 GMP and 222
+          # libuv symbols in a binary whose audit reported every component as
+          # absent. That audit is signed and published, and ADR-0006 keys
+          # THIRD-PARTY-LICENSES off it. Normalising the name and anchoring at
+          # its start makes the same prefixes mean the same thing under both
+          # object formats.
+          names="${RUNNER_TEMP}/symbol-names-${{ matrix.target }}.txt"
+          awk '{print $NF}' "$symbols" | sed 's/^_*//' > "$names"
+
+          # Lean's runtime links GMP for arbitrary-precision arithmetic, so a
+          # binary reporting none has not been read — which is exactly how this
+          # step failed before. If Lean genuinely stops bundling GMP that is a
+          # licensing change, and this is where it should be noticed rather
+          # than by an entry quietly vanishing from the notice.
+          if [ "$(grep -c '^gmp' "$names" || true)" -eq 0 ]; then
+            echo "::error::the symbol table of ${asset} names no GMP symbols. Lean's runtime links GMP for arbitrary-precision arithmetic, so this is a symbol table this step failed to read rather than a binary that genuinely links none — and the published audit would tell a recipient that THIRD-PARTY-LICENSES owes no GMP entry. If Lean has stopped bundling GMP, record that in ADR-0006 and change this check deliberately."
+            exit 1
+          fi
+
           {
             echo "link-time dependency audit for ${{ matrix.target }}"
             echo "binary:    ${{ steps.stage.outputs.asset }}"
@@ -569,10 +595,13 @@ jobs:
             # too: the v4.32.0 toolchain began bundling it, and the notice owes
             # an entry only if the linker did not dead-strip it.
             #
-            # `grep -c` over a file that was read successfully: a zero here is a
-            # count, not a failure to look.
+            # `grep -c` over names that were read successfully: a zero here is
+            # a count, not a failure to look. The prefix is normalised the same
+            # way the names are, so `__gmp` and `gmp_` mean what they mean on
+            # ELF while still matching Mach-O's extra underscore.
             for prefix in __gmp gmp_ uv_ SSL_ EVP_ CRYPTO_; do
-              count=$(grep -c " ${prefix}" "$symbols" || true)
+              bare=$(printf '%s' "$prefix" | sed 's/^_*//')
+              count=$(grep -c "^${bare}" "$names" || true)
               echo "${prefix}*: ${count}"
             done
           } > "$audit"

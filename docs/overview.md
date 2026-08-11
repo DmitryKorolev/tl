@@ -494,16 +494,38 @@ and this environment, with no classic token still able to publish; and that
 ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after
-any permission change, not once. An audit that cannot reach the API must report
-an operational error and stop the release rather than report the prerequisite
-as absent, because the two call for opposite responses — a rule the current
-shell audit does not yet follow, since a failed API call there collapses into a
-*missing* row. That is a recorded defect against the audit's port, not a
-property to rely on today. What follows if one fails is bounded and
-stated: without the environment protections, anyone able to create a `v*` tag
+any permission change, not once. An audit that cannot reach the API reports
+an operational error and stops the release rather than reporting the
+prerequisite as absent, because the two call for opposite responses: the shell
+audit separates a 404 from any other status on every row that talks to a
+network, and a channel `release/plan.json` defers produces neither — its rows
+are reported *deferred*, in their own class, and never contribute to the
+verdict. What follows if an assumption fails is bounded and stated: without the environment protections, anyone able to create a `v*` tag
 can make this workflow sign, with an identity every verifier accepts, whatever
 commit that tag points at; the ancestry check in the `sign` job is a backstop
 that sees what the tag points at and never who pushed it.
+
+**The release workflow has never run.** `.github/workflows/release.yml` is
+gated, linted and drift-guarded, but no tagged push has ever executed it, so
+every claim about what it *does* — as opposed to what it says — is carried
+here. A local rehearsal covers the whole darwin-arm64 Supported leg on a
+developer machine: stamping a clean checkout, `lake build tl`, staging,
+ad-hoc codesigning, the provenance assertions and the real task round-trip in
+the smoke test, the link-time dependency audit, the build-metadata record, and
+then the manifest generator, the SBOM, `SHA256SUMS` and
+`scripts/verify-release-artifacts.sh` over the result. That rehearsal is what
+found the audit reporting every third-party component as absent on both macOS
+legs, so it is not a formality. What it cannot reach stays untested rather than
+implied working: both Linux legs, which build inside the pinned glibc-floor
+container on the runner, and with them the glibc-floor assertion; `actions/checkout`;
+`upload-artifact`/`download-artifact` and therefore every cross-job handoff,
+including the stamp the build legs compare by digest and the binaries the sign
+job re-verifies; the OIDC token, the Sigstore certificate and every
+`cosign` call against a real transparency log; `actions/attest-build-provenance`;
+the GitHub Release creation itself; and the `release` environment's approval
+gate. Each of those is exercised only by a real tagged run, and until one
+happens the pipeline's behaviour past the artifact boundary is asserted by
+review and by drift guards over YAML, not by execution.
 
 A user-facing claim the binary makes also enters here. `tl version` reporting
 `clean build — commit X` asserts that the binary corresponds exactly to that
