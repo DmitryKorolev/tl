@@ -77,6 +77,16 @@ release workflow runs no npm job and the audit reports a single `deferred` row
 for this whole section rather than five missing packages. This section
 is the procedure for the release that turns the channel on.
 
+`--tag bootstrap` is npm's documented way of publishing without moving
+`latest`, and that is the mechanism relied on. It is nonetheless *checked*
+rather than assumed: the audit reads each package's `dist-tags.latest` and
+refuses `0.0.0`, because the consequence of being wrong — every
+`npm install @taskloop/tl` resolving to a package with no binary in it — is the
+one thing this whole bootstrap exists to avoid, and nothing in this repository
+has ever observed a first publish. If it fires, `npm dist-tag rm <package>
+latest` under 2FA is the repair; the placeholder version itself stays
+published, which is harmless once nothing resolves to it.
+
 npm configures trusted publishing **per package**, and only for a package that
 already exists. None of `@taskloop/tl`, `@taskloop/tl-bin-darwin-arm64`,
 `@taskloop/tl-bin-darwin-x64`, `@taskloop/tl-bin-linux-arm64` or
@@ -122,7 +132,8 @@ Then:
 5. Only then create the first release tag.
 
 The placeholder `0.0.0` versions stay published: unpublishing is restricted and
-would in any case free nothing. They are never a `latest` dist-tag target.
+would in any case free nothing. The audit refuses a release while `latest`
+still points at one.
 
 One consequence of publishing over OIDC, worth knowing before a retry: trusted
 publishing authorizes `npm publish` and no other registry mutation, so the

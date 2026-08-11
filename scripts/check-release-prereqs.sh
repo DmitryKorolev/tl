@@ -32,6 +32,11 @@ usage() {
   exit 2
 }
 
+# The version scripts/npm-bootstrap.sh publishes as a placeholder. Named here
+# so the row that refuses it on `latest` and the script that creates it cannot
+# drift into disagreeing about which version is the placeholder.
+BOOTSTRAP_PLACEHOLDER_VERSION=0.0.0
+
 ok=0
 bad=0
 unchecked=0
@@ -134,6 +139,26 @@ audit() {
             else
               unchecked_row "$pkg exists on the registry" \
                 "the registry did not answer ($(tr -d '\n' < "$work/npm.err" | cut -c1-160)); that is not evidence the package is absent. Re-run when the registry is reachable."
+            fi
+            # …and that `latest` does not still resolve to the bootstrap
+            # placeholder. `npm publish --tag bootstrap` is the documented way
+            # to keep `latest` unset, but nothing here has ever observed that it
+            # worked on a package's first publish, and the consequence is the
+            # one thing the bootstrap exists to avoid: every
+            # `npm install <pkg>` resolving to a package with no binary in it.
+            # Checked rather than written down — a step in a document can be
+            # skipped and the audit would still pass.
+            if npm view "$pkg" dist-tags.latest >"$work/npm.tag" 2>"$work/npm.err"; then
+              npm_latest=$(tr -d " \t\r\n" < "$work/npm.tag")
+              if [ "$npm_latest" = "$BOOTSTRAP_PLACEHOLDER_VERSION" ]; then
+                fail_row "$pkg publishes $BOOTSTRAP_PLACEHOLDER_VERSION — the bootstrap placeholder — as 'latest'" \
+                  "Every 'npm install $pkg' resolves to a package that contains no tl binary. Remove the tag by hand under 2FA with 'npm dist-tag rm $pkg latest'; the placeholder version itself stays published, which is harmless once nothing resolves to it."
+              else
+                pass "$pkg does not publish the bootstrap placeholder as 'latest' (latest=${npm_latest:-<unset>})"
+              fi
+            else
+              unchecked_row "$pkg's 'latest' dist-tag" \
+                "the registry did not answer ($(tr -d '\n' < "$work/npm.err" | cut -c1-160)); whether 'latest' still points at the bootstrap placeholder is unknown."
             fi
           done
         fi
@@ -471,7 +496,12 @@ case "${NPM_STUB:-ok}" in
     echo "npm error network request to https://registry.npmjs.org failed" >&2
     exit 1
     ;;
-  *) echo "@taskloop/tl" ;;
+  *)
+    case "$*" in
+      *dist-tags.latest*) printf '%s\n' "${NPM_STUB_LATEST-1.2.3}" ;;
+      *) echo "@taskloop/tl" ;;
+    esac
+    ;;
 esac
 NPMSTUB
   chmod +x "$bin/gh" "$bin/npm"
@@ -559,6 +589,21 @@ PLANJSON
   audit_with 0 "the registry did not answer" \
     "an unreachable registry is unchecked, not a missing package" \
     RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB=unreachable
+  # The bootstrap placeholder must not be what `npm install` resolves to. This
+  # was a step in a document, which an operator can skip and still get a
+  # passing audit.
+  audit_with 1 "as 'latest'" \
+    "a package still publishing the bootstrap placeholder as latest is refused" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB_LATEST=0.0.0
+  audit_with 1 "npm dist-tag rm" \
+    "the placeholder-on-latest refusal gives the command that repairs it" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB_LATEST=0.0.0
+  audit_with 0 "does not publish the bootstrap placeholder" \
+    "a real version on latest passes" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB_LATEST=0.1.0
+  audit_with 0 "does not publish the bootstrap placeholder" \
+    "an unset latest is not the placeholder" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB_LATEST=
   audit_with 0 "other than 'not found'" \
     "an API failure on the tap is unchecked, not a missing tap" \
     RC_PLAN_FILE="$work/plan-enabled.json" GH_STUB_TAP=error

@@ -27,8 +27,8 @@
 # executable that explains itself, the licence files, and a `bootstrap`
 # dist-tag that no user resolves. It then validates all five tarballs and
 # prints the commands. The placeholder versions stay published afterwards —
-# unpublishing is restricted and would free nothing — and are never a `latest`
-# target.
+# unpublishing is restricted and would free nothing — and the prerequisite
+# audit refuses a release while `latest` still points at one.
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
@@ -118,7 +118,9 @@ configure a trusted publisher for a package that already exists, so the name had
 to be created before the first real release could publish to it.
 
 It contains no tl binary. It is published under the \`$BOOTSTRAP_TAG\` dist-tag
-and is never what \`npm install $identity_name\` resolves to.
+so that \`npm install $identity_name\` does not resolve to it, and
+\`scripts/check-release-prereqs.sh\` refuses a release if \`latest\` ever points
+at this version.
 
 Install tl from <https://github.com/DmitryKorolev/tl>.
 README
@@ -177,11 +179,19 @@ PYEOF
   echo "  .github/workflows/release.yml, environment release — and remove any"
   echo "  classic automation token that can publish these packages."
   echo
-  echo "Finally, confirm with scripts/check-release-prereqs.sh before tagging."
+  echo "Then check what 'latest' resolves to, for each of them:"
   echo
-  echo "--tag $BOOTSTRAP_TAG is deliberate: without it npm would set 'latest',"
-  echo "and these placeholders would be what 'npm install $identity_name'"
-  echo "resolves to until the first real release."
+  echo "  npm dist-tag ls <package>"
+  echo
+  echo "--tag $BOOTSTRAP_TAG is deliberate: without it npm sets 'latest', and"
+  echo "these placeholders would be what 'npm install $identity_name' resolves"
+  echo "to until the first real release. check-release-prereqs.sh refuses a"
+  echo "release while 'latest' points at $BOOTSTRAP_VERSION, so this is checked rather"
+  echo "than assumed. If it ever does, remove the tag under 2FA:"
+  echo
+  echo "  npm dist-tag rm <package> latest"
+  echo
+  echo "Finally, confirm with scripts/check-release-prereqs.sh before tagging."
 }
 
 selftest() {
@@ -251,14 +261,41 @@ selftest() {
   # The printed commands must carry the non-default tag, or the placeholders
   # become `latest` for every user until the first release.
   rc_run "$0" "$work/second"
-  rc_note "$(grep -q -- "--tag bootstrap" "$RC_OUT" && echo 0 || echo 1)" \
-    "the printed publish commands use the bootstrap dist-tag"
-  rc_note "$(! grep -qE 'npm publish [^\n]*--tag latest' "$RC_OUT" && echo 0 || echo 1)" \
+  # Every printed command, not "at least one carries the tag" and "none says
+  # latest". A command with no --tag at all satisfied both, and npm defaults an
+  # untagged publish to latest — the exact outcome these rows exist to prevent.
+  printed=$(grep -c '^  npm publish ' "$RC_OUT" || true)
+  tagged=$(grep -c '^  npm publish .* --tag bootstrap$' "$RC_OUT" || true)
+  rc_note "$([ "$printed" -eq "$expected" ] && echo 0 || echo 1)" \
+    "one publish command is printed per package ($printed of $expected)"
+  rc_note "$([ "$printed" -gt 0 ] && [ "$tagged" -eq "$printed" ] && echo 0 || echo 1)" \
+    "every printed publish command carries --tag bootstrap ($tagged of $printed)"
+  # `.*`, not `[^\n]*`. POSIX reads a backslash inside a bracket expression
+  # literally, so `[^\n]` is "not a backslash and not the letter n" — and every
+  # platform line contains an n (`tl-bin-linux-x64`), so this row could not fire
+  # for four of the five commands it prints. It matched on this machine only
+  # because a drop-in grep read `\n` as a newline; the system grep and GNU grep
+  # both do not. grep is line-oriented, so `.` cannot cross a newline anyway.
+  rc_note "$(! grep -qE 'npm publish .*--tag latest' "$RC_OUT" && echo 0 || echo 1)" \
     "no printed command publishes to latest"
+  # …and the row can actually fire: a guard that cannot fail is the defect it
+  # replaced. Fed the command it is supposed to catch, on the platform-package
+  # line that the old pattern was structurally blind to.
+  printf '  npm publish /tmp/out/tl-bin-linux-x64 --access public --tag latest\n' \
+    > "$work/latest-probe"
+  rc_note "$(grep -qE 'npm publish .*--tag latest' "$work/latest-probe" && echo 0 || echo 1)" \
+    "the latest-guard pattern matches the command it exists to catch"
   rc_note "$(grep -q 'trusted publisher' "$RC_OUT" && echo 0 || echo 1)" \
     "the output names the follow-up trusted-publisher step"
   rc_note "$(grep -q 'check-release-prereqs' "$RC_OUT" && echo 0 || echo 1)" \
     "the output points at the audit that confirms the result"
+  # The one thing this script cannot establish for itself: a package's first
+  # publish may set `latest` whatever `--tag` said. It must therefore hand over
+  # the check and the repair rather than assert the outcome.
+  rc_note "$(grep -q 'npm dist-tag ls' "$RC_OUT" && echo 0 || echo 1)" \
+    "the output tells the operator to check what latest resolves to"
+  rc_note "$(grep -q 'npm dist-tag rm' "$RC_OUT" && echo 0 || echo 1)" \
+    "the output gives the command that repairs a latest pointing at the placeholder"
 
   # The names must be exactly the ones the release will publish.
   identity_name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["npmPackage"])' \

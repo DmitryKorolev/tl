@@ -76,14 +76,58 @@ manifest_field() {
 content_digest() {
   cd__dir=$1
   cd__out=$2
-  ( cd "$cd__dir" || exit 1
-    # The `while` is the last stage of the pipeline and so runs in a subshell;
-    # `exit 1` there ends that subshell, which is the pipeline's status, which
-    # is this subshell's status, which is what the caller checks.
-    find . -type f | LC_ALL=C sort | while IFS= read -r cd__file; do
-      cd__digest=$(rc_sha256_of "$cd__file") || exit 1
-      printf '%s  %s\n' "$cd__digest" "${cd__file#./}"
-    done ) > "$cd__out"
+  cd__paths="${cd__out}.paths"
+
+  # Each stage separately, with its own status checked. Written as one
+  # `find | sort | while` pipeline the status was the `while`'s: a `find` that
+  # could not read the tree produced an empty listing, an empty digest file,
+  # and a zero status — and two empty files compare equal, so *any* published
+  # package read as "already published and matches this staging tree".
+  ( cd "$cd__dir" && find . \( -type f -o -type l \) ) > "$cd__paths" || {
+    echo "could not list the contents of $cd__dir. The comparison that decides whether an immutable version is published over cannot be made from a partial listing." >&2
+    return 1
+  }
+  # A name containing a newline would split into two records and make the
+  # listing mean something else. Counted two ways rather than trusted.
+  cd__lines=$(wc -l < "$cd__paths") || return 1
+  cd__files=$( ( cd "$cd__dir" && find . \( -type f -o -type l \) -print0 ) | tr -dc '\0' | wc -c ) || return 1
+  if [ "$(printf '%s' "$cd__lines" | tr -d ' ')" -ne "$(printf '%s' "$cd__files" | tr -d ' ')" ]; then
+    echo "a path under $cd__dir contains a newline, so the listing cannot be read a line at a time. npm packages do not contain such names; treat this tree as malformed rather than comparing it." >&2
+    return 1
+  fi
+  # An empty package is not a package, and it is the shape every failure above
+  # degenerates to. Refused here so the comparison can never be between two
+  # empty listings.
+  if [ ! -s "$cd__paths" ]; then
+    echo "$cd__dir contains no files. A package with no contents cannot be what was published; nothing is compared." >&2
+    return 1
+  fi
+  LC_ALL=C sort -o "$cd__paths" "$cd__paths" || {
+    echo "could not sort the listing of $cd__dir; the comparison depends on both sides being in the same order." >&2
+    return 1
+  }
+
+  : > "$cd__out" || return 1
+  # `while … done < file` runs in this shell, so a refusal below returns from
+  # the function rather than from a subshell whose status something has to
+  # remember to check.
+  while IFS= read -r cd__file; do
+    if [ -L "$cd__dir/$cd__file" ]; then
+      # npm does not include symbolic links in a published package, so one here
+      # means this tree is not what the registry would ever hold. Refused
+      # rather than encoded: any flat encoding of (target, path) is ambiguous
+      # for names containing the separator, and there is nothing to compare
+      # against on the published side anyway.
+      echo "$cd__dir/$cd__file is a symbolic link. npm does not publish symbolic links, so this tree is not the one the registry would serve; comparing it would compare something that cannot exist there." >&2
+      return 1
+    fi
+    cd__digest=$(rc_sha256_of "$cd__dir/$cd__file") || return 1
+    # npm normalises modes to 755 or 644 in the tarball, so those are the two
+    # values worth comparing. Fixed-width digest and mode, path last, so no
+    # field can absorb another's separator.
+    if [ -x "$cd__dir/$cd__file" ]; then cd__mode=755; else cd__mode=644; fi
+    printf '%s %s  %s\n' "$cd__digest" "$cd__mode" "${cd__file#./}" >> "$cd__out" || return 1
+  done < "$cd__paths"
 }
 
 # Ask the registry whether <name>@<version> exists. Sets RS_STATE to `absent`
@@ -451,6 +495,48 @@ STUB
   rc_expect_output 1 "not recoverable" \
     "the broken-digest refusal says why the comparison cannot be skipped" \
     env PATH="$broken_digest:$PATH" "$0" "$conflict" latest
+
+  # A package whose only difference is the executable bit on its launcher. npm
+  # preserves that bit, and a launcher without it cannot run — but comparing
+  # bytes and paths alone called the two trees identical, so the run reported
+  # "already published and matches this staging tree" and converged on a
+  # package nobody can execute.
+  modeonly="$work_outer/modeonly"
+  stage_at "$modeonly"
+  mode_pkg=$(ls -d "$modeonly"/tl-bin-* | head -1)
+  chmod 644 "$mode_pkg/bin/tl"
+  rc_expect_output 1 "immutable" \
+    "a published package differing only in the launcher's executable bit is a conflict" \
+    pub "$modeonly" latest
+  chmod 755 "$mode_pkg/bin/tl"
+  rc_expect_status 0 "restoring the bit makes it match again" pub "$modeonly" latest
+
+  # A listing tool that cannot run must not produce an empty comparison. Each
+  # stage of the old pipeline reported the `while`'s status, so a failing find
+  # gave an empty digest file and a zero status — and two empty files compare
+  # equal, so any published package read as matching.
+  for broken in find sort; do
+    broken_dir="$work_outer/broken-$broken"
+    mkdir -p "$broken_dir"
+    cp "$bin/npm" "$broken_dir/npm"
+    printf '#!/bin/sh\necho "%s: cannot run" >&2\nexit 1\n' "$broken" > "$broken_dir/$broken"
+    chmod +x "$broken_dir/$broken"
+    rc_expect_output 1 "could not" \
+      "a $broken that cannot run stops the comparison instead of emptying it" \
+      env PATH="$broken_dir:$PATH" "$0" "$conflict" latest
+  done
+
+  # npm does not publish symbolic links, so one in a tree being compared means
+  # the tree is not what the registry would serve. Refused rather than encoded:
+  # every flat encoding of (target, path) collides on names containing the
+  # separator.
+  linked="$work_outer/linked"
+  stage_at "$linked"
+  link_pkg=$(ls -d "$linked"/tl-bin-* | head -1)
+  ln -s bin/tl "$link_pkg/alias-tl"
+  rc_expect_output 1 "symbolic link" \
+    "a symbolic link in a staged package is refused, not compared" \
+    pub "$linked" latest
 
   # A publish that fails for an authentication reason names the bootstrap.
   rm -rf "$work_outer/registry"
