@@ -656,8 +656,11 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   behind parsers, Tier and Channel closed, a
                         --   PublishedTarget carrying its leg's record by
                         --   construction, ChannelStatus making enabled and
-                        --   plannedFor exclusive, and AuditOutcome separating
-                        --   missing from could-not-check
+                        --   plannedFor exclusive (and carrying the deferral as
+                        --   a parsed Version, so nothing downstream re-parses
+                        --   it), Version ordering by full SemVer precedence
+                        --   including the prerelease rules, and AuditOutcome
+                        --   separating missing from could-not-check
   Cli.lean              --   the subcommand table and dispatch. `help` is
                         --   generated from the same list dispatch reads, so a
                         --   command that exists but is undocumented — or is
@@ -683,7 +686,12 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   derived from the plan rather than expected not to
                         --   run. Every channel is emitted, including enabled
                         --   ones: a missing output reads as the empty string,
-                        --   which would disable a channel silently
+                        --   which would disable a channel silently.
+                        --   `plan-deferrals` refuses a plan whose deferral
+                        --   names a release the one being cut has already
+                        --   reached — a deferral that stopped pointing
+                        --   forwards is a channel that was forgotten, not one
+                        --   that was postponed
   plan.json             --   (data) the channels this release publishes through
 ```
 

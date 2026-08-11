@@ -166,10 +166,14 @@ shims after proving each shim fires: `install.sh --selftest` and
 invocations. Those are the two user-facing paths, and the interpreter is gone
 from both.
 
-Not yet enforced: the release policy still invokes `python3` in eight of its
-gates and `ruby` in one, because the generators behind them — the version
-check, the identity check, the embedded-copy check, the SBOM and the manifest —
-have not moved to `tlrelease` yet. The eventual enforcement is twofold: an
+Not yet enforced: the release policy still reaches `python3` through ten of its
+gates and `ruby` through two, because the generators behind them — the version
+check, the identity check, the embedded-copy check, the SBOM, the manifest, the
+prerequisite audit and the Homebrew formula generator — have not moved to
+`tlrelease` yet. The count is a consequence of that list rather than a number to
+maintain by hand: it is re-derived by running each gate with counting
+`python3`/`ruby` shims first on `PATH`, which is the same method that
+established the two clean paths above. The eventual enforcement is twofold: an
 inventory of the enabled entry points rejecting a forbidden invocation in the
 first-party scripts they reach, and the policy, selftests and rehearsal all
 running under those shims. Until both exist, the honest claim is the one above:
