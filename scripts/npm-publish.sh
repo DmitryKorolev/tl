@@ -61,12 +61,29 @@ manifest_field() {
     "$1" "$2"
 }
 
-# A directory's contents as "<sha256>  <relative path>" lines, sorted. The
-# comparison unit: a published package matches the staged one when these agree.
+# content_digest <dir> <out> — write <dir>'s contents to <out> as sorted
+# "<sha256>  <relative path>" lines. The comparison unit: a published package
+# matches the staged one when these agree.
+#
+# Written to a file and reported by exit status rather than printed into a
+# command substitution. `$( … )` discards the digest tool's status, and a
+# `sha256sum` that is on PATH but cannot run — a broken coreutils, a wrapper,
+# a permission denial — then produced an *empty* digest for every file while
+# this function still exited 0. The comparison degenerated to comparing path
+# lists, so a published package holding entirely different bytes at the same
+# paths was reported as "already published and matches this staging tree", and
+# the release converged on the wrong artifact.
 content_digest() {
-  ( cd "$1" && find . -type f | LC_ALL=C sort | while read -r f; do
-      printf '%s  %s\n' "$(rc_sha256_of "$f")" "${f#./}"
-    done )
+  cd__dir=$1
+  cd__out=$2
+  ( cd "$cd__dir" || exit 1
+    # The `while` is the last stage of the pipeline and so runs in a subshell;
+    # `exit 1` there ends that subshell, which is the pipeline's status, which
+    # is this subshell's status, which is what the caller checks.
+    find . -type f | LC_ALL=C sort | while IFS= read -r cd__file; do
+      cd__digest=$(rc_sha256_of "$cd__file") || exit 1
+      printf '%s  %s\n' "$cd__digest" "${cd__file#./}"
+    done ) > "$cd__out"
 }
 
 # Ask the registry whether <name>@<version> exists. Sets RS_STATE to `absent`
@@ -144,7 +161,14 @@ publish_one() {
       tar -xzf "$remote_tgz" -C "$remote_unpacked"
       rm -f "$remote_tgz"
 
-      if [ "$(content_digest "$staged_unpacked/package")" = "$(content_digest "$remote_unpacked/package")" ]; then
+      # Digested before either is compared, and a digest that could not be
+      # taken stops the publication rather than answering the question with
+      # whatever it managed to produce.
+      content_digest "$staged_unpacked/package" "$work/staged.list" \
+        || fail "could not digest the staged ${po_name} to compare it with the published version. The digest tool on PATH is present but not working, and a comparison it cannot make must not be answered either way — an npm version is immutable, so publishing over a mismatch is not recoverable. Repair coreutils or shasum and re-run."
+      content_digest "$remote_unpacked/package" "$work/remote.list" \
+        || fail "could not digest the published ${po_name} to compare it with the staging tree. Same cause and same remedy as above; nothing has been published by this run."
+      if cmp -s "$work/staged.list" "$work/remote.list"; then
         echo "  ${po_name}@${po_version} is already published and matches this staging tree"
         # The dist-tag is separate state and can lag behind a partial run, so
         # it is checked rather than assumed. **Read, not written**: OIDC
@@ -174,10 +198,7 @@ publish_one() {
         return 0
       fi
 
-      diff -u \
-        "$(content_digest "$staged_unpacked/package" > "$work/staged.list"; echo "$work/staged.list")" \
-        "$(content_digest "$remote_unpacked/package" > "$work/remote.list"; echo "$work/remote.list")" \
-        >&2 || true
+      diff -u "$work/staged.list" "$work/remote.list" >&2 || true
       fail "${po_name}@${po_version} is already on the registry and its contents differ from what this release staged (the listing above is staged vs published, by SHA-256). npm versions are immutable — this cannot be resolved by publishing, and unpublishing does not free the number. Either this version was published from a different build, or the staging tree is not the one that produced it. Decide deliberately: bump the version everywhere and re-tag, or confirm the published package is correct and skip it."
       ;;
   esac
@@ -409,6 +430,27 @@ STUB
     pub "$conflict" latest
   rc_expect_output 1 "cannot be resolved by publishing" \
     "the conflict message says publishing cannot fix it" pub "$conflict" latest
+
+  # A digest tool that is on PATH but cannot run. The comparison it answers
+  # decides whether an immutable version is published over, so a digest nobody
+  # could take must stop the run rather than settle it. Before this the tool's
+  # status was discarded by `$( … )` and every file digested to the empty
+  # string, which reduced the comparison to comparing path *names*: a published
+  # package holding entirely different bytes reported as matching.
+  broken_digest="$work_outer/broken-digest"
+  mkdir -p "$broken_digest"
+  cp "$bin/npm" "$broken_digest/npm"
+  for tool in sha256sum shasum; do
+    printf '#!/bin/sh\necho "%s: cannot read that file" >&2\nexit 1\n' "$tool" \
+      > "$broken_digest/$tool"
+    chmod +x "$broken_digest/$tool"
+  done
+  rc_expect_output 1 "could not digest the staged" \
+    "a digest tool that cannot run stops the comparison instead of answering it" \
+    env PATH="$broken_digest:$PATH" "$0" "$conflict" latest
+  rc_expect_output 1 "not recoverable" \
+    "the broken-digest refusal says why the comparison cannot be skipped" \
+    env PATH="$broken_digest:$PATH" "$0" "$conflict" latest
 
   # A publish that fails for an authentication reason names the bootstrap.
   rm -rf "$work_outer/registry"

@@ -66,6 +66,25 @@ build() {
   out=$1
   [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ] \
     && fail "'$out' already exists and is not empty. Pass a fresh path: publishing from a directory holding a previous run's output would publish whichever tree npm found first."
+
+  # The names this will bootstrap, resolved before anything is written. The
+  # launcher, then one package per target, so they match exactly what the
+  # release will publish. Read from release/targets.json rather than written
+  # out, like every other consumer.
+  #
+  # Resolved once, into a variable, with its status checked. Written inline as
+  # `for pkg in tl $(rc_targets | sed …)` the status was lost twice over: a
+  # command substitution in a `for` word list is never checked, and the pipeline
+  # would have reported `sed` anyway. An unreadable release/targets.json
+  # therefore prepared the launcher alone, exited zero, and printed a list of
+  # `npm publish` commands for a human to paste — one package where five were
+  # meant, and nothing saying so.
+  targets=$(rc_targets) || fail "could not read the distributed targets, so the package names this would bootstrap are unknown. Preparing whichever subset happened to resolve is worse than preparing none: an npm name published by hand cannot be withdrawn."
+  packages=tl
+  for target in $targets; do
+    packages="$packages tl-bin-$target"
+  done
+
   mkdir -p "$out"
 
   identity_name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["npmPackage"])' \
@@ -76,10 +95,7 @@ build() {
   [ -f "$repo_root/THIRD-PARTY-LICENSES" ] || fail "$repo_root/THIRD-PARTY-LICENSES not found — run the licence generator first."
 
   names=''
-  # The launcher, then one package per target, so the names match exactly what
-  # the release will publish. Read from release/targets.json rather than
-  # written out, like every other consumer.
-  for pkg in tl $(rc_targets | sed 's/[^ ]*/tl-bin-&/g'); do
+  for pkg in $packages; do
     dir="$out/$pkg"
     mkdir -p "$dir/bin"
     if [ "$pkg" = tl ]; then
@@ -129,7 +145,7 @@ PYEOF
   packed="$out/.packed"
   mkdir -p "$packed"
   count=0
-  for pkg in tl $(rc_targets | sed 's/[^ ]*/tl-bin-&/g'); do
+  for pkg in $packages; do
     dir="$out/$pkg"
     ( cd "$dir" && npm pack --pack-destination "$packed" ) >/dev/null 2>&1 \
       || fail "could not pack $dir."
@@ -152,7 +168,7 @@ PYEOF
   echo
   echo "Run these under 2FA, from an account that owns the $scope scope:"
   echo
-  for pkg in tl $(rc_targets | sed 's/[^ ]*/tl-bin-&/g'); do
+  for pkg in $packages; do
     echo "  npm publish $out/$pkg --access public --tag $BOOTSTRAP_TAG"
   done
   echo
@@ -193,6 +209,22 @@ selftest() {
 
   out="$work/bootstrap"
   rc_expect_status 0 "the bootstrap packages build and validate" "$0" "$out"
+
+  # Offline for the same reason the other npm gates are: `npm pack` is local,
+  # but a run that can reach the registry is a run whose verdict can depend on
+  # it. Set after the row above so the row above proves the ordinary path.
+  npm_config_offline=true
+  export npm_config_offline
+
+  # An unreadable targets file must stop the run rather than bootstrap the
+  # launcher on its own. Every name here is published by hand and cannot be
+  # withdrawn, so a subset is worse than nothing — and the operator would have
+  # been handed a list of commands with no sign that four were missing.
+  rc_expect_output 1 "could not read the distributed targets" \
+    "an unreadable targets file refuses rather than bootstrapping a subset" \
+    env RC_TARGETS_FILE="$work/no-such-targets.json" "$0" "$work/partial"
+  rc_note "$([ ! -e "$work/partial" ] && echo 0 || echo 1)" \
+    "the refused run created no output directory at all"
 
   expected=$(rc_targets | wc -w | tr -d ' ')
   expected=$((expected + 1))

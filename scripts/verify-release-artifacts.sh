@@ -132,6 +132,26 @@ verify_dir() {
   # than accepted: the two-line shape is what makes the file unambiguous, and a
   # reader that tolerated a missing terminator would disagree with
   # `release/Identity.lean`, which refuses it. One pin, two readers, one answer.
+  # The raw bytes first, before any of them reaches a shell variable.
+  #
+  # A shell variable cannot hold a NUL: `read` drops it silently, and so does
+  # command substitution, so a pin carrying one arrived here already repaired
+  # and every check below passed. `release/Identity.lean` refuses it — it
+  # refuses everything outside printable ASCII — so the two readers of one pin
+  # disagreed about that byte, which is exactly what this pair exists to
+  # prevent. Counting the bytes rather than capturing them is what survives the
+  # round trip: `wc -c` reports a number, and a number is text.
+  #
+  # Deleting the printable range and the newline leaves exactly the bytes that
+  # do not belong, so a non-zero count is the refusal. Under the C locale, so
+  # the class means ASCII rather than whatever the caller's locale considers
+  # printable.
+  pin_stray_count=$(LC_ALL=C tr -d '\040-\176\n' < "$pin_file" | LC_ALL=C wc -c) \
+    || fail "could not read release/identity.pin to check its bytes (looked at $pin_file). A pin that cannot be read is not a weaker check, it is no check."
+  pin_stray_count=$(printf '%s' "$pin_stray_count" | tr -d ' ')
+  if [ "$pin_stray_count" -ne 0 ]; then
+    fail "release/identity.pin contains $pin_stray_count byte(s) outside printable ASCII — a carriage return from Windows line endings, or a NUL, are the usual causes. A NUL in particular vanishes on its way into a shell variable, so this check reads the file's bytes directly: it would otherwise be accepted here and refused by 'tlrelease check-pin', one pin with two answers. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  fi
   pin_issuer=''
   pin_identity=''
   pin_extra=''
@@ -470,6 +490,23 @@ $valid_expr"
   # the two readers of one pin actually agreeing.
   pin_case "a pin carrying a non-ASCII byte is refused" 1 "outside printable ASCII" \
     "$(printf 'https://ex\303\251mple.invalid\n%s\n' "$valid_expr")"
+  # A NUL, written straight into the file. It cannot travel through `pin_case`
+  # at all: its content arrives as a shell argument, and an argument is a
+  # NUL-terminated string — which is the same reason this verifier now counts
+  # the file's own bytes instead of inspecting what `read` managed to store.
+  # Before that it accepted a pin `tlrelease check-pin` refuses, so one pin had
+  # two answers and only the stricter reader was ever going to say so.
+  d=$(fixture pin-nul)
+  alt_root="$work/alt-pin-nul"
+  mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
+  cp "$self" "$alt_root/scripts/"
+  cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
+  printf 'https://example.invalid\000\n%s\n' "$valid_expr" > "$alt_root/release/identity.pin"
+  rc_expect_output 1 "outside printable ASCII" "a NUL byte in the pin is refused" \
+    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
+  rc_expect_output 1 "vanishes on its way into a shell variable" \
+    "the NUL refusal says why the bytes are counted rather than read" \
+    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
   # An unanchored expression is the failure a text-equality drift guard cannot
   # see: it is well-formed, it verifies real artifacts, and it also accepts a
   # certificate whose identity merely contains this repository's.

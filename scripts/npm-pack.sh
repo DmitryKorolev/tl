@@ -329,13 +329,24 @@ selftest() {
   # runs on rather than on the code — a cache in one state made this selftest
   # fail on a reviewer's host and pass here. A gate whose verdict tracks the
   # caller's home directory is not reporting on the release.
+  #
+  # Offline, and not merely cache-isolated. Everything installed below is a
+  # local tarball, but the launcher declares the four platform packages as
+  # optionalDependencies, so `npm install` resolves those names against the
+  # registry — a network round trip inside a gate whose whole claim is that it
+  # depends on nothing but this checkout. With the registry unreachable the run
+  # does not fail, it retries with backoff: measured here, the selftest hung
+  # past six minutes instead of finishing in ten seconds. Offline mode turns
+  # that into an immediate skip of the optional packages, which is what the two
+  # explicit platform tarballs are already there to supply.
   npm_config_cache="$work/npm-cache"
   npm_config_userconfig="$work/npmrc"
+  npm_config_offline=true
   npm_config_update_notifier=false
   npm_config_fund=false
   npm_config_audit=false
-  export npm_config_cache npm_config_userconfig npm_config_update_notifier \
-    npm_config_fund npm_config_audit
+  export npm_config_cache npm_config_userconfig npm_config_offline \
+    npm_config_update_notifier npm_config_fund npm_config_audit
   : > "$npm_config_userconfig"
   failures=0
   note() {

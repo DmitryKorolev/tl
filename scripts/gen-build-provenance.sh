@@ -92,11 +92,19 @@ if [ "$selftest" -eq 1 ]; then
     git_q -C "$d" init -q .
     echo "$d"
   }
+  # An optional PATH for the child only, so a row can hide a tool from the
+  # script under test without this shell losing the same tool — every helper
+  # here needs grep, sed and rm to report the result.
+  child_path=''
   # Run the script in $1, assert its exit status is $2. $3 names the case.
   expect_status() {
     dir=$1; want=$2; name=$3; shift 3
     got=0
-    ( cd "$dir" && "$script" "$@" >"$work/out" 2>"$work/err" ) || got=$?
+    if [ -n "$child_path" ]; then
+      ( cd "$dir" && PATH="$child_path" "$script" "$@" >"$work/out" 2>"$work/err" ) || got=$?
+    else
+      ( cd "$dir" && "$script" "$@" >"$work/out" 2>"$work/err" ) || got=$?
+    fi
     if [ "$got" -ne "$want" ]; then
       echo "  FAIL $name: expected exit $want, got $got" >&2
       sed 's/^/    /' "$work/err" >&2
@@ -104,6 +112,17 @@ if [ "$selftest" -eq 1 ]; then
       return 0
     fi
     echo "  ok   $name (exit $got)"
+  }
+  # Assert the last run's stderr contains $1. The message is the deliverable
+  # for a refusal, so a row that only pins the status leaves it free to drift.
+  expect_stderr_contains() {
+    if grep -q "$1" "$work/err"; then
+      echo "  ok   $2"
+    else
+      echo "  FAIL $2: the refusal did not say it" >&2
+      sed 's/^/    /' "$work/err" >&2
+      failures=$((failures + 1))
+    fi
   }
   # Assert the generated file in $1 contains $2.
   expect_output_contains() {
@@ -128,6 +147,36 @@ if [ "$selftest" -eq 1 ]; then
   # into a Lean string literal.
   d=$(fixture bad-toolchain); printf 'leanprover/lean4:v4.32.2"; evil\n' > "$d/lean-toolchain"
   expect_status "$d" 2 "a toolchain line with unexpected characters is refused"
+
+  # A digest tool that is on PATH but cannot run. The manifest digest is what
+  # the binary reports as its dependency identity, so an empty one is a stamp
+  # that names nothing while claiming to name the dependency set. Previously
+  # `sha256sum … | cut` reported `cut`'s status, which is always zero over
+  # empty input, and only an unrelated character-class guard downstream
+  # happened to catch the blank.
+  d=$(fixture broken-digest)
+  mkdir -p "$d/stub-bin"
+  for tool in sha256sum shasum; do
+    printf '#!/bin/sh\necho "%s: cannot read that file" >&2\nexit 1\n' "$tool" \
+      > "$d/stub-bin/$tool"
+    chmod +x "$d/stub-bin/$tool"
+  done
+  child_path="$d/stub-bin:$PATH"
+  expect_status "$d" 2 "a digest tool that cannot run is refused"
+  child_path=''
+  expect_stderr_contains "present but not working" \
+    "the broken-digest refusal distinguishes broken from absent"
+  # Neither tool present at all, which has a different remedy. `tr` is linked in
+  # because the toolchain line is read before the digest is taken; nothing after
+  # the digest runs, so nothing else is needed.
+  d=$(fixture no-digest-tool)
+  mkdir -p "$d/limited-bin"
+  ln -s "$(command -v tr)" "$d/limited-bin/tr"
+  child_path="$d/limited-bin"
+  expect_status "$d" 2 "no digest tool on PATH is refused"
+  child_path=''
+  expect_stderr_contains "no sha256sum or shasum on PATH" \
+    "the absent-digest refusal names both tools"
 
   d=$(fixture no-repo)
   expect_status "$d" 2 "--stamp outside a git repository is refused" --stamp
@@ -200,19 +249,34 @@ done
 
 # SHA-256 of a file as lowercase hex. coreutils ships sha256sum; macOS ships
 # shasum. Both print "<hex>  <name>", so the first field is the digest.
+#
+# Not `sha256sum "$1" | cut -d' ' -f1`: a pipeline reports its *last* stage, so
+# a digest tool that is present but cannot read the file left `cut` succeeding
+# over empty input and the caller holding an empty digest with a zero status.
+# And not `exit 2` from inside here either — every call site is a command
+# substitution, so that exit ended only the subshell and the script carried on.
+# The status is the answer; the caller turns it into an exit.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
+    so__line=$(sha256sum "$1") || so__line=''
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
+    so__line=$(shasum -a 256 "$1") || so__line=''
   else
     echo "gen-build-provenance: no sha256sum or shasum on PATH — cannot digest $1. Install coreutils (Linux) or use the system shasum (macOS); the stamp cannot name the dependency set without it." >&2
-    exit 2
+    return 1
   fi
+  if [ -z "$so__line" ]; then
+    echo "gen-build-provenance: the digest tool on PATH produced no output for $1 — it is present but not working. Repair the coreutils or shasum installation; the stamp cannot name the dependency set without a digest." >&2
+    return 1
+  fi
+  printf '%s' "${so__line%% *}"
 }
 
-toolchain=$(tr -d ' \t\r\n' < lean-toolchain)
-manifest_digest=$(sha256_of lake-manifest.json)
+toolchain=$(tr -d ' \t\r\n' < lean-toolchain) || {
+  echo "gen-build-provenance: could not read lean-toolchain — the stamp names the toolchain the binary was built with, and cannot be written without it." >&2
+  exit 2
+}
+manifest_digest=$(sha256_of lake-manifest.json) || exit 2
 
 commit=''
 dirty='false'
