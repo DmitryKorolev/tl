@@ -147,6 +147,18 @@ jobs:
           set -euo pipefail
           ./.lake/build/bin/tlrelease plan-channels release/plan.json | tee -a "$GITHUB_OUTPUT"
 
+      # A deferral has to point forwards. `plannedFor` parsing as a version
+      # makes it a commitment; this is what stops the commitment expiring
+      # silently. A channel deferred to a release that has shipped was not
+      # postponed, it was forgotten — it would go on naming the same release
+      # through that release and every one after it, and the plan would read as
+      # a decision nobody made. Only on a tag, because only then is there a
+      # release being cut to compare against; Tests/ReleaseTests.lean applies
+      # the same rule to the product version on every commit.
+      - name: deferred channels still point past this release
+        if: github.ref_type == 'tag'
+        run: ./.lake/build/bin/tlrelease plan-deferrals release/plan.json "${GITHUB_REF_NAME}"
+
   # ---------------------------------------------------------------------------
   # 2. One build stamp for the whole matrix.
   #
@@ -1008,7 +1020,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN is not configured, so this stable release cannot update DmitryKorolev/homebrew-tap — and ADR-0006 lists Homebrew as a published channel. Add the secret (a token with write access to the tap repository) and re-run this job. To release without the Homebrew channel deliberately, remove it from ADR-0006 in the same change rather than letting the push fail quietly."
+            echo "::error::HOMEBREW_TAP_TOKEN is not configured, so this stable release cannot update DmitryKorolev/homebrew-tap — and release/plan.json enables the Homebrew channel, which is why this job is running at all. Store it as a *repository* secret: this job declares no environment, so an environment secret resolves to the empty string here. To release without the Homebrew channel deliberately, defer it in release/plan.json rather than letting the push fail quietly."
             exit 1
           fi
           echo "the tap credential is present"

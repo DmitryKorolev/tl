@@ -28,7 +28,11 @@ published and at which tier, the toolchain
 and `lake-manifest.json` digest), `LICENSE`, `THIRD-PARTY-LICENSES`, an SPDX
 SBOM, `REBUILDING.md`, and per target a `link-audit-<target>.txt` and a
 `build-metadata-<target>.json`. Every one of them is listed in `SHA256SUMS`, so
-the procedure below covers the whole release and not only the binaries.
+the procedure below covers the whole release and not only the binaries — every
+one *except* the Sigstore bundles, which are deliberately not listed: a bundle
+is the signature over its asset, so listing it in the file it authenticates
+would be circular. A bundle is checked by verifying with it, not by digesting
+it.
 
 ## Required checks
 
@@ -150,11 +154,11 @@ lives outside the repository. Which of it applies follows from the channels
 must be active. The npm packages and the tap credential belong to the deferred
 channels and are not prerequisites of this release.
 
-The audit does not know that yet — `scripts/check-release-prereqs.sh` still
-reports those channels' state as *missing* — so that document also records what
-a v0.1.0 release has to disregard deliberately, and why.
+`scripts/check-release-prereqs.sh` reads the plan and reports those channels'
+rows as *deferred*, in their own class, so they never contribute to its verdict.
 
 The audit runs in the signing job before anything is signed. What it cannot
 read is carried in [docs/overview.md](docs/overview.md) as an explicit
-assumption; what it could not *reach* is reported as an operational error and
-stops the release without claiming the prerequisite is absent.
+assumption; what it could not *reach* is reported as unchecked and never as
+absent, so a registry outage cannot be mistaken for a prerequisite nobody
+created.

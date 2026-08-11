@@ -35,10 +35,19 @@ usage() {
 ok=0
 bad=0
 unchecked=0
+deferred=0
 
 pass() { echo "  ok        $1"; ok=$((ok + 1)); }
 fail_row() { echo "  MISSING   $1" >&2; echo "            $2" >&2; bad=$((bad + 1)); }
 unchecked_row() { echo "  unchecked $1"; echo "            $2"; unchecked=$((unchecked + 1)); }
+# A prerequisite this release does not have, because release/plan.json defers
+# the channel that needs it. Its own class, not a pass and not a skip: reported
+# so the reader can see the plan was consulted, and counted separately so a
+# deferred channel never contributes to the verdict. Collapsing it into MISSING
+# is what made the first release impossible — the audit demanded five npm
+# packages and a Homebrew tap for channels v0.1.0 deliberately does not
+# publish, and the sign job runs this with no way to disregard a row.
+deferred_row() { echo "  deferred  $1"; echo "            $2"; deferred=$((deferred + 1)); }
 
 identity_field() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
@@ -70,7 +79,7 @@ audit() {
       pass "the repository is public, so release assets are downloadable"
     else
       fail_row "the repository is ${visibility}, not public" \
-        "A private repository serves release assets only to authenticated clients — an anonymous fetch of /releases/latest is a 404 — so install.sh, 'brew install tl' and the whole of VERIFYING.md cannot work. Deployment protection rules are also a paid feature on private repositories. Make it public, or record an npm-only release in ADR-0006 deliberately: that retires the installer, the tap and the published verification procedure."
+        "A private repository serves release assets only to authenticated clients — an anonymous fetch of /releases/latest is a 404 — so install.sh, 'brew install tl' and the whole of VERIFYING.md cannot work. Deployment protection rules are also a paid feature on private repositories. Make it public, or defer the installer and Homebrew channels in release/plan.json deliberately — that file is where which channels a release publishes is decided, and deferring them retires the tap and the published verification procedure for this release."
     fi
   else
     unchecked_row "the repository is public" \
@@ -78,27 +87,63 @@ audit() {
   fi
 
   # --- npm ---------------------------------------------------------------
-  if ! command -v npm >/dev/null 2>&1; then
-    unchecked_row "the five npm packages exist" \
-      "npm is not on PATH, so the registry could not be asked."
-  else
-    packages="$npm_package"
-    for target in $(rc_targets); do
-      packages="$packages ${scope}/tl-bin-${target}"
-    done
-    for pkg in $packages; do
-      if npm view "$pkg" name >/dev/null 2>&1; then
-        pass "$pkg exists on the registry"
+  #
+  # Only when release/plan.json enables the channel. The plan is where "which
+  # channels does this release publish through" is decided, and the publish
+  # jobs are already derived from it; an audit that demanded npm's
+  # prerequisites regardless would stop the release it was auditing for a
+  # channel that release does not use.
+  npm_state=$(rc_channel_state npm 2>"$work/plan.err") || npm_state=''
+  case $npm_state in
+    '')
+      unchecked_row "the npm channel's prerequisites" \
+        "release/plan.json could not be read ($(tr -d '\n' < "$work/plan.err" | cut -c1-160)), so whether this release publishes to npm is unknown and none of its rows were run."
+      ;;
+    deferred*)
+      deferred_row "the npm packages and their trusted publishers" \
+        "release/plan.json defers the npm channel to ${npm_state#deferred }, so this release publishes nothing to npm and needs none of it. Enable the channel there when it is time — and bootstrap the package names first, per docs/release-prerequisites.md, because npm configures trusted publishing only for a package that already exists."
+      ;;
+    *)
+      if ! command -v npm >/dev/null 2>&1; then
+        unchecked_row "the five npm packages exist" \
+          "npm is not on PATH, so the registry could not be asked."
       else
-        fail_row "$pkg does not exist on the registry" \
-          "npm configures trusted publishing per package and only for a package that already exists, so the first release cannot authenticate for this one. Bootstrap it by hand per docs/release-prerequisites.md, then configure its trusted publisher."
+        packages="$npm_package"
+        # Resolved with its status checked: written as `for target in
+        # $(rc_targets)` an unreadable targets file audited the launcher alone
+        # and reported a clean sweep over one package instead of five.
+        targets=$(rc_targets 2>"$work/targets.err") || targets=''
+        if [ -z "$targets" ]; then
+          unchecked_row "the npm packages exist" \
+            "the distributed targets could not be read ($(tr -d '\n' < "$work/targets.err" | cut -c1-160)), so the package names to audit are unknown. Auditing whichever subset resolved would report a clean sweep over the wrong list."
+        else
+          for target in $targets; do
+            packages="$packages ${scope}/tl-bin-${target}"
+          done
+          for pkg in $packages; do
+            # "The registry says no" and "the registry did not answer" are
+            # different findings with different remedies, and only the first is
+            # about this repository's configuration. Collapsing them aborted a
+            # correct release on a transient 5xx, telling the operator to
+            # bootstrap a package that already existed.
+            if npm view "$pkg" name >"$work/npm.out" 2>"$work/npm.err"; then
+              pass "$pkg exists on the registry"
+            elif grep -q 'E404\|404 Not Found\|is not in this registry\|No match found' "$work/npm.err"; then
+              fail_row "$pkg does not exist on the registry" \
+                "npm configures trusted publishing per package and only for a package that already exists, so the first release cannot authenticate for this one. Bootstrap it by hand per docs/release-prerequisites.md, then configure its trusted publisher."
+            else
+              unchecked_row "$pkg exists on the registry" \
+                "the registry did not answer ($(tr -d '\n' < "$work/npm.err" | cut -c1-160)); that is not evidence the package is absent. Re-run when the registry is reachable."
+            fi
+          done
+        fi
+        unchecked_row "each package's trusted publisher names this workflow" \
+          "npm exposes no public API for a package's trusted-publisher configuration; confirm it on npmjs.com per docs/release-prerequisites.md."
+        unchecked_row "no classic automation token can publish these packages" \
+          "Same: token scopes are not readable from here."
       fi
-    done
-    unchecked_row "each package's trusted publisher names this workflow" \
-      "npm exposes no public API for a package's trusted-publisher configuration; confirm it on npmjs.com per docs/release-prerequisites.md."
-    unchecked_row "no classic automation token can publish these packages" \
-      "Same: token scopes are not readable from here."
-  fi
+      ;;
+  esac
 
   # --- GitHub ------------------------------------------------------------
   if ! command -v gh >/dev/null 2>&1; then
@@ -160,15 +205,34 @@ sys.exit(0 if data.get("deployment_branch_policy") else 1)
 ' "$env_json"; then
       # A custom policy exists; check that its patterns are tag patterns and
       # that they are the v* shape this pipeline releases under.
-      policy=$(gh api "repos/${repository}/environments/release/deployment-branch-policies" \
-                 --jq '[.branch_policies[] | select(.type == "tag") | .name] | join(",")' 2>/dev/null || echo '')
-      case ",$policy," in
-        *,v\**,*) pass "the 'release' environment restricts deployments to v* tags ($policy)" ;;
-        ,,) fail_row "the 'release' environment has a deployment policy with no tag patterns" \
-              "Only a tag policy matching v* keeps a branch push out of the environment that can sign." ;;
-        *) fail_row "the 'release' environment's tag patterns are '$policy', not v*" \
-             "The pattern must cover exactly the tags this pipeline releases under." ;;
-      esac
+      # Every policy entry, tagged with its own type. Filtering the branch
+      # entries out before looking made an environment that admits `main`
+      # *and* `v*` report as one restricted to v* tags — the branch half, which
+      # is the half that lets a push reach the signing job, was invisible.
+      if policy=$(gh api "repos/${repository}/environments/release/deployment-branch-policies" \
+                    --jq '[.branch_policies[] | .type + ":" + .name] | join(",")' \
+                    2>"$work/policy.err"); then
+        branch_patterns=$(printf '%s' "$policy" | tr ',' '\n' | sed -n 's/^branch://p')
+        tag_patterns=$(printf '%s' "$policy" | tr ',' '\n' | sed -n 's/^tag://p')
+        if [ -n "$branch_patterns" ]; then
+          fail_row "the 'release' environment also admits branch deployments ($(printf '%s' "$branch_patterns" | tr '\n' ' '))" \
+            "A branch policy lets a push reach the environment that can sign, whatever the tag policy beside it says. Remove the branch entries and keep only a v* tag policy."
+        elif [ -z "$tag_patterns" ]; then
+          fail_row "the 'release' environment has a deployment policy with no tag patterns" \
+            "Only a tag policy matching v* keeps a branch push out of the environment that can sign."
+        elif printf '%s\n' "$tag_patterns" | grep -qx '\*'; then
+          fail_row "the 'release' environment's tag policy includes '*', which admits every tag" \
+            "A pattern of '*' is not a restriction. Use v*, so only the tags this pipeline releases under can enter the environment that can sign."
+        elif printf '%s\n' "$tag_patterns" | grep -qx 'v\*'; then
+          pass "the 'release' environment restricts deployments to v* tags ($(printf '%s' "$tag_patterns" | tr '\n' ' '))"
+        else
+          fail_row "the 'release' environment's tag patterns are '$(printf '%s' "$tag_patterns" | tr '\n' ' ')', not v*" \
+            "The pattern must cover exactly the tags this pipeline releases under."
+        fi
+      else
+        unchecked_row "the 'release' environment's deployment policy" \
+          "the policy could not be read ($(tr -d '\n' < "$work/policy.err" | cut -c1-160)); this is not evidence that it is correct."
+      fi
     else
       fail_row "the 'release' environment allows deployments from any ref" \
         "Set a deployment-tag policy of v*, so a branch push cannot enter the environment that can sign."
@@ -227,15 +291,33 @@ sys.exit(0 if "creation" in kinds else 1)
     fi
   fi
 
-  tap="${repository%%/*}/homebrew-tap"
-  if gh api "repos/${tap}" >/dev/null 2>&1; then
-    pass "the Homebrew tap ${tap} exists"
-  else
-    fail_row "the Homebrew tap ${tap} does not exist or is not visible" \
-      "A stable release pushes the generated formula there and now fails if it cannot. Create it, or remove Homebrew from ADR-0006's channels deliberately."
-  fi
-  unchecked_row "HOMEBREW_TAP_TOKEN grants write access to the tap" \
-    "A secret's scope is not readable from a workflow; confirm by running the release once, or by testing the token by hand."
+  # The Homebrew tap, on the same terms as npm: only when release/plan.json
+  # enables the channel, and with "not found" kept apart from "could not ask".
+  brew_state=$(rc_channel_state homebrew 2>"$work/plan.err") || brew_state=''
+  case $brew_state in
+    '')
+      unchecked_row "the Homebrew channel's prerequisites" \
+        "release/plan.json could not be read ($(tr -d '\n' < "$work/plan.err" | cut -c1-160)), so whether this release publishes a formula is unknown and none of its rows were run."
+      ;;
+    deferred*)
+      deferred_row "the Homebrew tap and its credential" \
+        "release/plan.json defers the Homebrew channel to ${brew_state#deferred }, so this release pushes no formula and needs neither the tap nor HOMEBREW_TAP_TOKEN. Enable the channel there when it is time, and create the tap first per docs/release-prerequisites.md."
+      ;;
+    *)
+      tap="${repository%%/*}/homebrew-tap"
+      if gh api "repos/${tap}" >"$work/tap.out" 2>"$work/tap.err"; then
+        pass "the Homebrew tap ${tap} exists"
+      elif grep -q '404\|Not Found' "$work/tap.err"; then
+        fail_row "the Homebrew tap ${tap} does not exist or is not visible" \
+          "A release with this channel enabled pushes the generated formula there and fails if it cannot. Create the tap per docs/release-prerequisites.md, or defer the Homebrew channel in release/plan.json — that file is where the decision lives."
+      else
+        unchecked_row "the Homebrew tap ${tap} exists" \
+          "the API call failed for a reason other than 'not found' ($(tr -d '\n' < "$work/tap.err" | cut -c1-160)); this is not evidence that the tap is absent."
+      fi
+      unchecked_row "HOMEBREW_TAP_TOKEN grants write access to the tap" \
+        "A secret's scope is not readable from a workflow; confirm by running the release once, or by testing the token by hand. Store it where publish-homebrew reads it — a repository secret, since that job declares no environment."
+      ;;
+  esac
 }
 
 selftest() {
@@ -286,17 +368,213 @@ selftest() {
   rc_note "$(grep -q 'rc_targets' "$script_dir/$(basename -- "$0")" && echo 0 || echo 1)" \
     "the package list is derived from release/targets.json, not written out here"
 
+  # --- the audit itself, over stubbed external state ------------------------
+  #
+  # Everything above tests the reporting helpers; none of it entered `audit`,
+  # so every branch that decides a release could change without a row moving.
+  # `gh` and `npm` are stubbed and answer from environment variables, so each
+  # row drives one branch instead of whatever a real account happens to hold.
+  bin="$work/bin"
+  mkdir -p "$bin"
+  cat > "$bin/gh" <<'GHSTUB'
+#!/bin/sh
+# Specific paths first: a case glob must match the whole word, but `repos/*`
+# would otherwise swallow every one of them.
+case "$1" in
+  auth) exit "${GH_STUB_AUTH:-0}" ;;
+esac
+case "$2" in
+  repos/*/environments/release/deployment-branch-policies)
+    if [ -n "${GH_STUB_POLICY_FAILS:-}" ]; then
+      echo "gh: could not reach the API (HTTP 502)" >&2
+      exit 1
+    fi
+    # Unset-only default: an *empty* policy is one of the cases under test.
+    printf '%s\n' "${GH_STUB_POLICY-tag:v*}"
+    ;;
+  repos/*/environments/release)
+    case "${GH_STUB_ENV:-ok}" in
+      missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      error) echo "gh: could not reach the API (HTTP 502)" >&2; exit 1 ;;
+      *) cat "$GH_STUB_ENV_JSON" ;;
+    esac
+    ;;
+  repos/*/rulesets) printf '%s\n' "${GH_STUB_RULESETS:-[]}" ;;
+  repos/*/rulesets/*) printf '%s\n' "${GH_STUB_RULESET:-{\}}" ;;
+  repos/*/homebrew-tap)
+    case "${GH_STUB_TAP:-ok}" in
+      missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      error) echo "gh: could not reach the API (HTTP 502)" >&2; exit 1 ;;
+      *) echo '{}' ;;
+    esac
+    ;;
+  repos/*) printf '%s\n' "${GH_STUB_VISIBILITY:-public}" ;;
+esac
+exit 0
+GHSTUB
+  cat > "$bin/npm" <<'NPMSTUB'
+#!/bin/sh
+case "${NPM_STUB:-ok}" in
+  absent)
+    echo "npm error code E404" >&2
+    echo "npm error 404 Not Found - GET https://registry.npmjs.org/x" >&2
+    exit 1
+    ;;
+  unreachable)
+    echo "npm error network request to https://registry.npmjs.org failed" >&2
+    exit 1
+    ;;
+  *) echo "@taskloop/tl" ;;
+esac
+NPMSTUB
+  chmod +x "$bin/gh" "$bin/npm"
+
+  # An environment that satisfies every property the audit asks about, so a row
+  # varying one thing varies only that thing.
+  cat > "$work/env-ok.json" <<'ENVJSON'
+{
+  "protection_rules": [
+    {"type": "required_reviewers", "reviewers": [{"type": "User"}]}
+  ],
+  "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
+}
+ENVJSON
+  cat > "$work/env-no-reviewers.json" <<'ENVJSON'
+{
+  "protection_rules": [{"type": "wait_timer", "wait_timer": 5}],
+  "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
+}
+ENVJSON
+  cp "$repo_root/release/plan.json" "$work/plan-deferred.json"
+  cat > "$work/plan-enabled.json" <<'PLANJSON'
+{"channels": [
+  {"channel": "github-release", "enabled": true},
+  {"channel": "installer", "enabled": true},
+  {"channel": "npm", "enabled": true},
+  {"channel": "homebrew", "enabled": true}
+]}
+PLANJSON
+  printf '%s\n' '{"channels": 3}' > "$work/plan-broken.json"
+
+  # A ruleset that satisfies the tag row, so the environment and channel rows
+  # below are the only thing varying.
+  ruleset_list='[{"target": "tag", "id": 7}]'
+  ruleset_detail='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/v*"]}}, "rules": [{"type": "creation"}]}'
+
+  audit_with() {
+    # audit_with <want-status> <needle> <name> <VAR=VALUE>...
+    aw__want=$1; aw__needle=$2; aw__name=$3; shift 3
+    rc_expect_output "$aw__want" "$aw__needle" "$aw__name" \
+      env PATH="$bin:$PATH" \
+          GH_STUB_ENV_JSON="$work/env-ok.json" \
+          GH_STUB_RULESETS="$ruleset_list" \
+          GH_STUB_RULESET="$ruleset_detail" \
+          "$@" "$0"
+  }
+
+  # The whole reason this became plan-aware: with npm and Homebrew deferred,
+  # their prerequisites are not this release's, and demanding them made the
+  # first release impossible — the sign job runs this and has no way to
+  # disregard a row a human was told to disregard.
+  audit_with 0 "defers the npm channel" \
+    "a deferred npm channel is reported as deferred, not missing" \
+    RC_PLAN_FILE="$work/plan-deferred.json"
+  audit_with 0 "defers the Homebrew channel" \
+    "a deferred Homebrew channel is reported as deferred, not missing" \
+    RC_PLAN_FILE="$work/plan-deferred.json"
+  # The strongest form of it: with both channels deferred, an absent package
+  # and an absent tap are not prerequisites at all. Asserted as the *absence*
+  # of a MISSING row, which is the thing that used to stop the release.
+  rc_run env PATH="$bin:$PATH" \
+    GH_STUB_ENV_JSON="$work/env-ok.json" \
+    GH_STUB_RULESETS="$ruleset_list" GH_STUB_RULESET="$ruleset_detail" \
+    RC_PLAN_FILE="$work/plan-deferred.json" NPM_STUB=absent GH_STUB_TAP=missing \
+    "$0"
+  rc_note "$([ "$RC_STATUS" -eq 0 ] && ! grep -q 'MISSING' "$RC_ERR" "$RC_OUT" && echo 0 || echo 1)" \
+    "with both channels deferred, an absent package and an absent tap are not prerequisites"
+  # And with them enabled the same state is missing, so the rows above are not
+  # passing because nothing is checked.
+  audit_with 1 "does not exist on the registry" \
+    "an enabled npm channel audits the packages" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB=absent
+  audit_with 1 "the Homebrew tap" \
+    "an enabled Homebrew channel audits the tap" \
+    RC_PLAN_FILE="$work/plan-enabled.json" GH_STUB_TAP=missing
+  # A plan nobody can read is not a plan that says "off".
+  audit_with 0 "could not be read" \
+    "an unreadable plan leaves the channel rows unchecked rather than off" \
+    RC_PLAN_FILE="$work/plan-broken.json"
+
+  # "The registry says no" and "the registry did not answer" have different
+  # remedies, and only the first is about this repository. Collapsed, a
+  # transient 5xx aborted a correct release telling the operator to bootstrap a
+  # package that already existed.
+  audit_with 0 "the registry did not answer" \
+    "an unreachable registry is unchecked, not a missing package" \
+    RC_PLAN_FILE="$work/plan-enabled.json" NPM_STUB=unreachable
+  audit_with 0 "other than 'not found'" \
+    "an API failure on the tap is unchecked, not a missing tap" \
+    RC_PLAN_FILE="$work/plan-enabled.json" GH_STUB_TAP=error
+
+  # The deployment policy. Filtering the branch entries away made an
+  # environment that admits `main` report as one restricted to v* tags.
+  audit_with 1 "also admits branch deployments" \
+    "a branch deployment policy is refused even beside a v* tag policy" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY="branch:main,tag:v*"
+  audit_with 1 "admits every tag" \
+    "a '*' tag policy is refused rather than read as a restriction" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY="tag:*"
+  audit_with 1 "not v\*" \
+    "a tag policy for some other shape is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY="tag:release-*"
+  audit_with 1 "no tag patterns" \
+    "a deployment policy with no tag patterns is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY=""
+  audit_with 0 "restricts deployments to v\* tags" \
+    "a v* tag policy alone passes" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY="tag:v*"
+  audit_with 0 "deployment policy" \
+    "a policy that could not be read is unchecked, not correct" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_POLICY_FAILS=1
+
+  # The environment and the ruleset: missing, unreadable, and unprotected.
+  audit_with 1 "does not exist" "a missing release environment is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_ENV=missing
+  audit_with 0 "other than 'not found'" \
+    "an unreadable release environment is unchecked, not missing" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_ENV=error
+  audit_with 1 "no required-reviewers rule" \
+    "an environment with no required reviewers is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_ENV_JSON="$work/env-no-reviewers.json"
+  audit_with 1 "no active ruleset restricts creation" \
+    "an absent tag ruleset is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_RULESETS="[]"
+  audit_with 1 "no active ruleset restricts creation" \
+    "a tag ruleset in evaluate mode is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "evaluate", "conditions": {"ref_name": {"include": ["refs/tags/v*"]}}, "rules": [{"type": "creation"}]}'
+
+  # The repository's own visibility, which everything else assumes.
+  audit_with 1 "not public" "a private repository is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_VISIBILITY=private
+  # And a gh that cannot answer at all leaves the GitHub half unchecked.
+  audit_with 0 "not authenticated" "an unauthenticated gh leaves the GitHub rows unchecked" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_AUTH=1
+
   rc_selftest_end "The prerequisite audit no longer reports what it claims to report."
 }
 
 summary_status() {
   echo
   if [ "$bad" -ne 0 ]; then
-    echo "release prerequisites: $bad missing, $ok verified, $unchecked unchecked." >&2
-    echo "A missing prerequisite is not a warning: the pipeline's authorization and its npm channel both rest on state configured outside this repository." >&2
+    echo "release prerequisites: $bad missing, $ok verified, $unchecked unchecked, $deferred deferred." >&2
+    echo "A missing prerequisite is not a warning: the pipeline's authorization rests on state configured outside this repository." >&2
     return 1
   fi
-  echo "release prerequisites: $ok verified, $unchecked unchecked."
+  echo "release prerequisites: $ok verified, $unchecked unchecked, $deferred deferred."
+  if [ "$deferred" -ne 0 ]; then
+    echo "The deferred rows belong to channels release/plan.json switches off for this release; they become prerequisites the moment that file enables them."
+  fi
   if [ "$unchecked" -ne 0 ]; then
     echo "The unchecked rows are carried as assumptions in docs/overview.md; confirm them by hand per docs/release-prerequisites.md before the first release and after any permission change."
   fi

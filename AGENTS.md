@@ -130,6 +130,20 @@ CI gates (mirror these locally before declaring done):
   `scripts/task-id-placeholders.txt`. That registry is the pinned exclusion
   set, and registering a token is where a human asserts it is a placeholder and
   not a tracker reference, so a new test id lands there in the same change.
+- `./scripts/check-release-policy.sh --strict` — the release policy, which is
+  its own required CI job and is *not* implied by the four gates above. One list
+  of gates, called identically from `ci.yml` and from the release workflow's
+  `gates` job: `--list` names them. It runs every release script's `--selftest`
+  (each proves it can still refuse before its silence is believed), shellcheck
+  over every tracked shell file, actionlint over the workflows, and the
+  generators for the installer, the artifact verifier, the npm packages and the
+  Homebrew formula. Every channel's generator runs on every commit whether or
+  not `release/plan.json` publishes through it — a deferred channel that stopped
+  being exercised would rot until the release that enabled it. `--strict`
+  refuses to skip a gate whose tool is missing; without it, a missing
+  `shellcheck` or `ruby` is a smaller policy rather than a broken run. Touching
+  anything under `scripts/`, `release/`, `npm/`, `Formula/`, `install.sh` or
+  `.github/workflows/` means running it.
 
 `.github/workflows/ci.yml` mechanizes every gate above
 ([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). The task-ID check is

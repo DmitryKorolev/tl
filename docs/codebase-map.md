@@ -265,11 +265,16 @@ release/                -- what a release is, machine-readable
                         --   read by every consumer instead of being repeated
   plan.json             --   which channels this release actually publishes.
                         --   ADR-0006 describes how each channel works; this
-                        --   says which are switched on, and the applicable
-                        --   prerequisites, the enabled jobs and the release
-                        --   profile's gate list are all derived from it. A
-                        --   disabled channel is absent from each, never
-                        --   reported missing
+                        --   says which are switched on. The publish jobs
+                        --   (via `tlrelease plan-channels`) and the external
+                        --   prerequisite audit (via `rc_channel_state`) are
+                        --   both derived from it: a deferred channel has no
+                        --   job to run and no prerequisite to be missing. The
+                        --   per-commit gate list in check-release-policy.sh is
+                        --   NOT derived from it — those gates are hermetic and
+                        --   run over every channel's generator on every commit,
+                        --   which is what keeps a deferred channel from
+                        --   rotting while it is off
 
 install.sh              -- the curl-pipe installer; embeds its own copy of the
                         -- signing pin because it has no checkout to read

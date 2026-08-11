@@ -19,15 +19,16 @@ publishes. A section below whose channel is disabled should produce **no rows
 at all** — not a row reading *missing*, and not one reading *unchecked*.
 "Missing" is a defect report, and a channel nobody is publishing has no defect.
 
-**That is the rule, and the audit does not implement it yet.**
-`scripts/check-release-prereqs.sh` does not read `release/plan.json`: it still
-emits five npm rows and a tap row, all reading *missing*, which would stop the
-signing job on a v0.1.0 release for channels that release does not publish
-through. The release workflow's deferred-channel jobs *are* derived from the
-plan, so nothing would be published to npm or Homebrew — but the audit would
-refuse first. Until the audit is ported, a v0.1.0 release needs those rows
-disregarded deliberately, and that is a manual judgement rather than something
-this document should let a reader assume away.
+`scripts/check-release-prereqs.sh` reads `release/plan.json` and applies that
+rule. A deferred channel's rows are reported as **deferred**, counted in their
+own class, and never contribute to the verdict — so the signing job's audit
+passes on a release that publishes through neither npm nor Homebrew. Enabling a
+channel in the plan is what turns its rows back into prerequisites, which is
+also the moment its bootstrap has to be done.
+
+A plan the audit cannot *read* is a third answer again: those rows come back
+*unchecked*, never *deferred*. "Off" is a decision somebody made, and a file
+nobody could parse is not evidence of one.
 
 For **v0.1.0** — the GitHub Release and the installer (ADR-0006) — that means
 sections 0, 2 and 3 apply. Section 1 (npm) and section 4 (the Homebrew tap)
@@ -184,7 +185,12 @@ whose tag patterns cover `v*`), and each tag ruleset's target, enforcement
 state, ref conditions and whether it carries a creation restriction — because a
 count of protection rules is satisfied by a wait timer and a count of rulesets
 by an unrelated branch rule. It also distinguishes "not found" from "could not
-read", so an API failure is reported as unchecked rather than as absent.
+read" on every row that talks to a network — the repository's visibility, the
+`release` environment, its deployment policy, the tag rulesets, each npm
+package and the Homebrew tap — so an API failure or an unreachable registry is
+reported as unchecked rather than as absent. Collapsing those two would abort a
+correct release on a transient 5xx, with a remedy telling the operator to
+create something that already exists.
 
 What remains genuinely out of reach:
 
