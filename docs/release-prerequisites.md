@@ -190,8 +190,14 @@ a check that cannot run must not be silently absent:
 `scripts/check-release-prereqs.sh` reads more than this table once claimed. It
 inspects the actual rule *types* on the `release` environment (a
 required-reviewers rule with at least one reviewer, and a deployment policy
-whose tag patterns cover `v*`), and each tag ruleset's target, enforcement
-state, ref conditions and whether it carries a creation restriction — because a
+whose tag patterns cover `v*` and which admits no branch deployments at all),
+and each tag ruleset's target, enforcement state, ref conditions and whether it
+carries a creation restriction. "Ref conditions" means the include set covers
+*every* `v*` tag — `~ALL`, `refs/tags/*` or `refs/tags/v*`, with no exclude
+list — rather than merely containing a pattern that begins `refs/tags/v`: a
+ruleset naming the single tag `v1.0.0`, or the one line `v1.*`, restricts that
+tag or that line and leaves the rest of the namespace open. This matters
+because a
 count of protection rules is satisfied by a wait timer and a count of rulesets
 by an unrelated branch rule. It also distinguishes "not found" from "could not
 read" on every row that talks to a network — the repository's visibility, the

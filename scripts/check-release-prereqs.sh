@@ -273,8 +273,23 @@ import json, sys
 data = json.load(open(sys.argv[1]))
 if data.get("enforcement") != "active":
     sys.exit(1)
-patterns = (((data.get("conditions") or {}).get("ref_name") or {}).get("include")) or []
-if not any(p in ("~ALL", "refs/tags/v*") or p.startswith("refs/tags/v") for p in patterns):
+ref_name = ((data.get("conditions") or {}).get("ref_name")) or {}
+patterns = ref_name.get("include") or []
+# The question is whether the include set covers *every* v* tag, not whether
+# one pattern looks v-ish. `p.startswith("refs/tags/v")` answered the second:
+# a ruleset naming the single tag `refs/tags/v1.0.0` — or the one release line
+# `refs/tags/v1.*` — passed as one restricting creation of v* tags, leaving
+# every other v* tag creatable by anyone. So the accepted patterns are an
+# explicit closed set, and a pattern outside it is not assumed to cover
+# anything.
+COVERS_EVERY_V_TAG = {"~ALL", "refs/tags/*", "refs/tags/**", "refs/tags/v*", "refs/tags/v**"}
+if not any(p in COVERS_EVERY_V_TAG for p in patterns):
+    sys.exit(1)
+# An exclude list can hole any of those, and reasoning about which holes matter
+# is exactly the kind of interpretation a gate should refuse: an excluded
+# `refs/tags/v0.*` would leave the whole 0.x line unrestricted while the
+# include set still reads as complete.
+if ref_name.get("exclude"):
     sys.exit(1)
 kinds = {r.get("type") for r in (data.get("rules") or [])}
 sys.exit(0 if "creation" in kinds else 1)
@@ -287,7 +302,7 @@ sys.exit(0 if "creation" in kinds else 1)
       pass "an active tag ruleset (#$tag_ruleset) restricts creation of v* tags"
     else
       fail_row "no active ruleset restricts creation of v* tags" \
-        "A ruleset that exists but targets branches, is in evaluate mode, does not cover v*, or carries no creation restriction leaves tag creation open. The sign job's ancestry check is a backstop: it sees what the tag points at, never who pushed it."
+        "A ruleset that exists but targets branches, is in evaluate mode, carries no creation restriction, or whose ref conditions do not cover *every* v* tag leaves tag creation open. Coverage means an include pattern of ~ALL, refs/tags/*, refs/tags/** or refs/tags/v*, and no exclude list: naming one tag or one release line restricts that tag or that line and nothing else. The sign job's ancestry check is a backstop — it sees what the tag points at, never who pushed it."
     fi
   fi
 
@@ -553,6 +568,36 @@ PLANJSON
     "a tag ruleset in evaluate mode is refused" \
     RC_PLAN_FILE="$work/plan-deferred.json" \
     GH_STUB_RULESET='{"enforcement": "evaluate", "conditions": {"ref_name": {"include": ["refs/tags/v*"]}}, "rules": [{"type": "creation"}]}'
+  audit_with 1 "no active ruleset restricts creation" \
+    "a tag ruleset carrying no creation restriction is refused" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/v*"]}}, "rules": [{"type": "deletion"}]}'
+  # The include set has to cover *every* v* tag. Accepting any pattern that
+  # merely starts with refs/tags/v let a ruleset naming one tag, or one release
+  # line, pass as one restricting the whole v* namespace — leaving every other
+  # v* tag creatable by anyone, which is the capability the environment
+  # protections exist to gate.
+  audit_with 1 "no active ruleset restricts creation" \
+    "a ruleset naming a single tag does not count as covering v*" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/v1.0.0"]}}, "rules": [{"type": "creation"}]}'
+  audit_with 1 "no active ruleset restricts creation" \
+    "a ruleset covering one release line does not count as covering v*" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/v1.*"]}}, "rules": [{"type": "creation"}]}'
+  audit_with 1 "no active ruleset restricts creation" \
+    "an exclude list holes the coverage and is refused rather than interpreted" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": ["refs/tags/v0.*"]}}, "rules": [{"type": "creation"}]}'
+  # …and the patterns that genuinely do cover it.
+  audit_with 0 "restricts creation of v\* tags" \
+    "a ruleset over every tag covers v*" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["refs/tags/*"]}}, "rules": [{"type": "creation"}]}'
+  audit_with 0 "restricts creation of v\* tags" \
+    "a ruleset over every ref covers v*" \
+    RC_PLAN_FILE="$work/plan-deferred.json" \
+    GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["~ALL"]}}, "rules": [{"type": "creation"}]}'
 
   # The repository's own visibility, which everything else assumes.
   audit_with 1 "not public" "a private repository is refused" \
