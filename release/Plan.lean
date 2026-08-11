@@ -74,6 +74,43 @@ private def channelsCommand : Command := {
                 return 0
     | _ => misuse "usage: tlrelease plan-channels <plan.json>" }
 
-def planCommands : List Command := [channelsCommand]
+/-- The release being cut, however the caller spells it: a tag (`v0.1.0`) or a
+    bare version (`0.1.0`). Both are refused if malformed rather than one being
+    silently read as the other — `v0.1.0` passed to the bare parser would fail
+    on `v` as a numeric component, which is a true refusal with a message about
+    the wrong thing. -/
+private def parseCurrent (text : String) : Except String Version :=
+  if text.startsWith "v" then Version.parseTag "the release being cut" text
+  else Version.parse "the release being cut" text
+
+private def deferralsCommand : Command := {
+  name := "plan-deferrals"
+  arguments := "<plan.json> <version-or-tag>"
+  summary := "Refuse if a deferred channel names a release this one has already reached."
+  run := fun args => do
+    match args with
+    | [planPath, versionText] =>
+        match ← readTextFile planPath with
+        | .error message => refuse s!"tlrelease plan-deferrals: {message}"
+        | .ok text =>
+            match ReleasePlan.parse planPath text, parseCurrent versionText with
+            | .error message, _ => refuse s!"tlrelease plan-deferrals: {message}"
+            | _, .error message => refuse s!"tlrelease plan-deferrals: {message}"
+            | .ok plan, .ok current =>
+                match plan.staleDeferrals current with
+                | [] =>
+                    IO.println s!"tlrelease plan-deferrals: every deferred channel in {planPath} names a release ahead of {current.render}"
+                    return 0
+                | stale =>
+                    -- Every offending row, not the first: a plan with two
+                    -- expired deferrals would otherwise take two releases to
+                    -- fix, one refusal at a time.
+                    for (channel, planned) in stale do
+                      IO.eprintln
+                        s!"tlrelease plan-deferrals: {ReleasePlan.staleDeferralMessage channel planned current}"
+                    return 1
+    | _ => misuse "usage: tlrelease plan-deferrals <plan.json> <version-or-tag>" }
+
+def planCommands : List Command := [channelsCommand, deferralsCommand]
 
 end Release

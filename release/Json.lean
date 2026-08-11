@@ -126,6 +126,18 @@ private def unicodeEscape (code : Nat) : String :=
   let digit (shift : Nat) := hexDigit ((code / shift) % 16)
   String.ofList ['\\', 'u', digit 4096, digit 256, digit 16, digit 1]
 
+/-- A code point written the way `U+` announces it: uppercase hexadecimal, with
+    leading zeroes trimmed. Six digits cover every code point, the largest being
+    U+10FFFF. Printed in decimal this named a code point that does not exist, so
+    a reader who looked the number up found some other character, or none. -/
+private def codePointName (code : Nat) : String :=
+  let digit (shift : Nat) :=
+    let value := (code / shift) % 16
+    if value < 10 then Char.ofNat (value + 48) else Char.ofNat (value + 55)
+  let digits := [digit 0x100000, digit 0x10000, digit 0x1000, digit 0x100, digit 0x10, digit 1]
+  let trimmed := digits.dropWhile (· == '0')
+  String.ofList (if trimmed.isEmpty then ['0'] else trimmed)
+
 /-- One character, escaped the way Python's encoder escapes it. Characters
     above the BMP would need a surrogate pair; they cannot occur in any
     document this tool writes, and are rejected rather than mis-encoded. -/
@@ -142,7 +154,7 @@ private def escapeChar (c : Char) : Except String String :=
     else if code == 12 then .ok "\\f"
     else if code < 0x20 || code > 0x7e then
       if code > 0xffff then
-        .error s!"cannot render the character U+{code} — it is outside the Basic Multilingual Plane, and this encoder does not emit surrogate pairs. No release document is expected to contain one."
+        .error s!"cannot render the character U+{codePointName code} — it is outside the Basic Multilingual Plane, and this encoder does not emit surrogate pairs. No release document is expected to contain one."
       else .ok (unicodeEscape code)
     else .ok (String.singleton c)
 

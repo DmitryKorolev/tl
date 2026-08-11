@@ -190,18 +190,23 @@ def releasePlanTests : IO (List Outcome) := do
   -- A deferral has to point forwards. `plannedFor` parses as a version, but a
   -- version already shipped is not a deferral — it is a channel that quietly
   -- missed its release and would keep saying "planned for 0.2.0" through 0.2.0
-  -- and everything after it. Compared against the product version here,
-  -- because this is the file that knows it.
-  for row in rows do
-    match jStr row "plannedFor", jStr row "channel" with
-    | some planned, some channel =>
-        outs := outs ++ [
-          check s!"release plan: '{channel}' is deferred to a release still ahead of {Tl.Cli.productVersion}"
-            (match Release.Version.parse "plannedFor" planned, Release.Version.parse "productVersion" Tl.Cli.productVersion with
-             | Except.ok later, Except.ok current => later.exceeds current
-             | _, _ => false)
-            s!"channel {channel} is deferred to {planned}, which is not later than the current product version {Tl.Cli.productVersion}; a deferral to a release that has shipped is a channel that was forgotten, not one that was postponed"]
-    | _, _ => pure ()
+  -- and everything after it.
+  --
+  -- Decided by the model rather than re-derived here. `tlrelease plan-deferrals`
+  -- applies the same rule to the tag at release time, and two definitions of
+  -- "still ahead" would eventually disagree about whether a release may be cut.
+  -- The failure text is the list of offending messages, so a plan that stopped
+  -- parsing reports that rather than an empty sweep.
+  outs := outs ++ [
+    checkEq s!"release plan: no channel is deferred to a release {Tl.Cli.productVersion} has already reached"
+      (match Release.ReleasePlan.parse "release/plan.json" text,
+             Release.Version.parse "the product version" Tl.Cli.productVersion with
+       | .ok plan, .ok current =>
+           (plan.staleDeferrals current).map fun row =>
+             Release.ReleasePlan.staleDeferralMessage row.1 row.2 current
+       | .error message, _ => [message]
+       | _, .error message => [message])
+      []]
   -- The user-facing half. A reader deciding how to install tl reads this
   -- sentence, so it is the one that must not outlive the decision behind it.
   let verifying ← readRequired ("VERIFYING.md" : FilePath)
@@ -230,11 +235,51 @@ remembering to extend this test. -/
 private def dropIndent (line : String) : String :=
   String.ofList (line.toList.dropWhile (· == ' '))
 
+private def trimmed (text : String) : String := text.trimAscii.toString
+
+private def dropFromComment : List Char → Option Char → List Char
+  | [], _ => []
+  | c :: rest, previous =>
+      if c == '#' && (previous.isNone || previous == some ' ' || previous == some '\t') then []
+      else c :: dropFromComment rest (some c)
+
+/-- A line with any trailing comment removed, and both ends trimmed.
+
+    Removing it rather than only refusing lines that *begin* with `#` is what
+    makes `contents: write # create the release` read as a grant. Without this
+    the value is `write # create the release`, which matches nothing, and a job
+    silently stops counting as privileged the day someone annotates its
+    permissions. -/
+private def withoutComment (body : String) : String :=
+  trimmed (String.ofList (dropFromComment body.toList none))
+
+/-- A scalar with the quotes *around the whole of it* removed. YAML spells
+    `write`, `"write"` and `'write'` identically, and a scan that knew only the
+    first read a quoted permission as no permission at all. -/
+private def unquote (text : String) : String :=
+  if text.length ≥ 2 &&
+      ((text.startsWith "\"" && text.endsWith "\"")
+        || (text.startsWith "'" && text.endsWith "'")) then
+    String.ofList ((text.toList.drop 1).dropLast)
+  else text
+
+/-- A `key: value` line split at the first colon, with the value unquoted. -/
+private def keyValue (body : String) : String × String :=
+  match body.splitOn ":" with
+  | [] => ("", "")
+  | key :: rest => (trimmed key, unquote (trimmed (String.intercalate ":" rest)))
+
 /-- A bare YAML key: a job name or a permission name, with nothing quoted,
-    nested or flow-style about it. -/
+    nested or flow-style about it.
+
+    Uppercase belongs here because a GitHub job id may contain it. Refusing one
+    did not make this guard stricter — it made the header unreadable, and an
+    unreadable header folds its job into the one above and hands it that job's
+    `if:`. Anything still unreadable is reported rather than folded. -/
 private def isBareKey (name : String) : Bool :=
   !name.isEmpty && name.toList.all fun c =>
-    ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '-' || c == '_'
+    ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9')
+      || c == '-' || c == '_'
 
 /-- Whether a workflow line actually *grants* privilege, as opposed to
     discussing it. Both files reason about `id-token: write` in prose — the
@@ -245,20 +290,26 @@ private def isBareKey (name : String) : Bool :=
     Stated over the *shape* of a grant rather than a list of four permission
     names. An earlier version enumerated them, which left `write-all` and any
     permission GitHub adds later invisible: a job could acquire a capability
-    and drop out of this guard in the same edit. -/
+    and drop out of this guard in the same edit. For the same reason the value
+    is unquoted and the comment stripped before it is read, and a secret is
+    recognised through the bracket form as well as the dotted one — each of
+    those was a spelling that silently removed a job from this guard. -/
 private def grantsPrivilege (line : String) : Bool :=
-  let body := dropIndent line
-  if body.startsWith "#" then false
-  -- `<name>: write`, whatever <name> is.
-  else if (body.splitOn ": ") matches [_, "write"] &&
-      isBareKey ((body.splitOn ": ").headD "") then true
-  -- The blanket grants, and a secret reaching the job by any route.
-  else body == "permissions: write-all" || body == "write-all"
-    || has body "secrets." || body == "secrets: inherit"
-    -- Flow style: `permissions: {contents: write}` on one line. Refused as a
-    -- grant whatever it contains, because this scan reads block style and a
-    -- form it cannot read must not pass for an absent one.
-    || (body.startsWith "permissions:" && has body "{")
+  let body := withoutComment (dropIndent line)
+  if body.isEmpty then false
+  else
+    let (key, value) := keyValue body
+    -- `<name>: write`, whatever <name> is and however the value is spelled.
+    (isBareKey key && (value == "write" || value == "write-all"))
+      -- The blanket grants.
+      || body == "write-all"
+      -- A secret reaching the job by any route: `secrets.NAME`, the bracket
+      -- form `secrets['NAME']`, or a `secrets:` key of its own.
+      || has body "secrets." || has body "secrets[" || key == "secrets"
+      -- Flow style: `permissions: {contents: write}` on one line. Refused as a
+      -- grant whatever it contains, because this scan reads block style and a
+      -- form it cannot read must not pass for an absent one.
+      || (key == "permissions" && has value "{")
 
 /-- A top-level job block: the job's name and the lines belonging to it. -/
 private structure JobBlock where
@@ -283,11 +334,22 @@ private def jobHeader? (line : String) : Option String :=
           else none
       | [] => none
 
+/-- A workflow's `jobs:` mapping, as this scan could read it. -/
+private structure JobScan where
+  jobs : List JobBlock
+  /-- Lines sitting exactly where a top-level job header does that this scan
+      cannot read as one. Reported rather than folded into the preceding job:
+      a header this parser skips silently attributes its job's permissions to
+      the job above and gives it that job's `if:`, so a privileged job could
+      join the file already covered by somebody else's guard. -/
+  unreadable : List String
+
 /-- Split a workflow file into its top-level job blocks: everything after the
     column-zero `jobs:` key, up to the next column-zero key. -/
-private def jobBlocks (content : String) : List JobBlock := Id.run do
+private def jobScan (content : String) : JobScan := Id.run do
   let mut inJobs := false
   let mut blocks : List JobBlock := []
+  let mut unreadable : List String := []
   let mut current : Option (String × List String) := none
   for line in content.splitOn "\n" do
     if !inJobs then
@@ -301,9 +363,15 @@ private def jobBlocks (content : String) : List JobBlock := Id.run do
         if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
         current := some (name, [])
     | none =>
+        -- Inside `jobs:`, a line indented exactly two spaces is a job header or
+        -- it is nothing; a job's own keys sit at four. One this parser cannot
+        -- read is therefore a header it must not pass over.
+        if line.startsWith "  " && !line.startsWith "   "
+            && !(withoutComment (dropIndent line)).isEmpty then
+          unreadable := unreadable ++ [line]
         if let some (n, ls) := current then current := some (n, line :: ls)
   if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
-  return blocks
+  return { jobs := blocks, unreadable }
 
 /-- The job's own `if:`, as one string — indented four spaces, so a step's `if:`
     is not it, and folded continuations (`if: >-` and the more-indented lines
@@ -317,7 +385,7 @@ private def jobIf (block : JobBlock) : String :=
     else if taking && line.startsWith "      " then (collected ++ [line], true)
     else (collected, false)
   let (collected, _) := block.lines.foldl step ([], false)
-  String.intercalate " " (collected.map fun line => (dropIndent line))
+  String.intercalate " " (collected.map fun line => withoutComment (dropIndent line))
 
 /-- The condition itself: the job's `if:` with the key, any block-scalar
     indicator and any surrounding quotes removed, and runs of whitespace
@@ -339,38 +407,226 @@ private def conditionOf (block : JobBlock) : String :=
     String.ofList ((joined.toList.drop 1).dropLast)
   else joined
 
+/-- The workflow-level `permissions:` block, as its lines.
+
+    Everything else here reads only the `jobs:` mapping, so a workflow-level
+    default — which applies to every job that declares none — would be invisible
+    to it. Rather than model inheritance, the caller requires the default to be
+    exactly the read-only one: then a job is privileged exactly when its own
+    block says so, which is the assumption the scan rests on.
+
+    A blank line and a comment do not end a YAML block mapping, so neither ends
+    this scan. One that stopped at the first annotation would report whatever it
+    had read so far as the whole default, and a permission written underneath a
+    comment would grant every job in the file something this guard never saw. -/
+private def headerPermissions (content : String) : List String := Id.run do
+  let header := (content.splitOn "\njobs:\n").headD content
+  let mut inside := false
+  let mut collected : List String := []
+  for line in header.splitOn "\n" do
+    let body := withoutComment line
+    if body == "permissions:" && !line.startsWith " " then inside := true
+    else if inside then
+      if body.isEmpty then pure ()
+      else if line.startsWith "  " then collected := collected ++ [body]
+      else inside := false
+  return collected
+
+/-- Exactly the read-only default, not "contains `contents: read`". Adding
+    `id-token: write` underneath leaves that substring intact and grants every
+    job in the file a signing token. -/
+private def defaultPermissionIsReadOnly (content : String) : Bool :=
+  headerPermissions content == ["contents: read"]
+
+private def guardExpression : String :=
+  "github.event_name == 'push' && github.ref_type == 'tag'"
+
+/-- Whether a job condition confines the job to a pushed tag.
+
+    A narrow canonical shape, and every other form rejected. A substring test
+    accepts `!(<guard>)`, which contains the guard and inverts it — the job then
+    runs everywhere *except* a pushed tag. Requiring the guard as a *prefix* is
+    not enough either: `&&` binds tighter than `||` in a GitHub expression, so
+    `<guard> && true || github.event_name == 'schedule'` begins with the guard,
+    narrows it with `&&`, and still runs on every scheduled run. Hence no `||`
+    anywhere. A disjunction is refused rather than analysed, because the
+    alternative is writing an expression evaluator in a drift guard. -/
+private def narrowsToPushedTag (condition : String) : Bool :=
+  (condition == guardExpression || condition.startsWith (guardExpression ++ " &&"))
+    && !has condition "||"
+
+/-- Every way a workflow fails the pushed-tag rule; the empty list is the
+    passing state.
+
+    Stated over the text rather than over the file, so the rules that judge the
+    committed workflow can also be driven with fabricated ones. The parser is
+    the part of this guard most able to fail silently — a shape it cannot read
+    produces no job, no privilege and no violation — so it is exercised against
+    workflows written to break it rather than only against the one in the tree. -/
+private def privilegeViolations (content : String) : List String := Id.run do
+  let scan := jobScan content
+  let mut violations : List String := []
+  unless defaultPermissionIsReadOnly content do
+    violations := violations ++
+      [s!"the workflow-level permission default is not exactly `permissions:` / `contents: read` — it reads {headerPermissions content}, so a job declaring no permissions block may still be privileged and this scan would not see it"]
+  for line in scan.unreadable do
+    violations := violations ++
+      [s!"'{line}' sits where a top-level job header does but is not one this scan can read, so it folds into the job above and inherits that job's `if:`"]
+  for block in scan.jobs do
+    if block.lines.any grantsPrivilege && !narrowsToPushedTag (conditionOf block) then
+      violations := violations ++
+        [s!"privileged job '{block.name}' has if: {conditionOf block} — it must be exactly `{guardExpression}`, optionally narrowed with `&&` and never widened with `||`. Anything else (a negation, a disjunction, a quoted form, another clause first) is refused rather than interpreted."]
+  return violations
+
+/-! ## The guard's own parser, against workflows written to defeat it
+
+The rows above judge one file, and every one of them is quantified over a list
+this parser produced: a shape the parser cannot read yields no job, no
+privilege, and a clean sweep. So the parser is driven here with fabricated
+workflows instead — each one differing from a passing workflow in exactly one
+way, and each one a spelling that at some point *did* slip past.
+
+Every row states which side it is on: a workflow the guard must accept, or one
+it must refuse and the phrase the refusal must carry. -/
+
+private def readOnlyHeader : String := "permissions:\n  contents: read\n"
+
+/-- A whole workflow: a header, an ordinary unprivileged job, and the job under
+    test. The `build` job is there so that a parser which found nothing would
+    fail the accepting rows too. -/
+private def workflowWith (header : String) (job : String) : String :=
+  "on:\n  push:\n    tags: ['v*']\n\n" ++ header ++
+  "\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo build\n" ++ job
+
+private def fabricated (job : String) : String := workflowWith readOnlyHeader job
+
+/-- A job with a `contents: write` grant and whatever condition is given. -/
+private def guardedJob (condition : String) : String :=
+  "  publish:\n" ++ condition ++
+  "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"
+
+private def properGuard : String :=
+  "    if: github.event_name == 'push' && github.ref_type == 'tag'\n"
+
+/-- A job with no condition at all, carrying whatever body is given. Anything
+    the scan reads as a grant here must be refused, because nothing confines it. -/
+private def ungatedJob (body : String) : String :=
+  "  publish:\n    runs-on: ubuntu-latest\n" ++ body ++ "    steps:\n      - run: echo publish\n"
+
+private def workflowGuardTests : List Outcome :=
+  -- (label, workflow, the phrase a refusal must carry — none means it must pass)
+  let cases : List (String × String × Option String) := [
+    ("the canonical guard passes",
+      fabricated (guardedJob properGuard), none),
+    ("a guard narrowed with && passes",
+      fabricated (guardedJob
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && !cancelled()\n"),
+      none),
+    ("a folded condition is read across its continuation lines",
+      fabricated (guardedJob
+        "    if: >-\n      github.event_name == 'push' && github.ref_type == 'tag'\n      && needs.gates.outputs.npm == 'true'\n"),
+      none),
+    -- `&&` binds tighter than `||`, so this begins with the guard, narrows it,
+    -- and still runs on every scheduled run.
+    ("a guard widened with || after an && is refused",
+      fabricated (guardedJob
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && true || github.event_name == 'schedule'\n"),
+      some "never widened with `||`"),
+    ("an inverted guard is refused",
+      fabricated (guardedJob
+        "    if: \"!(github.event_name == 'push' && github.ref_type == 'tag')\"\n"),
+      some "privileged job 'publish'"),
+    ("a guard reached only as the second disjunct is refused",
+      fabricated (guardedJob
+        "    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref_type == 'tag')\n"),
+      some "privileged job 'publish'"),
+    ("a privileged job with no condition at all is refused",
+      fabricated (ungatedJob "    permissions:\n      contents: write\n"),
+      some "privileged job 'publish'"),
+    -- The spellings of a grant. Each of these once read as *no* grant, which
+    -- dropped the job out of the guard rather than failing it.
+    ("a quoted permission value is still a grant",
+      fabricated (ungatedJob "    permissions:\n      contents: \"write\"\n"),
+      some "privileged job 'publish'"),
+    ("a single-quoted permission value is still a grant",
+      fabricated (ungatedJob "    permissions:\n      id-token: 'write'\n"),
+      some "privileged job 'publish'"),
+    ("a permission annotated with a trailing comment is still a grant",
+      fabricated (ungatedJob "    permissions:\n      contents: write # create the release\n"),
+      some "privileged job 'publish'"),
+    ("the bracket form of a secret is still a grant",
+      fabricated (ungatedJob "    env:\n      GH_TOKEN: ${{ secrets['TAP_TOKEN'] }}\n"),
+      some "privileged job 'publish'"),
+    ("the dotted form of a secret is still a grant",
+      fabricated (ungatedJob "    env:\n      GH_TOKEN: ${{ secrets.TAP_TOKEN }}\n"),
+      some "privileged job 'publish'"),
+    ("inherited secrets are a grant",
+      fabricated ("  publish:\n    uses: ./.github/workflows/other.yml\n    secrets: inherit\n"),
+      some "privileged job 'publish'"),
+    ("a flow-style permissions block is a grant whatever it contains",
+      fabricated (ungatedJob "    permissions: {contents: write}\n"),
+      some "privileged job 'publish'"),
+    ("a blanket write-all is a grant",
+      fabricated (ungatedJob "    permissions: write-all\n"),
+      some "privileged job 'publish'"),
+    -- Job headers. A header this scan cannot read is the worst case: the job
+    -- folds into the one above and is judged by that job's condition.
+    ("a job id containing uppercase is read, not folded into the job above",
+      fabricated (guardedJob properGuard ++
+        "  publishMirror:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo mirror\n"),
+      some "privileged job 'publishMirror'"),
+    ("a quoted job header is refused rather than folded",
+      fabricated ("  \"publish\":\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n"),
+      some "is not one this scan can read"),
+    ("a flow-style job header is refused rather than folded",
+      fabricated ("  publish: {runs-on: ubuntu-latest}\n"),
+      some "is not one this scan can read"),
+    -- What must *not* be refused: a job that takes nothing, and one that only
+    -- talks about privilege.
+    ("an unprivileged job needs no condition",
+      fabricated (ungatedJob "    env:\n      LEVEL: info\n"), none),
+    ("discussing a permission in a comment is not taking one",
+      fabricated (ungatedJob
+        "    # this job takes none; contents: write would let it publish\n"),
+      none),
+    -- The workflow-level default, which licenses reading only the jobs.
+    ("a default that grants more than read is refused",
+      workflowWith "permissions:\n  contents: read\n  id-token: write\n" (guardedJob properGuard),
+      some "permission default"),
+    -- A comment does not end a YAML block mapping, so it must not end this scan.
+    ("a comment inside the default block does not hide what follows it",
+      workflowWith "permissions:\n  contents: read\n# needed to mint the token\n  id-token: write\n"
+        (guardedJob properGuard),
+      some "permission default"),
+    ("a blank line inside the default block does not hide what follows it",
+      workflowWith "permissions:\n  contents: read\n\n  id-token: write\n" (guardedJob properGuard),
+      some "permission default"),
+    ("a flow-style default is refused rather than read as absent",
+      workflowWith "permissions: {}\n" (guardedJob properGuard),
+      some "permission default"),
+    ("a read-all default is refused rather than read as read-only",
+      workflowWith "permissions: read-all\n" (guardedJob properGuard),
+      some "permission default"),
+    ("no default at all is refused",
+      workflowWith "" (guardedJob properGuard), some "permission default")]
+  cases.flatMap fun (label, content, expected) =>
+    let violations := privilegeViolations content
+    match expected with
+    | none =>
+        [checkEq s!"workflow guard: {label}" violations []]
+    | some needle =>
+        [check s!"workflow guard: {label}"
+          (violations.any (has · needle))
+          s!"expected a violation containing '{needle}'; got {violations}"]
+
 def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   let path : FilePath := ".github/workflows/release.yml"
   let raw ← readRequired path
   let some content := raw.toOption
     | return [check "release workflow: the workflow is readable" false s!"{raw}"]
-  let blocks := jobBlocks content
-  let names := blocks.map (·.name)
-  let privileged := blocks.filter fun b => b.lines.any grantsPrivilege
-  let privilegedNames := privileged.map (·.name)
-  let guard := "github.event_name == 'push' && github.ref_type == 'tag'"
-  -- Everything below reads only the `jobs:` mapping, so a workflow-level
-  -- `permissions:` default — which applies to every job that declares none —
-  -- would be invisible to it. Rather than model inheritance, require the
-  -- default to be exactly the read-only one: then a job is privileged exactly
-  -- when its own block says so, which is the assumption the scan rests on.
-  --
-  -- Exactly, not "contains `contents: read`". Adding `id-token: write`
-  -- underneath leaves that substring intact and grants every job in the file a
-  -- signing token.
-  let header := (content.splitOn "\njobs:\n").headD content
-  let headerLines := header.splitOn "\n"
-  let headerBlock : List String := Id.run do
-    let mut inside := false
-    let mut collected : List String := []
-    for line in headerLines do
-      if line == "permissions:" then inside := true
-      else if inside then
-        if line.startsWith "  " then collected := collected ++ [dropIndent line]
-        else if line.trimAscii.toString.isEmpty then pure ()
-        else inside := false
-    return collected
-  let defaultIsReadOnly := headerBlock == ["contents: read"]
+  let scan := jobScan content
+  let names := scan.jobs.map (·.name)
+  let privilegedNames := (scan.jobs.filter fun b => b.lines.any grantsPrivilege).map (·.name)
   -- Non-vacuity first. Every assertion below is universally quantified over a
   -- list this parser produced, so a parser that silently found nothing would
   -- report a clean sweep over an empty set.
@@ -386,23 +642,8 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
     -- a substring scan and the checks below stop meaning anything.
     check "release workflow: discussing a permission does not grant it"
       (!privilegedNames.contains "build") s!"jobs found privileged: {privilegedNames}",
-    -- Without this, every check below could be scanning jobs that were already
-    -- privileged by a default it never read.
-    check "release workflow: the workflow-level permission default is read-only"
-      defaultIsReadOnly
-      s!"the header before `jobs:` does not set exactly `permissions:` / `contents: read`, so a job with no permissions block may still be privileged and this scan would not see it. It reads: {headerBlock}"]
-  for block in privileged do
-    outs := outs ++ [
-      -- A narrow canonical shape, and every other form rejected. A substring
-      -- test accepts `!(<guard>)`, which contains the guard and inverts it —
-      -- the job then runs everywhere *except* a pushed tag. It also accepts
-      -- `<guard> || github.event_name == 'schedule'`. The condition must
-      -- therefore *begin* with the guard and may only go on to narrow it with
-      -- `&&`; anything else is refused rather than interpreted, because the
-      -- alternative is writing an expression evaluator in a drift guard.
-      check s!"release workflow: privileged job '{block.name}' runs only on a pushed tag"
-        (conditionOf block == guard || (conditionOf block).startsWith (guard ++ " &&"))
-        s!"job-level if: {conditionOf block} — it must be exactly `{guard}`, optionally narrowed with `&&`. Anything else (a negation, a disjunction, a quoted form, another clause first) is refused rather than interpreted."]
+    checkEq "release workflow: every privileged job is confined to a pushed tag"
+      (privilegeViolations content) []]
   -- The channels a release publishes through are decided in release/plan.json,
   -- and each deferred channel's publish job must be gated on that decision
   -- rather than merely expected not to run. Without this the workflow ran
@@ -411,7 +652,7 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
   -- published the GitHub Release and then failed for a tap credential the
   -- release had deliberately deferred.
   for (channel, job) in [("npm", "publish-npm"), ("homebrew", "publish-homebrew")] do
-    match blocks.find? (·.name == job) with
+    match scan.jobs.find? (·.name == job) with
     | none =>
         outs := outs ++ [check s!"release workflow: the '{job}' job exists" false
           s!"no job named {job}; if the channel was removed rather than deferred, drop this row with it"]
@@ -423,7 +664,7 @@ def releaseWorkflowPrivilegeTests : IO (List Outcome) := do
           check s!"release workflow: '{job}' depends on the job that reads the plan"
             (block.lines.any fun line => line.startsWith "    needs:" && has line "gates")
             s!"{job} does not list `gates` in needs, so needs.gates.outputs is always empty — and an empty output compares unequal to 'true', which disables the channel for a reason nobody chose"]
-  return outs
+  return outs ++ workflowGuardTests
 
 /-! ## Build provenance (`tl version`, ADR-0006 "Tool versioning") -/
 

@@ -95,6 +95,11 @@ private def jsonTests : List Outcome :=
     check "json: a character outside the BMP is refused rather than mis-encoded"
       (mentions (render (Json.str (String.singleton (Char.ofNat 0x1f600))))
         "Basic Multilingual Plane"),
+    -- `U+` is hexadecimal by convention. In decimal the refusal named U+128512,
+    -- which is past the largest code point there is, so the number a reader
+    -- looked up was not the character that stopped the render.
+    check "json: the astral refusal names the code point in hexadecimal"
+      (mentions (render (Json.str (String.singleton (Char.ofNat 0x1f600)))) "U+1F600"),
     -- Reading: the happy paths.
     checkEq "json: a document parses" ((parseDocument cur "{\"a\": 1}").toOption.isSome) true,
     checkEq "json: a string field reads" (okOr "" (stringField cur obj "name")) "tl",
@@ -156,12 +161,34 @@ private def dispatchCaptured (args : List String) : IO (UInt32 × String × Stri
 
 private def contains (hay needle : String) : Bool := (hay.splitOn needle).length > 1
 
+/-- Drive one subcommand in-process, capturing its status and both streams.
+    Looked up in the same table `dispatch` reads, so a command that stopped
+    being registered fails these rows rather than silently skipping them. -/
+private def runCommand (name : String) (args : List String) : IO (UInt32 × String × String) := do
+  match commands.find? (·.name == name) with
+  | none => return (255, "", s!"no command named {name}")
+  | some command =>
+      let out ← IO.mkRef { : IO.FS.Stream.Buffer }
+      let err ← IO.mkRef { : IO.FS.Stream.Buffer }
+      let status ← IO.withStdout (IO.FS.Stream.ofBuffer out) <|
+        IO.withStderr (IO.FS.Stream.ofBuffer err) <| command.run args
+      return (status, String.fromUTF8! (← out.get).data, String.fromUTF8! (← err.get).data)
+
 /-! ## The typed model
 
 Every constructor that can refuse has a row for each way it refuses. These are
 the types that exist because the shell could hold a value that should not
 exist, so a parser that quietly accepted one would put the whole port back
 where it started. -/
+
+/-- Precedence between two spellings, as an `Option` so that a fixture this
+    parser refuses is distinguishable from a comparison that came out `false`.
+    Every row below would otherwise pass vacuously the day one of its versions
+    stopped parsing. -/
+private def exceeds? (later earlier : String) : Option Bool :=
+  match Version.parse "later" later, Version.parse "earlier" earlier with
+  | .ok later, .ok earlier => some (later.exceeds earlier)
+  | _, _ => none
 
 private def modelTests : List Outcome :=
   let digest := String.ofList (List.replicate 64 'a')
@@ -205,6 +232,14 @@ private def modelTests : List Outcome :=
     check "model: a leading zero is refused" (mentions (version "01.2.3") "leading zero"),
     check "model: a two-component version is refused"
       (mentions (version "1.2") "not a release version"),
+    -- The remedy has to be the shape the reader is being asked for. Showing the
+    -- tag form to somebody editing `plannedFor` sent them to write `v0.2.0`
+    -- into a field this parser then refuses on `v` as a numeric component — a
+    -- correction whose only reward is a second, less legible refusal.
+    check "model: a bare version's remedy shows the bare shape"
+      (mentions (version "1.2") "Expected MAJOR.MINOR.PATCH"),
+    check "model: a tag's remedy shows the tag shape"
+      (mentions (Version.parseTag "t" "1.2.3") "Expected vMAJOR.MINOR.PATCH"),
     check "model: a four-component version is refused"
       (mentions (version "1.2.3.4") "not a release version"),
     check "model: a non-numeric component is refused" (mentions (version "1.x.3") "not a number"),
@@ -220,6 +255,42 @@ private def modelTests : List Outcome :=
       (mentions (Version.parseTag "t" "1.2.3") "does not begin with 'v'"),
     check "model: an uppercase V is refused"
       (mentions (Version.parseTag "t" "V1.2.3") "does not begin with 'v'"),
+    -- Precedence. The one question asked of it is whether a deferral names a
+    -- release still ahead of the one being cut, and it decides whether a
+    -- release aborts, so every rule of SemVer §11 that a plan can reach has a
+    -- row. Comparing the triple alone got the prerelease rows wrong.
+    checkEq "model: a later patch exceeds an earlier one" (exceeds? "1.2.4" "1.2.3") (some true),
+    checkEq "model: an earlier patch does not exceed a later one"
+      (exceeds? "1.2.3" "1.2.4") (some false),
+    checkEq "model: a version does not exceed itself" (exceeds? "1.2.3" "1.2.3") (some false),
+    checkEq "model: a later minor outranks a much later patch"
+      (exceeds? "1.3.0" "1.2.99") (some true),
+    checkEq "model: a later major outranks a much later minor"
+      (exceeds? "2.0.0" "1.99.0") (some true),
+    -- Numerically, not as text: "10" sorts before "9" lexically.
+    checkEq "model: components compare numerically" (exceeds? "0.10.0" "0.9.0") (some true),
+    -- The rule the triple-only comparison got wrong. Cutting 0.2.0-rc.1, a
+    -- channel deferred to 0.2.0 is still a deferral to a release ahead of it.
+    checkEq "model: a release exceeds its own prerelease"
+      (exceeds? "0.2.0" "0.2.0-rc.1") (some true),
+    checkEq "model: a prerelease does not exceed its own release"
+      (exceeds? "0.2.0-rc.1" "0.2.0") (some false),
+    checkEq "model: a later prerelease exceeds an earlier one"
+      (exceeds? "1.2.3-rc.2" "1.2.3-rc.1") (some true),
+    checkEq "model: numeric prerelease identifiers compare numerically"
+      (exceeds? "1.2.3-rc.10" "1.2.3-rc.9") (some true),
+    checkEq "model: more prerelease identifiers outrank a prefix of them"
+      (exceeds? "1.2.3-alpha.1" "1.2.3-alpha") (some true),
+    checkEq "model: a prefix does not outrank the longer identifier list"
+      (exceeds? "1.2.3-alpha" "1.2.3-alpha.1") (some false),
+    checkEq "model: alphanumeric prerelease identifiers compare by ASCII"
+      (exceeds? "1.2.3-beta" "1.2.3-alpha") (some true),
+    checkEq "model: an alphanumeric identifier outranks a numeric one"
+      (exceeds? "1.2.3-alpha.beta" "1.2.3-alpha.1") (some true),
+    -- The dash form parses as one identifier, not two, which is the reading
+    -- the pinned certificate expression gives it.
+    checkEq "model: a dash-separated prerelease compares as a single identifier"
+      (exceeds? "1.2.3-rc-2" "1.2.3-rc-1") (some true),
     -- Tiers and targets.
     checkEq "model: the supported tier parses" (Tier.parse "t" "supported").toOption (some .supported),
     checkEq "model: the best-effort tier parses"
@@ -270,6 +341,23 @@ private def objectOf (fields : List (String × String)) : String :=
 
 private def completeBuildMetadata : String := objectOf buildMetadataFields
 
+/-- The optional half of a build-metadata record: recorded for a reader, and
+    deliberately unvalidated as *content* — but still a string or a malformed
+    file. -/
+private def optionalBuildFields : List String :=
+  ["runnerOs", "runnerArch", "containerImage", "runAttempt"]
+
+private def targetRow (name : String) (tier : String) : String :=
+  "{\"target\": \"" ++ name ++ "\", \"tier\": \"" ++ tier ++ "\", \"os\": \"linux\", \"cpu\": \"x64\"}"
+
+private def targetsOf (rows : List String) : String :=
+  "{\"targets\": [" ++ String.intercalate "," rows ++ "]}"
+
+/-- A target matching `completeBuildMetadata` except where a row varies it, so
+    each `PublishedTarget.of` row differs from a passing pairing in one way. -/
+private def sampleTarget (name : String) (tier : Tier) : Target :=
+  { name, tier, os := "linux", cpu := "x64", libc := some "glibc" }
+
 private def planRow (channel : String) (enabled : Bool) (plannedFor : Option String) : String :=
   let base := s!"\"channel\": \"{channel}\", \"enabled\": {if enabled then "true" else "false"}"
   match plannedFor with
@@ -304,6 +392,17 @@ private def documentTests : IO (List Outcome) := do
   let plan := ReleasePlan.parse "release/plan.json" planText
   let identity := Identity.parse "release/identity.json" identityText
   let expectedPin := identity >>= renderPin
+  -- Pair a target with the committed build record, varying one thing at a time.
+  let publishedOf (target : Target) (digestText : String) : Except String PublishedTarget := do
+    let build ← BuildMetadata.parse "b" completeBuildMetadata
+    let digest ← Sha256.parse "d" digestText
+    PublishedTarget.of target digest build
+  -- The deferral deadline, against the committed plan. `none` means a fixture
+  -- stopped parsing, which must not read as "no stale deferrals".
+  let staleAt (text : String) : Option (List String) :=
+    match plan, Version.parse "current" text with
+    | .ok plan, .ok current => some ((plan.staleDeferrals current).map (fun row => row.1.wire))
+    | _, _ => none
   let mut outs := [
     -- The drift guard. `release/identity.pin` is what the scripted verifier
     -- and the installer selftest actually read, so a stale one is a signature
@@ -325,6 +424,28 @@ private def documentTests : IO (List Outcome) := do
     check "pin: a carriage return produces no pin"
       (mentions (renderPin (identityOf "https://a\r" validExpression))
         "contains a line break"),
+    -- Printable ASCII, and nothing else. The shell verifier deletes exactly
+    -- this range from the pin it reads and refuses whatever is left, so a value
+    -- these two readers judged differently would be a pin one accepted and the
+    -- other rejected — which looks like a broken signature rather than a broken
+    -- pin. A NUL is the case a shell cannot even report: it vanishes on the way
+    -- into a variable, so this side is the one that has to refuse it.
+    check "pin: a tab produces no pin"
+      (mentions (renderPin (identityOf "https://a\tb" validExpression))
+        "outside printable ASCII"),
+    check "pin: a NUL byte produces no pin"
+      (mentions (renderPin (identityOf ("https://a" ++ String.singleton (Char.ofNat 0))
+        validExpression)) "outside printable ASCII"),
+    check "pin: a non-ASCII character produces no pin"
+      (mentions (renderPin (identityOf "https://tokén.example" validExpression))
+        "outside printable ASCII"),
+    check "pin: a refusal for a stray byte says who reads the pin"
+      (mentions (renderPin (identityOf "https://a\tb" validExpression)) "handed to cosign"),
+    check "pin: a NUL byte in a pin being read back is refused"
+      (mentions (parsePin "p" ("https://a" ++ String.singleton (Char.ofNat 0) ++ "\n"
+        ++ validExpression ++ "\n")) "outside printable ASCII"),
+    check "pin: a non-ASCII character in the expression is refused on read"
+      (mentions (parsePin "p" ("https://a\n^https://tokén$\n")) "outside printable ASCII"),
     check "pin: an expression unanchored at the head produces no pin"
       (mentions (renderPin (identityOf "https://a" "https://github.com/x$"))
         "not anchored at ^"),
@@ -398,6 +519,21 @@ private def documentTests : IO (List Outcome) := do
       (mentions (Targets.parse "t"
         "{\"targets\": [{\"target\": \"x\", \"tier\": \"best\", \"os\": \"l\", \"cpu\": \"c\"}]}")
         "not a support tier"),
+    -- Duplicate target names. Every lookup takes the first match, so a repeat
+    -- makes the answer depend on file order — and if the two rows disagree on
+    -- the tier they disagree about whether a missing artifact blocks a release.
+    check "documents: two rows with distinct target names are accepted"
+      (Targets.parse "t" (targetsOf [targetRow "linux-x64" "supported",
+        targetRow "darwin-arm64" "supported"])).toOption.isSome,
+    check "documents: a repeated target name is refused"
+      (mentions (Targets.parse "t" (targetsOf [targetRow "linux-x64" "supported",
+        targetRow "linux-x64" "supported"])) "the target 'linux-x64' 2 times"),
+    check "documents: a repeated target name says why order must not decide"
+      (mentions (Targets.parse "t" (targetsOf [targetRow "linux-x64" "supported",
+        targetRow "linux-x64" "best-effort"])) "whether a missing artifact blocks the release"),
+    check "documents: a third repeat is counted, not merely noticed"
+      (mentions (Targets.parse "t" (targetsOf [targetRow "linux-x64" "supported",
+        targetRow "linux-x64" "supported", targetRow "linux-x64" "supported"])) "3 times"),
     -- The plan: exclusivity, completeness, and uniqueness.
     check "documents: a plan enabling a channel that also names a target release is refused"
       (mentions (ReleasePlan.parse "p" (planOf
@@ -479,7 +615,89 @@ private def documentTests : IO (List Outcome) := do
     check "documents: a build-metadata record with an unknown tier is refused"
       (mentions (BuildMetadata.parse "b"
         (objectOf (buildMetadataFields.map fun (k, v) => if k == "tier" then (k, "\"gold\"") else (k, v))))
-        "not a support tier")]
+        "not a support tier"),
+    -- Pairing a target with the evidence it was built. The three fields are
+    -- independently plausible and only agree by accident otherwise, which is
+    -- why the constructor is private and this is the only way in.
+    check "documents: a target agreeing with its build record pairs"
+      (publishedOf (sampleTarget "linux-x64" .supported) digest64).toOption.isSome
+      (errorOf (publishedOf (sampleTarget "linux-x64" .supported) digest64)),
+    checkEq "documents: a published target composes its asset name"
+      ((publishedOf (sampleTarget "linux-x64" .supported) digest64).toOption.map (·.asset))
+      (some ("tl" ++ "-" ++ "linux-x64")),
+    check "documents: a build record from another leg is refused"
+      (mentions (publishedOf (sampleTarget "darwin-arm64" .supported) digest64)
+        "records target 'linux-x64'"),
+    check "documents: a crossed build record says the legs were mixed up"
+      (mentions (publishedOf (sampleTarget "darwin-arm64" .supported) digest64)
+        "crossed between legs"),
+    check "documents: a build record disagreeing about the tier is refused"
+      (mentions (publishedOf (sampleTarget "linux-x64" .bestEffort) digest64)
+        "records tier 'supported'"),
+    check "documents: a tier disagreement says what the tier decides"
+      (mentions (publishedOf (sampleTarget "linux-x64" .bestEffort) digest64)
+        "whether a missing artifact blocks the release"),
+    check "documents: an artifact hashing to something else is refused"
+      (mentions (publishedOf (sampleTarget "linux-x64" .supported)
+        (String.ofList (List.replicate 64 'c'))) "but its build leg recorded"),
+    check "documents: a digest disagreement says nothing is signed"
+      (mentions (publishedOf (sampleTarget "linux-x64" .supported)
+        (String.ofList (List.replicate 64 'c'))) "Nothing is signed"),
+    -- What became of a target. `absent` carries no evidence because there is
+    -- none, and the two cases must not be distinguishable only by convention.
+    checkEq "documents: a published outcome carries its target"
+      ((TargetOutcome.published <$> (publishedOf (sampleTarget "linux-x64" .supported) digest64))
+        |>.toOption.map (·.target.name)) (some "linux-x64"),
+    check "documents: a published outcome carries its evidence"
+      (((TargetOutcome.published <$> (publishedOf (sampleTarget "linux-x64" .supported) digest64))
+        |>.toOption.bind (·.published?)).isSome),
+    checkEq "documents: an absent outcome names its target"
+      (TargetOutcome.absent (sampleTarget "darwin-x64" .bestEffort)).target.name "darwin-x64",
+    check "documents: an absent outcome carries no evidence"
+      ((TargetOutcome.absent (sampleTarget "darwin-x64" .bestEffort)).published?.isNone),
+    -- The per-target asset names, composed in one place each.
+    checkEq "documents: the build-metadata asset is named after its target"
+      (sampleTarget "linux-x64" .supported).buildMetadataAsset "build-metadata-linux-x64.json",
+    checkEq "documents: the link-audit asset is named after its target"
+      (sampleTarget "linux-x64" .supported).linkAuditAsset "link-audit-linux-x64.txt",
+    -- The deferral deadline. A deferral to a release that has shipped is a
+    -- channel that was forgotten rather than postponed.
+    checkEq "documents: the committed plan has no expired deferral at 0.1.0"
+      (staleAt "0.1.0") (some []),
+    checkEq "documents: a deferral to the release being cut has expired"
+      (staleAt "0.2.0") (some ["npm", "homebrew"]),
+    checkEq "documents: a deferral overtaken by a later release has expired"
+      (staleAt "0.3.0") (some ["npm", "homebrew"]),
+    -- The row the triple-only comparison got wrong: 0.2.0 is still ahead of
+    -- 0.2.0-rc.1, so cutting the release candidate must not abort.
+    checkEq "documents: a deferral to 0.2.0 survives cutting 0.2.0-rc.1"
+      (staleAt "0.2.0-rc.1") (some []),
+    check "documents: an expired deferral is told both versions and the two fixes"
+      (match Version.parse "p" "0.2.0", Version.parse "c" "0.3.0" with
+       | .ok planned, .ok current =>
+           let message := ReleasePlan.staleDeferralMessage .npm planned current
+           contains message "'npm'" && contains message "0.2.0" && contains message "0.3.0"
+             && contains message "enable the channel" && contains message "plannedFor"
+       | _, _ => false)]
+  -- The optional build-metadata fields. Absent is a record that did not say;
+  -- present-but-not-a-string is a record this generator cannot understand, and
+  -- reading the second as the first is the conflation the whole module removes.
+  for name in optionalBuildFields do
+    let malformed := objectOf (buildMetadataFields ++ [(name, "2")])
+    let present := objectOf (buildMetadataFields ++ [(name, "\"recorded\"")])
+    outs := outs ++ [
+      check s!"documents: build metadata whose optional '{name}' is not a string is refused"
+        (mentions (BuildMetadata.parse "b" malformed) "is not a string"),
+      check s!"documents: a malformed optional '{name}' names its own path"
+        (mentions (BuildMetadata.parse "b" malformed) s!"b at {name}"),
+      check s!"documents: a present optional '{name}' is accepted"
+        (BuildMetadata.parse "b" present).toOption.isSome
+        (errorOf (BuildMetadata.parse "b" present))]
+  outs := outs ++ [
+    checkEq "documents: a present optional field is read, not merely tolerated"
+      ((BuildMetadata.parse "b"
+        (objectOf (buildMetadataFields ++ [("runnerOs", "\"Linux\"")]))).toOption.map (·.runnerOs))
+      (some "Linux")]
   -- One row per required field, absent and then blank. The shell tested all
   -- nine with `not build.get(field)`, which cannot tell those two apart — so a
   -- record blanked in either way produced one indistinguishable message.
@@ -557,15 +775,7 @@ private def pinCommandTests : IO (List Outcome) := do
   let pinPath := (base / "identity.pin").toString
   let realIdentity ← IO.FS.readFile "release/identity.json"
   IO.FS.writeFile identityPath realIdentity
-  let run (name : String) (args : List String) : IO (UInt32 × String × String) := do
-    match commands.find? (·.name == name) with
-    | none => return (255, "", s!"no command named {name}")
-    | some command =>
-        let out ← IO.mkRef { : IO.FS.Stream.Buffer }
-        let err ← IO.mkRef { : IO.FS.Stream.Buffer }
-        let status ← IO.withStdout (IO.FS.Stream.ofBuffer out) <|
-          IO.withStderr (IO.FS.Stream.ofBuffer err) <| command.run args
-        return (status, String.fromUTF8! (← out.get).data, String.fromUTF8! (← err.get).data)
+  let run := runCommand
   let (writeStatus, writeOut, _) ← run "write-pin" [identityPath, pinPath]
   let written ← IO.FS.readFile pinPath
   let (checkStatus, checkOut, _) ← run "check-pin" [identityPath, pinPath]
@@ -585,6 +795,11 @@ private def pinCommandTests : IO (List Outcome) := do
   let unwrittenPath := (base / "never.pin").toString
   let (badStatus, _, badErr) ← run "write-pin" [badIdentityPath, unwrittenPath]
   let neverWritten := !(← System.FilePath.pathExists unwrittenPath)
+  -- The same malformed identity through check-pin. Without its own refusal
+  -- there, an unusable release/identity.json is reported as a drifted pin —
+  -- which sends the operator to `write-pin`, which refuses, with nothing
+  -- connecting the two messages.
+  let (badCheckStatus, _, badCheckErr) ← run "check-pin" [badIdentityPath, pinPath]
   -- Writing into a directory that does not exist: a refusal, not a backtrace.
   let (unwritableStatus, _, unwritableErr) ←
     run "write-pin" [identityPath, (base / "no-such-dir" / "p.pin").toString]
@@ -612,10 +827,91 @@ private def pinCommandTests : IO (List Outcome) := do
       (contains badErr "not anchored at $") badErr,
     check "pin command: a refused pin is not written at all" neverWritten
       "write-pin created a file it had already decided to refuse",
+    checkEq "pin command: check-pin refuses an identity it cannot render a pin from"
+      badCheckStatus 1,
+    check "pin command: an unusable identity is reported as such, not as drift"
+      (contains badCheckErr "not anchored at $" && !contains badCheckErr "wrong identity")
+      badCheckErr,
     checkEq "pin command: an unwritable destination is a refusal, not an exception"
       unwritableStatus 1,
     check "pin command: an unwritable destination names the path"
       (contains unwritableErr "could not write") unwritableErr]
+
+/-! ## The plan commands, end to end
+
+`plan-channels` decides whether an immutable publication job runs;
+`plan-deferrals` decides whether a release is cut at all. Both are driven
+through real files here, because reading a path that is not there and the exit
+status each refusal produces are where a release step actually meets this tool,
+and neither is exercised by testing the pure core. -/
+
+private def planCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let planPath := (base / "plan.json").toString
+  let stalePath := (base / "stale.json").toString
+  let brokenPath := (base / "broken.json").toString
+  let realPlan ← IO.FS.readFile "release/plan.json"
+  IO.FS.writeFile planPath realPlan
+  IO.FS.writeFile stalePath (planOf defaultPlanRows)
+  IO.FS.writeFile brokenPath "{\"channels\": 3}"
+  let (channelsStatus, channelsOut, _) ← runCommand "plan-channels" [planPath]
+  let (channelsMissing, _, channelsMissingErr) ←
+    runCommand "plan-channels" [(base / "absent.json").toString]
+  let (channelsBroken, _, channelsBrokenErr) ← runCommand "plan-channels" [brokenPath]
+  let (channelsUsage, _, _) ← runCommand "plan-channels" [planPath, "extra"]
+  -- The committed plan defers npm and Homebrew to 0.2.0, so 0.1.0 is ahead of
+  -- nothing and 0.2.0 has caught up with both.
+  let (aheadStatus, aheadOut, _) ← runCommand "plan-deferrals" [planPath, "v0.1.0"]
+  let (bareStatus, _, _) ← runCommand "plan-deferrals" [planPath, "0.1.0"]
+  let (expiredStatus, _, expiredErr) ← runCommand "plan-deferrals" [stalePath, "v0.2.0"]
+  -- Cutting the release candidate: 0.2.0 is still ahead of 0.2.0-rc.1, which
+  -- is the comparison a triple-only ordering got wrong.
+  let (candidateStatus, _, candidateErr) ← runCommand "plan-deferrals" [stalePath, "v0.2.0-rc.1"]
+  let (badVersion, _, badVersionErr) ← runCommand "plan-deferrals" [planPath, "banana"]
+  let (badTag, _, badTagErr) ← runCommand "plan-deferrals" [planPath, "vbanana"]
+  let (missingPlan, _, missingPlanErr) ←
+    runCommand "plan-deferrals" [(base / "absent.json").toString, "v0.1.0"]
+  let (brokenPlan, _, brokenPlanErr) ← runCommand "plan-deferrals" [brokenPath, "v0.1.0"]
+  let (deferralsUsage, _, deferralsUsageErr) ← runCommand "plan-deferrals" [planPath]
+  IO.FS.removeDirAll base
+  return [
+    checkEq "plan command: plan-channels succeeds against the committed plan" channelsStatus 0,
+    checkEq "plan command: plan-channels emits the decided lines on stdout"
+      channelsOut (okOr "<refused>" ((ReleasePlan.parse "p" realPlan).map renderChannelOutputs)),
+    checkEq "plan command: a missing plan file is a refusal" channelsMissing 1,
+    check "plan command: a missing plan file names the path"
+      (contains channelsMissingErr "could not read") channelsMissingErr,
+    checkEq "plan command: a malformed plan is a refusal" channelsBroken 1,
+    check "plan command: a malformed plan says what is wrong with it"
+      (contains channelsBrokenErr "is not an array") channelsBrokenErr,
+    checkEq "plan command: plan-channels with a spare argument is a usage error" channelsUsage 2,
+    checkEq "plan command: plan-deferrals accepts deferrals still ahead of the tag" aheadStatus 0,
+    check "plan command: plan-deferrals says what it checked"
+      (contains aheadOut "ahead of 0.1.0") aheadOut,
+    checkEq "plan command: a bare version is accepted as well as a tag" bareStatus 0,
+    checkEq "plan command: a deferral the release has caught up with is a refusal"
+      expiredStatus 1,
+    check "plan command: an expired deferral names every channel that expired"
+      (contains expiredErr "'npm'" && contains expiredErr "'homebrew'") expiredErr,
+    check "plan command: an expired deferral says how to fix it"
+      (contains expiredErr "enable the channel") expiredErr,
+    check "plan command: a deferral to 0.2.0 survives cutting 0.2.0-rc.1"
+      (candidateStatus == 0) candidateErr,
+    checkEq "plan command: a version that is not one is a refusal" badVersion 1,
+    check "plan command: a bad version says what shape was expected"
+      (contains badVersionErr "not a release version") badVersionErr,
+    checkEq "plan command: a tag whose version is malformed is a refusal" badTag 1,
+    check "plan command: a malformed tag is refused for its version, not its 'v'"
+      (contains badTagErr "not a release version" || contains badTagErr "not a number") badTagErr,
+    checkEq "plan command: plan-deferrals on a missing plan is a refusal" missingPlan 1,
+    check "plan command: a missing plan names the path"
+      (contains missingPlanErr "could not read") missingPlanErr,
+    checkEq "plan command: plan-deferrals on a malformed plan is a refusal" brokenPlan 1,
+    check "plan command: a malformed plan is refused before the version is judged"
+      (contains brokenPlanErr "is not an array") brokenPlanErr,
+    checkEq "plan command: plan-deferrals with one argument is a usage error" deferralsUsage 2,
+    check "plan command: the usage error names both arguments"
+      (contains deferralsUsageErr "<plan.json> <version-or-tag>") deferralsUsageErr]
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
@@ -672,6 +968,7 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ channelOutputTests ++ outs ++ (← documentTests) ++ (← pinCommandTests)
+  return jsonTests ++ modelTests ++ channelOutputTests ++ outs ++ (← documentTests)
+    ++ (← pinCommandTests) ++ (← planCommandTests)
 
 end Tl.Tests

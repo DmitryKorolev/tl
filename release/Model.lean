@@ -126,20 +126,96 @@ def Version.render (version : Version) : String :=
 /-- The tag form, which is the version with a leading `v`. -/
 def Version.tag (version : Version) : String := "v" ++ version.render
 
-/-- Strictly later, comparing the release triple only.
+private def compareNat (left right : Nat) : Ordering :=
+  if left < right then .lt else if right < left then .gt else .eq
 
-    Prerelease precedence is deliberately not modelled: SemVer's rules for it
-    are subtle, nothing here needs them, and a half-right ordering is worse
-    than an absent one. The one question asked of this is whether a deferral
-    names a release still ahead of the current one, and `0.2.0` versus `0.1.0`
-    answers that without ranking `1.0.0-rc.1` against `1.0.0-rc.2`. -/
+private def compareCharList : List Char → List Char → Ordering
+  | [], [] => .eq
+  | [], _ => .lt
+  | _, [] => .gt
+  | left :: leftRest, right :: rightRest =>
+      match compareNat left.toNat right.toNat with
+      | .eq => compareCharList leftRest rightRest
+      | other => other
+
+private def isNumericIdentifier (text : String) : Bool :=
+  !text.isEmpty && text.toList.all isDigit
+
+private def numericValue (text : String) : Nat :=
+  text.toList.foldl (fun acc c => acc * 10 + (c.toNat - 48)) 0
+
+/-- One prerelease identifier against another, SemVer §11: numeric identifiers
+    compare numerically and rank below alphanumeric ones, which compare by
+    ASCII. Numerically, not lexically — `rc.10` follows `rc.9`. -/
+private def compareIdentifier (left right : String) : Ordering :=
+  match isNumericIdentifier left, isNumericIdentifier right with
+  | true, true => compareNat (numericValue left) (numericValue right)
+  | true, false => .lt
+  | false, true => .gt
+  | false, false => compareCharList left.toList right.toList
+
+/-- Identifier lists, left to right. When the shorter is a prefix of the longer,
+    the longer wins: `1.0.0-alpha` precedes `1.0.0-alpha.1`. -/
+private def comparePrerelease : List String → List String → Ordering
+  | [], [] => .eq
+  | [], _ => .lt
+  | _, [] => .gt
+  | left :: leftRest, right :: rightRest =>
+      match compareIdentifier left right with
+      | .eq => comparePrerelease leftRest rightRest
+      | other => other
+
+/-- SemVer precedence, prerelease rules included.
+
+    Modelled rather than skipped. Comparing the release triple alone answered
+    the one question asked of this — whether a deferral names a release still
+    ahead of the one being cut — wrongly in exactly the case where the answer
+    matters: cutting `0.2.0-rc.1`, a channel deferred to `0.2.0` compares equal
+    on the triple and is reported as a deferral that has already shipped, which
+    would abort a legitimate release over a plan that was correct.
+
+    The prerelease suffix is split on `.` only, which is SemVer's identifier
+    separator. `Version.parse` also accepts `-` *inside* an identifier, so
+    `rc-1` is one alphanumeric identifier rather than two — the same reading
+    the pinned certificate expression gives it. -/
+def Version.precedence (left right : Version) : Ordering :=
+  match compareNat left.major right.major with
+  | .eq =>
+    match compareNat left.minor right.minor with
+    | .eq =>
+      match compareNat left.patch right.patch with
+      | .eq =>
+        -- A release outranks every prerelease of the same triple.
+        match left.prerelease, right.prerelease with
+        | none, none => .eq
+        | none, some _ => .gt
+        | some _, none => .lt
+        | some leftSuffix, some rightSuffix =>
+            comparePrerelease (leftSuffix.splitOn ".") (rightSuffix.splitOn ".")
+      | other => other
+    | other => other
+  | other => other
+
+/-- Strictly later by SemVer precedence. -/
 def Version.exceeds (later earlier : Version) : Bool :=
-  if later.major != earlier.major then later.major > earlier.major
-  else if later.minor != earlier.minor then later.minor > earlier.minor
-  else later.patch > earlier.patch
+  match later.precedence earlier with
+  | .gt => true
+  | _ => false
 
-private def semverShape : String :=
-  "vMAJOR.MINOR.PATCH with no leading zeroes, optionally followed by a -prerelease suffix of alphanumeric parts separated by '.' or '-'"
+/-- `0.0.0`, which no release this pipeline cuts is behind. It exists for one
+    fail-closed fallback below and is not parseable *from* anywhere: the private
+    constructor stays the only way in, and this is the module that owns it. -/
+private def Version.origin : Version := ⟨0, 0, 0, none⟩
+
+/-- The shape a message tells the reader to write, without the leading `v` and
+    with it. Two constants rather than one, because a message that showed the
+    tag form to someone editing `plannedFor` would send them to write `v0.2.0`
+    into a field the parser then refuses on `v` as a numeric component — a
+    correction that produces a second, less legible refusal. -/
+private def versionShape : String :=
+  "MAJOR.MINOR.PATCH with no leading zeroes, optionally followed by a -prerelease suffix of alphanumeric parts separated by '.' or '-'"
+
+private def tagShape : String := "v" ++ versionShape
 
 /-- Parse a version with no leading `v`. Build metadata (`+…`) is refused: the
     pinned certificate identity does not accept it, so a tag carrying one would
@@ -162,15 +238,15 @@ def Version.parse (what : String) (text : String) : Except String Version := do
       | none => return ⟨major, minor, patch, none⟩
       | some suffix =>
           if !validPrerelease suffix then
-            .error s!"{what}: '{text}' has a prerelease suffix this pipeline does not accept. Expected {semverShape}."
+            .error s!"{what}: '{text}' has a prerelease suffix this pipeline does not accept. Expected {versionShape}."
           else return ⟨major, minor, patch, some suffix⟩
   | _ =>
-      .error s!"{what}: '{text}' is not a release version. Expected {semverShape}."
+      .error s!"{what}: '{text}' is not a release version. Expected {versionShape}."
 
 /-- Parse a tag, which must carry the leading `v`. -/
 def Version.parseTag (what : String) (text : String) : Except String Version :=
   if !text.startsWith "v" then
-    .error s!"{what}: '{text}' is not a release tag — it does not begin with 'v'. Expected {semverShape}."
+    .error s!"{what}: '{text}' is not a release tag — it does not begin with 'v'. Expected {tagShape}."
   else Version.parse what (text.drop 1 |>.toString)
 
 /-! ## Targets and tiers -/
@@ -296,10 +372,15 @@ def Channel.parse (what : String) (text : String) : Except String Channel :=
 /-- Enabled, or deferred to a named release. Exclusive by construction: an
     enabled channel has no future version to name, and a deferred one must name
     the release it is planned for, so deferral cannot quietly become
-    abandonment. -/
+    abandonment.
+
+    A deferral names a *parsed* release rather than a string. "later" and
+    "banana" are both non-empty strings and only one of them is a commitment
+    anything can be checked against, so the check happens once, at the boundary,
+    and every consumer downstream gets a version it can compare. -/
 inductive ChannelStatus where
   | enabled
-  | deferred (plannedFor : String)
+  | deferred (plannedFor : Version)
   deriving DecidableEq, Repr, Inhabited
 
 def ChannelStatus.isEnabled : ChannelStatus → Bool
@@ -326,14 +407,42 @@ def ReleasePlan.status (plan : ReleasePlan) (channel : Channel) : ChannelStatus 
   -- do not cover every channel, `mk` is private, and there is no `Inhabited`
   -- instance to manufacture a rowless plan through a `default`. Deferred is
   -- the fail-closed answer if that ever stops being true — an unknown channel
-  -- is one nothing should publish through.
-  | none => .deferred "unknown"
+  -- is one nothing should publish through, and `0.0.0` is behind every release
+  -- this pipeline cuts, so it also reads as a deferral already overtaken
+  -- rather than as a commitment nobody has to keep.
+  | none => .deferred Version.origin
 
 def ReleasePlan.enabled (plan : ReleasePlan) (channel : Channel) : Bool :=
   (plan.status channel).isEnabled
 
 def ReleasePlan.enabledChannels (plan : ReleasePlan) : List Channel :=
   Channel.all.filter plan.enabled
+
+/-- Deferrals the release being cut has already caught up with, each with the
+    release it names.
+
+    A deferral has to point forwards. `plannedFor` parsing as a version makes it
+    a commitment; this is what keeps the commitment from expiring silently. A
+    channel deferred to a release that has shipped was not postponed, it was
+    forgotten — it would go on saying "planned for 0.2.0" through 0.2.0 and
+    every release after it, and the plan would read as a decision nobody made.
+
+    Not enforced inside `ReleasePlan.parse`, deliberately: the parser reads one
+    file and the release being cut is not in it. The rule needs both, so it
+    lives here and is applied where the version is known — the repository test
+    against the product version, and `tlrelease plan-deferrals` against the tag. -/
+def ReleasePlan.staleDeferrals (plan : ReleasePlan) (current : Version) :
+    List (Channel × Version) :=
+  plan.rows.filterMap fun row =>
+    match row.status with
+    | .enabled => none
+    | .deferred planned => if planned.exceeds current then none else some (row.channel, planned)
+
+/-- What to tell whoever has to fix a deferral that has expired. One definition,
+    because the repository test and the release-time gate report the same thing
+    and a reader who saw two wordings would look for two problems. -/
+def ReleasePlan.staleDeferralMessage (channel : Channel) (planned current : Version) : String :=
+  s!"the '{channel.wire}' channel is deferred to {planned.render}, which is not ahead of {current.render}. A deferral to a release that has already shipped is a channel that was forgotten rather than postponed. Either enable the channel and publish it now, or move its plannedFor to a release still ahead of this one."
 
 private def parseChannelRow (cursor : Cursor) (value : Json) : Except String ChannelRow := do
   let channelText ← stringField cursor value "channel"
@@ -352,9 +461,10 @@ private def parseChannelRow (cursor : Cursor) (value : Json) : Except String Cha
       | .ok text =>
           -- A version, not a note. "later" and "banana" are both non-empty
           -- strings, and only one of them is a commitment something can be
-          -- checked against.
-          let _ ← Version.parse (cursor.at "plannedFor").render text
-          return { channel, status := .deferred text }
+          -- checked against. The parsed value is what the row carries, so
+          -- nothing downstream re-parses it or compares it as text.
+          let version ← Version.parse (cursor.at "plannedFor").render text
+          return { channel, status := .deferred version }
       | .error _ => (cursor.at "plannedFor").fail "is not a string."
 
 def ReleasePlan.parse (document : String) (text : String) : Except String ReleasePlan := do
@@ -378,11 +488,14 @@ def ReleasePlan.parse (document : String) (text : String) : Except String Releas
   -- leaves the other channels pointing at artifacts that were never published.
   -- Refused here rather than ignored: a row whose value changes nothing is
   -- worse than no row, because it reads as a decision.
+  --
+  -- One check, not two. A second loop reporting "enables '<channel>' while
+  -- 'github-release' is off" followed this and could not run: the refusal above
+  -- has already left the block whenever the antecedent holds, so its message
+  -- was unreachable — a remedy nobody could ever be shown, and one more thing
+  -- to keep true.
   unless plan.enabled .githubRelease do
     inner.fail "disables the 'github-release' channel. That channel is the source of truth every other one serves the same bytes from (ADR-0006), so switching it off does not describe a smaller release — it describes none, and leaves any other enabled channel pointing at artifacts nothing published."
-  for channel in Channel.all do
-    if channel != .githubRelease && plan.enabled channel && !plan.enabled .githubRelease then
-      inner.fail s!"enables '{channel.wire}' while 'github-release' is off. Every channel distributes the artifacts the GitHub Release publishes; one without it has nothing to distribute."
   return plan
 
 /-! ## The signing identity -/
