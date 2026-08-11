@@ -86,10 +86,19 @@ mark, and the difference was not cosmetic: the prerequisite audit demanded five
 npm packages and a Homebrew tap before anything could be signed, the release
 policy ran their gates, and the workflow held jobs for them. A first release
 through the GitHub channel alone was therefore blocked by external state that
-nothing about it needed. A channel that is off is *absent* from the applicable
-prerequisites, from the enabled jobs, and from the strict release policy —
-never reported as missing or unchecked. "Missing" is a defect report, and a
-channel nobody is publishing has no defect.
+nothing about it needed. A channel that is off contributes no *prerequisite* and no *job*: the audit
+reports its rows as `deferred`, in their own class, and the workflow derives
+the publish jobs from this file so a deferred channel has no job to skip.
+"Missing" is a defect report, and a channel nobody is publishing has no defect.
+
+The per-commit release policy is deliberately *not* derived from the plan, and
+that is the one place where "absent" would be the wrong answer. Its gates run
+every channel's generator on every commit — the npm selftests, the formula
+generator, `ruby -c` on the committed formula — because a channel that is built
+but switched off is exactly the code nothing else exercises, and it must not rot
+while it waits. The cost is that `--strict` demands `npm` and `ruby` on a
+machine running the policy, whichever channels are enabled; ADR-0026 records the
+release-profile split that would separate the two.
 
 ### v0.1.0 channel scope
 
@@ -166,11 +175,12 @@ shims after proving each shim fires: `install.sh --selftest` and
 invocations. Those are the two user-facing paths, and the interpreter is gone
 from both.
 
-Not yet enforced: the release policy still reaches `python3` through ten of its
-gates and `ruby` through two, because the generators behind them — the version
-check, the identity check, the embedded-copy check, the SBOM, the manifest, the
-prerequisite audit and the Homebrew formula generator — have not moved to
-`tlrelease` yet. The count is a consequence of that list rather than a number to
+Not yet enforced: of the release policy's twenty-two gates, fourteen fail when
+`python3` and `ruby` are replaced by refusing shims — thirteen need `python3`
+and two need `ruby`. The generators behind them are the version check, the
+identity check, the embedded-copy check, the SBOM, the manifest, the
+prerequisite audit, the three npm gates and the Homebrew formula generator;
+none has moved to `tlrelease` yet. The count is a consequence of that list rather than a number to
 maintain by hand: it is re-derived by running each gate with counting
 `python3`/`ruby` shims first on `PATH`, which is the same method that
 established the two clean paths above. The eventual enforcement is twofold: an
@@ -353,8 +363,12 @@ Binary distribution is gated on a verifiable release pipeline:
   SHA-256 digest remains mandatory. Homebrew has no signature-skip mode.
 - A repository owner/name or release-workflow-path change is an identity
   rotation, not an editorial rename. Before the new identity signs anything,
-  a protected change updates `release/identity.json`, `VERIFYING.md`, this ADR,
-  the installer, and the Homebrew formula together. The history table retains
+  a protected change updates `release/identity.json`, `release/identity.pin`,
+  `VERIFYING.md`, this ADR, the installer, and the Homebrew formula together.
+  The pin is generated from the identity by `tlrelease write-pin` and
+  drift-guarded against it, so in practice it is regenerated rather than
+  edited — but it is the copy the scripted verifier actually reads, so a
+  rotation that skipped it would check signatures against the old identity. The history table retains
   the old identity for old releases; artifacts are never re-signed to rewrite
   history. A compromise records and withdraws the affected release interval
   before rotating. `Tests/ReleaseTests.lean` compares every operative copy as
@@ -443,10 +457,11 @@ Binary distribution is gated on a verifiable release pipeline:
   `release/plan.json` rather than fixed. For the channels v0.1.0 enables that
   is: the repository being public, the `release` environment and its protection
   rules, the `v*` tag ruleset, and the signing identity. npm's per-package
-  trusted publishers and the tap credential belong to their channels and
-  produce no rows at all while those channels are off — a disabled channel is
-  neither missing nor unchecked, because there is nothing it is supposed to
-  have. `docs/release-prerequisites.md` is the procedure, the audit runs before
+  trusted publishers and the tap credential belong to their channels: while
+  those channels are off the audit reports one `deferred` row each, naming the
+  release they are planned for, and neither is missing nor unchecked, because
+  there is nothing they are supposed to have yet. The row is reported rather
+  than omitted so a reader can see the plan was consulted. `docs/release-prerequisites.md` is the procedure, the audit runs before
   anything is signed, and what it cannot read is carried in docs/overview.md.
   An operational failure to *reach* the API is reported as exactly that and
   never as an absent prerequisite: the two demand opposite responses, and

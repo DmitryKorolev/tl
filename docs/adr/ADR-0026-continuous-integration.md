@@ -109,10 +109,25 @@ express:
   candidate whose digest disagrees with what its build leg recorded.
 - `scripts/check-release-prereqs.sh --selftest` checks the *reporting* of the
   external-state audit — that an unreadable row is counted as unchecked and
-  never as a pass. The audit itself is deliberately not in this gate: it talks
-  to npm and to the GitHub API, and a network check on every commit would make
-  CI flaky and teach people to ignore it. It runs in the release workflow
-  instead, before anything is signed.
+  never as a pass — and drives `audit` itself over stubbed `gh` and `npm`, so
+  each branch that decides a release has a row: a deferred channel producing no
+  prerequisites, a 404 kept apart from any other status, a deployment policy
+  that also admits branches, a tag ruleset that covers one tag rather than the
+  namespace, and a ruleset the API could not read. The *live* audit is
+  deliberately not in this gate: it talks to npm and to the GitHub API, and a
+  network check on every commit would make CI flaky and teach people to ignore
+  it. It runs in the release workflow instead, before anything is signed.
+- `shellcheck -S warning` over every tracked shell file, found by shebang and
+  extension rather than listed — a list stops covering a new script silently,
+  and the gate refuses outright if the discovery pattern matches nothing.
+- `scripts/npm-bootstrap.sh --selftest` covers the one manual step before the
+  first release: the placeholder packages must carry the licence files and a
+  version nobody resolves, and the commands it prints must not publish to
+  `latest`.
+- `scripts/gen-homebrew-formula.sh --selftest` covers the formula generator's
+  refusals and renderings; the `ruby -c` gate two entries below is the parse
+  check on the committed formula, and both skip visibly rather than fail when
+  ruby is absent.
 - actionlint over both workflow files. A workflow cannot validate itself: if
   GitHub refuses to load `release.yml`, nothing runs to say so, and the failure
   would surface only when someone pushed a tag. actionlint shells out to
@@ -121,9 +136,11 @@ express:
   as a *skip* rather than a pass — three real shell defects in these workflows
   survived precisely because the runner has shellcheck and the machines they
   were tried on did not.
-- A separate `homebrew-formula` job loads, styles and audits three formulae
-  with real Homebrew: the committed template, a fully-pinned generated one, and
-  one with the Best-effort target dropped. `ruby -c` proves a formula parses
+- A separate `homebrew-formula` job loads, styles and audits four formulae
+  with real Homebrew: the committed template, a fully-pinned generated one, one
+  with the Best-effort target dropped, and a prerelease one — Homebrew's version
+  scanner drops the SemVer suffix and resolves that formula's urls differently,
+  so the job also asserts each resolved url names the tag it should. `ruby -c` proves a formula parses
   and says nothing about whether Homebrew accepts it — a formula whose stable
   spec has no url for the running platform passes `ruby -c` and makes Homebrew
   raise on *load*, for every brew command against the tap.
@@ -152,10 +169,10 @@ channel cannot rot while it waits.
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
 and `npm` on any path reachable from an enabled channel, and the single
-`--strict` policy violates it: measured under failing PATH shims, thirteen of
+`--strict` policy violates it: measured under failing PATH shims, fourteen of
 its twenty-two gates invoke `python3` or `ruby`. Five of those are the npm and
 Homebrew gates, which the split removes from the release profile outright; the
-other eight are v0.1 gates whose generators have to move to `tlrelease` before
+other nine are v0.1 gates whose generators have to move to `tlrelease` before
 the budget can hold. One profile could not both enforce the budget and keep the
 deferred channels covered.
 
@@ -248,7 +265,8 @@ trust boundary. Its executable is under `Verify/` and does the following:
 
 1. dynamically imports raw `.olean` data for the production roots (`Tl`,
    `Main`), test roots (`Tests` plus an adversarial fixture), its own root
-   (`Verify.Main`), and executable Lean tooling (`scripts.GenLicenses`) into
+   (`Verify.Main`), executable Lean tooling (`scripts.GenLicenses`), and the
+   release-decision layer (`release.Main`) into
    separate environments, with extension/initializer execution disabled;
 2. enumerates current importable `.lean` sources from the repository and
    compares each scoped inventory with Lean's actual imported-module graph;
@@ -354,8 +372,8 @@ in *both* arms (`workerVerdict_diagnostics`) — stated with no
 paths, so neither a clean run nor a failing one can grow an emission that no
 theorem sees. Composed with the assembly theorem,
 `workerVerdict_marker_iff_clean` states the whole decision in one step: the
-marker is printed exactly when all six scopes are `GateClean` and both inventory
-scans are silent.
+marker is printed exactly when all seven scopes are `GateClean` and both
+inventory scans are silent.
 
 What stays IO splits two ways, and only one half is tested. The supervisor's
 handling of the marker is covered against real worker processes. The emission
@@ -527,9 +545,9 @@ uniqueness assumption in `docs/overview.md`.
 - No Bash trust scripts or source lexer remain.
 - A clean `lake build --wfail` is necessary but not sufficient; contributors
   also run `lake exe tlverify` and `lake exe tltest`.
-- Adding a source under `Tl/`, `Tests/`, `Verify/`, `VerifyFixture/`, or
-  `scripts/` requires including it in the corresponding audited scope in the
-  same change.
+- Adding a source under `Tl/`, `Tests/`, `Verify/`, `VerifyFixture/`,
+  `scripts/`, or `release/` requires including it in the corresponding audited
+  scope in the same change.
 - Adding or retiring a proved claim updates `Verify/Policy.lean` and
   `docs/overview.md` together.
 - Widening the axiom allowance or Mathlib scope remains an explicit ADR-level

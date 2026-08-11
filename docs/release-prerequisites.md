@@ -15,9 +15,11 @@ verified nor recorded is the one that fails at the worst moment.
 
 Not all of them, and not always the same ones. A prerequisite belongs to a
 distribution channel, and `release/plan.json` says which channels a release
-publishes. A section below whose channel is disabled should produce **no rows
-at all** — not a row reading *missing*, and not one reading *unchecked*.
-"Missing" is a defect report, and a channel nobody is publishing has no defect.
+publishes. A section below whose channel is disabled produces **no prerequisite** — no row
+reading *missing*, and none reading *unchecked*. "Missing" is a defect report,
+and a channel nobody is publishing has no defect. It does produce one visible
+row, in a class of its own, so that a reader can see the plan was consulted
+rather than the section forgotten.
 
 `scripts/check-release-prereqs.sh` reads `release/plan.json` and applies that
 rule. A deferred channel's rows are reported as **deferred**, counted in their
@@ -71,7 +73,8 @@ and the first thing to do.
 ### 1. Bootstrap the five npm packages — *only when the npm channel is enabled*
 
 Not a prerequisite of v0.1.0: `release/plan.json` has npm disabled, so the
-release workflow runs no npm job and the audit emits no npm rows. This section
+release workflow runs no npm job and the audit reports a single `deferred` row
+for this whole section rather than five missing packages. This section
 is the procedure for the release that turns the channel on.
 
 npm configures trusted publishing **per package**, and only for a package that
@@ -157,7 +160,8 @@ not a substitute: it sees what the tag points at, never who pushed it.
 ### 4. Create the Homebrew tap and its credential — *only when the Homebrew channel is enabled*
 
 Not a prerequisite of v0.1.0, for the same reason as section 1: with the
-channel disabled there is no `publish-homebrew` job and no tap row to audit.
+channel disabled there is no `publish-homebrew` job, and the audit reports a
+single `deferred` row for this section rather than auditing the tap.
 
 `DmitryKorolev/homebrew-tap` must exist with a `Formula/` directory, and the
 `HOMEBREW_TAP_TOKEN` secret must hold a token with write access to it.
@@ -200,10 +204,13 @@ tag or that line and leaves the rest of the namespace open. This matters
 because a
 count of protection rules is satisfied by a wait timer and a count of rulesets
 by an unrelated branch rule. It also distinguishes "not found" from "could not
-read" on every row that talks to a network — the repository's visibility, the
-`release` environment, its deployment policy, the tag rulesets, each npm
-package and the Homebrew tap — so an API failure or an unreachable registry is
-reported as unchecked rather than as absent. Collapsing those two would abort a
+read" on the rows where the two have different remedies — each npm package, the
+Homebrew tap, and the `release` environment separate a 404 from any other
+status, and a tag ruleset the API could not read is reported as unchecked
+rather than counted as absent. The repository-visibility and deployment-policy
+rows report any failure as unchecked without separating the 404, which is the
+same fail-closed direction. An unreachable registry or a 5xx is never reported
+as a prerequisite nobody created. Collapsing those two would abort a
 correct release on a transient 5xx, with a remedy telling the operator to
 create something that already exists.
 

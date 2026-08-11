@@ -58,7 +58,9 @@ What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files). The
 `lake exe tlverify` re-derives it from compiled environments on every CI run
 and fails otherwise ([ADR-0026](adr/ADR-0026-continuous-integration.md)). It
 checks production (`Tl` + `Main`), tests (including a hostile initializer
-fixture), its own verifier modules, and executable Lean tooling. For each scope
+fixture), its own verifier modules, executable Lean tooling, and the
+`tlrelease` release-decision layer (`release/`) — seven scopes in all, each
+loaded into its own environment. For each scope
 it compares the current filesystem inventory exactly with Lean's actual
 imported-module graph, classifies additional first-party imports by their
 resolved project-build `.olean` provenance, examines declaration ownership and transitive axioms,
@@ -101,7 +103,7 @@ table above and neither gets a landmark; that split and its reasoning are
 recorded in [ADR-0026](adr/ADR-0026-continuous-integration.md) and
 [the codebase map](codebase-map.md).
 Required evidence is typed rather than accumulated in optional clean
-arrays: import audit, replay, expected landmarks, six named scope reports,
+arrays: import audit, replay, expected landmarks, seven named scope reports,
 inventory findings, typed source-scope ownership, and unclaimed sources must all
 reach the verdict.
 `Tests/VerifyTests.lean` covers each report branch's message and remedy, the
@@ -494,13 +496,20 @@ and this environment, with no classic token still able to publish; and that
 ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after
-any permission change, not once. An audit that cannot reach the API reports
-an operational error and stops the release rather than reporting the
-prerequisite as absent, because the two call for opposite responses: the shell
-audit separates a 404 from any other status on every row that talks to a
-network, and a channel `release/plan.json` defers produces neither — its rows
-are reported *deferred*, in their own class, and never contribute to the
-verdict. What follows if an assumption fails is bounded and stated: without the environment protections, anyone able to create a `v*` tag
+any permission change, not once. An audit that cannot reach the API reports the
+row as *unchecked* rather than as absent, because the two call for opposite
+responses: the npm, Homebrew-tap and tag-ruleset rows separate a 404 from any
+other status, so an unreachable registry or a 5xx on a ruleset never reads as a
+prerequisite nobody created. A channel `release/plan.json` defers produces
+neither answer — its rows are *deferred*, in their own class, and never
+contribute to the verdict. **An unchecked row does not stop the release**, and
+that is a deliberate gap rather than a property: several rows are permanently
+unchecked because no API exposes them, so failing on `unchecked` would fail
+every run. The consequence is that a transient outage silently demotes a
+verified prerequisite to a carried assumption for that release, and nothing
+distinguishes "could not check it this time" from "cannot be checked at all".
+Recorded here rather than papered over; closing it means giving the two a
+separate class, the way a deferred channel got one. What follows if an assumption fails is bounded and stated: without the environment protections, anyone able to create a `v*` tag
 can make this workflow sign, with an identity every verifier accepts, whatever
 commit that tag points at; the ancestry check in the `sign` job is a backstop
 that sees what the tag points at and never who pushed it.

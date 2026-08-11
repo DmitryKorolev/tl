@@ -65,8 +65,8 @@ for the decisions and their rationale, read the ADRs in
   deliberately forging its own verdict, so `Verify/Main.lean`,
   `Verify/Launcher.lean`, and the workflow remain protected-review bootstrap.
   The worker loads raw compiled production,
-  test, verifier, and Lean-tooling environments without
-  executing their initializers; matches their modules exactly against the current source inventory;
+  test, verifier, Lean-tooling and release-decision (`release/`) environments
+  — seven audited scopes — without executing their initializers; matches their modules exactly against the current source inventory;
   rejects first-party axioms and transitive axiom dependencies outside
   `propext` / `Classical.choice` / `Quot.sound`; enforces the ADR-0009 direct
   dependency allowlist from Lean's stored import graph; and independently
@@ -144,6 +144,13 @@ CI gates (mirror these locally before declaring done):
   `shellcheck` or `ruby` is a smaller policy rather than a broken run. Touching
   anything under `scripts/`, `release/`, `npm/`, `Formula/`, `install.sh` or
   `.github/workflows/` means running it.
+- A `homebrew-formula` job, which is the other required CI job the four gates
+  above do not imply. It taps four generated formulae on macOS and runs
+  `brew info --formula`, `brew style` and `brew audit` over each, plus a
+  resolved-url check. Real Homebrew is the only thing that catches a stable
+  spec with no url for the running platform, which raises on *load* for every
+  `brew` command; `ruby -c` does not. It cannot run locally without Homebrew,
+  so a formula change is the one case where CI sees something you cannot.
 
 `.github/workflows/ci.yml` mechanizes every gate above
 ([ADR-0026](docs/adr/ADR-0026-continuous-integration.md)). The task-ID check is

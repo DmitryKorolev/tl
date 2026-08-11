@@ -260,14 +260,37 @@ sys.exit(0 if data.get("deployment_branch_policy") else 1)
     # must be actively enforced, its conditions must cover v*, and it must
     # actually restrict creation.
     tag_ruleset=''
-    for id in $(python3 -c '
+    unreadable_rulesets=0
+    # Resolved with its status checked. As `for id in $(python3 …)` the parse's
+    # failure was discarded, so a listing this could not read produced an empty
+    # loop and, below, a MISSING row — an unreadable API reported as an absent
+    # ruleset, which is the collapse the rest of this file exists to remove.
+    if ! ids=$(python3 -c '
 import json, sys
-for entry in json.load(open(sys.argv[1])):
+try:
+    entries = json.load(open(sys.argv[1]))
+except (OSError, ValueError) as error:
+    sys.exit(f"the rulesets listing is not readable JSON ({error})")
+for entry in entries:
     if entry.get("target") == "tag":
         print(entry["id"])
-' "$rules_json"); do
+' "$rules_json" 2>"$work/rules-parse.err"); then
+      unchecked_row "a ruleset restricts who may create v* tags" \
+        "the rulesets listing could not be read ($(tr -d '\n' < "$work/rules-parse.err" | cut -c1-160)); that is not evidence that no ruleset exists."
+      ids=''
+      unreadable_rulesets=1
+    fi
+    for id in $ids; do
       detail="$work/ruleset-$id.json"
-      gh api "repos/${repository}/rulesets/$id" --cache 0s > "$detail" 2>/dev/null || continue
+      # A ruleset this cannot read is not a ruleset that fails to qualify.
+      # Skipping it silently turned one 5xx on a detail call into "no active
+      # ruleset restricts creation of v* tags" — a MISSING row that aborts a
+      # correctly configured release and sends the operator to create a
+      # ruleset that already exists.
+      if ! gh api "repos/${repository}/rulesets/$id" --cache 0s > "$detail" 2>"$work/detail.err"; then
+        unreadable_rulesets=$((unreadable_rulesets + 1))
+        continue
+      fi
       if python3 -c '
 import json, sys
 data = json.load(open(sys.argv[1]))
@@ -300,6 +323,9 @@ sys.exit(0 if "creation" in kinds else 1)
     done
     if [ -n "$tag_ruleset" ]; then
       pass "an active tag ruleset (#$tag_ruleset) restricts creation of v* tags"
+    elif [ "$unreadable_rulesets" -ne 0 ]; then
+      unchecked_row "a ruleset restricts who may create v* tags" \
+        "$unreadable_rulesets ruleset(s) could not be read, and none of the ones that could read as covering every v* tag. An unreadable ruleset is not an absent one — re-run when the API is reachable rather than creating a ruleset that may already exist."
     else
       fail_row "no active ruleset restricts creation of v* tags" \
         "A ruleset that exists but targets branches, is in evaluate mode, carries no creation restriction, or whose ref conditions do not cover *every* v* tag leaves tag creation open. Coverage means an include pattern of ~ALL, refs/tags/*, refs/tags/** or refs/tags/v*, and no exclude list: naming one tag or one release line restricts that tag or that line and nothing else. The sign job's ancestry check is a backstop — it sees what the tag points at, never who pushed it."
@@ -415,7 +441,13 @@ case "$2" in
     esac
     ;;
   repos/*/rulesets) printf '%s\n' "${GH_STUB_RULESETS:-[]}" ;;
-  repos/*/rulesets/*) printf '%s\n' "${GH_STUB_RULESET:-{\}}" ;;
+  repos/*/rulesets/*)
+    if [ -n "${GH_STUB_RULESET_FAILS:-}" ]; then
+      echo "gh: could not reach the API (HTTP 502)" >&2
+      exit 1
+    fi
+    printf '%s\n' "${GH_STUB_RULESET:-{\}}"
+    ;;
   repos/*/homebrew-tap)
     case "${GH_STUB_TAP:-ok}" in
       missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -598,6 +630,21 @@ PLANJSON
     "a ruleset over every ref covers v*" \
     RC_PLAN_FILE="$work/plan-deferred.json" \
     GH_STUB_RULESET='{"enforcement": "active", "conditions": {"ref_name": {"include": ["~ALL"]}}, "rules": [{"type": "creation"}]}'
+  # An unreadable ruleset is not an absent one. A 5xx on the detail call used to
+  # be skipped silently, which turned a correctly configured repository into
+  # "no active ruleset restricts creation of v* tags" and aborted the release
+  # with a remedy telling the operator to create what already existed.
+  audit_with 0 "could not be read" \
+    "a ruleset whose detail cannot be read is unchecked, not missing" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_RULESET_FAILS=1
+  audit_with 0 "not an absent one" \
+    "the unreadable-ruleset row says why it is not a refusal" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_RULESET_FAILS=1
+  # Same for a listing that does not parse: an empty loop used to read as
+  # "there are no tag rulesets".
+  audit_with 0 "rulesets listing could not be read" \
+    "an unparseable rulesets listing is unchecked, not missing" \
+    RC_PLAN_FILE="$work/plan-deferred.json" GH_STUB_RULESETS='not json'
 
   # The repository's own visibility, which everything else assumes.
   audit_with 1 "not public" "a private repository is refused" \
