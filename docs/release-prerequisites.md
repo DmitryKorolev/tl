@@ -165,6 +165,15 @@ channel disabled there is no `publish-homebrew` job and no tap row to audit.
 if this secret is missing, rather than warning and exiting zero — a green
 release that quietly did not update a promised channel is worse than a red one.
 
+Store it as a **repository** secret, not an environment one. `release` is the
+only environment this document names, so an environment secret is the natural
+reading — but `publish-homebrew` declares no `environment:`, so
+`secrets.HOMEBREW_TAP_TOKEN` would resolve there to the empty string and the
+job would refuse for a secret that exists. Putting that job behind the `release`
+environment instead would gate it with the same approval as signing, at the
+cost of a third manual approval per release; that is a deliberate trade to make
+when the channel is enabled, not a detail to discover mid-release.
+
 ## Before every release
 
 - The tag is a SemVer `v` tag whose version matches every copy

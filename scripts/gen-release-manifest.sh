@@ -44,8 +44,24 @@ generate() {
 
   [ -d "$dist" ] || { echo "gen-release-manifest: '$dist' is not a directory." >&2; exit 1; }
 
+  # Resolved into variables first, with their statuses checked. As assignment
+  # prefixes on the `python3` command the substitutions' failures are discarded
+  # — the command's own status is what survives — so an unreadable
+  # release/targets.json produced empty tier lists, and the manifest below then
+  # described a release with no targets and skipped every per-leg
+  # build-metadata check. The manifest is signed, so that is a signed document
+  # asserting a release whose contents nothing looked at.
+  required=$(rc_targets supported) || {
+    echo "gen-release-manifest: could not read the release-blocking targets, so the manifest cannot say which artifacts this release requires. A manifest with an empty required list is not a smaller claim, it is a signed claim that nothing was checked." >&2
+    exit 1
+  }
+  optional=$(rc_targets best-effort) || {
+    echo "gen-release-manifest: could not read the best-effort targets, so the manifest cannot distinguish an artifact whose absence is acceptable from one whose absence blocks the release." >&2
+    exit 1
+  }
+
   DIST="$dist" TAG="$tag" COMMIT="$commit" OUTPUT="$output" ROOT="$repo_root" \
-  REQUIRED="$(rc_targets supported)" OPTIONAL="$(rc_targets best-effort)" \
+  REQUIRED="$required" OPTIONAL="$optional" \
   python3 <<'PYEOF'
 import hashlib
 import json
@@ -459,6 +475,16 @@ json.dump({"target": target, "sha256": digest, "commit": commit, "tier": tier,
   rc_expect_output 1 "not the one that was built" \
     "a binary that differs from what its build leg recorded is refused" \
     "$0" "$tampered" v1.2.3 "$commit" "$work/o1"
+
+  # An unreadable targets file must stop the generator, not describe a release
+  # with no targets. The manifest is signed, so an empty required list is not a
+  # smaller claim — it is a signed claim that nothing was checked, and every
+  # per-leg build-metadata comparison below is skipped along with it.
+  rc_expect_output 1 "could not read the release-blocking targets" \
+    "an unreadable targets file refuses rather than describing an empty release" \
+    env RC_TARGETS_FILE="$work/no-such-targets.json" "$0" "$tampered" v1.2.3 "$commit" "$work/o-notargets"
+  rc_note "$([ ! -e "$work/o-notargets" ] && echo 0 || echo 1)" \
+    "the refused run wrote no manifest at all"
 
   # The evidence must be *mandatory*. Written as "check it when the file
   # happens to exist", deleting the metadata published every binary with
