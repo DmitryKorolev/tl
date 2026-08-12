@@ -184,15 +184,19 @@ shims after proving each shim fires: `install.sh --selftest` and
 invocations. Those are the two user-facing paths, and the interpreter is gone
 from both.
 
-Not yet enforced: of the release policy's twenty-two gates, fourteen fail when
-`python3` and `ruby` are replaced by refusing shims — thirteen need `python3`
-and two need `ruby`. The generators behind them are the version check, the
-identity check, the embedded-copy check, the SBOM, the manifest, the
-prerequisite audit, the three npm gates and the Homebrew formula generator;
-none has moved to `tlrelease` yet. The count is a consequence of that list rather than a number to
-maintain by hand: it is re-derived by running each gate with counting
-`python3`/`ruby` shims first on `PATH`, which is the same method that
-established the two clean paths above. The eventual enforcement is twofold: an
+Not yet enforced: of the release policy's twenty-one gates, thirteen fail when
+`python3` and `ruby` are replaced by refusing shims — twelve need `python3` and
+two need `ruby`, and the Homebrew formula generator needs both. The generators
+behind them are the version check, the identity check, the embedded-copy check,
+the manifest, the prerequisite audit, the three npm gates and the Homebrew
+formula generator. The SBOM is the one that has moved: it is `tlrelease sbom`,
+it needs no interpreter, and it is covered by `lake exe tltest` rather than by a
+policy gate, which is why the policy has one gate fewer than it did. The count
+is a consequence of that list rather than a number to maintain by hand: it is
+re-derived by running each gate with counting `python3`/`ruby` shims first on
+`PATH`, and separately with each interpreter shimmed alone, since a gate that
+reaches `python3` first would otherwise hide that it needs `ruby` too. That is
+the same method that established the two clean paths above. The eventual enforcement is twofold: an
 inventory of the enabled entry points rejecting a forbidden invocation in the
 first-party scripts they reach, and the policy, selftests and rehearsal all
 running under those shims. Until both exist, the honest claim is the one above:
@@ -422,8 +426,8 @@ Binary distribution is gated on a verifiable release pipeline:
   with each release, states that boundary to users; the remaining work is
   tracked in docs/design-backlog.md.
 - Every binary release includes an SBOM and the full link-time dependency audit
-  required by the licensing section below. **Built**: `scripts/gen-sbom.sh`
-  emits SPDX 2.3 derived from `lean-toolchain` and `lake-manifest.json` (no
+  required by the licensing section below. **Built**: `tlrelease sbom` emits
+  SPDX 2.3 derived from `lean-toolchain` and `lake-manifest.json` (no
   generation timestamp, so two runs for one release agree byte for byte), and
   each build leg writes `link-audit-<target>.txt` from `ldd`/`otool -L` plus a
   symbol scan of the actual candidate — the one drift the license generator

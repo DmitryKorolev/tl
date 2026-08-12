@@ -103,10 +103,17 @@ express:
   partial failure, and an already-published version whose contents differ,
   which must stop rather than retry. npm versions are immutable, so this is the
   one gate whose failure cannot be corrected afterwards.
-- `scripts/gen-sbom.sh --selftest` and `scripts/gen-release-manifest.sh
-  --selftest` exercise the two generators whose output is signed: the SBOM must
-  refuse rather than emit an empty document, and the manifest must refuse a
-  candidate whose digest disagrees with what its build leg recorded.
+- `scripts/gen-release-manifest.sh --selftest` exercises one of the two
+  generators whose output is signed: the manifest must refuse a candidate whose
+  digest disagrees with what its build leg recorded. The other is the SBOM, and
+  it is not a gate in this script — `tlrelease sbom` is Lean, and its refusals
+  and its byte-exact output are covered by `Tests/ReleaseToolTests.lean` under
+  `lake exe tltest`, which is a required gate on the same commit in both
+  workflows. This script runs in a job with no Lean toolchain by design, so
+  invoking the built binary here would trade an answer in seconds for the whole
+  build matrix. `--list` names the SBOM under what a different gate covers, so
+  the one place that answers "what does the policy cover" does not fall silent
+  about it.
 - `scripts/check-release-prereqs.sh --selftest` checks the *reporting* of the
   external-state audit — that an unreadable row is counted as unchecked and
   never as a pass — and drives `audit` itself over stubbed `gh` and `npm`, so
@@ -169,10 +176,10 @@ channel cannot rot while it waits.
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
 and `npm` on any path reachable from an enabled channel, and the single
-`--strict` policy violates it: measured under failing PATH shims, fourteen of
-its twenty-two gates invoke `python3` or `ruby`. Five of those are the npm and
+`--strict` policy violates it: measured under failing PATH shims, thirteen of
+its twenty-one gates invoke `python3` or `ruby`. Five of those are the npm and
 Homebrew gates, which the split removes from the release profile outright; the
-other nine are v0.1 gates whose generators have to move to `tlrelease` before
+other eight are v0.1 gates whose generators have to move to `tlrelease` before
 the budget can hold. One profile could not both enforce the budget and keep the
 deferred channels covered.
 

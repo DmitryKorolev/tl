@@ -111,24 +111,12 @@ private def writePinCommand : Command := {
                 | .error message =>
                     refuse s!"tlrelease write-pin: refusing to write a pin this reader would reject: {message}"
                 | .ok _ =>
-                    -- A failed write is a refusal, not an exception. An
-                    -- unreadable directory or a full disk would otherwise
-                    -- escape as a Lean backtrace, which is the traceback-for-a-
-                    -- message regression this port exists to remove.
-                    -- Written beside the target and renamed over it. The pin
-                    -- is a trust anchor: a partial write straight onto the
-                    -- path would leave a truncated file where a valid one had
-                    -- been, and the verifier would then refuse every genuine
-                    -- signature. `rename` within a directory is atomic, so a
-                    -- reader sees either the old pin or the new one.
-                    let temporary := outputPath ++ ".tmp"
-                    match ← (try
-                        IO.FS.writeFile temporary pin
-                        IO.FS.rename temporary outputPath
-                        pure (Except.ok ())
-                      catch error => do
-                        try IO.FS.removeFile temporary catch _ => pure ()
-                        pure (Except.error s!"could not write {outputPath}: {error}")) with
+                    -- The pin is a trust anchor: a partial write straight onto
+                    -- the path would leave a truncated file where a valid one
+                    -- had been, and the verifier would then refuse every
+                    -- genuine signature. `writeFileAtomically` is where that
+                    -- reasoning lives, shared with the SBOM.
+                    match ← writeFileAtomically outputPath pin with
                     | .error message => refuse s!"tlrelease write-pin: {message}"
                     | .ok () =>
                         IO.println s!"tlrelease write-pin: wrote {outputPath}"

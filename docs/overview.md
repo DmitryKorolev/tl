@@ -521,15 +521,26 @@ here. A local rehearsal covers the whole darwin-arm64 Supported leg on a
 developer machine: stamping a clean checkout, `lake build tl`, staging,
 ad-hoc codesigning, the provenance assertions and the real task round-trip in
 the smoke test, the link-time dependency audit, the build-metadata record, and
-then the manifest generator, the SBOM, `SHA256SUMS` and
-`scripts/verify-release-artifacts.sh` over the result. That rehearsal is what
+then the manifest generator, `SHA256SUMS` and
+`scripts/verify-release-artifacts.sh` over the result. The SBOM is covered per
+commit rather than by that rehearsal, in two rows that do different jobs:
+`lake exe tltest` renders it from this repository's own `lean-toolchain` and
+`lake-manifest.json` and checks that every dependency is described at the
+revision the manifest pins, and separately renders it from a committed pair of
+fixture inputs and compares the result byte for byte against a committed
+golden. That rehearsal is what
 found the audit reporting every third-party component as absent on both macOS
 legs, so it is not a formality. What it cannot reach stays untested rather than
 implied working: both Linux legs, which build inside the pinned glibc-floor
 container on the runner, and with them the glibc-floor assertion; `actions/checkout`;
 `upload-artifact`/`download-artifact` and therefore every cross-job handoff,
-including the stamp the build legs compare by digest and the binaries the sign
-job re-verifies; the OIDC token, the Sigstore certificate and every
+including the stamp the build legs compare by digest, the binaries the sign job
+re-verifies, and the release tool that job downloads and executes to write the
+SBOM. That last one is compared against a digest the gates job publishes as an
+output, and the comparison is inline workflow shell like the stamp check above
+it: its three branches — no digest published, a digest that disagrees, and the
+handoff succeeding — are read and linted but never executed, so what the check
+would do is asserted rather than known; the OIDC token, the Sigstore certificate and every
 `cosign` call against a real transparency log; `actions/attest-build-provenance`;
 the GitHub Release creation itself; and the `release` environment's approval
 gate. Each of those is exercised only by a real tagged run, and until one

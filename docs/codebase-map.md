@@ -229,10 +229,6 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- publish / accept-if-identical / refuse a differing
                         -- version, since npm versions are immutable and a
                         -- partial run must be resumable),
-                        -- gen-sbom.sh (SPDX from lean-toolchain and
-                        -- lake-manifest.json; refuses rather than emitting an
-                        -- empty document, and carries no timestamp so two
-                        -- generations of one release agree),
                         -- gen-release-manifest.sh (the canonical description
                         -- of a release, signed with it; --verify is what the
                         -- downstream jobs read instead of re-deriving the
@@ -590,7 +586,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   refusals. Driven in-process against release.Cli;
                         --   a refusal must never share an exit status with
                         --   success, which is the failure the port exists to
-                        --   prevent
+                        --   prevent. The SBOM's exact bytes are pinned by
+                        --   fixtures/sbom-golden.spdx.json, rendered from the
+                        --   two committed inputs beside it, so a change to
+                        --   what a release describes is a failing row rather
+                        --   than a difference inside a signed asset
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
@@ -685,6 +685,21 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   opened descriptor so two reads cannot be handed
                         --   one line each from two different pins
   targets.json          --   (data) the distributed targets and their tiers
+  Sbom.lean             --   `sbom` writes the release's SPDX 2.3 document from
+                        --   lean-toolchain and lake-manifest.json, the two
+                        --   files that already fix the build, so it cannot
+                        --   disagree with what was built. No generation
+                        --   timestamp and no generated document id: the bytes
+                        --   are a function of the release, which is what lets
+                        --   two independent generations of one release agree
+                        --   after it has been hashed into SHA256SUMS and
+                        --   signed. Refuses an input it cannot describe rather
+                        --   than describing what did not ship: another Lake
+                        --   package's manifest, a dependency Lake did not
+                        --   resolve from git, an unpinned revision, a url
+                        --   nothing could fetch from, an empty inventory, two
+                        --   names colliding in one SPDX identifier, and a
+                        --   toolchain naming a channel instead of a pin
   Plan.lean             --   `plan-channels` emits one channel=true|false line
                         --   for the release workflow's gates job to publish as
                         --   outputs, so each deferred channel's publish job is

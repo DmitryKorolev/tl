@@ -148,7 +148,6 @@ release-policy gates, in order:
   embedded-copy drift                 scripts/check-embedded-copies.sh
   shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
-  SBOM generator selftest             scripts/gen-sbom.sh --selftest
   release manifest selftest           scripts/gen-release-manifest.sh --selftest
   release prerequisites reporting     scripts/check-release-prereqs.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
@@ -161,6 +160,11 @@ release-policy gates, in order:
   workflow lint                       actionlint .github/workflows/*.yml (needs actionlint)
   the checked-in build stamp is       git diff after regenerating it
     the development stamp             (skipped with --tag: a tag run stamps on purpose)
+
+covered by a different required gate, and deliberately not run here:
+  the SBOM generator                  `lake exe tltest`, over Tests/ReleaseToolTests.lean
+                                      — it is `tlrelease sbom`, and this script
+                                      answers in seconds without a toolchain
 GATES
   exit 0
 fi
@@ -200,7 +204,13 @@ else
 fi
 
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
-gate "SBOM generator selftest" ./scripts/gen-sbom.sh --selftest
+# The SBOM generator is `tlrelease sbom`, and its refusals are covered by
+# Tests/ReleaseToolTests.lean under `lake exe tltest` — a required gate on the
+# same commit in ci.yml and in the release workflow's own gates job. It is not
+# invoked here because this script runs in a job with no Lean toolchain, by
+# design: it answers in seconds rather than after the build matrix. Named in
+# --list under what a different gate covers, so a reader asking what the policy
+# covers is not told the SBOM is uncovered.
 gate "release manifest selftest" ./scripts/gen-release-manifest.sh --selftest
 gate "release prerequisites reporting selftest" ./scripts/check-release-prereqs.sh --selftest
 

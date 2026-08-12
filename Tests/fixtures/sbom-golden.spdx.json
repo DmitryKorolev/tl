@@ -1,0 +1,137 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "comment": "Generated from lean-toolchain and lake-manifest.json, the files that fix this build. The `created` field is fixed rather than stamped so the document is a function of the release and two independent generations agree. The per-target link-time audit ships alongside as link-audit-<target>.txt.",
+    "created": "1970-01-01T00:00:00Z",
+    "creators": [
+      "Tool: tlrelease sbom",
+      "Organization: DmitryKorolev"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://github.com/DmitryKorolev/tl/spdx/v9.9.9",
+  "name": "tl-9.9.9",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-tl",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://github.com/DmitryKorolev/tl",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "tl",
+      "supplier": "Organization: DmitryKorolev",
+      "versionInfo": "9.9.9"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-lean-toolchain",
+      "comment": "Supplies the Lean runtime linked into every tl binary, and with it the statically linked GMP (LGPL-3.0-or-later, elected over the GPL-2.0 option) and libuv (MIT). See the licensing section of ADR-0006 and THIRD-PARTY-LICENSES.",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://github.com/leanprover/lean4",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "lean4",
+      "supplier": "Organization: Lean FRO",
+      "versionInfo": "leanprover/lean4:v4.33.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-gmp",
+      "comment": "Statically linked via the Lean toolchain, not vendored by this project. tl elects the LGPL-3.0 option; the section 4 relink obligation is met by tl remaining open source with a pinned build system (ADR-0006).",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://gmplib.org/",
+      "filesAnalyzed": false,
+      "licenseConcluded": "LGPL-3.0-or-later",
+      "licenseDeclared": "LGPL-3.0-or-later OR GPL-2.0-or-later",
+      "name": "gmp",
+      "supplier": "NOASSERTION",
+      "versionInfo": "NOASSERTION"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-libuv",
+      "comment": "Statically linked into every Lean binary and omitted from Lean's own bundled LICENSES file, so tl's notice adds the entry itself.",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://github.com/libuv/libuv",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "libuv",
+      "supplier": "NOASSERTION",
+      "versionInfo": "NOASSERTION"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-batteries",
+      "comment": "Lake dependency, pinned to an immutable commit (ADR-0009). Its license is classified fail-closed against the permissive allowlist by Tests/CliTests.lean and recorded in THIRD-PARTY-LICENSES.",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "git+https://example.invalid/batteries@1111111111111111111111111111111111111111",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "batteries",
+      "supplier": "NOASSERTION",
+      "versionInfo": "1111111111111111111111111111111111111111"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-quote-4",
+      "comment": "Lake dependency, pinned to an immutable commit (ADR-0009). Its license is classified fail-closed against the permissive allowlist by Tests/CliTests.lean and recorded in THIRD-PARTY-LICENSES.",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "quote/4",
+      "supplier": "NOASSERTION",
+      "versionInfo": "2222222222222222222222222222222222222222"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-unstated",
+      "comment": "Lake dependency, pinned to an immutable commit (ADR-0009). Its license is classified fail-closed against the permissive allowlist by Tests/CliTests.lean and recorded in THIRD-PARTY-LICENSES.",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "unstated",
+      "supplier": "NOASSERTION",
+      "versionInfo": "3333333333333333333333333333333333333333"
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Package-tl",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-lean-toolchain",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-gmp",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libuv",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-batteries",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unstated",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-tl"
+    }
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

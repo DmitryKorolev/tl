@@ -1,0 +1,14 @@
+{"version": "1.2.0",
+ "name": "tl",
+ "packages":
+ [{"type": "git",
+   "name": "batteries",
+   "rev": "1111111111111111111111111111111111111111",
+   "url": "https://example.invalid/batteries"},
+  {"type": "git",
+   "name": "quote/4",
+   "rev": "2222222222222222222222222222222222222222"},
+  {"type": "git",
+   "name": "unstated",
+   "rev": "3333333333333333333333333333333333333333",
+   "url": "NOASSERTION"}]}

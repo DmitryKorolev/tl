@@ -82,7 +82,7 @@ lean_lib Tooling where
     escape hatch. -/
 lean_lib ReleaseCore where
   roots := #[`release.Command, `release.Json, `release.Model, `release.Identity,
-    `release.Plan,
+    `release.Plan, `release.Sbom,
     `release.Cli]
 
 /-- A default target so `lake build --wfail` holds the release tool to the same

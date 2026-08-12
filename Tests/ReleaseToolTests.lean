@@ -913,6 +913,505 @@ private def planCommandTests : IO (List Outcome) := do
     check "plan command: the usage error names both arguments"
       (contains deferralsUsageErr "<plan.json> <version-or-tag>") deferralsUsageErr]
 
+/-! ## The SBOM
+
+The exact bytes are pinned as a committed fixture rather than as a literal
+here, so what a reviewer judges is an SPDX document rather than an escaped
+string, and `Tests/fixtures/sbom-golden.spdx.json` is what the tool itself
+renders from the two committed inputs beside it — an unnoticed change to what a
+release describes is then a failing row rather than a difference in a signed
+asset nobody reads.
+
+The refusals get the weight: a document that understates what ships still reads
+as evidence, so every input that cannot be understood is refused rather than
+carried.
+-/
+
+private def rev40 (c : Char) : String := String.ofList (List.replicate 40 c)
+
+/-- A manifest row. `url` is raw JSON rather than a string so that a row whose
+    url is a number is reachable — reading that as an absent url is the
+    absent/malformed conflation this whole tool exists to remove. -/
+private def manifestRow (name rev : String) (url : Option String := none)
+    (kind : Option String := some "\"git\"") : String :=
+  "{" ++ String.intercalate ", " (
+    (match kind with | none => [] | some raw => ["\"type\": " ++ raw]) ++
+    ["\"name\": \"" ++ name ++ "\"", "\"rev\": \"" ++ rev ++ "\""] ++
+    (match url with | none => [] | some raw => ["\"url\": " ++ raw])) ++ "}"
+
+/-- A manifest, which names the Lake package it belongs to. -/
+private def manifestOf (rows : List String) (package : String := "\"tl\"") : String :=
+  "{\"name\": " ++ package ++ ", \"packages\": [" ++ String.intercalate "," rows ++ "]}"
+
+/-- The toolchain pin's shape, since a bare word is no longer one. -/
+private def pinnedToolchain : String := "leanprover/lean4:v4.33.0"
+
+private def oneDependency : String := manifestOf [manifestRow "batteries" (rev40 '1')]
+
+private def sbomInputsOf (version toolchain manifest : String) : SbomInputs :=
+  { version, toolchainDocument := "lean-toolchain", toolchainText := toolchain
+    manifestDocument := "lake-manifest.json", manifestText := manifest }
+
+/-- The whole pipeline, for a row that only varies the manifest. -/
+private def sbomOfManifest (manifest : String) : Except String Sbom :=
+  sbomOfInputs (sbomInputsOf "1.2.3" "leanprover/lean4:v4.33.0\n" manifest)
+
+private def renderedOf (version toolchain manifest : String) : Except String String :=
+  renderSbomOfInputs (sbomInputsOf version toolchain manifest)
+
+/-- The `(name, <field>)` pairs of a document's `packages` array, read with
+    Lean's own JSON parser rather than through the code under test: a
+    cross-check that used the parser under test would agree with a broken one.
+
+    Pairs, and read out of one object at a time, because two independent
+    substring searches over the rendered text would also pass on a document
+    that paired one dependency's name with another's revision. -/
+private def packagePairs (field : String) (text : String) : Option (List (String × String)) :=
+  match Json.parse text with
+  | .error _ => none
+  | .ok root =>
+    match root.getObjVal? "packages" with
+    | .error _ => none
+    | .ok packages =>
+      match packages.getArr? with
+      | .error _ => none
+      | .ok rows =>
+        rows.foldl (init := some []) fun acc row =>
+          match acc, (row.getObjVal? "name").bind Json.getStr?,
+              (row.getObjVal? field).bind Json.getStr? with
+          | some collected, .ok name, .ok value => some (collected ++ [(name, value)])
+          | _, _, _ => none
+
+/-- What `lake-manifest.json` pins, and what the rendered document says. The
+    manifest calls it `rev` and SPDX calls it `versionInfo`; comparing the two
+    lists is the whole check. -/
+private def manifestPairs : String → Option (List (String × String)) := packagePairs "rev"
+
+private def documentPairs : String → Option (List (String × String)) :=
+  packagePairs "versionInfo"
+
+private def sbomTests : List Outcome :=
+  let dependencies (manifest : String) : Option (List String) :=
+    (sbomOfManifest manifest).toOption.map fun sbom => sbom.dependencies.map (·.downloadLocation)
+  [ -- The identifier mapping. Package names are in the SPDX character class
+    -- today; the mapping is explicit because a name that is not would
+    -- otherwise produce an identifier SPDX cannot carry.
+    checkEq "sbom: an ordinary package name maps to its identifier"
+      (spdxIdentifier "batteries") "SPDXRef-Package-batteries",
+    checkEq "sbom: a dot survives the identifier mapping"
+      (spdxIdentifier "a.b") "SPDXRef-Package-a.b",
+    checkEq "sbom: characters outside the identifier class become dashes"
+      (spdxIdentifier "quote/4 v_1") "SPDXRef-Package-quote-4-v-1",
+    -- The version. It is the one argument an operator types.
+    check "sbom: a tag is refused where the bare version belongs"
+      (mentions (renderedOf "v1.2.3" pinnedToolchain oneDependency) "carries a leading 'v'"),
+    check "sbom: the tag refusal says what the document would otherwise be called"
+      (mentions (renderedOf "v1.2.3" pinnedToolchain oneDependency) "'vv1.2.3'"),
+    check "sbom: a version that is not one is refused"
+      (mentions (renderedOf "1.2" pinnedToolchain oneDependency) "not a release version"),
+    check "sbom: a leading zero is refused"
+      (mentions (renderedOf "01.2.3" pinnedToolchain oneDependency) "leading zero"),
+    check "sbom: build metadata is refused"
+      (mentions (renderedOf "1.2.3+b" pinnedToolchain oneDependency) "build metadata"),
+    check "sbom: a prerelease is accepted, and names itself"
+      (match renderedOf "1.2.3-rc.1" pinnedToolchain oneDependency with
+       | .ok document =>
+           contains document "\"name\": \"tl-1.2.3-rc.1\""
+             && contains document "/spdx/v1.2.3-rc.1\""
+       | .error _ => false),
+    -- The toolchain. It is what carries GMP and libuv into the binary, so a
+    -- document without it understates exactly what the licensing section of
+    -- ADR-0006 is about.
+    check "sbom: an empty toolchain file is refused"
+      (mentions (renderedOf "1.2.3" "" oneDependency) "is empty"),
+    check "sbom: a whitespace-only toolchain file is refused"
+      (mentions (renderedOf "1.2.3" "  \n" oneDependency) "is empty"),
+    check "sbom: an empty toolchain says what it would understate"
+      (mentions (renderedOf "1.2.3" "" oneDependency) "understate what ships"),
+    -- A pin, not a channel. A bare name resolves to whatever it points at
+    -- today, which is the opposite of what this field records.
+    check "sbom: a toolchain that is not a pin is refused"
+      (mentions (renderedOf "1.2.3" "definitely-not-an-elan-pin" oneDependency)
+        "is not a toolchain pin"),
+    check "sbom: a bare channel name is refused"
+      (mentions (renderedOf "1.2.3" "stable" oneDependency) "is not a toolchain pin"),
+    check "sbom: a toolchain with no channel is refused"
+      (mentions (renderedOf "1.2.3" "leanprover/lean4" oneDependency) "is not a toolchain pin"),
+    check "sbom: a toolchain refusal shows the shape elan reads"
+      (mentions (renderedOf "1.2.3" "stable" oneDependency) "<owner>/<repository>:<channel>"),
+    check "sbom: a toolchain carrying a space is refused"
+      (mentions (renderedOf "1.2.3" "leanprover/lean4:v4.33.0 and more" oneDependency)
+        "would not accept"),
+    -- Whitespace this file's own trimming does not remove, because it trims
+    -- ASCII: a non-breaking space would otherwise ride into the compiler
+    -- version, looking exactly like the ordinary space it is not.
+    check "sbom: a toolchain padded with a non-breaking space is refused"
+      (mentions (renderedOf "1.2.3" (pinnedToolchain ++ String.singleton (Char.ofNat 0xa0))
+        oneDependency) "would not accept"),
+    check "sbom: an invisible character is described as one"
+      (mentions (renderedOf "1.2.3" (pinnedToolchain ++ String.singleton (Char.ofNat 0xa0))
+        oneDependency) "looks like one"),
+    check "sbom: a two-line toolchain file is refused rather than embedded"
+      (mentions (renderedOf "1.2.3" "leanprover/lean4:v4.33.0\nsomething else\n" oneDependency)
+        "more than one line"),
+    check "sbom: a carriage return in the toolchain is refused"
+      (mentions (renderedOf "1.2.3" "a\r\nb\n" oneDependency) "more than one line"),
+    checkEq "sbom: the toolchain is recorded without its trailing newline"
+      ((sbomOfInputs (sbomInputsOf "1.2.3" "leanprover/lean4:v4.33.0\n" oneDependency)).toOption.bind
+        (fun sbom => (sbom.dependencies.head?).map (·.versionInfo)))
+      (some "leanprover/lean4:v4.33.0"),
+    -- The manifest: every way it can fail to be one.
+    check "sbom: a malformed manifest is refused"
+      (mentions (sbomOfManifest "{ not json") "is not valid JSON"),
+    -- The manifest is an argument rather than something this command finds, so
+    -- being handed another checkout's is a mistake it can actually make.
+    check "sbom: a manifest belonging to another Lake package is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1')] "\"elsewhere\""))
+        "describes the Lake package 'elsewhere'"),
+    check "sbom: another project's manifest says what would be published"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1')] "\"elsewhere\""))
+        "a dependency set it was not built from"),
+    check "sbom: a manifest that names no package is refused"
+      (mentions (sbomOfManifest "{\"packages\": []}") "has no 'name' field"),
+    -- Each row is described as a git package pinned to a commit, so a row of
+    -- another kind is refused rather than rendered as one.
+    check "sbom: a dependency Lake did not resolve from git is refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') none (some "\"path\"")])) "is 'path'"),
+    check "sbom: a non-git dependency says why it cannot be described"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') none (some "\"path\"")]))
+        "not something it can describe"),
+    check "sbom: a row that does not say what kind it is is refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') none none])) "has no 'type' field"),
+    check "sbom: a manifest with no packages key is refused"
+      (mentions (sbomOfManifest "{\"name\": \"tl\"}") "has no 'packages' field"),
+    check "sbom: a manifest whose packages are not an array is refused"
+      (mentions (sbomOfManifest "{\"name\": \"tl\", \"packages\": 3}") "is not an array"),
+    check "sbom: a manifest row that is not an object is refused"
+      (mentions (sbomOfManifest "{\"name\": \"tl\", \"packages\": [7]}") "is not a JSON object"),
+    check "sbom: a row with no name is refused"
+      (mentions (sbomOfManifest (manifestOf ["{\"type\": \"git\", \"rev\": \"" ++ rev40 '1' ++ "\"}"]))
+        "has no 'name' field"),
+    check "sbom: a row with a blank name is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "" (rev40 '1')])) "is empty"),
+    check "sbom: a row whose name is not a string is refused"
+      (mentions (sbomOfManifest "{\"name\": \"tl\", \"packages\": [{\"name\": 4, \"rev\": \"x\"}]}")
+        "is not a string"),
+    check "sbom: a row with no revision is refused"
+      (mentions (sbomOfManifest "{\"name\": \"tl\", \"packages\": [{\"type\": \"git\", \"name\": \"x\"}]}")
+        "has no 'rev' field"),
+    check "sbom: a row with a blank revision is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" ""])) "is empty"),
+    -- A pin is the whole point of the row: a branch name names something that
+    -- moves, and the SBOM would describe a build nobody can reconstruct.
+    check "sbom: a branch name where a pinned commit belongs is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" "main"]))
+        "not a full git object id"),
+    check "sbom: an unpinned revision is told what a pin is"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" "main"])) "ADR-0009"),
+    check "sbom: an unpinned revision names the dependency it belongs to"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" "main"])) "the 'x' dependency"),
+    check "sbom: an uppercase revision is refused rather than folded"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 'A')])) "lowercase"),
+    -- The url: absent, declined, given, and malformed are four different
+    -- things, and only the last is an error.
+    checkEq "sbom: a row with no url declines to name a download location"
+      ((dependencies (manifestOf [manifestRow "x" (rev40 '1')])).bind (·.getLast?))
+      (some "NOASSERTION"),
+    checkEq "sbom: a url is composed with the pinned revision"
+      ((dependencies (manifestOf
+        [manifestRow "x" (rev40 '1') (some "\"https://e.invalid/x\"")])).bind (·.getLast?))
+      (some ("git+https://e.invalid/x@" ++ rev40 '1')),
+    -- A manifest that already declines to name a url must not acquire one
+    -- reading `git+NOASSERTION@<rev>`.
+    checkEq "sbom: an explicit NOASSERTION url is carried, not composed"
+      ((dependencies (manifestOf
+        [manifestRow "x" (rev40 '1') (some "\"NOASSERTION\"")])).bind (·.getLast?))
+      (some "NOASSERTION"),
+    check "sbom: a url that is not a string is refused, not read as absent"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1') (some "5")]))
+        "is not a string"),
+    check "sbom: a malformed url names its own path"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1') (some "5")]))
+        "packages.[0].url"),
+    check "sbom: an empty url is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1') (some "\"\"")]))
+        "is empty"),
+    -- A url is composed into `git+<url>@<rev>`, which a reader resolves. Text
+    -- that merely occupies the field is worse than the sentinel that declines
+    -- it, because it reads as a location.
+    check "sbom: a url that could not be fetched from is refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') (some "\"not a URI\"")])) "not a location"),
+    check "sbom: a url with no scheme is refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') (some "\"example.invalid/x\"")])) "not a location"),
+    check "sbom: an unfetchable url says what it would have become"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1') (some "\"not a URI\"")])) "git+<url>@<rev>"),
+    check "sbom: an empty url says how to decline instead"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "x" (rev40 '1') (some "\"\"")]))
+        "NOASSERTION"),
+    -- A name the renderer cannot encode. The document is pure ASCII by
+    -- construction, and a character needing a surrogate pair is refused there
+    -- rather than mis-encoded into a signed asset.
+    check "sbom: a package name outside the BMP is refused rather than mis-encoded"
+      (mentions (renderSbomOfInputs (sbomInputsOf "1.2.3" pinnedToolchain
+        (manifestOf [manifestRow (String.singleton (Char.ofNat 0x1f600)) (rev40 '1')])))
+        "Basic Multilingual Plane"),
+    -- An empty inventory. A generator that silently found nothing would emit a
+    -- confident empty document that still reads as evidence.
+    check "sbom: a manifest listing no packages is refused"
+      (mentions (sbomOfManifest (manifestOf [])) "lists no packages"),
+    check "sbom: an empty inventory says why it is not a smaller release"
+      (mentions (sbomOfManifest (manifestOf [])) "nothing ships"),
+    -- Identifier collisions. SPDX identifiers are unique within a document,
+    -- and the name is mapped into a restricted class on the way in, so two
+    -- distinct names can arrive at one identifier.
+    check "sbom: a repeated dependency name is refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "x" (rev40 '1'), manifestRow "x" (rev40 '2')])) "describes both 'x' and 'x'"),
+    check "sbom: two names that collide after mapping are refused"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "a/b" (rev40 '1'), manifestRow "a-b" (rev40 '2')]))
+        "describes both 'a/b' and 'a-b'"),
+    check "sbom: a collision says why the document would describe neither"
+      (mentions (sbomOfManifest (manifestOf
+        [manifestRow "a/b" (rev40 '1'), manifestRow "a-b" (rev40 '2')]))
+        "Identifiers are unique within a document"),
+    -- …including a collision with one of the four packages this document
+    -- always carries, which no per-row check would catch, and separately with
+    -- the subject itself, which is not in the dependency list at all.
+    check "sbom: a dependency colliding with a fixed package is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "gmp" (rev40 '1')]))
+        "SPDXRef-Package-gmp"),
+    check "sbom: a dependency colliding with the document's own subject is refused"
+      (mentions (sbomOfManifest (manifestOf [manifestRow "tl" (rev40 '1')]))
+        "SPDXRef-Package-tl"),
+    -- The shape of the document itself.
+    checkEq "sbom: the document carries the four fixed packages plus every dependency"
+      ((sbomOfManifest (manifestOf
+        [manifestRow "a" (rev40 '1'), manifestRow "b" (rev40 '2')])).toOption.map
+        (·.packages.length)) (some 6),
+    checkEq "sbom: the document describes tl and depends on everything else"
+      ((sbomOfManifest oneDependency).toOption.map
+        (fun sbom => (sbom.subject.name, sbom.relationships.length)))
+      (some ("tl", 5)),
+    check "sbom: the version reaches the subject, the name and the namespace"
+      (match renderedOf "1.2.3" "leanprover/lean4:v4.33.0" oneDependency with
+       | .ok document =>
+           contains document "\"name\": \"tl-1.2.3\""
+             && contains document "\"documentNamespace\": \"https://github.com/DmitryKorolev/tl/spdx/v1.2.3\""
+             && contains document "\"versionInfo\": \"1.2.3\""
+       | .error _ => false),
+    -- The document is a function of the release and of nothing else: no
+    -- timestamp, no generated id. Two correct SBOMs for one release must not
+    -- differ, because both are hashed into SHA256SUMS and signed.
+    check "sbom: the creation time is fixed rather than stamped"
+      (match renderedOf "1.2.3" pinnedToolchain oneDependency with
+       | .ok document => contains document "\"created\": \"1970-01-01T00:00:00Z\""
+       | .error _ => false),
+    check "sbom: the tool that wrote it is named"
+      (match renderedOf "1.2.3" pinnedToolchain oneDependency with
+       | .ok document => contains document "\"Tool: tlrelease sbom\""
+       | .error _ => false),
+    -- Whitespace around the toolchain is not content: two checkouts whose
+    -- lean-toolchain differs only in a trailing newline describe one release.
+    checkEq "sbom: the toolchain's surrounding whitespace does not reach the bytes"
+      (okOr "<padded>" (renderedOf "1.2.3" ("  " ++ pinnedToolchain ++ "  \n") oneDependency))
+      (okOr "<bare>" (renderedOf "1.2.3" pinnedToolchain oneDependency)),
+    check "sbom: a different release renders different bytes"
+      (match renderedOf "1.2.3" pinnedToolchain oneDependency, renderedOf "1.2.4" pinnedToolchain oneDependency with
+       | .ok earlier, .ok later => earlier != later
+       | _, _ => false),
+    -- The licensing boundary ADR-0006 is about has to be in the document by
+    -- name, or it does not discharge what it is produced for.
+    check "sbom: the statically linked components ADR-0006 is about are named"
+      (match renderedOf "1.2.3" "leanprover/lean4:v4.33.0" oneDependency with
+       | .ok document =>
+           contains document "\"gmp\"" && contains document "\"libuv\""
+             && contains document "LGPL-3.0-or-later" && contains document "\"lean4\""
+       | .error _ => false)]
+
+/-! ## The SBOM against the repository's own inputs and its committed golden -/
+
+private def sbomDocumentTests : IO (List Outcome) := do
+  let goldenToolchain ← IO.FS.readFile "Tests/fixtures/sbom-lean-toolchain"
+  let goldenManifest ← IO.FS.readFile "Tests/fixtures/sbom-lake-manifest.json"
+  let golden ← IO.FS.readFile "Tests/fixtures/sbom-golden.spdx.json"
+  let realToolchain ← IO.FS.readFile "lean-toolchain"
+  let realManifest ← IO.FS.readFile "lake-manifest.json"
+  let real := renderSbomOfInputs
+    { version := "1.2.3", toolchainDocument := "lean-toolchain", toolchainText := realToolchain
+      manifestDocument := "lake-manifest.json", manifestText := realManifest }
+  let pairs := manifestPairs realManifest
+  let mut outs := [
+    -- The golden document. Regenerated by the tool itself, so a change to what
+    -- a release describes is a failing row rather than a quiet difference in a
+    -- signed asset.
+    checkEq "sbom: the committed golden is exactly what the tool renders"
+      (okOr "<refused>" (renderSbomOfInputs
+        { version := "9.9.9", toolchainDocument := "Tests/fixtures/sbom-lean-toolchain"
+          toolchainText := goldenToolchain
+          manifestDocument := "Tests/fixtures/sbom-lake-manifest.json"
+          manifestText := goldenManifest })) golden,
+    -- The repository's own inputs, which is the document a release actually
+    -- publishes. A model that no longer describes them is a model of nothing.
+    check "sbom: the repository's own inputs produce a document" real.toOption.isSome
+      (errorOf real),
+    check "sbom: the committed manifest reads independently of the parser under test"
+      pairs.isSome "lake-manifest.json could not be read as name/rev pairs",
+    checkEq "sbom: the document carries every lake dependency and nothing else"
+      ((okOr "" real).splitOn "\"SPDXID\": \"SPDXRef-Package-").length
+      ((pairs.getD []).length + 5)]
+  -- Each dependency at the exact revision the manifest pins — a branch or a
+  -- range here would describe a build nobody can reconstruct. Compared as
+  -- pairs read out of the rendered document, so a name attached to another
+  -- dependency's revision fails rather than satisfying two separate searches.
+  let described := (documentPairs (okOr "" real)).getD []
+  for (name, revision) in pairs.getD [] do
+    outs := outs ++ [
+      check s!"sbom: '{name}' is described at the revision lake-manifest.json pins"
+        (described.contains (name, revision))
+        s!"the rendered document has no package pairing '{name}' with {revision}; it carries {described}"]
+  outs := outs ++ [
+    check "sbom: the toolchain the repository pins is the one recorded"
+      (contains (okOr "" real) s!"\"versionInfo\": \"{realToolchain.trimAscii.toString}\"")
+      realToolchain]
+  return outs
+
+/-! ## The SBOM command, end to end
+
+The pure core above cannot reach the parts a release step actually meets: a
+path that is not there, a destination that cannot be written, whether a refused
+generation leaves a file behind, and the exit status each produces. -/
+
+private def sbomCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let first := (base / "first.spdx.json").toString
+  let second := (base / "second.spdx.json").toString
+  let other := (base / "other.spdx.json").toString
+  let never := (base / "never.spdx.json").toString
+  let (status, out, _) ← runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", first]
+  let (againStatus, _, _) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", second]
+  let (otherStatus, _, _) ←
+    runCommand "sbom" ["1.2.4", "lean-toolchain", "lake-manifest.json", other]
+  let written ← IO.FS.readFile first
+  let writtenAgain ← IO.FS.readFile second
+  let writtenOther ← IO.FS.readFile other
+  -- Against the committed fixtures, through the command rather than the pure
+  -- core: this is the path the release workflow runs.
+  let goldenOut := (base / "golden.spdx.json").toString
+  let (goldenStatus, _, _) ← runCommand "sbom"
+    ["9.9.9", "Tests/fixtures/sbom-lean-toolchain", "Tests/fixtures/sbom-lake-manifest.json",
+     goldenOut]
+  let goldenWritten ← IO.FS.readFile goldenOut
+  let golden ← IO.FS.readFile "Tests/fixtures/sbom-golden.spdx.json"
+  let (missingToolchain, _, missingToolchainErr) ←
+    runCommand "sbom" ["1.2.3", (base / "absent").toString, "lake-manifest.json", never]
+  let (missingManifest, _, missingManifestErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", (base / "absent.json").toString, never]
+  -- A refusal must not leave a document behind: a partial SBOM would be hashed
+  -- into SHA256SUMS and signed like a complete one.
+  let brokenManifest := (base / "broken.json").toString
+  IO.FS.writeFile brokenManifest (manifestOf [])
+  let (emptyInventory, _, emptyInventoryErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", brokenManifest, never]
+  let (badVersion, _, badVersionErr) ←
+    runCommand "sbom" ["v1.2.3", "lean-toolchain", "lake-manifest.json", never]
+  -- A name the renderer cannot encode: the refusal comes from rendering rather
+  -- than from parsing, which is the one command branch the pure rows above
+  -- cannot reach.
+  let astralManifest := (base / "astral.json").toString
+  IO.FS.writeFile astralManifest
+    (manifestOf [manifestRow (String.singleton (Char.ofNat 0x1f600)) (rev40 '1')])
+  let (unrenderable, _, unrenderableErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", astralManifest, never]
+  -- Checked after every refusal above, not after the first: each of them was
+  -- given the same destination, so this says none of them wrote anything.
+  let nothingWritten := !(← System.FilePath.pathExists never)
+  -- A destination that is an existing directory. The temporary file is written
+  -- and the rename over it fails, which is the arm that has to clean up after
+  -- itself — a stray `<output>.tmp` beside a signed asset set is a file nothing
+  -- describes.
+  let occupied := (base / "occupied").toString
+  IO.FS.createDir occupied
+  let (occupiedStatus, _, occupiedErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", occupied]
+  let noTemporary := !(← System.FilePath.pathExists (occupied ++ ".tmp"))
+  -- Something already at the staging path. Writing through it would follow
+  -- whatever it is — a link elsewhere, or another run's half-written file — so
+  -- it is refused, and what was there is left for whoever has to explain it.
+  let staged := (base / "staged.spdx.json").toString
+  IO.FS.writeFile (staged ++ ".tmp") "an earlier run left this behind\n"
+  let (stagedStatus, _, stagedErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", staged]
+  let stagedUntouched := (← IO.FS.readFile (staged ++ ".tmp")) == "an earlier run left this behind\n"
+  let stagedNotWritten := !(← System.FilePath.pathExists staged)
+  let (unwritable, _, unwritableErr) ← runCommand "sbom"
+    ["1.2.3", "lean-toolchain", "lake-manifest.json", (base / "no-such-dir" / "s.json").toString]
+  let (fewArguments, _, fewArgumentsErr) ←
+    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json"]
+  let (manyArguments, _, _) ← runCommand "sbom"
+    ["1.2.3", "lean-toolchain", "lake-manifest.json", never, "extra"]
+  IO.FS.removeDirAll base
+  return [
+    checkEq "sbom command: the repository's inputs produce an SBOM" status 0,
+    check "sbom command: it says where it wrote and how much it describes"
+      (contains out "wrote" && contains out "packages for tl 1.2.3") out,
+    -- Byte-stability is not a nicety: the document is hashed into SHA256SUMS
+    -- and signed, so two generations for one release have to agree.
+    checkEq "sbom command: two runs over the same inputs are byte-identical"
+      (againStatus, writtenAgain) (0, written),
+    check "sbom command: a different release produces a different document"
+      (otherStatus == 0 && writtenOther != written) "the two releases rendered the same bytes",
+    checkEq "sbom command: the committed golden is what the command writes"
+      (goldenStatus, goldenWritten) (0, golden),
+    checkEq "sbom command: a missing toolchain file is a refusal" missingToolchain 1,
+    check "sbom command: a missing input names the path and what it would cost"
+      (contains missingToolchainErr "could not read"
+        && contains missingToolchainErr "understate what ships") missingToolchainErr,
+    checkEq "sbom command: a missing manifest is a refusal" missingManifest 1,
+    check "sbom command: a missing manifest names the path"
+      (contains missingManifestErr "could not read") missingManifestErr,
+    checkEq "sbom command: an empty inventory is a refusal" emptyInventory 1,
+    check "sbom command: an empty inventory says an empty SBOM is not a smaller release"
+      (contains emptyInventoryErr "nothing ships") emptyInventoryErr,
+    check "sbom command: a refused generation writes no document at all" nothingWritten
+      "the command created a file it had already decided to refuse",
+    checkEq "sbom command: a name the renderer cannot encode is a refusal" unrenderable 1,
+    check "sbom command: an unencodable name is refused for the reason it is"
+      (contains unrenderableErr "Basic Multilingual Plane") unrenderableErr,
+    checkEq "sbom command: a destination that is a directory is a refusal" occupiedStatus 1,
+    check "sbom command: a destination that is a directory names the path"
+      (contains occupiedErr "could not write") occupiedErr,
+    check "sbom command: a failed rename leaves no temporary file behind" noTemporary
+      "an <output>.tmp survived a write the command refused to complete",
+    checkEq "sbom command: an occupied staging path is a refusal" stagedStatus 1,
+    check "sbom command: an occupied staging path says what to look at"
+      (contains stagedErr "already exists") stagedErr,
+    check "sbom command: it writes through nothing it did not create" stagedUntouched
+      "the command wrote through a file that was already at the staging path",
+    check "sbom command: and produces no document when it refuses to stage"
+      stagedNotWritten "a document appeared despite the refusal",
+    -- A malformed version is a refusal, not a usage error: the invocation was
+    -- well formed and a decision was made.
+    checkEq "sbom command: a tag where the version belongs is a refusal" badVersion 1,
+    check "sbom command: the tag refusal says to pass the bare version"
+      (contains badVersionErr "bare version") badVersionErr,
+    checkEq "sbom command: an unwritable destination is a refusal, not an exception"
+      unwritable 1,
+    check "sbom command: an unwritable destination names the path"
+      (contains unwritableErr "could not write") unwritableErr,
+    checkEq "sbom command: three arguments is a usage error" fewArguments 2,
+    check "sbom command: the usage error names every argument"
+      (contains fewArgumentsErr "<version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>")
+      fewArgumentsErr,
+    checkEq "sbom command: a spare argument is a usage error" manyArguments 2]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -968,7 +1467,8 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ channelOutputTests ++ outs ++ (← documentTests)
-    ++ (← pinCommandTests) ++ (← planCommandTests)
+  return jsonTests ++ modelTests ++ channelOutputTests ++ sbomTests ++ outs ++ (← documentTests)
+    ++ (← pinCommandTests) ++ (← planCommandTests) ++ (← sbomDocumentTests)
+    ++ (← sbomCommandTests)
 
 end Tl.Tests
