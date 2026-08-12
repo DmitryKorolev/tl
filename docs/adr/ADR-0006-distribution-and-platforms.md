@@ -264,7 +264,7 @@ running binary, as the additive `build` object ADR-0020 left room for:
 ```json
 { "version": "0.1.0", "logFormat": 2,
   "build": { "kind": "clean", "commit": "<40-hex>", "dirty": false,
-             "toolchain": "leanprover/lean4:v4.32.2", "manifestDigest": "<sha256 hex>" } }
+             "toolchain": "leanprover/lean4:v4.33.0", "manifestDigest": "<sha256 hex>" } }
 ```
 
 `commit` is `null` — not `""` — when no commit was stamped, so an agent reads

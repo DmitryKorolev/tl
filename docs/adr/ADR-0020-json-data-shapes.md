@@ -413,7 +413,7 @@ diagnostics, stale claims); checks are added additively.
 { "schemaVersion": 3, "ok": true, "data": { "root": ".tl", "replica": "chp14mvsxr027", "created": true } }
 { "schemaVersion": 3, "ok": true, "data": { "version": "0.1.0", "logFormat": 2,
   "build": { "kind": "clean", "commit": "<40-hex>", "dirty": false,
-             "toolchain": "leanprover/lean4:v4.32.2", "manifestDigest": "<sha256 hex>" } } }
+             "toolchain": "leanprover/lean4:v4.33.0", "manifestDigest": "<sha256 hex>" } } }
 ```
 
 (`"created": false` on an idempotent re-run. `build` is the ADR-0006

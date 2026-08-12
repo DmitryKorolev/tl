@@ -699,7 +699,7 @@ PYEOF
     cp -R "$staging/tl-bin-$host_target/." "$probe_dir/tl-bin-$host_target/"
     cat > "$probe_dir/tl-bin-$host_target/bin/tl" <<PROBE
 #!/bin/sh
-printf '%s\n' '{"schemaVersion":3,"ok":true,"data":{"version":"$version","logFormat":2,"build":{"kind":"$1","commit":$2,"dirty":false,"toolchain":"leanprover/lean4:v4.32.2","manifestDigest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}'
+printf '%s\n' '{"schemaVersion":3,"ok":true,"data":{"version":"$version","logFormat":2,"build":{"kind":"$1","commit":$2,"dirty":false,"toolchain":"leanprover/lean4:v4.33.0","manifestDigest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}'
 PROBE
     chmod +x "$probe_dir/tl-bin-$host_target/bin/tl"
     echo "$probe_dir"

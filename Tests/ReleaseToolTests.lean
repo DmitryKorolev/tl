@@ -331,7 +331,7 @@ private def commit40 : String := String.ofList (List.replicate 40 'b')
 private def buildMetadataFields : List (String × String) :=
   [("target", "\"linux-x64\""), ("sha256", s!"\"{digest64}\""),
    ("commit", s!"\"{commit40}\""), ("tier", "\"supported\""),
-   ("runner", "\"ubuntu-latest\""), ("toolchain", "\"leanprover/lean4:v4.32.2\""),
+   ("runner", "\"ubuntu-latest\""), ("toolchain", "\"leanprover/lean4:v4.33.0\""),
    ("lakeManifestSha256", s!"\"{digest64}\""),
    ("workflowRef", "\"owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3\""),
    ("runId", "\"42\"")]

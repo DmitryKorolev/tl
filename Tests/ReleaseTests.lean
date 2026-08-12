@@ -673,7 +673,7 @@ open Tl.Build (Provenance Kind)
 /-- A stand-in stamp. Only `commit`/`dirty` decide the kind, so the pins are
     fixed here and varied only in the drift guard below. -/
 private def sampleStamp (commit : String) (dirty : Bool) : Provenance :=
-  { commit, dirty, toolchain := "leanprover/lean4:v4.32.2",
+  { commit, dirty, toolchain := "leanprover/lean4:v4.33.0",
     manifestDigest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
 
 def buildProvenanceTests : IO (List Outcome) := do
@@ -731,7 +731,7 @@ def buildProvenanceTests : IO (List Outcome) := do
   for (label, human) in [("development", humanDev), ("dirty", humanDirty), ("clean", humanClean)] do
     outs := outs ++ [
       check s!"build provenance human ({label}): carries the toolchain pin"
-        (has human "leanprover/lean4:v4.32.2") human,
+        (has human "leanprover/lean4:v4.33.0") human,
       check s!"build provenance human ({label}): carries the manifest digest prefix"
         (has human "0123456789ab") human]
   -- The compiled `tl version` payload: the additive `build` object joins the

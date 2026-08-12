@@ -29,12 +29,12 @@ def stampCommit : String := ""
 def stampDirty : Bool := false
 
 /-- The `lean-toolchain` pin the binary was compiled with. -/
-def stampToolchain : String := "leanprover/lean4:v4.32.2"
+def stampToolchain : String := "leanprover/lean4:v4.33.0"
 
 /-- The SHA-256 of `lake-manifest.json`, lowercase hex: the identity of the
     resolved dependency set (ADR-0009 pins are immutable commits, so this
     digest fixes every dependency revision at once). -/
 def stampManifestDigest : String :=
-  "6a5ac70d19873fec6076d419ab54a804c52481b73c68f9ca25a27a1f2dd08f5d"
+  "fbc4ca1499ff05569cd04dbdaa976000ff1325630a002446dd5d3b3f199b4192"
 
 end Tl.Build

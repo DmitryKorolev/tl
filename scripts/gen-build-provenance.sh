@@ -145,7 +145,7 @@ if [ "$selftest" -eq 1 ]; then
 
   # A toolchain line outside the permitted character class must not be spliced
   # into a Lean string literal.
-  d=$(fixture bad-toolchain); printf 'leanprover/lean4:v4.32.2"; evil\n' > "$d/lean-toolchain"
+  d=$(fixture bad-toolchain); printf 'leanprover/lean4:v4.33.0"; evil\n' > "$d/lean-toolchain"
   expect_status "$d" 2 "a toolchain line with unexpected characters is refused"
 
   # A digest tool that is on PATH but cannot run. The manifest digest is what

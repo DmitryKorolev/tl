@@ -791,8 +791,15 @@ end AMap
 
 /-- A finite set: the degenerate `AMap … Unit`. `union` is its merge with the
     trivial combiner, hence a commutative/associative/idempotent join — the OR-Set
-    add-tag and label sets (ADR-0002) ride on it. -/
-def FinSet (α : Type u) [TotalOrd α] := AMap α Unit
+    add-tag and label sets (ADR-0002) ride on it.
+
+    Implicit-reducible because it is a *type* synonym, and metavariable types
+    are compared at implicit transparency: without it an `AMap` lemma cannot
+    unify its `m : AMap K V` against a `FinSet α` argument, so every map lemma
+    would need a hand-written coercion at each use. One unfold step, and it
+    creates no instance diamond — `AMap` carries no instance that `FinSet`
+    also declares. -/
+@[implicit_reducible] def FinSet (α : Type u) [TotalOrd α] := AMap α Unit
 
 namespace FinSet
 
