@@ -298,7 +298,11 @@ built Lean-native trust verifier and its policy/reporting modules.
    silently downgraded to a test.
 6. If the change affects scope or the trust boundary, update
    `docs/vision.md` / `docs/overview.md` in the same change.
-7. **Close repository-change tasks only after their implementing commits land
-   on `main`.** Before merge, leave the task open or in progress and record the
-   completed work in a note. Tasks whose deliverable is not a repository change
+7. **Close a repository-change task `--as done` only after its implementing
+   commits land on local `main`** — this overrides the tl skill's generic
+   close-on-finish step for work in this repo. Before the merge, leave the
+   task open or in progress and record the completed work in a note; if you
+   closed one early, `tl reopen` it and re-claim. `--as cancelled` /
+   `--as duplicate` are unaffected: they retire a task that will have no
+   implementing commits. Tasks whose deliverable is not a repository change
    may close when their stated outcome is complete.
