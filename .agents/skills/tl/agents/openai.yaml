@@ -1,0 +1,4 @@
+interface:
+  display_name: "tl"
+  short_description: "Work safely from the verified tl task queue"
+  default_prompt: "Use $tl to inspect the ready queue, claim work, and keep task state current."
