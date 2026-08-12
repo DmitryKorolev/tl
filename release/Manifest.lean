@@ -127,6 +127,9 @@ structure DirectoryEvidence where
   digests : List (String × Sha256)
   deriving Repr
 
+/-- The signature bundle for an asset, by name. -/
+def bundleName (asset : String) : String := asset ++ ".sigstore.json"
+
 /-- What a release directory may hold without the manifest describing it.
 
     Three things, each because the manifest cannot describe it. `SHA256SUMS`
@@ -134,9 +137,18 @@ structure DirectoryEvidence where
     the manifest, so the manifest cannot list the sums file without one of them
     having to be written twice. The Sigstore bundles are produced *after* this
     manifest is written and are signed alongside it, so listing them would be a
-    promise this file cannot keep. -/
-def allowedUndescribed (manifestName : String) (name : String) : Bool :=
-  name == "SHA256SUMS" || name == manifestName || name.endsWith ".sigstore.json"
+    promise this file cannot keep.
+
+    The bundles are admitted *by asset*, not by suffix. Written as "anything
+    ending .sigstore.json", the one category of file this check cannot inspect
+    became a category anyone could add a member to: a file named for nothing in
+    the release would be published beside the signed set and accounted for by
+    neither the manifest nor SHA256SUMS, which excludes the same suffix. A
+    bundle is now allowed exactly when it is named for something the manifest
+    describes. -/
+def allowedUndescribed (manifestName : String) (assets : List Asset) (name : String) : Bool :=
+  name == "SHA256SUMS" || name == manifestName
+    || assets.any fun asset => bundleName asset.name == name
 
 /-- One described asset: it is present, and its bytes are the ones the manifest
     names. -/
@@ -165,8 +177,8 @@ def describedChecks (directory : String) (assets : List Asset)
     a user has no way to tell it apart from one that was. -/
 def undescribedCheck (directory : String) (manifestName : String)
     (assets : List Asset) (name : String) : Check :=
-  { held := allowedUndescribed manifestName name || assets.any (·.name == name),
-    failure := s!"{name} is in {directory} but the manifest does not describe it — a release must not publish an asset nothing accounts for." }
+  { held := allowedUndescribed manifestName assets name || assets.any (·.name == name),
+    failure := s!"{name} is in {directory} but the manifest does not describe it — a release must not publish an asset nothing accounts for. The only exceptions are SHA256SUMS, the manifest itself, and a .sigstore.json bundle named for an asset the manifest does describe." }
 
 def undescribedChecks (directory : String) (manifestName : String)
     (assets : List Asset) (evidence : DirectoryEvidence) : List Check :=
@@ -221,7 +233,8 @@ private theorem describedCheck_held_iff (directory : String) (evidence : Directo
 private theorem undescribedCheck_held_iff (directory : String) (manifestName : String)
     (assets : List Asset) (name : String) :
     (undescribedCheck directory manifestName assets name).held = true ↔
-      allowedUndescribed manifestName name = true ∨ ∃ asset ∈ assets, asset.name = name := by
+      allowedUndescribed manifestName assets name = true
+        ∨ ∃ asset ∈ assets, asset.name = name := by
   rw [undescribedCheck, Bool.or_eq_true]
   constructor
   · intro held
@@ -239,12 +252,19 @@ private theorem undescribedCheck_held_iff (directory : String) (manifestName : S
 /-- **The directory matches exactly when every described asset is present with
     the digest the manifest names, and nothing present is undescribed.**
 
-    Both directions matter and each rules out a different way of being useless.
-    Left to right is the guarantee a consumer relies on. Right to left is what
-    a check that accepts nothing cannot satisfy — and, more usefully, what a
-    check that has quietly stopped looking at one of the two halves cannot
-    satisfy either: drop `undescribedChecks` and the right-hand side still
-    demands it, so the theorem fails to compile.
+    Both directions matter and each rules out a different way of being useless,
+    in opposite directions.
+
+    *Left to right* is soundness, and it is what forces every check to still be
+    there. Dropping `undescribedChecks` makes the verdict strictly more
+    accepting, so a directory holding an extra file passes while the right-hand
+    side's second conjunct is false — this implication fails and the theorem
+    stops compiling. Any check quietly removed from the list breaks this
+    direction, which is the failure that is invisible in the output.
+
+    *Right to left* is completeness, and it is what a verdict that accepts
+    nothing cannot satisfy. A check list that refused every directory would
+    prove the first direction trivially.
 
     Stated about the evidence value and not about a directory, deliberately.
     Walking, typing, reading and hashing are I/O and are tested; what is proved
@@ -256,18 +276,36 @@ theorem manifestAccepts_iff (directory : String) (manifestName : String)
     manifestAccepts directory manifestName assets evidence = true ↔
       (∀ asset ∈ assets, evidence.digests.lookup asset.name = some asset.sha256)
         ∧ (∀ name ∈ evidence.names,
-            allowedUndescribed manifestName name = true
+            allowedUndescribed manifestName assets name = true
               ∨ ∃ asset ∈ assets, asset.name = name) := by
   rw [manifestAccepts, Check.allHeld, manifestChecks, List.all_append, Bool.and_eq_true,
     describedChecks, undescribedChecks,
     all_mapped_held_iff _ _ _ (describedCheck_held_iff directory evidence),
     all_mapped_held_iff _ _ _ (undescribedCheck_held_iff directory manifestName assets)]
 
-/-- Why the directory does not match, or nothing at all. Tied to
-    `manifestAccepts` by `Check.allHeld_iff_noFailures`. -/
+/-- Why the directory does not match, or nothing at all. -/
 def manifestFailures (directory : String) (manifestName : String) (assets : List Asset)
     (evidence : DirectoryEvidence) : List String :=
   Check.failures (manifestChecks directory manifestName assets evidence)
+
+/-- **`manifest-verify` reports nothing exactly when every described asset is
+    present with the digest the manifest names and nothing present is
+    undescribed.**
+
+    `manifestAccepts_iff` characterises the verdict; the command calls the
+    report. On its own that would leave the theorem about a function nothing
+    reaches. Composed with `Check.allHeld_iff_noFailures` it lands on the list
+    the command branches on, which is where the guarantee has to be. -/
+theorem manifestFailures_isEmpty_iff (directory : String) (manifestName : String)
+    (assets : List Asset) (evidence : DirectoryEvidence) :
+    manifestFailures directory manifestName assets evidence = [] ↔
+      (∀ asset ∈ assets, evidence.digests.lookup asset.name = some asset.sha256)
+        ∧ (∀ name ∈ evidence.names,
+            allowedUndescribed manifestName assets name = true
+              ∨ ∃ asset ∈ assets, asset.name = name) :=
+  Iff.trans
+    (Check.allHeld_iff_noFailures (manifestChecks directory manifestName assets evidence)).symm
+    (manifestAccepts_iff directory manifestName assets evidence)
 
 /-! ## Generation: what the release consists of -/
 
@@ -349,13 +387,13 @@ structure ManifestInputs where
     that did not is recorded as unpublished, which is a statement rather than an
     omission — a consumer reading the manifest can tell "we did not build this"
     from "we do not know about this". -/
-private def outcomeOfEvidence (facts : ReleaseFacts) (row : TargetEvidence) :
-    Except String TargetOutcome :=
-  match row.found with
+private def outcomeOfEvidence (facts : ReleaseFacts) (target : Target)
+    (found : ArtifactEvidence) : Except String TargetOutcome :=
+  match found with
   | .absent =>
-      if row.target.tier.releaseBlocking then
-        .error s!"{row.target.asset} is missing, and '{row.target.name}' is a Supported target — release-blocking under ADR-0006. Fix the failing build leg; do not publish a partial release."
-      else .ok (.absent row.target)
+      if target.tier.releaseBlocking then
+        .error s!"{target.asset} is missing, and '{target.name}' is a Supported target — release-blocking under ADR-0006. Fix the failing build leg; do not publish a partial release."
+      else .ok (.absent target)
   | .present digest build linkAuditPresent =>
       match build with
       -- Mandatory, not "compared when the file happens to be there". Written
@@ -364,25 +402,36 @@ private def outcomeOfEvidence (facts : ReleaseFacts) (row : TargetEvidence) :
       -- that exists to prove the signed bytes were smoke-tested was satisfied
       -- by removing the evidence for it.
       | none =>
-          .error s!"{row.target.asset} is present but {row.target.buildMetadataAsset} is not. Every published target carries the record its own build leg wrote — that record is the only thing tying the signed bytes to the leg that smoke-tested them, so its absence is a refusal rather than a check that gets skipped. Fix the upload in the build job."
+          .error s!"{target.asset} is present but {target.buildMetadataAsset} is not. Every published target carries the record its own build leg wrote — that record is the only thing tying the signed bytes to the leg that smoke-tested them, so its absence is a refusal rather than a check that gets skipped. Fix the upload in the build job."
       | some build =>
           if !linkAuditPresent then
-            .error s!"{row.target.asset} is present but {row.target.linkAuditAsset} is not. ADR-0006 requires the link-time audit for every binary release, and it is produced per target by the leg that built it. Fix the upload in the build job."
+            .error s!"{target.asset} is present but {target.linkAuditAsset} is not. ADR-0006 requires the link-time audit for every binary release, and it is produced per target by the leg that built it. Fix the upload in the build job."
           else
-            (PublishedTarget.of facts row.target digest build).map TargetOutcome.published
+            (PublishedTarget.of facts target digest build).map TargetOutcome.published
+
+/-- Which run a leg says produced it: the workflow and the run within it.
+
+    Both, not the run id alone. Ids are per repository and per workflow, so two
+    different workflows in one repository can legitimately record the same id —
+    and outside a workflow, where there is no ambient identity to hold each leg
+    to, this comparison is the only thing left saying the legs belong together.
+    Comparing half of it would let a binary built by `ci.yml` sit in a release
+    beside three built by `release.yml`. -/
+private def recordedRun (build : BuildMetadata) : String :=
+  s!"{build.workflowRef} run {build.runId}"
 
 /-- The first pair of published legs that disagree about which run built them.
 
     Checked as well as the per-leg agreement with `RunContext`, not instead of
     it: outside a workflow there is no ambient run, and inside one this catches
     a leg whose record agrees with the ambient values for the wrong reason.
-    Adjacent pairs of the recorded ids, so this is one pass. -/
+    Adjacent pairs of the recorded runs, so this is one pass. -/
 private def crossedRuns : List (String × String) → Option (String × String × String)
   | [] => none
   | [_] => none
-  | (name, runId) :: rest@((nextName, nextRunId) :: _) =>
-      if runId == nextRunId then crossedRuns rest
-      else some (name, nextName, s!"{runId} and {nextRunId}")
+  | (name, run) :: rest@((nextName, nextRun) :: _) =>
+      if run == nextRun then crossedRuns rest
+      else some (name, nextName, s!"{run} and {nextRun}")
 
 /-- The first name listed twice, if any. -/
 private def repeatedName : List String → Option String
@@ -392,6 +441,13 @@ private def repeatedName : List String → Option String
 /-- Assemble the description of a release, refusing every one this pipeline
     must not publish. -/
 def Manifest.of (inputs : ManifestInputs) : Except String Manifest := do
+  -- Refused here as well as in `Targets.parse`, and not as belt and braces: an
+  -- empty list makes every loop below vacuous, so a manifest would be rendered
+  -- and signed having compared nothing — which is exactly what an unreadable
+  -- targets file did to the shell. A check whose failure mode is "passes
+  -- silently when the input is empty" is worth stating twice.
+  if inputs.targets.targets.isEmpty then
+    .error "the target list is empty, so this manifest would describe a release with no targets — and every per-leg comparison below would pass by having nothing to compare. That is a signed document asserting a release whose contents nothing looked at, which is the opposite of a smaller release."
   -- The evidence covers the target list exactly. This is what an unreadable
   -- `release/targets.json` used to defeat: with an empty list every per-leg
   -- comparison was skipped, and a signed manifest asserted a release whose
@@ -406,18 +462,37 @@ def Manifest.of (inputs : ManifestInputs) : Except String Manifest := do
   for row in inputs.evidence do
     if (inputs.targets.find? row.target.name).isNone then
       .error s!"evidence was collected for '{row.target.name}', which release/targets.json does not list. The target list is what decides whether a missing artifact blocks the release, so an artifact outside it has no tier and cannot be published."
+  -- The target is taken from the parsed list, and only the *findings* come from
+  -- the evidence row. Reading `row.target` instead would let a caller decide a
+  -- target's tier by supplying it — and demoting a Supported target to
+  -- best-effort turns a release-blocking absence into a row saying "not built",
+  -- which is a partial release that describes itself as complete.
   let outcomes ← inputs.targets.targets.mapM fun target =>
     match inputs.evidence.find? (·.target.name == target.name) with
-    | some row => outcomeOfEvidence inputs.facts row
+    | some row => outcomeOfEvidence inputs.facts target row.found
     | none =>
         -- Unreachable: the loop above refused unless every target has a row.
         .error s!"no evidence was collected for the target '{target.name}'."
   let recordedRuns := outcomes.filterMap fun outcome =>
-    outcome.published?.map fun published => (published.target.name, published.build.runId)
+    outcome.published?.map fun published => (published.target.name, recordedRun published.build)
   match crossedRuns recordedRuns with
   | some (first, second, ids) =>
       .error s!"the '{first}' and '{second}' legs record different runs ({ids}). These binaries were not produced by one run of this workflow."
   | none => pure ()
+  -- A record or an audit for a binary that did not arrive. Left alone it is
+  -- hashed, described in the manifest and signed, while nothing ever compares
+  -- it to anything — a published document about an artifact this release does
+  -- not contain.
+  for row in inputs.evidence do
+    match row.found with
+    | .present _ _ _ => pure ()
+    | .absent =>
+        let orphans := [row.target.buildMetadataAsset, row.target.linkAuditAsset].filter
+          fun name => inputs.directory.any (·.1 == name)
+        match orphans with
+        | [] => pure ()
+        | name :: _ =>
+            .error s!"{name} is in the release directory but {row.target.asset} is not. That describes a leg that recorded what it built and then did not deliver it; publishing the record alone would sign a document about an artifact this release does not contain. Fix the upload in the build job, or remove the leftover file."
   match repeatedName (inputs.directory.map (·.1)) with
   | some name =>
       .error s!"'{name}' was collected twice from the release directory. A directory cannot hold two entries under one name, so this is the collector having listed something twice; the manifest would describe one of them and verification would compare against the other."
@@ -595,7 +670,11 @@ def collectNames (directory : String) : IO (Except String (List String)) := do
     then reported as an extra asset by the job that verifies it — a release
     that refuses itself. -/
 def describableNames (manifestName : String) (names : List String) : List String :=
-  names.filter fun name => !allowedUndescribed manifestName name
+  -- Bundles are excluded by suffix here and admitted by asset there, and the
+  -- two agree: this runs before anything is signed, so no bundle exists yet,
+  -- and one that did would be named for an asset that is about to be described.
+  names.filter fun name =>
+    !(name == "SHA256SUMS" || name == manifestName || name.endsWith ".sigstore.json")
 
 /-- One target's evidence, from files already listed and hashed.
 
@@ -639,7 +718,11 @@ def runContextOf (options : Options) : Except String RunContext :=
   | none, none, true => .ok .outsideWorkflow
   | _, _, true =>
       .error "--outside-workflow was given together with --workflow-ref or --run-id. They are the two answers to one question; passing both leaves it open which one this run is."
-  | _, _, false =>
+  | some _, none, false =>
+      .error "--workflow-ref was given without --run-id. Half a run identity is not one: the workflow would be compared and the run within it would not, so a leg from an earlier run of this same workflow would pass. Pass both, or --outside-workflow."
+  | none, some _, false =>
+      .error "--run-id was given without --workflow-ref. Half a run identity is not one: run ids are per workflow, so a leg produced by a different workflow that happened to reach the same id would pass. Pass both, or --outside-workflow."
+  | none, none, false =>
       .error "the run this release is being cut by was not given. Pass --workflow-ref and --run-id together, so every build leg's record can be held to this run, or --outside-workflow to state that there is no run to hold them to. There is no default: an absent run identity used to disable the comparison rather than fail it, which is why every leg agreeing with every other leg was the only thing left being checked."
 
 private def manifestOptions : List OptionSpec :=
@@ -666,60 +749,71 @@ private def baseName (path : String) : String :=
   let segments := path.splitOn "/"
   segments.getLastD path
 
-private def manifestDecision (options : Options) : Decision String := do
-  let dist ← ofExcept (options.required "dist")
-  let version ← ofExcept (options.required "tag" >>= Version.parseTag "--tag")
-  let commit ← ofExcept (options.required "commit" >>= Commit.parse "--commit")
-  let toolchainPath ← ofExcept (options.required "toolchain")
-  let lakeManifestPath ← ofExcept (options.required "lake-manifest")
-  let targetsPath ← ofExcept (options.required "targets")
-  let identityPath ← ofExcept (options.required "identity")
-  let output ← ofExcept (options.required "output")
-  let run ← ofExcept (runContextOf options)
-  let toolchain ← readParsed toolchainPath parseToolchain
-  let targets ← readParsed targetsPath Targets.parse
-  let identity ← readParsed identityPath Identity.parse
-  let names ← ofIO (collectNames dist)
+/-- Everything `manifest` was told, with the option names resolved. -/
+private structure ManifestArgs where
+  dist : String
+  tag : String
+  commit : String
+  toolchainPath : String
+  lakeManifestPath : String
+  targetsPath : String
+  identityPath : String
+  output : String
+  run : RunContext
+
+private def manifestArgs (options : Options) : Except String ManifestArgs := do
+  return {
+    dist := ← options.required "dist"
+    tag := ← options.required "tag"
+    commit := ← options.required "commit"
+    toolchainPath := ← options.required "toolchain"
+    lakeManifestPath := ← options.required "lake-manifest"
+    targetsPath := ← options.required "targets"
+    identityPath := ← options.required "identity"
+    output := ← options.required "output"
+    run := ← runContextOf options }
+
+private def manifestDecision (args : ManifestArgs) : Decision String := do
+  let version ← ofExcept (Version.parseTag "--tag" args.tag)
+  let commit ← ofExcept (Commit.parse "--commit" args.commit)
+  let toolchain ← readParsed args.toolchainPath parseToolchain
+  let targets ← readParsed args.targetsPath Targets.parse
+  let identity ← readParsed args.identityPath Identity.parse
+  let names ← ofIO (collectNames args.dist)
   let digester ← ofIO Digester.resolve
-  let lakeManifestSha256 ← ofIO (digester.digest lakeManifestPath)
-  let facts : ReleaseFacts := { commit, toolchain, lakeManifestSha256, run }
+  let lakeManifestSha256 ← ofIO (digester.digest args.lakeManifestPath)
+  let facts : ReleaseFacts := { commit, toolchain, lakeManifestSha256, run := args.run }
   -- Every describable file, hashed exactly once and carried. The Python hashed
   -- each binary three times: once against its leg's record, once for its target
   -- row, once for its asset row.
-  let describable := describableNames (baseName output) names
+  let describable := describableNames (baseName args.output) names
   let digests ← ofIO (do
     let mut collected : Array (String × Sha256) := #[]
     for name in describable do
-      match ← digester.digest (dist ++ "/" ++ name) with
+      match ← digester.digest (args.dist ++ "/" ++ name) with
       | .error message => return .error message
       | .ok digest => collected := collected.push (name, digest)
     return .ok collected.toList)
   let evidence ← ofIO (do
     let mut rows : Array TargetEvidence := #[]
     for target in targets.targets do
-      match ← artifactEvidence dist names digests target with
+      match ← artifactEvidence args.dist names digests target with
       | .error message => return .error message
       | .ok found => rows := rows.push { target, found }
     return .ok rows.toList)
   let manifest ← ofExcept (Manifest.of {
     version, facts, identity, targets, evidence, directory := digests })
   let document ← ofExcept (renderManifest manifest)
-  ofIO (writeFileAtomically output document)
+  ofIO (writeFileAtomically args.output document)
   let published := manifest.publishedTargets.length
-  return s!"wrote {output} — {manifest.assets.length} assets, {published} of {manifest.outcomes.length} targets published"
+  return s!"wrote {args.output} — {manifest.assets.length} assets, {published} of {manifest.outcomes.length} targets published"
 
 private def manifestCommand : Command := {
   name := "manifest"
   arguments := "--dist <dir> --tag <vX.Y.Z> --commit <sha> …"
   summary := "Describe this release once, for every job downstream of signing to read instead of re-deriving it."
-  run := fun args => do
-    match parseOptions manifestOptions args with
-    | .error message => misuse s!"tlrelease manifest: {message}\n{manifestUsage}"
-    | .ok options =>
-        if !options.positional.isEmpty then
-          misuse s!"tlrelease manifest: takes no positional arguments, and was given {options.positional.length}. Every value is named, so a stray word is a mistyped option rather than something to ignore.\n{manifestUsage}"
-        else
-          decide "tlrelease manifest" (manifestDecision options) }
+  run := runWithOptions "tlrelease manifest" manifestOptions manifestUsage
+    manifestArgs manifestDecision }
 
 private def verifyOptions : List OptionSpec :=
   [{ name := "dist", takesValue := true },
@@ -728,12 +822,17 @@ private def verifyOptions : List OptionSpec :=
 private def verifyUsage : String :=
   "usage: tlrelease manifest-verify --dist <dir> --manifest <path>"
 
-private def verifyDecision (options : Options) : Decision String := do
-  let dist ← ofExcept (options.required "dist")
-  let manifestPath ← ofExcept (options.required "manifest")
-  let description ← readParsed manifestPath ManifestDescription.parse
-  let names ← ofIO (collectNames dist)
-  let manifestName := baseName manifestPath
+private structure VerifyArgs where
+  dist : String
+  manifestPath : String
+
+private def verifyArgs (options : Options) : Except String VerifyArgs := do
+  return { dist := ← options.required "dist", manifestPath := ← options.required "manifest" }
+
+private def verifyDecision (args : VerifyArgs) : Decision String := do
+  let description ← readParsed args.manifestPath ManifestDescription.parse
+  let names ← ofIO (collectNames args.dist)
+  let manifestName := baseName args.manifestPath
   let digester ← ofIO Digester.resolve
   -- Only the files the manifest describes are hashed. An undescribed one is
   -- refused for its name, and reading a large file to establish something its
@@ -742,16 +841,16 @@ private def verifyDecision (options : Options) : Decision String := do
     let mut collected : Array (String × Sha256) := #[]
     for asset in description.assets do
       if names.contains asset.name then
-        match ← digester.digest (dist ++ "/" ++ asset.name) with
+        match ← digester.digest (args.dist ++ "/" ++ asset.name) with
         | .error message => return .error message
         | .ok digest => collected := collected.push (asset.name, digest)
     return .ok collected.toList)
   let evidence : DirectoryEvidence := { names, digests }
-  match manifestFailures dist manifestName description.assets evidence with
+  match manifestFailures args.dist manifestName description.assets evidence with
   | [] =>
-      return s!"{dist} matches the manifest for {description.tag} ({description.assets.length} assets)"
+      return s!"{args.dist} matches the manifest for {description.tag} ({description.assets.length} assets)"
   | failures =>
-      decline (s!"{dist} does not match the manifest.\n"
+      decline (s!"{args.dist} does not match the manifest.\n"
         ++ String.join (failures.map fun failure => s!"  {failure}\n")
         ++ "The manifest is signed alongside SHA256SUMS, so a mismatch means either the wrong directory or a modified one. Do not publish it.")
 
@@ -759,14 +858,8 @@ private def verifyCommand : Command := {
   name := "manifest-verify"
   arguments := "--dist <dir> --manifest <path>"
   summary := "Refuse unless the directory holds exactly what the manifest describes, with the digests it names."
-  run := fun args => do
-    match parseOptions verifyOptions args with
-    | .error message => misuse s!"tlrelease manifest-verify: {message}\n{verifyUsage}"
-    | .ok options =>
-        if !options.positional.isEmpty then
-          misuse s!"tlrelease manifest-verify: takes no positional arguments, and was given {options.positional.length}.\n{verifyUsage}"
-        else
-          decide "tlrelease manifest-verify" (verifyDecision options) }
+  run := runWithOptions "tlrelease manifest-verify" verifyOptions verifyUsage
+    verifyArgs verifyDecision }
 
 def manifestCommands : List Command := [manifestCommand, verifyCommand]
 

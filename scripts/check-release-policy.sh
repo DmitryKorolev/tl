@@ -148,7 +148,6 @@ release-policy gates, in order:
   embedded-copy drift                 scripts/check-embedded-copies.sh
   shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
-  release manifest selftest           scripts/gen-release-manifest.sh --selftest
   release prerequisites reporting     scripts/check-release-prereqs.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   npm package selftest                scripts/npm-pack.sh --selftest
@@ -204,14 +203,15 @@ else
 fi
 
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
-# The SBOM generator is `tlrelease sbom`, and its refusals are covered by
+# The SBOM generator, the release manifest and each build leg's record are
+# `tlrelease sbom`, `tlrelease manifest`/`manifest-verify` and
+# `tlrelease build-metadata`, and their refusals are covered by
 # Tests/ReleaseToolTests.lean under `lake exe tltest` — a required gate on the
-# same commit in ci.yml and in the release workflow's own gates job. It is not
-# invoked here because this script runs in a job with no Lean toolchain, by
+# same commit in ci.yml and in the release workflow's own gates job. They are
+# not invoked here because this script runs in a job with no Lean toolchain, by
 # design: it answers in seconds rather than after the build matrix. Named in
 # --list under what a different gate covers, so a reader asking what the policy
-# covers is not told the SBOM is uncovered.
-gate "release manifest selftest" ./scripts/gen-release-manifest.sh --selftest
+# covers is not told those are uncovered.
 gate "release prerequisites reporting selftest" ./scripts/check-release-prereqs.sh --selftest
 
 # The code path behind VERIFYING.md, the installer, and the release workflow's

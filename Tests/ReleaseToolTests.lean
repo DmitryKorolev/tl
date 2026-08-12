@@ -1427,6 +1427,673 @@ private def sbomCommandTests : IO (List Outcome) := do
       fewArgumentsErr,
     checkEq "sbom command: a spare argument is a usage error" manyArguments 2]
 
+/-! ## Checks: the verdict and the report are one list
+
+`Check.allHeld_iff_noFailures` proves the two readings agree. These rows are
+about what each one *says* — order, which texts are emitted, and that an empty
+list passes, which is the shape a check list that stopped being built would
+take. -/
+
+private def heldCheck : Check := { held := true, failure := "should not be said" }
+private def failedCheck : Check := { held := false, failure := "first" }
+private def secondFailed : Check := { held := false, failure := "second" }
+
+private def checkTests : List Outcome :=
+  [checkEq "check: every check holding is a pass" (Check.allHeld [heldCheck, heldCheck]) true,
+   checkEq "check: a passing list reports nothing"
+     (Check.failures [heldCheck, heldCheck]) [],
+   checkEq "check: one failing check fails the list"
+     (Check.allHeld [heldCheck, failedCheck, heldCheck]) false,
+   checkEq "check: only the failing checks are reported"
+     (Check.failures [heldCheck, failedCheck, heldCheck]) ["first"],
+   checkEq "check: failures are reported in list order"
+     (Check.failures [failedCheck, heldCheck, secondFailed]) ["first", "second"],
+   -- An empty list passes, which is correct and is also the shape a check list
+   -- that stopped being built would take. Every caller that can produce one
+   -- refuses on emptiness separately; this row records that this layer does
+   -- not, so nobody reads a pass here as evidence anything was looked at.
+   checkEq "check: an empty list passes, and says nothing" (Check.allHeld []) true,
+   checkEq "check: an empty list reports nothing" (Check.failures []) []]
+
+/-! ## Named options
+
+Three ways an option list fails silently, each closed at the parser. -/
+
+private def sampleSpecs : List OptionSpec :=
+  [{ name := "alpha", takesValue := true }, { name := "beta", takesValue := false }]
+
+private def parsedOptions (args : List String) : Except String Options :=
+  parseOptions sampleSpecs args
+
+private def optionValue (args : List String) (name : String) : String :=
+  match parsedOptions args with
+  | .error message => s!"<refused: {message}>"
+  | .ok options => (options.value? name).getD "<absent>"
+
+private def optionTests : List Outcome :=
+  [checkEq "options: a declared option carries its value"
+     (optionValue ["--alpha", "one"] "alpha") "one",
+   checkEq "options: an undeclared option is absent rather than empty"
+     (optionValue ["--beta"] "alpha") "<absent>",
+   check "options: a valueless option records that it was given"
+     (match parsedOptions ["--beta"] with
+      | .ok options => options.given "beta" && !options.given "alpha"
+      | .error _ => false) "the flag was not recorded",
+   -- The three silent failures.
+   check "options: an option nobody declared is refused"
+     (mentions (parsedOptions ["--comit", "x"]) "is not an option this command takes")
+     (errorOf (parsedOptions ["--comit", "x"])),
+   check "options: the refusal lists the options that do exist"
+     (mentions (parsedOptions ["--comit", "x"]) "--alpha")
+     (errorOf (parsedOptions ["--comit", "x"])),
+   check "options: an option given twice is refused"
+     (mentions (parsedOptions ["--alpha", "one", "--alpha", "two"]) "more than once")
+     (errorOf (parsedOptions ["--alpha", "one", "--alpha", "two"])),
+   check "options: an option with no value at all is refused"
+     (mentions (parsedOptions ["--alpha"]) "was given none")
+     (errorOf (parsedOptions ["--alpha"])),
+   -- The one that would otherwise be silent: `--alpha --beta` binds alpha to
+   -- the literal text "--beta", and a free-text field would carry it.
+   check "options: a value that is another option is refused rather than bound"
+     (mentions (parsedOptions ["--alpha", "--beta"]) "which is another option")
+     (errorOf (parsedOptions ["--alpha", "--beta"])),
+   -- Positionals and the separator.
+   check "options: a bare word is positional"
+     (match parsedOptions ["stray"] with
+      | .ok options => options.positional == ["stray"]
+      | .error _ => false) "the word was not collected",
+   check "options: everything after -- is positional, options included"
+     (match parsedOptions ["--", "--alpha", "one"] with
+      | .ok options => options.positional == ["--alpha", "one"]
+      | .error _ => false) "the separator did not hold",
+   -- The accessors.
+   check "options: a required option that was not given is a usage message"
+     (mentions (parsedOptions [] >>= (·.required "alpha")) "--alpha is required")
+     (errorOf (parsedOptions [] >>= (·.required "alpha"))),
+   -- An option given as the empty string is what a workflow expression that
+   -- resolved to nothing looks like on the command line. It gets past a
+   -- presence check and produces a record its own reader refuses, written by a
+   -- step that exited zero.
+   check "options: an option given as the empty string is refused"
+     (mentions (parsedOptions ["--alpha", ""] >>= (·.required "alpha")) "is not a value")
+     (errorOf (parsedOptions ["--alpha", ""] >>= (·.required "alpha"))),
+   check "options: the empty-value refusal is different from the absent-value one"
+     (errorOf (parsedOptions ["--alpha", ""] >>= (·.required "alpha"))
+       != errorOf (parsedOptions [] >>= (·.required "alpha"))) "one message for two conditions",
+   checkEq "options: a descriptive option defaults to the empty string"
+     (match parsedOptions [] with
+      | .ok options => options.describing "alpha"
+      | .error _ => "<refused>") ""]
+
+/-! ## Running another program
+
+The seam the whole port turns on: a status that is a value, and three outcomes
+because "it is not there" and "it did not finish" are not answers. -/
+
+private def absentProgram : String := "definitely-not-a-program-on-this-path"
+
+private def outcomeLabel : RunOutcome → String
+  | .completed output => s!"completed {output.exitCode}"
+  | .unavailable _ _ => "unavailable"
+  | .timedOut _ _ => "timedOut"
+
+private def processTests : IO (List Outcome) := do
+  let absent ← Release.run absentProgram #[]
+  let failing ← Release.run "sh" #["-c", "printf answer; printf trouble >&2; exit 3"]
+  let hung ← Release.run "sh" #["-c", "sleep 30"] 300
+  let fine ← succeeded "sh" #["-c", "printf hello"]
+  let nonZero ← succeeded "sh" #["-c", "printf why >&2; exit 7"]
+  let missing ← succeeded absentProgram #[]
+  return [
+    -- A program that is not there is not a program that failed.
+    checkEq "process: a command that is not on PATH is unavailable"
+      (outcomeLabel absent) "unavailable",
+    check "process: an unavailable command says it cannot be skipped"
+      (match absent.failureMessage with
+       | some message => contains message "cannot be skipped"
+       | none => false) "no failure message",
+    -- The status is a value, and the streams stay apart.
+    checkEq "process: a non-zero status is carried, not discarded"
+      (outcomeLabel failing) "completed 3",
+    checkEq "process: stdout and stderr are captured separately"
+      (match failing with
+       | .completed output => (output.stdout, output.stderr)
+       | _ => ("<not completed>", "")) ("answer", "trouble"),
+    check "process: a completed run has no failure message"
+      failing.failureMessage.isNone "a completed run reported a failure message",
+    -- A hang is bounded, and the bound is honoured rather than reported early.
+    checkEq "process: a program that does not finish times out" (outcomeLabel hung) "timedOut",
+    check "process: a timeout says the tool established nothing"
+      (match hung.failureMessage with
+       | some message => contains message "established nothing"
+       | none => false) "no failure message",
+    -- `succeeded` collapses all three failures and cannot be reached otherwise.
+    checkEq "process: succeeded returns the output of a zero-status run"
+      (match fine with | .ok output => output.stdout | .error message => message) "hello",
+    check "process: succeeded refuses a non-zero status and quotes the diagnosis"
+      (mentions nonZero "exited 7" && mentions nonZero "why") (errorOf nonZero),
+    check "process: succeeded refuses a command that is not there"
+      (mentions missing "could not be run") (errorOf missing)]
+
+/-! ## Digests
+
+The tool is not trusted for its name. Both refusals below are driven through
+`resolveFrom`, so they are reachable without removing anything from the machine
+the tests run on. -/
+
+private def brokenCandidates : List Candidate :=
+  -- `cat` is present everywhere and answers with the file's own bytes, which is
+  -- not the digest of them. This is the shape of a `shasum` whose `-a 256` is
+  -- ignored: present, exiting zero, and answering with the wrong function.
+  [{ command := "cat", leadingArgs := #[] }]
+
+private def failingCandidates : List Candidate :=
+  [{ command := "sh", leadingArgs := #["-c", "exit 1"] }]
+
+private def absentCandidates : List Candidate :=
+  [{ command := absentProgram, leadingArgs := #[] }]
+
+private def digestTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let file := (base / "content").toString
+  IO.FS.writeFile file "abc"
+  let subdirectory := (base / "sub").toString
+  IO.FS.createDirAll subdirectory
+  let link := (base / "link").toString
+  let _ ← Release.run "ln" #["-s", file, link]
+  let fifo := (base / "pipe").toString
+  let _ ← Release.run "mkfifo" #[fifo]
+  let absent ← Digester.resolveFrom absentCandidates
+  let broken ← Digester.resolveFrom brokenCandidates
+  let failing ← Digester.resolveFrom failingCandidates
+  let real ← Digester.resolve
+  let digested ← match real with
+    | .error message => pure (.error message : Except String Sha256)
+    | .ok digester => digester.digest file
+  let ofDirectory ← match real with
+    | .error message => pure (.error message : Except String Sha256)
+    | .ok digester => digester.digest subdirectory
+  let ofLink ← match real with
+    | .error message => pure (.error message : Except String Sha256)
+    | .ok digester => digester.digest link
+  let ofFifo ← match real with
+    | .error message => pure (.error message : Except String Sha256)
+    | .ok digester => digester.digest fifo
+  let ofMissing ← match real with
+    | .error message => pure (.error message : Except String Sha256)
+    | .ok digester => digester.digest ((base / "no-such-file").toString)
+  IO.FS.removeDirAll base
+  return [
+    check "digest: no digest tool at all is a refusal that names the remedy"
+      (mentions absent "no working SHA-256 tool" && mentions absent "coreutils")
+      (errorOf absent),
+    -- The reason the probe exists: a tool present, exiting zero, and computing
+    -- something other than SHA-256 would fill a signed manifest with digests of
+    -- the wrong function and nothing downstream would notice.
+    check "digest: a tool that answers with the wrong function is refused"
+      (mentions broken "does not compute SHA-256") (errorOf broken),
+    check "digest: the wrong-function refusal names the standard it checked against"
+      (mentions broken "FIPS 180-4") (errorOf broken),
+    check "digest: a tool that is present and fails is refused"
+      (mentions failing "exited 1") (errorOf failing),
+    -- The real tool, cross-checked against the same published vector.
+    checkEq "digest: the resolved tool computes the FIPS 180-4 vector for 'abc'"
+      (match digested with | .ok sha => sha.hex | .error message => message)
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    -- Everything that is not an ordinary file.
+    check "digest: a directory is refused" (mentions ofDirectory "is a directory")
+      (errorOf ofDirectory),
+    check "digest: a symbolic link is refused rather than followed"
+      (mentions ofLink "symbolic link") (errorOf ofLink),
+    check "digest: the symlink refusal says what a consumer would receive"
+      (mentions ofLink "what a consumer receives is the link") (errorOf ofLink),
+    check "digest: a named pipe is refused rather than read"
+      (mentions ofFifo "neither an ordinary file nor a directory") (errorOf ofFifo),
+    check "digest: a path that is not there is refused"
+      (mentions ofMissing "could not be read") (errorOf ofMissing)]
+
+/-! ## The manifest verdict
+
+Pure, over an explicit evidence value, which is what `manifestAccepts_iff` is
+stated about. Every branch is reachable here without a filesystem. -/
+
+private def digest64c : String := String.ofList (List.replicate 64 'c')
+
+/-- The verdict rows, built inside `Except` so that a fixture which stopped
+    parsing becomes one failing row saying so, rather than a group that quietly
+    stops asserting anything. `Sha256` has a private constructor, so there is no
+    default to fall back to — which is the property it exists to have. -/
+private def manifestVerdictRows : Except String (List Outcome) := do
+  let shaA ← Sha256.parse "a" digest64
+  let shaC ← Sha256.parse "c" digest64c
+  let assets : List Asset :=
+    [{ name := "LICENSE", sha256 := shaA, kind := .notice },
+     { name := "tl.spdx.json", sha256 := shaC, kind := .sbom }]
+  let matching : DirectoryEvidence :=
+    { names := ["LICENSE", "tl.spdx.json"],
+      digests := [("LICENSE", shaA), ("tl.spdx.json", shaC)] }
+  let verdictOf (evidence : DirectoryEvidence) : Bool :=
+    manifestAccepts "dist" "release-manifest.json" assets evidence
+  let reportOf (evidence : DirectoryEvidence) : List String :=
+    manifestFailures "dist" "release-manifest.json" assets evidence
+  let missing : DirectoryEvidence := { names := ["LICENSE"], digests := [("LICENSE", shaA)] }
+  let tampered : DirectoryEvidence :=
+    { matching with digests := [("LICENSE", shaC), ("tl.spdx.json", shaC)] }
+  let extra : DirectoryEvidence :=
+    { matching with names := matching.names ++ ["unexpected-asset"] }
+  let allowed : DirectoryEvidence :=
+    { matching with
+      names := matching.names
+        ++ ["SHA256SUMS", "release-manifest.json", "LICENSE.sigstore.json",
+            "tl.spdx.json.sigstore.json"] }
+  let uncollected : DirectoryEvidence := { matching with digests := [("LICENSE", shaA)] }
+  return [
+    check "manifest: a directory holding exactly what is described matches"
+      (verdictOf matching) s!"{reportOf matching}",
+    checkEq "manifest: a match reports nothing at all" (reportOf matching) [],
+    -- The three ways a directory stops matching.
+    check "manifest: a described asset that is not present is refused"
+      (!verdictOf missing) "an absent asset was accepted",
+    check "manifest: the absent-asset message says which side it is missing from"
+      ((reportOf missing).any (contains · "is described by the manifest but is not in dist"))
+      s!"{reportOf missing}",
+    check "manifest: an asset whose bytes differ is refused"
+      (!verdictOf tampered) "a modified asset was accepted",
+    check "manifest: the mismatch message names both digests"
+      ((reportOf tampered).any fun failure => contains failure digest64c && contains failure digest64)
+      s!"{reportOf tampered}",
+    check "manifest: an asset nothing describes is refused"
+      (!verdictOf extra) "an undescribed asset was accepted",
+    check "manifest: the extra-asset message says why a surplus is not harmless"
+      ((reportOf extra).any (contains · "nothing accounts for")) s!"{reportOf extra}",
+    -- The three things a manifest structurally cannot describe.
+    check "manifest: the sums file, the manifest, and bundles for described assets may be undescribed"
+      (verdictOf allowed) s!"{reportOf allowed}",
+    -- A described-and-present asset with no digest collected is this program
+    -- failing to look, which must not be reported as the directory being wrong.
+    check "manifest: a described asset present but unhashed is refused"
+      (!verdictOf uncollected) "an unhashed asset was accepted",
+    check "manifest: the unhashed message blames the collector, not the directory"
+      ((reportOf uncollected).any (contains · "failing to look")) s!"{reportOf uncollected}",
+    -- A bundle is admitted by asset, not by suffix. Written as "anything ending
+    -- .sigstore.json", the one category this check cannot inspect became a
+    -- category anyone could add a member to — and SHA256SUMS excludes the same
+    -- suffix, so such a file would be accounted for by neither.
+    check "manifest: a bundle named for a described asset may be undescribed"
+      (allowedUndescribed "release-manifest.json" assets "LICENSE.sigstore.json")
+      "a legitimate bundle was refused",
+    check "manifest: a bundle named for nothing in the release is not allowed"
+      (!allowedUndescribed "release-manifest.json" assets "anything-at-all.sigstore.json")
+      "an unattached bundle was allowed",
+    check "manifest: an unattached bundle in the directory is refused"
+      (!verdictOf { matching with
+        names := matching.names ++ ["anything-at-all.sigstore.json"] })
+      "an unattached bundle was accepted"]
+
+private def manifestVerdictTests : List Outcome :=
+  (match manifestVerdictRows with
+   | .ok rows => rows
+   | .error message =>
+       [check "manifest: the verdict fixtures parse" false message]) ++
+  -- Classification, which needs no digests.
+  [checkEq "manifest: a notice is classified as one"
+     (classifyAsset [] "THIRD-PARTY-LICENSES").wire "notice",
+   checkEq "manifest: an SBOM is classified by its suffix"
+     (classifyAsset [] "tl-0.1.0.spdx.json").wire "sbom",
+   checkEq "manifest: a file shaped like a binary but not in the target list is other"
+     (classifyAsset [] "tl-imaginary-platform").wire "other",
+   checkEq "manifest: a binary is classified against the target list"
+     (classifyAsset [sampleTarget "linux-x64" .supported] "tl-linux-x64").wire "binary",
+   checkEq "manifest: a build record is classified against the target list"
+     (classifyAsset [sampleTarget "linux-x64" .supported] "build-metadata-linux-x64.json").wire
+     "build-metadata",
+   checkEq "manifest: a link audit is classified against the target list"
+     (classifyAsset [sampleTarget "linux-x64" .supported] "link-audit-linux-x64.txt").wire
+     "link-audit",
+   -- Generation omits exactly what verification allows to be undescribed.
+   -- Written twice these could drift, and a release would refuse itself.
+   checkEq "manifest: what generation omits is exactly what verification allows"
+     (describableNames "release-manifest.json"
+       ["LICENSE", "SHA256SUMS", "release-manifest.json", "tl-linux-x64.sigstore.json"])
+     ["LICENSE"]]
+
+/-! ## The build-record verdict
+
+Seven facts, each varied one at a time from a record that agrees. -/
+
+private def metadataText (overrides : List (String × String)) : String :=
+  objectOf (buildMetadataFields.map fun (key, value) =>
+    (key, (overrides.lookup key).getD value))
+
+private def recordVerdict (run : RunContext) (target : Target)
+    (digestText : String) (overrides : List (String × String)) : Except String Bool := do
+  let facts ← factsOf run
+  let build ← BuildMetadata.parse "b" (metadataText overrides)
+  let digest ← Sha256.parse "d" digestText
+  return metadataAccepts facts target digest build
+
+private def recordReport (run : RunContext) (target : Target)
+    (digestText : String) (overrides : List (String × String)) : List String :=
+  match factsOf run, BuildMetadata.parse "b" (metadataText overrides),
+        Sha256.parse "d" digestText with
+  | .ok facts, .ok build, .ok digest => metadataFailures facts target digest build
+  | _, _, _ => ["<a fixture stopped parsing>"]
+
+private def linuxTarget : Target := sampleTarget "linux-x64" .supported
+
+private def inRun : RunContext := .inWorkflow sampleWorkflowRef "42"
+
+private def accepted (overrides : List (String × String)) : Bool :=
+  (recordVerdict inRun linuxTarget digest64 overrides).toOption == some true
+
+private def metadataVerdictTests : List Outcome :=
+  [check "record: a record agreeing on all seven facts is accepted" (accepted [])
+     s!"{recordReport inRun linuxTarget digest64 []}",
+   checkEq "record: an accepted record reports nothing"
+     (recordReport inRun linuxTarget digest64 []) [],
+   -- Each of the seven, one at a time.
+   check "record: a record naming another target is refused"
+     (!accepted [("target", "\"darwin-x64\"")]) "a crossed record was accepted",
+   check "record: a record recording another tier is refused"
+     (!accepted [("tier", "\"best-effort\"")]) "a drifted tier was accepted",
+   check "record: a record whose digest is not the artifact's is refused"
+     ((recordVerdict inRun linuxTarget digest64c []).toOption == some false)
+     "bytes that were not the ones built were accepted",
+   check "record: a record from another commit is refused"
+     (!accepted [("commit", s!"\"{String.ofList (List.replicate 40 'd')}\"")])
+     "another commit was accepted",
+   check "record: a record from another toolchain is refused"
+     (!accepted [("toolchain", "\"leanprover/lean4:v0.0.0\"")]) "another toolchain was accepted",
+   check "record: a record built against another dependency set is refused"
+     (!accepted [("lakeManifestSha256", s!"\"{digest64c}\"")]) "another dependency set was accepted",
+   -- The one the shell compared leg-to-leg only. Four artifacts carried in from
+   -- an earlier run of this same workflow agree with each other perfectly.
+   check "record: a record from another run of this workflow is refused"
+     (!accepted [("runId", "\"41\"")]) "a record from another run was accepted",
+   check "record: a record from another workflow is refused"
+     (!accepted [("workflowRef", "\"owner/repo/.github/workflows/ci.yml@refs/heads/main\"")])
+     "a record from another workflow was accepted",
+   check "record: the wrong-run message says that legs agreeing with each other proves nothing"
+     ((recordReport inRun linuxTarget digest64 [("runId", "\"41\"")]).any
+       (contains · "agreeing with each other establishes nothing"))
+     s!"{recordReport inRun linuxTarget digest64 [("runId", "\"41\"")]}",
+   -- Outside a workflow there is no run to disagree with, and that is a stated
+   -- choice rather than an absent value silently disabling the comparison.
+   check "record: outside a workflow the run identity is not compared"
+     ((recordVerdict .outsideWorkflow linuxTarget digest64 [("runId", "\"99\"")]).toOption
+       == some true) "a rehearsal refused a record it has nothing to compare against",
+   check "record: outside a workflow the other six facts are still compared"
+     ((recordVerdict .outsideWorkflow linuxTarget digest64
+        [("commit", s!"\"{String.ofList (List.replicate 40 'd')}\"")]).toOption == some false)
+     "a rehearsal accepted a record from another commit",
+   -- A field this build does not know is refused rather than dropped: the
+   -- manifest embeds a record by re-rendering what was parsed, so an unknown
+   -- field would survive in one published document and vanish from the other.
+   check "record: a field this build does not know is refused, not ignored"
+     (mentions (BuildMetadata.parse "b"
+       (objectOf (buildMetadataFields ++ [("surprise", "\"x\"")])))
+       "a field this build does not know")
+     (errorOf (BuildMetadata.parse "b"
+       (objectOf (buildMetadataFields ++ [("surprise", "\"x\"")])))),
+   check "record: the unknown-field refusal lists the fields there are"
+     (mentions (BuildMetadata.parse "b"
+       (objectOf (buildMetadataFields ++ [("surprise", "\"x\"")]))) "lakeManifestSha256")
+     "the refusal did not say which fields exist",
+   -- Every disagreement is reported, not the first: a directory with two
+   -- problems must not take two runs of a four-binary pipeline to diagnose.
+   check "record: every disagreeing fact is reported at once"
+     ((recordReport inRun linuxTarget digest64
+        [("commit", s!"\"{String.ofList (List.replicate 40 'd')}\""),
+         ("toolchain", "\"leanprover/lean4:v0.0.0\"")]).length == 2)
+     s!"{recordReport inRun linuxTarget digest64 [("commit", "\"d…\""), ("toolchain", "\"x\"")]}"]
+
+/-! ## Assembling a release
+
+`Manifest.of` is where the tier policy, the evidence-covers-the-target-list
+rule, and the cross-leg run agreement live. Built inside `Except` for the same
+reason as the verdict rows: a fixture that stopped parsing must fail rather than
+stop asserting. -/
+
+private def sampleIdentity : Identity :=
+  { repository := "Owner/tl", npmPackage := "@scope/tl", releaseWorkflow := "w",
+    certificateOidcIssuer := "i", certificateIdentityRegexp := "e" }
+
+private def twoTargets : Except String Targets :=
+  Targets.parse "t" (targetsOf
+    [targetRow "linux-x64" "supported", targetRow "linux-arm64" "best-effort"])
+
+private def evidenceFor (name : String) (tier : String) (digestText : String)
+    (overrides : List (String × String)) (linkAudit : Bool) :
+    Except String TargetEvidence := do
+  let build ← BuildMetadata.parse "b" (metadataText
+    ([("target", "\"" ++ name ++ "\""), ("tier", "\"" ++ tier ++ "\"")] ++ overrides))
+  let digest ← Sha256.parse "d" digestText
+  let tierValue ← Tier.parse "tier" tier
+  return { target := sampleTarget name tierValue, found := .present digest (some build) linkAudit }
+
+private def absentFor (name : String) (tier : String) : Except String TargetEvidence := do
+  let tierValue ← Tier.parse "tier" tier
+  return { target := sampleTarget name tierValue, found := .absent }
+
+private def assembledUnder (run : RunContext) (version : String)
+    (evidence : List (Except String TargetEvidence))
+    (directory : List (String × Sha256)) : Except String Manifest := do
+  let parsedVersion ← Version.parse "v" version
+  let facts ← factsOf run
+  let targets ← twoTargets
+  let rows ← evidence.mapM id
+  let inputs : ManifestInputs :=
+    { version := parsedVersion
+      facts := facts
+      identity := sampleIdentity
+      targets := targets
+      evidence := rows
+      directory := directory }
+  Manifest.of inputs
+
+private def assembledFrom (version : String) (evidence : List (Except String TargetEvidence))
+    (directory : List (String × Sha256)) : Except String Manifest :=
+  assembledUnder inRun version evidence directory
+
+private def assemblyRows : Except String (List Outcome) := do
+  let shaA ← Sha256.parse "a" digest64
+  let shaC ← Sha256.parse "c" digest64c
+  -- Asset names composed through `Target.asset` rather than spelled out: the
+  -- prefix followed by a target name reads as a tracker id to the task-ID
+  -- lint, which cannot tell the two apart, and there is exactly one place that
+  -- knows how an asset name is spelled.
+  let linuxAsset := (sampleTarget "linux-x64" .supported).asset
+  let armAsset := (sampleTarget "linux-arm64" .bestEffort).asset
+  let directory : List (String × Sha256) :=
+    [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
+  let bothPresent : List (Except String TargetEvidence) :=
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+  let complete := assembledFrom "1.2.3" bothPresent directory
+  let oneAbsent := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true, absentFor "linux-arm64" "best-effort"]
+    [(linuxAsset, shaA), ("LICENSE", shaC)]
+  let missingRequired := assembledFrom "1.2.3"
+    [absentFor "linux-x64" "supported", evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+    directory
+  let noAudit := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] false,
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true] directory
+  let noRecord := assembledFrom "1.2.3"
+    [(do let row ← evidenceFor "linux-x64" "supported" digest64 [] true
+         return { row with found := .present shaA none true }),
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true] directory
+  -- Driven outside a workflow deliberately: inside one, each leg is already
+  -- held to the ambient run, so a leg from another run is caught per-record and
+  -- the cross-leg rule never gets a turn. Outside one there is no ambient run,
+  -- and this is the only thing left that says the legs belong together.
+  let twoRuns := assembledUnder .outsideWorkflow "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [("runId", "\"99\"")] true] directory
+  let twoRunsInWorkflow := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [("runId", "\"99\"")] true] directory
+  let shortEvidence := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true] directory
+  let foreignEvidence := assembledFrom "1.2.3"
+    (bothPresent ++ [evidenceFor "windows-x64" "supported" digest64 [] true]) directory
+  let emptyDirectory := assembledFrom "1.2.3" bothPresent []
+  let repeated := assembledFrom "1.2.3" bothPresent (directory ++ [("LICENSE", shaA)])
+  let prerelease := assembledFrom "1.2.3-rc.1" bothPresent directory
+  let emptyTargets : Except String Manifest := do
+    let parsedVersion ← Version.parse "v" "1.2.3"
+    let facts ← factsOf inRun
+    let inputs : ManifestInputs :=
+      { version := parsedVersion
+        facts := facts
+        identity := sampleIdentity
+        targets := ⟨[]⟩
+        evidence := []
+        directory := directory }
+    Manifest.of inputs
+  let orphanRecord := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true, absentFor "linux-arm64" "best-effort"]
+    [(linuxAsset, shaA), ("LICENSE", shaC),
+     ((sampleTarget "linux-arm64" .bestEffort).buildMetadataAsset, shaC)]
+  let orphanAudit := assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true, absentFor "linux-arm64" "best-effort"]
+    [(linuxAsset, shaA), ("LICENSE", shaC),
+     ((sampleTarget "linux-arm64" .bestEffort).linkAuditAsset, shaC)]
+  -- The evidence row claims best-effort for a target the list calls Supported.
+  -- Its absence must still block the release.
+  let demoted := assembledFrom "1.2.3"
+    [(do let row ← absentFor "linux-x64" "best-effort"
+         return row), evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+    directory
+  let crossedWorkflows := assembledUnder .outsideWorkflow "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64
+       [("workflowRef", "\"owner/repo/.github/workflows/ci.yml@refs/heads/main\"")] true]
+    directory
+  return [
+    check "assembly: a complete candidate set is described"
+      complete.toOption.isSome (errorOf complete),
+    checkEq "assembly: every target is described, published or not"
+      (complete.toOption.map (·.outcomes.length)) (some 2),
+    checkEq "assembly: the assets are sorted by name, whatever order they arrived in"
+      (complete.toOption.map fun manifest => manifest.assets.map (·.name))
+      (some ["LICENSE", armAsset, linuxAsset]),
+    -- A missing Best-effort target is recorded as unpublished rather than
+    -- omitted: a consumer can tell "we did not build this" from "we do not know
+    -- about this".
+    check "assembly: a missing Best-effort target still produces a manifest"
+      oneAbsent.toOption.isSome (errorOf oneAbsent),
+    checkEq "assembly: the absent Best-effort target is recorded, not dropped"
+      (oneAbsent.toOption.map fun manifest => manifest.outcomes.length) (some 2),
+    checkEq "assembly: an absent target is not listed among the npm packages"
+      (oneAbsent.toOption.map fun manifest => manifest.npmPackages)
+      (some ["@scope/tl", "@scope/tl-bin-linux-x64"]),
+    -- A missing Supported target stops the release.
+    check "assembly: a missing Supported target is refused"
+      (mentions missingRequired "release-blocking") (errorOf missingRequired),
+    -- Both companion files are mandatory, not "compared when present". Written
+    -- the other way, deleting the evidence satisfied the check that exists to
+    -- prove the signed bytes were smoke-tested.
+    check "assembly: a published binary with no link audit is refused"
+      (mentions noAudit "link-audit-linux-x64.txt") (errorOf noAudit),
+    check "assembly: a published binary with no build record is refused"
+      (mentions noRecord "is a refusal rather than a check that gets skipped")
+      (errorOf noRecord),
+    -- The cross-leg property, which is about the set rather than one record.
+    check "assembly: outside a workflow, legs recording different runs are refused"
+      (mentions twoRuns "not produced by one run") (errorOf twoRuns),
+    check "assembly: inside a workflow, a leg from another run is caught per record"
+      (mentions twoRunsInWorkflow "carried in") (errorOf twoRunsInWorkflow),
+    -- What an unreadable target list used to do: an empty list skipped every
+    -- comparison, and the result was signed.
+    check "assembly: a target with no evidence collected for it is refused"
+      (mentions shortEvidence "no evidence was collected") (errorOf shortEvidence),
+    check "assembly: evidence for a target the list does not carry is refused"
+      (mentions foreignEvidence "does not list") (errorOf foreignEvidence),
+    check "assembly: a release directory with nothing in it is refused"
+      (mentions emptyDirectory "holds no assets") (errorOf emptyDirectory),
+    check "assembly: a name collected twice is refused"
+      (mentions repeated "collected twice") (errorOf repeated),
+    -- An empty target list makes every loop below it vacuous, so a manifest
+    -- would be rendered and signed having compared nothing. `Targets.parse`
+    -- refuses one; this refuses it again, because a check whose failure mode is
+    -- "passes silently on empty input" is worth stating at both ends.
+    check "assembly: an empty target list is refused rather than compared vacuously"
+      (mentions emptyTargets "every per-leg comparison below would pass")
+      (errorOf emptyTargets),
+    -- A record or an audit whose binary never arrived would be hashed,
+    -- described and signed while nothing compared it to anything.
+    check "assembly: a build record for a binary that did not arrive is refused"
+      (mentions orphanRecord "did not deliver it") (errorOf orphanRecord),
+    check "assembly: a link audit for a binary that did not arrive is refused"
+      (mentions orphanAudit "did not deliver it") (errorOf orphanAudit),
+    -- The tier decides whether an absence blocks the release, so it comes from
+    -- the parsed target list and never from the evidence handed in. Demoting a
+    -- Supported target would turn a release-blocking absence into a row saying
+    -- "not built" — a partial release describing itself as complete.
+    check "assembly: the tier comes from the target list, not from the evidence row"
+      (mentions demoted "release-blocking") (errorOf demoted),
+    -- Outside a workflow there is no ambient identity, so leg-to-leg agreement
+    -- is the only thing left saying the legs belong together — and run ids are
+    -- per workflow, so comparing the id alone would admit a binary built by
+    -- another workflow that reached the same number.
+    check "assembly: outside a workflow, legs naming different workflows are refused"
+      (mentions crossedWorkflows "not produced by one run") (errorOf crossedWorkflows),
+    -- The two channel decisions read off the parsed version rather than by
+    -- searching a string for a hyphen, which is how a prerelease reached the
+    -- `latest` tag once already.
+    checkEq "assembly: a release publishes to the latest dist-tag"
+      (complete.toOption.map (·.npmDistTag)) (some "latest"),
+    checkEq "assembly: a prerelease publishes to the next dist-tag"
+      (prerelease.toOption.map (·.npmDistTag)) (some "next"),
+    checkEq "assembly: a release pushes the tap"
+      (complete.toOption.map (·.homebrewPush)) (some true),
+    checkEq "assembly: a prerelease does not push the tap"
+      (prerelease.toOption.map (·.homebrewPush)) (some false),
+    checkEq "assembly: the tap is derived from the identity owner"
+      (complete.toOption.map (·.homebrewTap)) (some "Owner/homebrew-tap")]
+
+private def assemblyTests : List Outcome :=
+  match assemblyRows with
+  | .ok rows => rows
+  | .error message => [check "assembly: the fixtures parse" false message]
+
+/-- The document a fixed release assembles to, byte for byte.
+
+    A golden file rather than a set of field assertions, because the manifest is
+    hashed into `SHA256SUMS` and signed: what has to hold is that the bytes are a
+    function of the release and of nothing else — not that some fields are
+    present. Field assertions would go on passing through a key rename, an
+    ordering change, or an indentation change, each of which makes two correct
+    generations of one release disagree.
+
+    Regenerate deliberately with `--write-golden` on the test binary if the
+    document is meant to change, and read the diff: a change here is a change to
+    something signed. -/
+private def goldenManifestPath : String := "Tests/fixtures/release-manifest-golden.json"
+
+private def goldenManifestDocument : Except String String := do
+  let shaA ← Sha256.parse "a" digest64
+  let shaC ← Sha256.parse "c" digest64c
+  let linuxAsset := (sampleTarget "linux-x64" .supported).asset
+  let armAsset := (sampleTarget "linux-arm64" .bestEffort).asset
+  let manifest ← assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+    [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
+  renderManifest manifest
+
+private def goldenManifestTests : IO (List Outcome) := do
+  let golden ← IO.FS.readFile goldenManifestPath
+  let rendered := okOr "<the golden fixtures stopped assembling>" goldenManifestDocument
+  return [
+    checkEq "manifest: a fixed release renders to the committed golden bytes" rendered golden,
+    -- The property the golden exists for, stated separately so a golden that
+    -- was regenerated from a broken generator still fails this.
+    check "manifest: the rendered document is pure ASCII with a trailing newline"
+      (rendered.endsWith "\n" && rendered.toList.all (fun c => c.toNat < 0x80))
+      "the signed document carries bytes whose length depends on an encoding choice"]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -1482,8 +2149,9 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ channelOutputTests ++ sbomTests ++ outs ++ (← documentTests)
-    ++ (← pinCommandTests) ++ (← planCommandTests) ++ (← sbomDocumentTests)
-    ++ (← sbomCommandTests)
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
+    ++ metadataVerdictTests ++ assemblyTests ++ channelOutputTests ++ sbomTests ++ outs
+    ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests)
 
 end Tl.Tests

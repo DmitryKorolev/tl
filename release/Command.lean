@@ -110,6 +110,20 @@ def ofExcept (result : Except String α) : Decision α := ExceptT.mk (pure resul
 /-- A read of the world that can refuse, as a step. -/
 def ofIO (action : IO (Except String α)) : Decision α := ExceptT.mk action
 
+/-- An `IO` action that can throw, as a step that refuses instead.
+
+    Every path out of this executable is a decision, and an escaping `IO.Error`
+    is not one: it leaves a backtrace and a status outside the three this tool
+    documents, so a caller branching on `$?` gets an answer that is neither
+    yes, nor no, nor "you invoked me wrongly". `what` says what was being
+    attempted, because an errno on its own tells an operator nothing about
+    which step to look at. -/
+def attempt (what : String) (action : IO α) : Decision α :=
+  ExceptT.mk do
+    match ← action.toBaseIO with
+    | .ok value => return .ok value
+    | .error error => return .error s!"{what}: {error}"
+
 /-- Refuse here, with this message. -/
 def decline (message : String) : Decision α := ofExcept (.error message)
 
@@ -238,10 +252,21 @@ def parseOptions (specs : List OptionSpec) (args : List String) :
 
     Every reader of a required option goes through here, so "the caller did not
     pass it" is a usage error rather than an empty string that reaches a
-    comparison and matches nothing. -/
+    comparison and matches nothing.
+
+    An option given *as* the empty string is refused too, and that is the more
+    valuable half. `--target ""` is what a workflow produces from an expression
+    that resolved to nothing, and it is not a smaller value — it is the absence
+    of one, spelled in a way that gets past a presence check. Left to a caller
+    it produces a record whose own reader refuses it, written by a step that
+    exited zero. Refused here, once, rather than by every command remembering
+    to test each of its own strings. -/
 def Options.required (options : Options) (name : String) : Except String String :=
   match options.named.find? (·.1 == name) with
-  | some (_, value) => .ok value
+  | some (_, value) =>
+      if value.isEmpty then
+        .error s!"--{name} was given as the empty string, which is not a value — it is what a workflow expression that resolved to nothing looks like on the command line. A record with a blank field is not a complete record, and the step that wrote one would exit zero having produced something its own reader refuses. Pass the value, or find out why the caller had none."
+      else .ok value
   | none => .error s!"--{name} is required and was not given."
 
 /-- A declared option's value, when the command has something sensible to do
@@ -261,5 +286,32 @@ def Options.describing (options : Options) (name : String) : String :=
 /-- Whether a declared valueless option was given. -/
 def Options.given (options : Options) (name : String) : Bool :=
   options.present.contains name
+
+/-- Run a subcommand whose values are named options.
+
+    Two phases, because the two failures are different statuses and collapsing
+    them would put back the thing this executable exists to remove. *Resolving*
+    the options is usage: a caller that did not pass `--commit`, or passed a
+    word where no option takes one, invoked this wrongly and no decision was
+    made — status `2`. *Reading what the values mean* is the decision: a
+    `--commit` that is not a commit is a refusal, made and negative — status
+    `1`. A release step reading `$?` can therefore tell "I invoked it wrongly"
+    from "it checked, and the answer was no", and neither from success.
+
+    Positional arguments are refused rather than ignored for the same reason:
+    where every value is named, a stray word is a mistyped option, and the value
+    the operator meant to pass is missing. -/
+def runWithOptions (name : String) (specs : List OptionSpec) (usage : String)
+    (resolve : Options → Except String α) (act : α → Decision String)
+    (args : List String) : IO UInt32 := do
+  match parseOptions specs args with
+  | .error message => misuse s!"{name}: {message}\n{usage}"
+  | .ok options =>
+      if !options.positional.isEmpty then
+        misuse s!"{name}: takes no positional arguments, and was given {options.positional.length}. Every value this command takes is named, so a bare word is a mistyped option rather than something to ignore — and whatever it was meant to name has not been passed.\n{usage}"
+      else
+        match resolve options with
+        | .error message => misuse s!"{name}: {message}\n{usage}"
+        | .ok resolved => decide name (act resolved)
 
 end Release

@@ -80,6 +80,29 @@ def defaultTimeoutMs : Nat := 120000
     long enough that waiting is not a busy-spin. -/
 private def pollStepMs : Nat := 10
 
+/-- Lean's own message when the child stub cannot exec the named program.
+
+    `IO.Process.spawn` does not fail on a name that is not on PATH — the fork
+    succeeds and the *child* discovers there is nothing to exec, prints this,
+    and exits. So "there is no such program" arrives looking exactly like "the
+    program ran and failed", which is the conflation this module exists to
+    remove, and it is recovered here rather than left to each caller.
+
+    Matching a runtime message is not a thing to be pleased about, and it is
+    kept honest by what depends on it: nothing. Both readings refuse, and the
+    only difference is which remedy the operator is shown — install the tool, or
+    find out why it failed. If a later toolchain changes the wording the worst
+    outcome is a less helpful sentence, never an acceptance. -/
+private def notExecutableMarker : String := "could not execute external process"
+
+/-- The conventional POSIX status for "command not found", which a shell in the
+    chain would produce even where the message above does not appear. -/
+private def commandNotFoundStatus : UInt32 := 127
+
+private def looksUnexecutable (output : ProcessOutput) : Bool :=
+  output.exitCode == commandNotFoundStatus
+    || (output.exitCode != 0 && (output.stderr.splitOn notExecutableMarker).length > 1)
+
 /-- Run `command` with `args`, waiting at most `timeoutMs`.
 
     The bound is enforced by polling rather than by a second thread: `tryWait`
@@ -117,11 +140,28 @@ def run (command : String) (args : Array String)
         IO.sleep (UInt32.ofNat pollStepMs)
       match code? with
       | some exitCode =>
+          -- The child has exited, but the pipes are not necessarily closed: a
+          -- grandchild that inherited them keeps `readToEnd` waiting, and a
+          -- bound that covered only the wait would leave this blocked forever
+          -- in a release job whose own timeout is then the only thing that
+          -- stops it. The reads get the same bound as the run.
+          let mut drained := false
+          for _ in [0 : bound / pollStepMs + 1] do
+            if (← IO.hasFinished outTask) && (← IO.hasFinished errTask) then
+              drained := true
+              break
+            IO.sleep (UInt32.ofNat pollStepMs)
+          if !drained then
+            return .timedOut command bound
           -- A stream that could not be read is not an empty stream. Reading it
           -- as one would turn a broken pipe into a digest tool that printed
           -- nothing, which is a different refusal with a different remedy.
           match outTask.get, errTask.get with
-          | .ok stdout, .ok stderr => return .completed { exitCode, stdout, stderr }
+          | .ok stdout, .ok stderr =>
+              let output : ProcessOutput := { exitCode, stdout, stderr }
+              if looksUnexecutable output then
+                return .unavailable command output.stderr.trimAscii.toString
+              else return .completed output
           | .error error, _ | _, .error error =>
               return .unavailable command
                 s!"it ran, but its output could not be read ({error})"

@@ -589,10 +589,24 @@ structure BuildMetadata where
   runAttempt : String := ""
   deriving Repr
 
+/-- Every field a build record carries. Named once, because the parser reads
+    them and the check below refuses anything else. -/
+def buildMetadataFieldNames : List String :=
+  ["target", "sha256", "commit", "tier", "runner", "toolchain", "lakeManifestSha256",
+   "workflowRef", "runId", "runnerOs", "runnerArch", "containerImage", "runAttempt"]
+
 def BuildMetadata.parse (document : String) (text : String) : Except String BuildMetadata := do
   let cursor : Cursor := { document }
   let root ← parseDocument cursor text
-  let _ ← getObj cursor root
+  let fields ← getObj cursor root
+  -- A field this build does not know is refused rather than ignored. The
+  -- manifest embeds this record by re-rendering the parsed value, so an
+  -- unknown field would be dropped there and kept in the published
+  -- `build-metadata-*.json` asset — two documents in one signed release,
+  -- disagreeing about what a leg recorded, with nothing to say which is right.
+  for (name, _) in fields do
+    if !buildMetadataFieldNames.contains name then
+      (cursor.at name).fail s!"is a field this build does not know. A record is copied into the release manifest by re-rendering what was parsed, so a field nothing here reads would survive in one published document and vanish from the other. Either this record was written by a newer build than the one assembling the release, or the field is a typo for one of: {String.intercalate ", " buildMetadataFieldNames}."
   -- Present-but-not-a-string is a malformed record, not an absent field. These
   -- describe the machine rather than the artifact and no verdict reads them,
   -- but reading a malformed one as absent is the same conflation that was just
@@ -685,9 +699,9 @@ structure ReleaseFacts where
 def metadataChecks (facts : ReleaseFacts) (target : Target) (digest : Sha256)
     (build : BuildMetadata) : List Check :=
   [{ held := build.target == target.name,
-     failure := s!"the record for '{target.name}' names target '{build.target}'. The records were crossed between legs, so none of them describes its own binary." },
+     failure := s!"the build metadata for '{target.name}' records target '{build.target}'. The records were crossed between legs, so none of them describes its own binary." },
    { held := build.tier == target.tier,
-     failure := s!"the '{target.name}' leg recorded tier '{build.tier.wire}', but release/targets.json says '{target.tier.wire}'. The tier decides whether a missing artifact blocks the release, so the build matrix and the target list cannot disagree about it." },
+     failure := s!"the build metadata for '{target.name}' records tier '{build.tier.wire}', but release/targets.json says '{target.tier.wire}'. The tier decides whether a missing artifact blocks the release, so the build matrix and the target list cannot disagree about it." },
    { held := build.sha256 == digest,
      failure := s!"the artifact for '{target.name}' hashes to {digest.hex}, but its build leg recorded {build.sha256.hex}. These are not the bytes that leg built and smoke-tested — the artifact was replaced in transit, or the wrong one was uploaded. Nothing is signed." },
    { held := build.commit == facts.commit,
@@ -706,14 +720,21 @@ def metadataAccepts (facts : ReleaseFacts) (target : Target) (digest : Sha256)
 
 /-- **A record is accepted exactly when it agrees on all seven facts.**
 
-    An if-and-only-if in both useful directions. Left to right is soundness: a
-    record that gets published really does agree with the release, so a
-    disagreement cannot pass. Right to left is what stops the check from being
-    satisfiable vacuously — a comparison that accepted nothing, or one whose
-    seven rows had collapsed to six through an editing accident, could not prove
-    this. The shell had exactly that failure mode available: its nine
-    comparisons lived in a loop an empty target list could skip, and skipping
-    them all was indistinguishable in the output from passing them all.
+    An if-and-only-if, and the two directions rule out opposite failures.
+
+    *Left to right* is soundness: a record that gets published really does agree
+    with the release, so a disagreement cannot pass. It is also what keeps the
+    seven rows from becoming six — deleting one makes the verdict strictly more
+    accepting, so a record disagreeing about the deleted fact would satisfy the
+    left side while failing the right, and this implication would stop
+    compiling. That is the editing accident worth guarding, because it is
+    invisible in the output.
+
+    *Right to left* is completeness: a comparison that accepted nothing would
+    prove soundness trivially, and cannot prove this. The shell had that failure
+    mode available — its nine comparisons lived in a loop an empty target list
+    could skip, and skipping them all was indistinguishable in the output from
+    passing them all.
 
     The run conjunct is an implication rather than an equality because
     `outsideWorkflow` has nothing to compare against. It says "and, if this is a
@@ -757,6 +778,32 @@ theorem metadataAccepts_iff (facts : ReleaseFacts) (target : Target)
 def metadataFailures (facts : ReleaseFacts) (target : Target) (digest : Sha256)
     (build : BuildMetadata) : List String :=
   Check.failures (metadataChecks facts target digest build)
+
+/-- **A record is published without complaint exactly when it agrees on all
+    seven facts.**
+
+    `metadataAccepts_iff` characterises the verdict, and `PublishedTarget.of`
+    calls the *report* — so on its own the theorem would be about a function no
+    command reaches, which is a theorem about nothing. Composed with
+    `Check.allHeld_iff_noFailures`, which says the two readings of one check
+    list cannot disagree, it lands on the function that actually decides
+    whether a target is published. Stated rather than left for the reader to
+    compose, because a reader who has to compose two theorems to find the
+    guarantee will not. -/
+theorem metadataFailures_isEmpty_iff (facts : ReleaseFacts) (target : Target)
+    (digest : Sha256) (build : BuildMetadata) :
+    metadataFailures facts target digest build = [] ↔
+      build.target = target.name
+        ∧ build.tier = target.tier
+        ∧ build.sha256 = digest
+        ∧ build.commit = facts.commit
+        ∧ build.toolchain = facts.toolchain
+        ∧ build.lakeManifestSha256 = facts.lakeManifestSha256
+        ∧ (∀ workflowRef runId, facts.run = .inWorkflow workflowRef runId →
+            build.workflowRef = workflowRef ∧ build.runId = runId) :=
+  Iff.trans
+    (Check.allHeld_iff_noFailures (metadataChecks facts target digest build)).symm
+    (metadataAccepts_iff facts target digest build)
 
 /-- A target that was built and will be published. It carries its digest and
     its leg's complete record *by construction*, so no consumer can reach a
@@ -823,7 +870,7 @@ inductive AuditOutcome where
   | missing (remedy : String)
   | carried (assumption : String)
   | operationalError (detail : String)
-  deriving Repr, Inhabited
+  deriving Repr
 
 def AuditOutcome.label : AuditOutcome → String
   | .verified => "VERIFIED"

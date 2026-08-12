@@ -128,6 +128,49 @@ private def buildMetadataOptions : List OptionSpec :=
 private def buildMetadataUsage : String :=
   "usage: tlrelease build-metadata --target <name> --binary <path> --commit <sha> --tier <supported|best-effort> --runner <label> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --workflow-ref <ref> --run-id <id> --output <path> [--runner-os <s>] [--runner-arch <s>] [--container-image <s>] [--run-attempt <s>]"
 
+/-- Everything the command was told, with the option names resolved.
+
+    A structure rather than a fourteen-value tuple: the project rule is that
+    four-plus component returns consumed by more than one caller get a name, and
+    the reason bites here — half of these are strings that describe the machine
+    and half are strings that get parsed into evidence, and a tuple would let
+    them be swapped without a type error. -/
+private structure BuildMetadataArgs where
+  target : String
+  binary : String
+  commit : String
+  tier : String
+  runner : String
+  toolchainPath : String
+  lakeManifestPath : String
+  workflowRef : String
+  runId : String
+  output : String
+  runnerOs : String
+  runnerArch : String
+  containerImage : String
+  runAttempt : String
+
+private def buildMetadataArgs (options : Options) : Except String BuildMetadataArgs := do
+  return {
+    target := ← options.required "target"
+    binary := ← options.required "binary"
+    commit := ← options.required "commit"
+    tier := ← options.required "tier"
+    runner := ← options.required "runner"
+    toolchainPath := ← options.required "toolchain"
+    lakeManifestPath := ← options.required "lake-manifest"
+    workflowRef := ← options.required "workflow-ref"
+    runId := ← options.required "run-id"
+    output := ← options.required "output"
+    -- The four the release page shows a human and no verdict reads. Absent is
+    -- the empty string here and only here; `describing` is named so that using
+    -- it where a decision is made reads wrong.
+    runnerOs := options.describing "runner-os"
+    runnerArch := options.describing "runner-arch"
+    containerImage := options.describing "container-image"
+    runAttempt := options.describing "run-attempt" }
+
 /-- The tier is passed in rather than read from `release/targets.json`, and
     that is the point of it.
 
@@ -139,46 +182,30 @@ private def buildMetadataUsage : String :=
     belief is what lets the sign job catch a matrix that has drifted from the
     target list, which is a live possibility because the two are edited in
     different files. -/
-private def buildMetadataDecision (options : Options) : Decision String := do
-  let target ← ofExcept (options.required "target")
-  let binary ← ofExcept (options.required "binary")
-  let commit ← ofExcept (options.required "commit" >>= Commit.parse "--commit")
-  let tier ← ofExcept (options.required "tier" >>= Tier.parse "--tier")
-  let runner ← ofExcept (options.required "runner")
-  let toolchainPath ← ofExcept (options.required "toolchain")
-  let manifestPath ← ofExcept (options.required "lake-manifest")
-  let workflowRef ← ofExcept (options.required "workflow-ref")
-  let runId ← ofExcept (options.required "run-id")
-  let output ← ofExcept (options.required "output")
-  let toolchain ← readParsed toolchainPath parseToolchain
+private def buildMetadataDecision (args : BuildMetadataArgs) : Decision String := do
+  let commit ← ofExcept (Commit.parse "--commit" args.commit)
+  let tier ← ofExcept (Tier.parse "--tier" args.tier)
+  let toolchain ← readParsed args.toolchainPath parseToolchain
   let digester ← ofIO Digester.resolve
-  -- One resolution and one pass over the two files that need hashing. The
-  -- shell hashed the binary twice and the manifest once per leg.
-  let digest ← ofIO (digester.digest binary)
-  let lakeManifestSha256 ← ofIO (digester.digest manifestPath)
+  -- One tool resolution, and each file hashed once. The Python hashed the
+  -- binary twice per leg.
+  let digest ← ofIO (digester.digest args.binary)
+  let lakeManifestSha256 ← ofIO (digester.digest args.lakeManifestPath)
   let record := BuildMetadataInputs.record {
-    target, digest, commit, tier, runner, toolchain,
-    lakeManifestSha256, workflowRef, runId,
-    runnerOs := options.describing "runner-os"
-    runnerArch := options.describing "runner-arch"
-    containerImage := options.describing "container-image"
-    runAttempt := options.describing "run-attempt" }
+    target := args.target, digest, commit, tier, runner := args.runner, toolchain,
+    lakeManifestSha256, workflowRef := args.workflowRef, runId := args.runId,
+    runnerOs := args.runnerOs, runnerArch := args.runnerArch,
+    containerImage := args.containerImage, runAttempt := args.runAttempt }
   let document ← ofExcept (renderBuildMetadata record)
-  ofIO (writeFileAtomically output document)
-  return s!"wrote {output} — {target} ({tier.wire}) is {digest.hex}"
+  ofIO (writeFileAtomically args.output document)
+  return s!"wrote {args.output} — {args.target} ({tier.wire}) is {digest.hex}"
 
 private def buildMetadataCommand : Command := {
   name := "build-metadata"
   arguments := "--target <name> --binary <path> --commit <sha> --tier <tier> …"
   summary := "Record what this build leg built, for the sign job to hold the artifact to."
-  run := fun args => do
-    match parseOptions buildMetadataOptions args with
-    | .error message => misuse s!"tlrelease build-metadata: {message}\n{buildMetadataUsage}"
-    | .ok options =>
-        if !options.positional.isEmpty then
-          misuse s!"tlrelease build-metadata: takes no positional arguments, and was given {options.positional.length}. Every value is named, so a stray word is a mistyped option rather than something to ignore.\n{buildMetadataUsage}"
-        else
-          decide "tlrelease build-metadata" (buildMetadataDecision options) }
+  run := runWithOptions "tlrelease build-metadata" buildMetadataOptions buildMetadataUsage
+    buildMetadataArgs buildMetadataDecision }
 
 def metadataCommands : List Command := [buildMetadataCommand]
 

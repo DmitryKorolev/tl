@@ -1,0 +1,94 @@
+{
+  "assets": [
+    {
+      "kind": "notice",
+      "name": "LICENSE",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "kind": "binary",
+      "name": "tl-linux-arm64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "kind": "binary",
+      "name": "tl-linux-x64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "homebrew": {
+    "pinnedTargets": [
+      "linux-x64",
+      "linux-arm64"
+    ],
+    "push": true,
+    "tap": "Owner/homebrew-tap"
+  },
+  "lakeManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "npm": {
+    "distTag": "latest",
+    "packages": [
+      "@scope/tl",
+      "@scope/tl-bin-linux-x64",
+      "@scope/tl-bin-linux-arm64"
+    ]
+  },
+  "product": "tl",
+  "repository": "Owner/tl",
+  "schemaVersion": 1,
+  "signing": {
+    "certificateIdentityRegexp": "e",
+    "certificateOidcIssuer": "i",
+    "workflow": "w"
+  },
+  "tag": "v1.2.3",
+  "targets": [
+    {
+      "asset": "tl-linux-x64",
+      "build": {
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "containerImage": "",
+        "lakeManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "runAttempt": "",
+        "runId": "42",
+        "runner": "ubuntu-latest",
+        "runnerArch": "",
+        "runnerOs": "",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target": "linux-x64",
+        "tier": "supported",
+        "toolchain": "leanprover/lean4:v4.33.0",
+        "workflowRef": "owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3"
+      },
+      "published": true,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "linux-x64",
+      "tier": "supported"
+    },
+    {
+      "asset": "tl-linux-arm64",
+      "build": {
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "containerImage": "",
+        "lakeManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "runAttempt": "",
+        "runId": "42",
+        "runner": "ubuntu-latest",
+        "runnerArch": "",
+        "runnerOs": "",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target": "linux-arm64",
+        "tier": "best-effort",
+        "toolchain": "leanprover/lean4:v4.33.0",
+        "workflowRef": "owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3"
+      },
+      "published": true,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "linux-arm64",
+      "tier": "best-effort"
+    }
+  ],
+  "toolchain": "leanprover/lean4:v4.33.0",
+  "version": "1.2.3"
+}

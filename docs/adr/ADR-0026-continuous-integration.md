@@ -103,17 +103,18 @@ express:
   partial failure, and an already-published version whose contents differ,
   which must stop rather than retry. npm versions are immutable, so this is the
   one gate whose failure cannot be corrected afterwards.
-- `scripts/gen-release-manifest.sh --selftest` exercises one of the two
-  generators whose output is signed: the manifest must refuse a candidate whose
-  digest disagrees with what its build leg recorded. The other is the SBOM, and
-  it is not a gate in this script — `tlrelease sbom` is Lean, and its refusals
-  and its byte-exact output are covered by `Tests/ReleaseToolTests.lean` under
-  `lake exe tltest`, which is a required gate on the same commit in both
-  workflows. This script runs in a job with no Lean toolchain by design, so
-  invoking the built binary here would trade an answer in seconds for the whole
-  build matrix. `--list` names the SBOM under what a different gate covers, so
-  the one place that answers "what does the policy cover" does not fall silent
-  about it.
+- Neither generator whose output is signed is a gate in this script. The SBOM
+  is `tlrelease sbom`, the release manifest is `tlrelease manifest` and
+  `tlrelease manifest-verify`, and each build leg's record is
+  `tlrelease build-metadata`; all of them are Lean, and their refusals — a
+  candidate whose digest disagrees with what its leg recorded, a record from
+  another run, a directory holding an asset nothing describes — are covered by
+  `Tests/ReleaseToolTests.lean` under `lake exe tltest`, a required gate on the
+  same commit in both workflows. This script runs in a job with no Lean
+  toolchain by design, so invoking the built binary here would trade an answer
+  in seconds for the whole build matrix. `--list` names them under what a
+  different gate covers, so the one place that answers "what does the policy
+  cover" does not fall silent about them.
 - `scripts/check-release-prereqs.sh --selftest` checks the *reporting* of the
   external-state audit — that an unreadable row is counted as unchecked and
   never as a pass — and drives `audit` itself over stubbed `gh` and `npm`, so
