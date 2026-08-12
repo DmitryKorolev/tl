@@ -343,8 +343,141 @@ selftest() {
   done
   rc_note "$(grep -q "PINNED_TARGETS = %w\[$(echo "$all_targets" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')\]" "$out" && echo 0 || echo 1)" \
     "PINNED_TARGETS lists every target this formula pins"
-  rc_note "$([ "$(stat -f '%Lp' "$out" 2>/dev/null || stat -c '%a' "$out")" = 644 ] && echo 0 || echo 1)" \
+  rc_note "$([ "$(rc_file_mode "$out")" = 644 ] && echo 0 || echo 1)" \
     "the generated formula is world-readable, not 0600"
+
+  # That row is worth no more than rc_file_mode is, and the expression it
+  # replaced was correct on exactly one of the two platforms this project
+  # builds on — which the row could not say, because a broken mode reader and a
+  # 0600 file produce the same FAIL. So: the check is shown to discriminate
+  # against a file that really is 0600, and then each `stat` dialect is driven
+  # through the real helper from whichever host is running. The stubs answer
+  # with a mode the file does not have, so a row that passed because the
+  # *system* stat had answered instead would not.
+  secret="$work/secret.rb"
+  cp "$out" "$secret"
+  chmod 600 "$secret"
+  rc_note "$([ "$(rc_file_mode "$secret")" = 600 ] && echo 0 || echo 1)" \
+    "the mode check discriminates: a 0600 formula reads as 600, not as 644"
+
+  # rc_file_mode against a chosen `stat`, run the way the release scripts reach
+  # it: sourced from the library, with the stub first on PATH. Calling it in a
+  # `$(PATH=…; …)` subshell would work too, but this keeps the stubbed-PATH
+  # shape the rest of this selftest already uses and lets rc_run capture the
+  # refusal's status and message together.
+  mode_with_stat() {
+    env PATH="$1:$PATH" RC_LIB_SELF="$RC_LIB_SELF" \
+      sh -c '. "$RC_LIB_SELF"; rc_file_mode "$1"' sh "$2"
+  }
+
+  # A coreutils stat. `-f` asks it for file-system status and takes no format,
+  # so the BSD-shaped call leaves '%Lp' in the argument list as a second path —
+  # the behaviour that made the previous expression unpassable on Linux.
+  gnubin="$work/stat-gnu"
+  mkdir -p "$gnubin"
+  cat > "$gnubin/stat" <<'GNUSTAT'
+#!/bin/sh
+fs=0
+fmt=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    -f) fs=1; shift ;;
+    -c) fmt=$2; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "stat: invalid option -- '${1#-}'" >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
+if [ "$fs" -eq 1 ]; then
+  status=0
+  for path in "$@"; do
+    if [ -e "$path" ]; then
+      echo "  File: \"$path\""
+      echo "    ID: 0        Namelen: 255     Type: ext2/ext3"
+    else
+      echo "stat: cannot read file system information for '$path': No such file or directory" >&2
+      status=1
+    fi
+  done
+  exit "$status"
+fi
+[ "$fmt" = '%a' ] || { echo "stat: unrecognised format '$fmt'" >&2; exit 1; }
+echo 640
+GNUSTAT
+  chmod +x "$gnubin/stat"
+  gnu_mode=$(mode_with_stat "$gnubin" "$out" 2>/dev/null || true)
+  rc_note "$([ "$gnu_mode" = 640 ] && echo 0 || echo 1)" \
+    "a coreutils stat is read through -c, not through its file-system flag (got '$gnu_mode')"
+
+  # A BSD stat, which has no -c at all and writes its usage to stderr, leaving
+  # stdout empty — which is what makes trying the coreutils spelling first safe.
+  bsdbin="$work/stat-bsd"
+  mkdir -p "$bsdbin"
+  cat > "$bsdbin/stat" <<'BSDSTAT'
+#!/bin/sh
+fmt=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    -f) fmt=$2; shift 2 ;;
+    -c)
+      echo "stat: illegal option -- c" >&2
+      echo "usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]" >&2
+      exit 1
+      ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+[ "$fmt" = '%Lp' ] || { echo "stat: unrecognised format '$fmt'" >&2; exit 1; }
+echo 604
+BSDSTAT
+  chmod +x "$bsdbin/stat"
+  bsd_mode=$(mode_with_stat "$bsdbin" "$out" 2>/dev/null || true)
+  rc_note "$([ "$bsd_mode" = 604 ] && echo 0 || echo 1)" \
+    "a BSD stat is read through -f once -c is refused (got '$bsd_mode')"
+
+  # Neither dialect. The mode is unknown, and the one thing that must not
+  # happen is a caller reading the refusal as a mode.
+  deafbin="$work/stat-deaf"
+  mkdir -p "$deafbin"
+  printf '#!/bin/sh\necho "stat: unknown option" >&2\nexit 1\n' > "$deafbin/stat"
+  chmod +x "$deafbin/stat"
+  rc_expect_output 1 "-c '%a'" \
+    "a stat that speaks neither dialect refuses, naming the coreutils spelling" \
+    mode_with_stat "$deafbin" "$out"
+  rc_note "$(grep -q -- "-f '%Lp'" "$RC_ERR" && echo 0 || echo 1)" \
+    "the refusal names the BSD spelling too, so the reader knows what was tried"
+  rc_note "$([ ! -s "$RC_OUT" ] && echo 0 || echo 1)" \
+    "the refusal prints nothing a caller could compare against a mode"
+
+  # A stat that *succeeds* while printing something that is not a mode. Checking
+  # the status is what discards a dialect that refused; only the octal-digit
+  # test catches this one, and without a row for it the guard could be deleted
+  # with every other row still green — which is how the shape that broke CI got
+  # here, a report on stdout that some caller compared against a mode.
+  liarbin="$work/stat-liar"
+  mkdir -p "$liarbin"
+  printf '#!/bin/sh\necho "  File: \\"x\\"  Type: ext2/ext3"\nexit 0\n' > "$liarbin/stat"
+  chmod +x "$liarbin/stat"
+  rc_expect_output 1 "could not be read" \
+    "a stat that exits 0 printing something that is not a mode is refused, not returned" \
+    mode_with_stat "$liarbin" "$out"
+  rc_note "$([ ! -s "$RC_OUT" ] && echo 0 || echo 1)" \
+    "no part of that output reaches a caller as a mode"
+
+  # Both dialects are given the path after `--`, so a filename that begins with
+  # a dash is a path rather than a flag. The argument has to be the bare name
+  # for that to mean anything — a path with a directory in front of it never
+  # reaches the option parser as a flag. Driven through the host's real stat,
+  # and `-dashname` is an illegal option to both dialects without the `--`.
+  dashdir="$work/dash"
+  mkdir -p "$dashdir"
+  : > "$dashdir/-dashname"
+  chmod 604 "$dashdir/-dashname"
+  dash_mode=$(cd "$dashdir" && rc_file_mode -dashname 2>/dev/null || true)
+  rc_note "$([ "$dash_mode" = 604 ] && echo 0 || echo 1)" \
+    "a filename beginning with a dash is read as a path, not as a flag (got '$dash_mode')"
 
   # The checked-in template must still be a placeholder formula: an
   # accidentally committed filled-in copy would pin a stale release. Five

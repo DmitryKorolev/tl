@@ -100,6 +100,56 @@ rc_sums_digest() {
 }
 
 # ---------------------------------------------------------------------------
+# File modes
+#
+# `stat` is the portability split with no common spelling, and unlike the digest
+# tools the two dialects share a flag letter while disagreeing about what it
+# means. The bridge this replaces,
+#
+#     $(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")
+#
+# passed on macOS and could not pass on Linux. coreutils reads `-f` as *file
+# system* status, which takes no format of its own, so `%Lp` became a second
+# path to stat: the run failed on it and printed a filesystem report for the
+# real one. Redirecting stderr hides the complaint but not the report, and a
+# command substitution keeps the stdout of both sides of a `||` — so the
+# fallback's `644` arrived concatenated onto that report and matched nothing.
+# The check it guarded reported FAIL on every Linux run and could not report
+# anything else.
+#
+# Each dialect is therefore tried on its own, and two separate things keep the
+# failure from recurring — they are not the same thing, and neither covers the
+# other. The `||` sits outside the substitution, so each attempt's status is
+# observed before its output is used and a dialect that refused contributes
+# nothing. The octal-digit test then covers what a status cannot: a `stat` that
+# exits *zero* while printing something that is not a mode — an unrecognised
+# format directive rendered as `?`, a wrapper that writes its usage to stdout.
+# ---------------------------------------------------------------------------
+
+# rc_file_mode <path> — the permission bits as octal digits, as the platform
+# prints them (`644`, `600`, `44`). The dialects agree on the low nine bits and
+# not above them: coreutils `%a` carries the setuid/setgid/sticky nibble and BSD
+# `%Lp` drops it, so a caller that cares about those bits cannot compare this
+# value across platforms. Prints nothing and returns non-zero when no `stat` on
+# PATH could be understood, so "could not tell" cannot be mistaken for a mode. A
+# `stat` that is absent and one that is present but speaks neither dialect are
+# the same answer here — in both cases the mode is unknown, and there is nothing
+# different for the caller to do.
+rc_file_mode() {
+  rc__mode=$(stat -c '%a' -- "$1" 2>/dev/null) || rc__mode=''
+  case $rc__mode in
+    '' | *[!01234567]*) rc__mode=$(stat -f '%Lp' -- "$1" 2>/dev/null) || rc__mode='' ;;
+  esac
+  case $rc__mode in
+    '' | *[!01234567]*)
+      echo "no stat on PATH answered either the coreutils spelling (-c '%a') or the BSD one (-f '%Lp') for '$1', so its mode could not be read. Install coreutils (Linux) or use the system stat (macOS)." >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "$rc__mode"
+}
+
+# ---------------------------------------------------------------------------
 # Platform detection
 #
 # One mapping, one set of refusals. The npm launcher keeps its own copy because

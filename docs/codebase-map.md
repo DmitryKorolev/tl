@@ -252,12 +252,13 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- release workflow against the tagged commit)
 
 scripts/lib/            -- shared by the release scripts
-  release-common.sh     --   digests, the SHA256SUMS lookup, the uname mapping,
-                        --   the ADR-0006 tiers from release/targets.json, the
-                        --   stub cosign and the selftest harness. install.sh
-                        --   and npm/tl/bin/tl carry marked copies of the parts
-                        --   they need, because neither can source a file from
-                        --   this repository at the moment it runs
+  release-common.sh     --   digests, the SHA256SUMS lookup, the file-mode
+                        --   reader, the uname mapping, the ADR-0006 tiers from
+                        --   release/targets.json, the stub cosign and the
+                        --   selftest harness. install.sh and npm/tl/bin/tl
+                        --   carry marked copies of the parts they need,
+                        --   because neither can source a file from this
+                        --   repository at the moment it runs
 
 release/                -- what a release is, machine-readable
   identity.json         --   the signing pin every verifier checks against
