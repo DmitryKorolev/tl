@@ -298,3 +298,7 @@ built Lean-native trust verifier and its policy/reporting modules.
    silently downgraded to a test.
 6. If the change affects scope or the trust boundary, update
    `docs/vision.md` / `docs/overview.md` in the same change.
+7. **Close repository-change tasks only after their implementing commits land
+   on `main`.** Before merge, leave the task open or in progress and record the
+   completed work in a note. Tasks whose deliverable is not a repository change
+   may close when their stated outcome is complete.
