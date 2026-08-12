@@ -142,7 +142,7 @@ and rotates the repository/workflow identity before another release.
 `release/identity.json` is the machine-readable current pin.
 `Tests/ReleaseTests.lean` keeps its values synchronized with this document,
 ADR-0006, ADR-0014, `install.sh` and `Formula/tl.rb` — every operative copy —
-and `scripts/check-release-identity.sh` checks that the expression still
+and `tlrelease identity-check` checks that the expression still
 discriminates, which a text-equality guard cannot.
 
 ## Before a release is tagged

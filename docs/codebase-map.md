@@ -200,12 +200,7 @@ Tl/Error.lean           -- the structured error contract: the closed code enum,
 scripts/                -- gates that need no toolchain, each with a --selftest
                         -- arm so a checker that stopped detecting cannot pass
                         -- unnoticed: check-task-ids.sh (no tracker ids in
-                        -- tracked artifacts), check-release-identity.sh (the
-                        -- pinned cosign certificate expression accepts this
-                        -- repository's release workflow on a SemVer tag and
-                        -- rejects adversarial neighbours — meaning, where
-                        -- ReleaseTests.lean can only guard text),
-                        -- gen-build-provenance.sh (writes Tl/Build/Stamp.lean;
+                        -- tracked artifacts), gen-build-provenance.sh (writes Tl/Build/Stamp.lean;
                         -- fails closed on anything it cannot establish),
                         -- verify-release-artifacts.sh (the VERIFYING.md
                         -- procedure as code, run by the release workflow's
@@ -667,6 +662,17 @@ release/                -- `lake exe tlrelease`, and its inputs
   Main.lean             --   the three-line root defining `main`, kept separate
                         --   so tests can import the decisions in-process
                         --   (two top-level `main`s cannot share a closure)
+  Certificate.lean      --   which certificate identity this project accepts,
+                        --   defined structurally (parseSan) and rendered into
+                        --   the one Go RE2 expression cosign is given, from
+                        --   escaped literals plus the fixed tag grammar. The
+                        --   expression stopped being configuration:
+                        --   certificateIdentityRegexp is a generated mirror
+                        --   held to equal the rendering, so it cannot be
+                        --   widened by editing it. identityAccepts_iff is
+                        --   about the structure; that cosign reads the emitted
+                        --   fragment as documented Go RE2 is a carried
+                        --   assumption in overview.md, not a claim here
   Identity.lean         --   writes and drift-guards release/identity.pin: the
                         --   pin in a form a POSIX shell reads without a JSON
                         --   parser, so checking a signature needs no

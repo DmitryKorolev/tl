@@ -49,7 +49,7 @@ counted as a passing one.
 The gates it holds are the release-machinery checks the Lean suite cannot
 express:
 
-- `scripts/check-release-identity.sh` checks what the pinned cosign
+- `tlrelease identity-check` checks what the pinned cosign
   certificate expression *means* — that it accepts this repository's release
   workflow on a SemVer tag and rejects adversarial neighbours (a repository
   whose name contains ours, a different workflow in this repository, an

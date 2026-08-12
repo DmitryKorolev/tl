@@ -548,6 +548,22 @@ gate. Each of those is exercised only by a real tagged run, and until one
 happens the pipeline's behaviour past the artifact boundary is asserted by
 review and by drift guards over YAML, not by execution.
 
+One assumption is *narrowed* rather than removed by the certificate-identity
+port, and the residual is worth stating precisely. `tlrelease` defines which
+certificate this project accepts **structurally** — a parser over the SAN,
+holding it to exactly the configured repository, exactly the configured
+workflow path, a `refs/tags/` ref, and a tag the release grammar accepts — and
+renders the Go RE2 expression cosign is given from those same literals plus a
+fixed tag fragment. What is checked is the structure (`identityAccepts_iff`);
+what is carried is that **cosign interprets the emitted fragment according to
+documented Go RE2 syntax**. Nothing in Lean implements or verifies RE2, and no
+second matcher is written — one would be a second semantics whose agreement
+with RE2 would itself be an assumption. What the port removes is the surface of
+a hand-written, editable expression that could be anchored, well-formed, pass
+every adversarial candidate anyone enumerated, and still be permissive; what
+remains is a fixed fragment generated from escaped literals, first exercised
+against real cosign by the v0.1 release candidate.
+
 A user-facing claim the binary makes also enters here. `tl version` reporting
 `clean build — commit X` asserts that the binary corresponds exactly to that
 source commit, and nothing in the artifact can establish that: the stamp is

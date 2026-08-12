@@ -2094,6 +2094,112 @@ private def goldenManifestTests : IO (List Outcome) := do
       (rendered.endsWith "\n" && rendered.toList.all (fun c => c.toNat < 0x80))
       "the signed document carries bytes whose length depends on an encoding choice"]
 
+/-! ## The canonical signing identity
+
+The policy is `parseSan`, and the expression is its projection into the one
+syntax cosign speaks. Both are exercised: the structural accept/reject table
+runs against the committed configuration, and the rendered bytes are pinned so
+a change to what cosign is given cannot be silent. -/
+
+private def pinnedIdentity : Identity :=
+  { repository := "Owner/tl", npmPackage := "@scope/tl"
+    releaseWorkflow := ".github/workflows/release.yml"
+    certificateOidcIssuer := "https://token.actions.githubusercontent.com"
+    certificateIdentityRegexp := "" }
+
+private def sanFor (repository workflow ref : String) : String :=
+  "https://github.com/" ++ repository ++ "/" ++ workflow ++ "@" ++ ref
+
+private def acceptsSan (san : String) : Bool := identityAccepts pinnedIdentity san
+
+private def certificateTests : IO (List Outcome) := do
+  let realIdentityText ← IO.FS.readFile "release/identity.json"
+  let realIdentity := Identity.parse "release/identity.json" realIdentityText
+  let renderedReal := realIdentity >>= renderIdentityExpression
+  let rendered := renderIdentityExpression pinnedIdentity
+  let liveFailures := match realIdentity, renderedReal with
+    | .ok identity, .ok expression => Check.failures (identityChecks identity expression)
+    | _, _ => ["release/identity.json stopped parsing or rendering"]
+  return [
+    -- The committed mirror is exactly what this build renders. This is the
+    -- property that makes the expression stop being configuration: it cannot
+    -- be widened by editing it, because editing it makes this fail.
+    checkEq "identity: the committed expression is the canonical rendering" liveFailures [],
+    checkEq "identity: the pinned expression renders to exactly these bytes"
+      (okOr "<refused>" rendered)
+      ("^https://github\\.com/Owner/tl/\\.github/workflows/release\\.yml@refs/tags/"
+        ++ "v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$"),
+    -- Anchors and escapes, each as its own row, because each admits a
+    -- different wrong certificate when it is missing.
+    check "identity: the expression is anchored at both ends"
+      ((okOr "" rendered).startsWith "^" && (okOr "" rendered).endsWith "$")
+      (okOr "<refused>" rendered),
+    check "identity: every dot in a literal is escaped"
+      (!(okOr "" rendered |>.splitOn "github.com").length.blt 2 |> not)
+      "an unescaped dot would also match github<any>com",
+    -- What the policy accepts.
+    check "identity: this repository's release workflow on a SemVer tag is accepted"
+      (acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/tags/v1.2.3"))
+      "the pin rejects the thing it exists to accept",
+    check "identity: a prerelease tag is accepted"
+      (acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/tags/v1.2.3-rc.1"))
+      "a prerelease was rejected",
+    -- What it rejects, one wrong thing at a time.
+    check "identity: another repository is rejected"
+      (!acceptsSan (sanFor "someone/tl" ".github/workflows/release.yml" "refs/tags/v1.2.3"))
+      "another repository was accepted",
+    check "identity: another workflow in this repository is rejected"
+      (!acceptsSan (sanFor "Owner/tl" ".github/workflows/ci.yml" "refs/tags/v1.2.3"))
+      "another workflow was accepted",
+    check "identity: a branch ref is rejected"
+      (!acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/heads/main"))
+      "a branch ref was accepted — it moves, so it would sign every later commit",
+    check "identity: a tag with a leading zero is rejected"
+      (!acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/tags/v01.2.3"))
+      "a tag the signing grammar refuses was accepted",
+    check "identity: a tag carrying build metadata is rejected"
+      (!acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/tags/v1.2.3+b"))
+      "a tag nothing could be signed from was accepted",
+    -- The two an unanchored expression would admit, and the reason both
+    -- anchors are there.
+    check "identity: an identity that merely contains this one is rejected"
+      (!acceptsSan ("https://evil.example/https://github.com/Owner/tl/.github/workflows/release.yml@refs/tags/v1.2.3"))
+      "a containing identity was accepted",
+    check "identity: an identity that merely begins with this one is rejected"
+      (!acceptsSan (sanFor "Owner/tl-fork" ".github/workflows/release.yml" "refs/tags/v1.2.3"))
+      "a prefixing identity was accepted",
+    check "identity: a tag name extending past the version is rejected"
+      (!acceptsSan (sanFor "Owner/tl" ".github/workflows/release.yml" "refs/tags/v1.2.3/extra"))
+      "a tag name may contain '/', and one did",
+    -- Malformed input reaches a refusal that says which part was wrong.
+    check "identity: a SAN with no scheme prefix is refused with a reason"
+      (mentions (parseSan "github.com/Owner/tl/x@refs/tags/v1.2.3") "does not begin with")
+      (errorOf (parseSan "github.com/Owner/tl/x@refs/tags/v1.2.3")),
+    check "identity: a SAN naming no ref is refused with a reason"
+      (mentions (parseSan "https://github.com/Owner/tl/x") "names no ref")
+      (errorOf (parseSan "https://github.com/Owner/tl/x")),
+    check "identity: a SAN naming no workflow file is refused with a reason"
+      (mentions (parseSan "https://github.com/Owner/tl@refs/tags/v1.2.3") "no workflow file")
+      (errorOf (parseSan "https://github.com/Owner/tl@refs/tags/v1.2.3")),
+    -- A configuration this generator will not render, rather than one it
+    -- renders wrongly.
+    check "identity: a repository carrying a regex metacharacter is refused"
+      (mentions (renderIdentityExpression { pinnedIdentity with repository := "Own|er/tl" })
+        "will not render")
+      (errorOf (renderIdentityExpression { pinnedIdentity with repository := "Own|er/tl" })),
+    check "identity: an empty workflow path is refused"
+      (mentions (renderIdentityExpression { pinnedIdentity with releaseWorkflow := "" })
+        "is empty")
+      (errorOf (renderIdentityExpression { pinnedIdentity with releaseWorkflow := "" })),
+    -- A mirror that disagrees is a refusal that shows both, because the
+    -- difference is the thing to look at.
+    check "identity: a widened mirror is refused, and both readings are shown"
+      (match rendered with
+       | .ok expression =>
+           (Check.failures (identityExpressionChecks
+             { pinnedIdentity with certificateIdentityRegexp := "^.*$" } expression)).length == 1
+       | .error _ => false) "a mirror that says something else was accepted"]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -2152,6 +2258,6 @@ def releaseToolTests : IO (List Outcome) := do
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests)
 
 end Tl.Tests

@@ -387,7 +387,7 @@ Binary distribution is gated on a verifiable release pipeline:
   before rotating. `Tests/ReleaseTests.lean` compares every operative copy as
   text — `release/identity.json`, VERIFYING.md, this ADR, ADR-0014,
   `install.sh` and `Formula/tl.rb` — and
-  `scripts/check-release-identity.sh` checks what the expression *means*
+  `tlrelease identity-check` checks what the expression *means*
   against adversarial candidates, which a text-equality guard cannot.
 
   One limitation, stated rather than implied: every shipped verifier reads the

@@ -142,8 +142,6 @@ release-policy gates, in order:
   task-id leakage                     scripts/check-task-ids.sh
   version consistency selftest        scripts/check-release-version.sh --selftest
   version consistency                 scripts/check-release-version.sh [--tag]
-  release identity selftest           scripts/check-release-identity.sh --selftest
-  release identity discriminates      scripts/check-release-identity.sh
   embedded-copy drift selftest        scripts/check-embedded-copies.sh --selftest
   embedded-copy drift                 scripts/check-embedded-copies.sh
   shell static analysis               shellcheck over every tracked shell file
@@ -182,9 +180,6 @@ gate "task-id leakage" ./scripts/check-task-ids.sh
 # applying it uniformly is most of why this file exists.
 gate "version consistency selftest" ./scripts/check-release-version.sh --selftest
 gate "version consistency" version_gate
-
-gate "release identity selftest" ./scripts/check-release-identity.sh --selftest
-gate "release identity discriminates" ./scripts/check-release-identity.sh
 
 gate "embedded-copy drift selftest" ./scripts/check-embedded-copies.sh --selftest
 gate "embedded-copy drift" ./scripts/check-embedded-copies.sh
