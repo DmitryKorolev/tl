@@ -2200,6 +2200,117 @@ private def certificateTests : IO (List Outcome) := do
              { pinnedIdentity with certificateIdentityRegexp := "^.*$" } expression)).length == 1
        | .error _ => false) "a mirror that says something else was accepted"]
 
+/-! ## Release prerequisites
+
+The three distinctions the module is built around, each as rows: missing is not
+unchecked, not-applicable is not satisfied, and a property is not a proxy for
+it. The aggregation carries theorems; these exercise the classification and the
+predicates the theorems are stated over. -/
+
+private def rowWith (outcome : AuditOutcome) : Row :=
+  { kind := .tagRuleset, summary := "a row", outcome }
+
+private def rulesetWith (enforcement : String) (included excluded : List String)
+    (ruleTypes : List String) : TagRuleset :=
+  { identifier := "1", enforcement,
+    conditions := { included, excluded }, ruleTypes }
+
+private def planWith (npm homebrew : Bool) : Except String ReleasePlan :=
+  ReleasePlan.parse "p" (planOf
+    [planRow "github-release" true none, planRow "installer" true none,
+     planRow "npm" npm (if npm then none else some "\"0.2.0\""),
+     planRow "homebrew" homebrew (if homebrew then none else some "\"0.2.0\"")])
+
+private def kindsFor (npm homebrew : Bool) : List String :=
+  match planWith npm homebrew with
+  | .ok plan => (applicableKinds plan).map fun kind =>
+      match kind.channel with
+      | none => "always"
+      | some channel => channel.wire
+  | .error message => [message]
+
+private def prerequisiteTests : List Outcome :=
+  let verified := rowWith .verified
+  let carried := rowWith (.carried "recorded, never checked")
+  let missing := rowWith (.missing "create it")
+  let unchecked := rowWith (.operationalError "the API would not answer")
+  [-- The verdict, over the four outcomes.
+   check "prereqs: verified and carried rows permit a release"
+     (auditPermits [verified, carried]) "a clean audit refused",
+   check "prereqs: a missing row stops the release"
+     (!auditPermits [verified, missing]) "a missing prerequisite was permitted",
+   -- The one that matters most: an audit that could not run has established
+   -- nothing, and reading its silence as consent is the failure this prevents.
+   check "prereqs: an unchecked row stops the release too"
+     (!auditPermits [verified, unchecked]) "an unasked question was read as consent",
+   check "prereqs: a clean audit reports no blockers"
+     (auditBlockers [verified, carried]).isEmpty "a clean audit reported a blocker",
+   -- Missing and unchecked stay apart, including mixed.
+   checkEq "prereqs: missing and unchecked are counted separately"
+     ((auditMissing [verified, missing, unchecked]).length,
+      (auditUnchecked [verified, missing, unchecked]).length) (1, 1),
+   checkEq "prereqs: a missing row is not counted as unchecked"
+     (auditUnchecked [missing]).length 0,
+   checkEq "prereqs: an unchecked row is not counted as missing"
+     (auditMissing [unchecked]).length 0,
+   -- Applicability from the plan: a deferred channel produces no rows at all,
+   -- which is neither missing nor unchecked.
+   checkEq "prereqs: a GitHub-only release needs no npm or Homebrew prerequisites"
+     (kindsFor false false) ["always", "always", "always", "always", "always"],
+   checkEq "prereqs: enabling npm adds exactly its two prerequisites"
+     ((kindsFor true false).filter (· == "npm")).length 2,
+   checkEq "prereqs: enabling Homebrew adds exactly its two prerequisites"
+     ((kindsFor false true).filter (· == "homebrew")).length 2,
+   -- The tag ruleset predicate, which has been a proxy in three review rounds.
+   check "prereqs: a ruleset covering every v* tag qualifies"
+     (restrictsTagCreation (rulesetWith "active" ["refs/tags/v*"] [] ["creation"]))
+     "a qualifying ruleset was rejected",
+   check "prereqs: ~ALL covers every v* tag"
+     (restrictsTagCreation (rulesetWith "active" ["~ALL"] [] ["creation"]))
+     "the catch-all pattern was rejected",
+   -- The defect the round-3 finding names: one tag, or one release line, is not
+   -- every v* tag.
+   check "prereqs: a ruleset naming one tag does not qualify"
+     (!restrictsTagCreation (rulesetWith "active" ["refs/tags/v1.0.0"] [] ["creation"]))
+     "a ruleset over one tag read as one over every v* tag",
+   check "prereqs: a ruleset naming one release line does not qualify"
+     (!restrictsTagCreation (rulesetWith "active" ["refs/tags/v1.*"] [] ["creation"]))
+     "a ruleset over one release line read as one over every v* tag",
+   -- An exclude list can hole any include pattern, and deciding which holes
+   -- matter is interpretation a gate should refuse to perform.
+   check "prereqs: any exclude list disqualifies"
+     (!restrictsTagCreation (rulesetWith "active" ["~ALL"] ["refs/tags/v0.*"] ["creation"]))
+     "an excluded release line still read as complete coverage",
+   check "prereqs: evaluate mode does not qualify"
+     (!restrictsTagCreation (rulesetWith "evaluate" ["~ALL"] [] ["creation"]))
+     "a ruleset that only reports read as one that restricts",
+   check "prereqs: a ruleset with no creation rule does not qualify"
+     (!restrictsTagCreation (rulesetWith "active" ["~ALL"] [] ["update", "deletion"]))
+     "a ruleset restricting updates read as one restricting creation",
+   -- The deployment policy: a branch entry is the half that lets a push reach
+   -- the signing job, and filtering it out before looking made an environment
+   -- admitting both report as tag-only.
+   check "prereqs: a tag-only v* policy qualifies"
+     (policyAdmitsOnlyReleaseTags [{ entryType := "tag", name := "v*" }])
+     "a correct policy was rejected",
+   check "prereqs: a policy admitting a branch as well does not qualify"
+     (!policyAdmitsOnlyReleaseTags
+       [{ entryType := "tag", name := "v*" }, { entryType := "branch", name := "main" }])
+     "a branch entry was invisible behind a tag entry",
+   check "prereqs: an empty policy restricts nothing"
+     (!policyAdmitsOnlyReleaseTags []) "a policy naming nothing read as a restriction",
+   -- The reviewer rule: a rule with nobody in it approves itself, and is a
+   -- different configuration from no rule at all.
+   checkEq "prereqs: a required-reviewers rule with nobody in it is distinguishable"
+     ((environmentProtectionOf (Json.mkObj [("protection_rules",
+        Json.arr #[Json.mkObj [("type", Json.str "required_reviewers"),
+                               ("reviewers", Json.arr #[])]])])).requiredReviewers)
+     (some 0),
+   checkEq "prereqs: an environment with only a wait timer has no reviewer rule"
+     ((environmentProtectionOf (Json.mkObj [("protection_rules",
+        Json.arr #[Json.mkObj [("type", Json.str "wait_timer")]])])).requiredReviewers)
+     none]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -2256,7 +2367,7 @@ def releaseToolTests : IO (List Outcome) := do
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
-    ++ metadataVerdictTests ++ assemblyTests ++ channelOutputTests ++ sbomTests ++ outs
+    ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests)
 

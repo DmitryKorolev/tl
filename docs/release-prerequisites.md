@@ -21,7 +21,7 @@ and a channel nobody is publishing has no defect. It does produce one visible
 row, in a class of its own, so that a reader can see the plan was consulted
 rather than the section forgotten.
 
-`scripts/check-release-prereqs.sh` reads `release/plan.json` and applies that
+`tlrelease prereqs` reads `release/plan.json` and applies that
 rule. A deferred channel's rows are reported as **deferred**, counted in their
 own class, and never contribute to the verdict — so the signing job's audit
 passes on a release that publishes through neither npm nor Homebrew. Enabling a
@@ -128,7 +128,7 @@ Then:
    with a different one — will not authenticate.
 3. Remove any classic automation token that could publish these packages, so
    the OIDC path is the only one.
-4. Run `scripts/check-release-prereqs.sh` and confirm the npm rows pass.
+4. Run `tlrelease prereqs` and confirm the npm rows pass.
 5. Only then create the first release tag.
 
 The placeholder `0.0.0` versions stay published: unpublishing is restricted and
@@ -195,14 +195,14 @@ when the channel is enabled, not a detail to discover mid-release.
   (`scripts/check-release-version.sh --tag <tag>` — also run by the release
   policy on the tagged commit).
 - The tagged commit is on `main`. The `sign` job enforces this.
-- `scripts/check-release-prereqs.sh` passes.
+- `tlrelease prereqs` passes.
 
 ## What the checker cannot see
 
 Recorded here and in [overview.md](overview.md) as carried assumptions, because
 a check that cannot run must not be silently absent:
 
-`scripts/check-release-prereqs.sh` reads more than this table once claimed. It
+`tlrelease prereqs` reads more than this table once claimed. It
 inspects the actual rule *types* on the `release` environment (a
 required-reviewers rule with at least one reviewer, and a deployment policy
 whose tag patterns cover `v*` and which admits no branch deployments at all),

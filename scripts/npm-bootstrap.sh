@@ -119,7 +119,7 @@ to be created before the first real release could publish to it.
 
 It contains no tl binary. It is published under the \`$BOOTSTRAP_TAG\` dist-tag
 so that \`npm install $identity_name\` does not resolve to it, and
-\`scripts/check-release-prereqs.sh\` refuses a release if \`latest\` ever points
+\`tlrelease prereqs\` refuses a release if \`latest\` ever points
 at this version.
 
 Install tl from <https://github.com/DmitryKorolev/tl>.
@@ -185,13 +185,13 @@ PYEOF
   echo
   echo "--tag $BOOTSTRAP_TAG is deliberate: without it npm sets 'latest', and"
   echo "these placeholders would be what 'npm install $identity_name' resolves"
-  echo "to until the first real release. check-release-prereqs.sh refuses a"
+  echo "to until the first real release. tlrelease prereqs refuses a"
   echo "release while 'latest' points at $BOOTSTRAP_VERSION, so this is checked rather"
   echo "than assumed. If it ever does, remove the tag under 2FA:"
   echo
   echo "  npm dist-tag rm <package> latest"
   echo
-  echo "Finally, confirm with scripts/check-release-prereqs.sh before tagging."
+  echo "Finally, confirm with tlrelease prereqs before tagging."
 }
 
 selftest() {
@@ -287,7 +287,7 @@ selftest() {
     "the latest-guard pattern matches the command it exists to catch"
   rc_note "$(grep -q 'trusted publisher' "$RC_OUT" && echo 0 || echo 1)" \
     "the output names the follow-up trusted-publisher step"
-  rc_note "$(grep -q 'check-release-prereqs' "$RC_OUT" && echo 0 || echo 1)" \
+  rc_note "$(grep -q 'tlrelease prereqs' "$RC_OUT" && echo 0 || echo 1)" \
     "the output points at the audit that confirms the result"
   # The one thing this script cannot establish for itself: a package's first
   # publish may set `latest` whatever `--tag` said. It must therefore hand over

@@ -83,7 +83,7 @@ lean_lib Tooling where
 lean_lib ReleaseCore where
   roots := #[`release.Check, `release.Command, `release.Json, `release.Model,
     `release.Certificate, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
-    `release.Digest, `release.Metadata, `release.Manifest,
+    `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
     `release.Cli]
 
 /-- A default target so `lake build --wfail` holds the release tool to the same

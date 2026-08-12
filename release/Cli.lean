@@ -46,6 +46,7 @@ import release.Identity
 import release.Manifest
 import release.Metadata
 import release.Plan
+import release.Prerequisites
 import release.Sbom
 
 namespace Release
@@ -57,7 +58,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  certificateCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ sbomCommands
+  certificateCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
 
 def usage : String :=
   let header :=

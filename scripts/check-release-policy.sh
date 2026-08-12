@@ -146,7 +146,6 @@ release-policy gates, in order:
   embedded-copy drift                 scripts/check-embedded-copies.sh
   shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
-  release prerequisites reporting     scripts/check-release-prereqs.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   npm package selftest                scripts/npm-pack.sh --selftest
   npm publisher selftest              scripts/npm-publish.sh --selftest
@@ -198,16 +197,16 @@ else
 fi
 
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
-# The SBOM generator, the release manifest and each build leg's record are
-# `tlrelease sbom`, `tlrelease manifest`/`manifest-verify` and
-# `tlrelease build-metadata`, and their refusals are covered by
+# The SBOM generator, the release manifest, each build leg's record, the
+# signing-identity policy and the external-prerequisite audit are `tlrelease
+# sbom`, `manifest`/`manifest-verify`, `build-metadata`, `identity-check` and
+# `prereqs`, and their refusals are covered by
 # Tests/ReleaseToolTests.lean under `lake exe tltest` — a required gate on the
 # same commit in ci.yml and in the release workflow's own gates job. They are
 # not invoked here because this script runs in a job with no Lean toolchain, by
 # design: it answers in seconds rather than after the build matrix. Named in
 # --list under what a different gate covers, so a reader asking what the policy
 # covers is not told those are uncovered.
-gate "release prerequisites reporting selftest" ./scripts/check-release-prereqs.sh --selftest
 
 # The code path behind VERIFYING.md, the installer, and the release workflow's
 # own pre-publish check. Its refusal paths are the whole point of it.

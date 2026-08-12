@@ -229,9 +229,6 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- literal and the five npm manifests),
                         -- check-embedded-copies.sh (guards the copies of
                         -- lib/release-common.sh that cannot source it),
-                        -- check-release-prereqs.sh (the external state: npm
-                        -- packages, the release environment, rulesets, the
-                        -- tap; unreadable rows are reported, never passed),
                         -- check-release-policy.sh (all of the above as one
                         -- command, called identically by ci.yml and by the
                         -- release workflow against the tagged commit)

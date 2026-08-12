@@ -115,7 +115,7 @@ express:
   in seconds for the whole build matrix. `--list` names them under what a
   different gate covers, so the one place that answers "what does the policy
   cover" does not fall silent about them.
-- `scripts/check-release-prereqs.sh --selftest` checks the *reporting* of the
+- `tlrelease prereqs` checks the *reporting* of the
   external-state audit — that an unreadable row is counted as unchecked and
   never as a pass — and drives `audit` itself over stubbed `gh` and `npm`, so
   each branch that decides a release has a row: a deferred channel producing no

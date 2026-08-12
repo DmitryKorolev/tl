@@ -154,7 +154,7 @@ lives outside the repository. Which of it applies follows from the channels
 must be active. The npm packages and the tap credential belong to the deferred
 channels and are not prerequisites of this release.
 
-`scripts/check-release-prereqs.sh` reads the plan and reports those channels'
+`tlrelease prereqs` reads the plan and reports those channels'
 rows as *deferred*, in their own class, so they never contribute to its verdict.
 
 The audit runs in the signing job before anything is signed. What it cannot
