@@ -88,12 +88,15 @@ tl help <command>  # one command (human)
 ```
 tl create "<title>" [-p 0-4] [--description <body>]        # pipe the body with a trailing `-`: echo body | tl create "<title>" -
 tl create "<title>" --blocked-by <id> --blocks <id> --parent <id> --related <id>
-tl update <id> [--title T] [-p N] [--description D] [--slug S]   # non-lifecycle scalars
+tl update <id> [--title T] [-p N] [--description D] [--slug S]   # non-lifecycle scalars; this is the edit verb — there is no `tl edit`
 tl note add <id> "<text>"   # append an immutable note ('-' reads the text from stdin); `tl note list <id>` to read
+tl label add <id> <label>   # `label remove` drops one; `tl label list` shows every label in use, with counts
 tl dep add <A> <B>       # A becomes blocked by B
 tl dep remove <A> <B>
+tl dep relate <A> <B>    # symmetric informational link after the fact; `dep unrelate` removes it
 tl parent set <id> <new-parent>     # (re)place <id> under an epic
 tl parent remove <id> <parent>      # detach <id> from that parent
+tl defer <id> --until <YYYY-MM-DD> | --for <dur>   # timed postponement; `tl undefer` clears it
 ```
 
 - **Write a `--description` on every create.** The description is the context
@@ -104,8 +107,14 @@ tl parent remove <id> <parent>      # detach <id> from that parent
 - Priorities are `0`–`4`, `0` = highest (default `2`).
 - An epic is just an issue with `--parent` children; it is `done` when they all
   close — never close an epic `--as done` yourself (`--as cancelled` is the only
-  manual terminal). `tl dep cycles --json` reports any dependency cycles to
-  break with `tl dep remove`.
+  manual terminal).
+- **`tl defer` postpones the same task; it does not spin out new scope.** A
+  deferred issue leaves `ready` until its `deferUntil` passes, then resumes on
+  its own — no reminder to run. Use `--until <YYYY-MM-DD>` (local start-of-day,
+  or a timestamp with an explicit offset) or `--for <dur>` (`36h`, `7d`);
+  `tl undefer <id>` makes it workable again now, and `tl list --deferred`
+  shows what is parked. For *new* sub-scope you are not doing, create a linked
+  task instead (see the session-close protocol).
 - **File new work under the epic it belongs to.** Before creating, check for an
   existing epic that owns the area (`tl list --json` and look at the epics /
   parent links, or `tl show <epic>`); create with `--parent <epic>` so the work
@@ -118,6 +127,20 @@ tl parent remove <id> <parent>      # detach <id> from that parent
   of the parent and is preserved — so an item can live under one epic while
   still pointing back to where it was discovered.
 
+## Dependency diagnostics
+
+- `tl why <id> --json` — the transitive unclosed blockers of one item: why it
+  is not ready.
+- `tl unblocks <id> --json` — what closing it *would* free (`freed`), without
+  closing it. The same set the `close` echo reports, available in advance.
+- `tl dep critical --json` — open issues ranked by `weight`: how many others
+  each transitively blocks. When `ready` is wide and you have no other reason
+  to prefer one item, this is the one that frees the most.
+- `tl dep cycles --json` — dependency cycles, which a merge can introduce and
+  which no write-time guard rejects. Break one with `tl dep remove`, and use
+  `tl dep path <from> <to> --json` first to see the actual edge chain
+  (`path`) so you remove the intended edge rather than guessing.
+
 ## Session-close protocol (before you declare done)
 
 1. Close everything you actually finished (`tl close … --as done`).
@@ -125,8 +148,8 @@ tl parent remove <id> <parent>      # detach <id> from that parent
    becomes a **new linked task** —
    `tl create "<title>" --related <id> --description "<why deferred + what remains>"` (or
    `--blocks <id>`) — **never** a note on a closed item, so deferred work
-   cannot evaporate. (This is spinning out *new* scope; it is distinct from
-   timed postponement of the same task.)
+   cannot evaporate. (This is spinning out *new* scope; postponing *this*
+   task to a later date is `tl defer` instead.)
 3. `tl doctor --json` — confirm nothing is structurally wrong; `checks` is data
    and a finding still exits `0`, so branch on `healthy`/the `checks` array,
    not the exit code.
@@ -154,8 +177,18 @@ clock, segment); only the ref is shared.
   <true|false>`), each write best-effort publishes to the shared local ref so
   siblings see it without an explicit sync. It is best-effort: a failure never
   fails the write — it surfaces as a `notes` entry (`auto-sync skipped …`)
-  telling you to run `tl sync`. Auto-sync covers only the **local** ref; the
-  **remote** leg is still explicit `tl sync`.
+  telling you to run `tl sync`. Auto-sync covers only the **local** ref;
+  nothing reaches a **remote** unless you ask for it.
+- **Ask for the remote inside one command with `--sync`** (`tl ready --sync`,
+  `tl doctor --sync`, `tl claim --sync`): reconcile through `refs/tl/log`
+  first, then run. Best-effort — an unreachable remote degrades to a `notes`
+  entry rather than failing the command, so a `--sync` read is fresher but not
+  *guaranteed* fresh. `tl claim <id> --verify` is the strict variant: it
+  fetches and re-checks readiness against the freshest state before taking,
+  and **fails** with `verify-failed` if a configured remote is unreachable
+  (with no remote configured there is nothing to fetch, so it degrades). Use
+  `--verify` before starting expensive work on an item other clones can also
+  see.
 - **`tl sync` publishes and reconciles.** Run it after a batch of writes (and
   whenever a `notes` entry asks you to). It
   (1) publishes your changes to the shared ref (zero network for worktrees of
@@ -177,14 +210,9 @@ a third value: `ended` means your claim ran its course via your own later
 still means another writer took the item (do not proceed); `won` means your
 claim currently holds — including after your own re-claim from another clone.
 
-## Not yet available
+## When this guide and the binary disagree
 
-There is no `tl edit` yet. The
-**remote** sync leg is still explicit (`tl sync`); only the local-ref publish
-auto-runs (see Sharing). `tl defer <id> --until <date>/--for <dur>` and
-`tl undefer` (timed postponement, ADR-0010), `tl dep path`/`dep critical`,
-`tl label add/remove/list`, `tl list`/`tl ready --label <l>`
-(repeatable ⇒ AND) and `--assignee <name>` (repeatable ⇒ OR),
-`tl parent set/remove` (reparenting), and on-write
-auto-sync of the local ref **are** available. `tl help --json` is always the
-authoritative list of what this binary actually supports.
+`tl help --json` is authoritative for what the binary in front of you actually
+supports — this guide covers the verbs an agent needs most, not the whole
+grammar. Check it before concluding a command is missing, and never guess a
+flag.
