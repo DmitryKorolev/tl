@@ -127,23 +127,11 @@ shellcheck_all() {
   shellcheck -S warning $files
 }
 
-version_gate() {
-  if [ -n "$tag" ]; then
-    ./scripts/check-release-version.sh --tag "$tag"
-  else
-    ./scripts/check-release-version.sh
-  fi
-}
-
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 release-policy gates, in order:
   task-id lint selftest               scripts/check-task-ids.sh --selftest
   task-id leakage                     scripts/check-task-ids.sh
-  version consistency selftest        scripts/check-release-version.sh --selftest
-  version consistency                 scripts/check-release-version.sh [--tag]
-  embedded-copy drift selftest        scripts/check-embedded-copies.sh --selftest
-  embedded-copy drift                 scripts/check-embedded-copies.sh
   shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
@@ -177,12 +165,6 @@ gate "task-id leakage" ./scripts/check-task-ids.sh
 # Each gate proves it can still fail before its silence is believed, then runs.
 # The selftest/real pairing is the discipline the identity gate established;
 # applying it uniformly is most of why this file exists.
-gate "version consistency selftest" ./scripts/check-release-version.sh --selftest
-gate "version consistency" version_gate
-
-gate "embedded-copy drift selftest" ./scripts/check-embedded-copies.sh --selftest
-gate "embedded-copy drift" ./scripts/check-embedded-copies.sh
-
 # Every shell file in the repository, not only the snippets embedded in
 # workflows. actionlint runs ShellCheck over `run:` blocks and nothing else, so
 # install.sh — the file users pipe into a shell — and the release scripts had
@@ -197,6 +179,12 @@ else
 fi
 
 gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
+# Version consistency and embedded-copy drift are `tlrelease
+# version-consistency` and `tlrelease embedded-copies`, and the release
+# workflow's gates job runs both against the tagged commit before the build
+# matrix. They are not gates here for the same reason as the rest: this script
+# runs in a job with no Lean toolchain by design.
+#
 # The SBOM generator, the release manifest, each build leg's record, the
 # signing-identity policy and the external-prerequisite audit are `tlrelease
 # sbom`, `manifest`/`manifest-verify`, `build-metadata`, `identity-check` and

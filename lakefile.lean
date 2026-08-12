@@ -82,7 +82,7 @@ lean_lib Tooling where
     escape hatch. -/
 lean_lib ReleaseCore where
   roots := #[`release.Check, `release.Command, `release.Json, `release.Model,
-    `release.Certificate, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
+    `release.Certificate, `release.Consistency, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
     `release.Cli]
 

@@ -17,7 +17,7 @@
 # piped into a shell with no checkout to read, so it carries its own copy of
 # the pinned issuer and expression. `Tests/ReleaseTests.lean` fails if that
 # copy drifts from `release/identity.json`, and
-# `scripts/check-embedded-copies.sh` fails if its copies of the shared helpers
+# `tlrelease embedded-copies` fails if its copies of the shared helpers
 # drift from `scripts/lib/release-common.sh`.
 #
 # Order matters and is not an accident. The signature on `SHA256SUMS` is

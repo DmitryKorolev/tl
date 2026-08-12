@@ -42,6 +42,7 @@ that contains it.
 -/
 
 import release.Certificate
+import release.Consistency
 import release.Identity
 import release.Manifest
 import release.Metadata
@@ -58,7 +59,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  certificateCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
+  certificateCommands ++ consistencyCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
 
 def usage : String :=
   let header :=

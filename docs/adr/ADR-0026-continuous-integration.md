@@ -87,12 +87,12 @@ express:
   release, covering each refusal path including a rejected signature, a digest
   mismatch, a missing bundle, an unwritable install directory, and every
   unsupported platform.
-- `scripts/check-release-version.sh` compares every place the release version
+- `tlrelease version-consistency` compares every place the release version
   is written: the tag, `productVersion`, the Lake package version, the pinned
   literal in `Tests/ReleaseTests.lean`, and the five npm manifests. Nothing
   compared them before, though two error messages instructed the operator to
   keep the lakefile in lockstep with a value neither of them read.
-- `scripts/check-embedded-copies.sh` guards the copies of
+- `tlrelease embedded-copies` guards the copies of
   `scripts/lib/release-common.sh` that cannot source it — `install.sh`, piped
   from curl, and the npm launcher, which ships inside a published package.
   Textually where the code can be identical, and by classification for the

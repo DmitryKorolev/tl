@@ -12,7 +12,7 @@
 #
 # `install.sh` deliberately does *not* source this. It is piped straight into a
 # shell with no checkout to read, so it carries embedded copies of the few
-# helpers it needs; `scripts/check-embedded-copies.sh` fails if those drift from
+# helpers it needs; `tlrelease embedded-copies` fails if those drift from
 # the definitions here, the same discipline the signing pin already follows.
 #
 # Every function is prefixed `rc_` and every variable `RC_`/`rc_`, so a sourcing
@@ -162,7 +162,7 @@ rc_file_mode() {
 # Nothing in this repository calls it, and that is the point: the two consumers
 # that need the mapping — install.sh and the npm launcher — cannot source this
 # file, so what lives here is the *reference* their copies are compared against
-# by scripts/check-embedded-copies.sh, which reads it as text. RC_OS therefore
+# by tlrelease embedded-copies, which reads it as text. RC_OS therefore
 # has no reader in shell, which is what SC2034 is reporting.
 # shellcheck disable=SC2034
 rc_detect_os() {

@@ -2311,6 +2311,83 @@ private def prerequisiteTests : List Outcome :=
         Json.arr #[Json.mkObj [("type", Json.str "wait_timer")]])])).requiredReviewers)
      none]
 
+/-! ## One version, and the embedded copies
+
+Both were shell gates in check-release-policy.sh until they moved into the
+release tool. That script runs in a job with no Lean toolchain by design, so
+these run here — against the real repository files, which is what makes them a
+drift guard rather than a test of a fixture. -/
+
+private def consistencyTests : IO (List Outcome) := do
+  let targetsText ← IO.FS.readFile "release/targets.json"
+  let commandsText ← IO.FS.readFile "Tl/Cli/Commands.lean"
+  let lakefileText ← IO.FS.readFile "lakefile.lean"
+  let releaseTestsText ← IO.FS.readFile "Tests/ReleaseTests.lean"
+  let libraryText ← IO.FS.readFile "scripts/lib/release-common.sh"
+  let manifestPaths : List String := match Targets.parse "release/targets.json" targetsText with
+    | .ok targets =>
+        "npm/tl/package.json"
+          :: targets.targets.map (fun target => "npm/platform/" ++ target.name ++ "/package.json")
+    | .error _ => []
+  let mut manifests : Array (String × String) := #[]
+  for path in manifestPaths do
+    let text ← IO.FS.readFile path
+    manifests := manifests.push (path, text)
+  let sources : VersionSources :=
+    { commandsPath := "Tl/Cli/Commands.lean", commandsText
+      lakefilePath := "lakefile.lean", lakefileText
+      releaseTestsPath := "Tests/ReleaseTests.lean", releaseTestsText
+      manifests := manifests.toList }
+  let product := productVersionOf sources
+  let copies := versionCopies sources
+  let problems := match product, copies with
+    | .ok product, .ok copies => versionProblems product copies none
+    | .error message, _ => [message]
+    | _, .error message => [message]
+  let taggedProblems := match product, copies with
+    | .ok product, .ok copies => versionProblems product copies (some "v9.9.9")
+    | _, _ => ["<a source stopped parsing>"]
+  -- Every guarded copy, against the real library.
+  let mut copyRows : List Outcome := []
+  for copy in guardedCopies do
+    let consumerText ← IO.FS.readFile copy.consumer
+    copyRows := copyRows ++ [
+      check s!"copies: {copy.consumer} still carries {copy.blockName} unchanged"
+        (match copyCheck copy consumerText libraryText with
+         | .ok check => check.held
+         | .error _ => false)
+        (match copyCheck copy consumerText libraryText with
+         | .ok check => check.failure
+         | .error message => message)]
+  -- Drift is detected, not merely absent. A gate that passes over a library it
+  -- could not read would pass here too, so one row breaks a copy on purpose.
+  let driftRow ← match guardedCopies.find? (·.mode == .classification) with
+    | none => pure (check "copies: a classification row exists to break" false "none found")
+    | some copy => do
+        let consumerText ← IO.FS.readFile copy.consumer
+        -- The consumer, not the library: the mutation has to land inside the
+        -- marked block, which is what the comparison reads.
+        let mutated := consumerText.replace "Darwin) install_os=darwin" "Darwin) install_os=linux"
+        pure (check "copies: a copy that classifies differently is caught"
+          (mutated != consumerText &&
+            (match copyCheck copy mutated libraryText with
+             | .ok check => !check.held
+             | .error _ => false))
+          "a mutated classification was not detected, so this guard proves nothing")
+  return [
+    checkEq "version: every copy of the release version agrees" problems [],
+    -- The gate must also be able to fail: a comparison that accepted anything
+    -- would satisfy the row above without establishing it.
+    check "version: a tag naming another version is refused"
+      (!taggedProblems.isEmpty) "a tag disagreeing with the checkout was accepted",
+    check "version: exactly one productVersion definition is required"
+      (mentions (oneLiteral "f" "it" "def productVersion : String := \"a\"\ndef productVersion : String := \"b\"" "def productVersion : String := \"" "\"") "Exactly one is expected")
+      "two definitions were resolved rather than refused",
+    check "version: a missing definition is refused with a different message"
+      (mentions (oneLiteral "f" "it" "nothing here" "def productVersion : String := \"" "\"") "has no")
+      "an absent definition was not distinguished from a duplicated one",
+    driftRow] ++ copyRows
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -2369,6 +2446,6 @@ def releaseToolTests : IO (List Outcome) := do
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests)
 
 end Tl.Tests

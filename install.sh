@@ -68,7 +68,7 @@ verify_signature() {
 # The platform mapping and the digest helper below are embedded copies of the
 # definitions in scripts/lib/release-common.sh. The duplication is forced: this
 # script is piped straight into a shell and has no checkout to source from.
-# `scripts/check-embedded-copies.sh` compares the two and fails on drift, the
+# `tlrelease embedded-copies` compares the two and fails on drift, the
 # same discipline the signing pin already follows — three copies of a digest
 # helper that disagree about case or length are worse than one, because the
 # disagreement is invisible at the call site.

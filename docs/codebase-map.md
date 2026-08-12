@@ -211,7 +211,7 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- than honoured. install.sh does NOT call it — piped
                         -- from curl it has no checkout — and carries its own
                         -- copy of the pin and the shared helpers, guarded by
-                        -- Tests/ReleaseTests.lean and check-embedded-copies.sh),
+                        -- Tests/ReleaseTests.lean and tlrelease embedded-copies),
                         -- npm-pack.sh (stages the npm packages around the
                         -- signed binaries; --selftest packs, installs and
                         -- drives the launcher),
@@ -224,10 +224,10 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- publish / accept-if-identical / refuse a differing
                         -- version, since npm versions are immutable and a
                         -- partial run must be resumable),
-                        -- check-release-version.sh (one version across the
+                        -- tlrelease version-consistency (one version across the
                         -- tag, productVersion, the lakefile, the pinned test
                         -- literal and the five npm manifests),
-                        -- check-embedded-copies.sh (guards the copies of
+                        -- tlrelease embedded-copies (guards the copies of
                         -- lib/release-common.sh that cannot source it),
                         -- check-release-policy.sh (all of the above as one
                         -- command, called identically by ci.yml and by the

@@ -135,6 +135,24 @@ jobs:
         run: lake build tlverify --wfail
       - name: build the release tool warning-free
         run: lake build tlrelease --wfail
+
+      # One version everywhere, and against the tag when there is one. Both of
+      # these were shell gates in check-release-policy.sh until they moved into
+      # the release tool; that script runs in a job with no Lean toolchain by
+      # design, so they run here, where the binary exists, and still before the
+      # build matrix.
+      - name: one version across every copy of it
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = tag ]; then
+            ./.lake/build/bin/tlrelease version-consistency \
+              --targets release/targets.json --tag "${GITHUB_REF_NAME}"
+          else
+            ./.lake/build/bin/tlrelease version-consistency --targets release/targets.json
+          fi
+
+      - name: the embedded shell copies still match the library
+        run: ./.lake/build/bin/tlrelease embedded-copies --library scripts/lib/release-common.sh
       - name: trust boundary (lake exe tlverify)
         run: lake exe tlverify
       - name: test (lake exe tltest)
