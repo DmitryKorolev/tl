@@ -8,38 +8,66 @@ namespace Tl.Verify
     of the worker's imports and selects one of these protocols from its own
     executable name. -/
 structure CompletionProtocol where
+  /-- The gate's product name, spelled the way a reader invokes it. It opens
+      the verdict line so a log tells you which of the two gates finished. -/
+  tool : String
   label : String
-  marker : String
+  /-- Bumped when the verdict's shape or meaning changes. A worker and a
+      launcher built at different revisions then disagree on the exact string
+      and the run is refused, rather than one accepting the other's line
+      because it happens to look finished. -/
+  protocolVersion : Nat
   workerFile : String
   buildCommand : String
   runCommand : String
   deriving DecidableEq, Repr
 
+/-- The line a completed worker prints last, and the only one its supervisor
+    accepts as evidence that it reached the end.
+
+    Derived from the fields above rather than stored beside them: a second
+    constant would be one more thing to keep in step, and the copy it drifted
+    from would be the one the launcher compares against. Two protocols
+    therefore differ in this line by construction — they already differ in
+    `tool` and in `label`.
+
+    A sentence rather than an opaque token, because whoever meets it is reading
+    a CI log: a bare constant is a question ("what is this, and did it pass?")
+    that the line can answer itself for the cost of a few words. Readability
+    does not weaken the contract — the string is still matched exactly, in
+    full, and as the last nonempty line — and it never authenticated a worker
+    that deliberately forges it, which is outside what any in-band protocol can
+    establish. -/
+def CompletionProtocol.verdict (protocol : CompletionProtocol) : String :=
+  s!"{protocol.tool}: {protocol.label} completed (completion protocol v{protocol.protocolVersion})"
+
 def verifierCompletionProtocol : CompletionProtocol := {
+  tool := "tlverify"
   label := "trust verification"
-  marker := "TL_VERIFY_COMPLETED_V1"
+  protocolVersion := 1
   workerFile := "tlverifyWorker"
   buildCommand := "lake build tlverify"
   runCommand := "lake exe tlverify"
 }
 
 def testCompletionProtocol : CompletionProtocol := {
+  tool := "tltest"
   label := "test suite"
-  marker := "TL_TESTS_COMPLETED_V1"
+  protocolVersion := 1
   workerFile := "tltestWorker"
   buildCommand := "lake build tltest"
   runCommand := "lake exe tltest"
 }
 
-/-- Status zero is accepted only when the marker is the final nonempty stdout
-    line. This detects both an early exit before the marker and later work
-    accidentally moved after it. Deliberate in-worker forgery remains outside
-    what an in-band protocol can authenticate. -/
+/-- Status zero is accepted only when the protocol's verdict is the final
+    nonempty stdout line. This detects both an early exit before the verdict
+    and later work accidentally moved after it. Deliberate in-worker forgery
+    remains outside what an in-band protocol can authenticate. -/
 def completedSuccessfully (protocol : CompletionProtocol)
     (exitCode : UInt32) (stdout : String) : Bool :=
   let lastNonempty := (stdout.splitOn "\n").foldl (fun latest line =>
     if line.trimAscii.isEmpty then latest else some line) none
-  exitCode == 0 && lastNonempty == some protocol.marker
+  exitCode == 0 && lastNonempty == some protocol.verdict
 
 /-- Run the audited worker through `runWorker` and decide the gate's status.
     The injected runner keeps the process-spawn exception path testable; the
@@ -63,14 +91,14 @@ def superviseWorkerWith
   IO.eprint result.stderr
   if completedSuccessfully protocol result.exitCode result.stdout then return 0
   -- The two failures need opposite next actions: a worker that exited non-zero
-  -- has already said what is wrong, while status zero without the marker is the
-  -- unmarked early-exit case this protocol exists to catch.
+  -- has already said what is wrong, while status zero without the verdict is
+  -- the unannounced early-exit case this protocol exists to catch.
   if result.exitCode == 255 then
     IO.eprintln s!"{protocol.label} supervisor: could not execute the worker at {worker}; restore its executable permission or rebuild it with `{protocol.buildCommand}`, then rerun `{protocol.runCommand}`"
   else if result.exitCode != 0 then
     IO.eprintln s!"{protocol.label} supervisor: the worker exited with status {result.exitCode}; fix what it reported above and rerun `{protocol.runCommand}`"
   else
-    IO.eprintln s!"{protocol.label} supervisor: the worker exited successfully without its final completion verdict as the last nonempty stdout line; fix an early-exit/initialization failure or work left after the marker, then rerun `{protocol.runCommand}`"
+    IO.eprintln s!"{protocol.label} supervisor: the worker exited successfully without its final completion verdict as the last nonempty stdout line — expected exactly `{protocol.verdict}`; fix an early-exit/initialization failure, or work left after the verdict, then rerun `{protocol.runCommand}`"
   return 1
 
 /-- Run the audited worker and decide the gate's status: forward its streams,

@@ -125,7 +125,7 @@ unsafe def runChecked : IO UInt32 := do
   -- failure too.
   let verdict := workerVerdict
     s!"trust verification: ok; inspected production={productionObservation.decls.size}, tests={testObservation.decls.size}, verifier={verifierObservation.decls.size}, verifier-supervisor={launcherObservation.decls.size}, test-supervisor={testLauncherObservation.decls.size}, tooling={toolingObservation.decls.size}, release={releaseObservation.decls.size} declarations; safe total dependency cones independently replay-validated; landmarks={productionObservation.landmarks.size}"
-    verifierCompletionProtocol.marker evidence
+    verifierCompletionProtocol.verdict evidence
   for diagnostic in verdict.diagnostics do IO.eprintln diagnostic
   for line in verdict.report do IO.println line
   return verdict.status

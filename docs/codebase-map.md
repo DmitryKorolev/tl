@@ -619,8 +619,12 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
                         --   import/axiom inspection, kernel replay
   Main.lean             --   dynamically loads production, tests, itself, and
                         --   Lean tooling without initializers; worker verdict
-  Supervise.lean        --   the completion-marker protocol and the supervision
-                        --   decision applied to a spawned worker
+  Supervise.lean        --   the completion protocol and the supervision
+                        --   decision applied to a spawned worker. The line a
+                        --   worker must print last is derived from the
+                        --   protocol's own fields (tool, label, protocol
+                        --   version), so it reads as a sentence in a CI log and
+                        --   there is no second constant to drift from
   Proofs.lean           --   verdict-logic theorems: GateClean + analyze_clean_iff
                         --   per scope, the gate-wide evidence characterisation,
                         --   the worker's verdict-to-exit decision (status zero
@@ -633,8 +637,8 @@ Verify/                 -- Lean-native trust gate: `lake exe tlverify`
                         --   directions (sound + complete over an inductive
                         --   Reaches, at a drained exit),
                         --   the supervision status/marker rule, one replay step
-  Launcher.lean         --   minimal supervisor requiring the worker's final marker
-  TestLauncher.lean     --   distinct minimal launcher for the test-worker marker
+  Launcher.lean         --   minimal supervisor requiring the worker's final verdict
+  TestLauncher.lean     --   distinct minimal launcher for the test worker's verdict
 
 VerifyFixture/          -- compiled hostile-initializer fixture; never executed
 scripts/GenLicenses.lean -- executable Lean tooling, audited as a separate root

@@ -260,7 +260,12 @@ structure WorkerVerdict where
     returns `status` unconditionally, so the lines CI exercises on every clean
     run are the same lines that run on a failure. A branch there would be the
     one arm no test reaches, guarding the outcome the project can least afford
-    to get wrong — a silently green trust gate. -/
+    to get wrong — a silently green trust gate.
+
+    The `marker` this takes is the supervising launcher's
+    `CompletionProtocol.verdict` — the exact line it accepts as proof the worker
+    reached the end. Passed in rather than imported so this module stays
+    independent of the supervision protocol. -/
 def workerVerdict (summary marker : String) (evidence : GateEvidence) : WorkerVerdict :=
   let errors := evidence.errors
   if errors.isEmpty then { diagnostics := #[], report := #[summary, marker], status := 0 }

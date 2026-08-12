@@ -89,5 +89,5 @@ unsafe def main : IO UInt32 := do
     ("Perf: native-primitive fast paths (String compare, content hash)", perfPrim),
     ("Perf: end-to-end compiled-binary latency on a scaled repo", perfBin)
   ]
-  if status == 0 then IO.println testCompletionProtocol.marker
+  if status == 0 then IO.println testCompletionProtocol.verdict
   return status

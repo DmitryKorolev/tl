@@ -60,7 +60,7 @@ for the decisions and their rationale, read the ADRs in
   *stated* theorems.
 - `lake exe tlverify` — a minimal supervisor for the Lean-native
   `tlverifyWorker` trust-boundary gate; status zero is accepted only with the
-  worker's fixed end-of-run marker. The marker detects unmarked accidental
+  worker's fixed end-of-run completion verdict. The verdict detects accidental
   early exits; it is not an authentication boundary against code in the worker
   deliberately forging its own verdict, so `Verify/Main.lean`,
   `Verify/Launcher.lean`, and the workflow remain protected-review bootstrap.
@@ -106,8 +106,9 @@ for the decisions and their rationale, read the ADRs in
   executable (does compilation preserve the theorems?), **never a substitute
   for the `Tl/Kernel` + `Tl/Crdt` theorems** themselves (ADR-0004).
   `lake exe tltest` is a minimal supervisor around `tltestWorker`: status zero
-  is accepted only when the worker reaches the harness's final marker, so an
-  imported initializer cannot silently exit successfully before assertions run.
+  is accepted only when the worker reaches the harness's final completion
+  verdict, so an imported initializer cannot silently exit successfully before
+  assertions run.
 
 CI gates (mirror these locally before declaring done):
 - Warning-free `lake build --wfail` and `lake build tlverify --wfail`.

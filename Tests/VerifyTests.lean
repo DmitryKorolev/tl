@@ -338,19 +338,44 @@ private def policyTests : List Outcome :=
         `Tl.Cli.assigneeFacet_pred_eq_true_iff ] ]
 
 private def supervisorTests : List Outcome :=
-  [ check "status zero without the final marker is rejected"
+  [ check "status zero without the final verdict is rejected"
       (!completedSuccessfully verifierCompletionProtocol 0 ""),
-    check "the exact final marker with status zero is accepted"
+    check "the exact final verdict with status zero is accepted"
       (completedSuccessfully verifierCompletionProtocol 0
-        s!"diagnostic\n{verifierCompletionProtocol.marker}\n"),
-    check "a marker followed by later output is not final"
+        s!"diagnostic\n{verifierCompletionProtocol.verdict}\n"),
+    check "a verdict followed by later output is not final"
       (!completedSuccessfully verifierCompletionProtocol 0
-        s!"{verifierCompletionProtocol.marker}\nlater work\n"),
-    check "the test worker has a distinct accepted completion marker"
+        s!"{verifierCompletionProtocol.verdict}\nlater work\n"),
+    check "the test worker has a distinct accepted completion verdict"
       (completedSuccessfully testCompletionProtocol 0
-        s!"{testCompletionProtocol.marker}\n" &&
+        s!"{testCompletionProtocol.verdict}\n" &&
        !completedSuccessfully verifierCompletionProtocol 0
-        s!"{testCompletionProtocol.marker}\n") ]
+        s!"{testCompletionProtocol.verdict}\n"),
+    -- The line is matched in full, so a prefix of it is not a completed run.
+    -- Truncation is what a killed worker or a full pipe buffer produces, and it
+    -- is the one corruption that still looks like the real thing.
+    check "a truncated verdict is not accepted"
+      (!completedSuccessfully verifierCompletionProtocol 0
+        s!"{String.ofList verifierCompletionProtocol.verdict.toList.dropLast}\n"),
+    -- Each half of what makes the line self-explanatory, asserted separately:
+    -- the product name a reader would grep for, and the protocol version that
+    -- keeps a stale worker/launcher pair distinguishable. A rendering that
+    -- dropped either would still be a plausible sentence.
+    check "a verdict names the tool a reader invokes"
+      (verifierCompletionProtocol.verdict.contains "tlverify" &&
+       testCompletionProtocol.verdict.contains "tltest"),
+    check "a verdict carries its protocol version"
+      (verifierCompletionProtocol.verdict.contains "completion protocol v1" &&
+       testCompletionProtocol.verdict.contains "completion protocol v1"),
+    check "a verdict says what completed, not merely that something did"
+      (verifierCompletionProtocol.verdict.contains "trust verification completed" &&
+       testCompletionProtocol.verdict.contains "test suite completed"),
+    -- The protocol is a single line compared whole: a newline would silently
+    -- make it two, and only the second could ever match. A single quote would
+    -- break the `sh` stubs below, which is how these rows reach a real process.
+    check "no completion verdict can break the one-line protocol or its stub quoting"
+      ([verifierCompletionProtocol, testCompletionProtocol].all fun protocol =>
+        !protocol.verdict.contains "\n" && !protocol.verdict.contains "'") ]
 
 /-- Run a supervision, capturing the streams it forwards so a passing test does
     not print the gate's own failure diagnostics into the suite's output. -/
@@ -383,21 +408,32 @@ private def superviseTests : IO (List Outcome) := do
     IO.FS.writeFile path s!"#!/bin/sh\n{body}\n"
     let _ ← IO.Process.output { cmd := "chmod", args := #["+x", path.toString] }
     return path
+  -- Single-quoted: the verdict is a sentence with spaces and parentheses, which
+  -- an unquoted `echo` argument would hand to `sh` as a syntax error — the stub
+  -- would then fail for a reason unrelated to what its row is testing. A row
+  -- above asserts no verdict contains the one character this quoting cannot
+  -- carry, so the two stay in step.
+  let echoVerdict (protocol : CompletionProtocol) : String := s!"echo '{protocol.verdict}'"
   let (completed, completedOut, completedErr) ← superviseCaptured
     (← stub "completed"
-      s!"echo worker-completed-stdout; echo worker-completed-stderr >&2; echo {verifierCompletionProtocol.marker}")
+      s!"echo worker-completed-stdout; echo worker-completed-stderr >&2; {echoVerdict verifierCompletionProtocol}")
   let (trailingOutput, _, trailingErr) ← superviseCaptured
     (← stub "trailing"
-      s!"echo {verifierCompletionProtocol.marker}; echo later-work; exit 0")
-  let testCompletedWorker ← stub "test-completed" s!"echo {testCompletionProtocol.marker}"
+      s!"{echoVerdict verifierCompletionProtocol}; echo later-work; exit 0")
+  let testCompletedWorker ← stub "test-completed" (echoVerdict testCompletionProtocol)
   let (testCompleted, _, _) ← superviseCapturedWith
     (fun path => IO.Process.output { cmd := path.toString })
     testCompletionProtocol testCompletedWorker
+  -- The same real process under the other launcher. The two verdicts are
+  -- distinct by construction, but what has to hold is that the *supervisor*
+  -- refuses one worker's completed run as evidence for the other gate — the
+  -- case a shared marker would have silently passed.
+  let (crossedProtocol, _, _) ← superviseCaptured testCompletedWorker
   let (earlyExit, _, earlyErr) ←
     superviseCaptured (← stub "early" "echo working; exit 0")
-  let (failedWithMarker, failedOut, failedErr) ← superviseCaptured
+  let (failedWithVerdict, failedOut, failedErr) ← superviseCaptured
     (← stub "failed"
-      s!"echo worker-failed-stdout; echo worker-failed-stderr >&2; echo {verifierCompletionProtocol.marker}; exit 1")
+      s!"echo worker-failed-stdout; echo worker-failed-stderr >&2; {echoVerdict verifierCompletionProtocol}; exit 1")
   let (missing, _, missingErr) ← superviseCaptured (base / "absent-worker")
   let nonExecutable := base / "not-executable"
   IO.FS.writeFile nonExecutable "not a process\n"
@@ -413,13 +449,18 @@ private def superviseTests : IO (List Outcome) := do
       (completedOut.contains "worker-completed-stdout"),
     check "the supervisor forwards a successful worker's stderr"
       (completedErr.contains "worker-completed-stderr"),
-    checkEq "a worker with output after its marker fails the gate" trailingOutput 1,
+    checkEq "a worker with output after its verdict fails the gate" trailingOutput 1,
     check "trailing work is diagnosed as an incomplete final verdict"
       (trailingErr.contains "last nonempty stdout line"),
-    checkEq "the test completion protocol accepts a marked real worker" testCompleted 0,
-    checkEq "a worker that exits zero without the marker fails the gate" earlyExit 1,
+    check "an incomplete run is told the exact line that was expected"
+      (trailingErr.contains verifierCompletionProtocol.verdict),
+    checkEq "the test completion protocol accepts a real worker that reached its verdict"
+      testCompleted 0,
+    checkEq "one gate's completed worker is not evidence for the other gate"
+      crossedProtocol 1,
+    checkEq "a worker that exits zero without the verdict fails the gate" earlyExit 1,
     check "an early exit is diagnosed as one" (earlyErr.contains "early-exit"),
-    checkEq "a marker cannot rescue a worker that failed" failedWithMarker 1,
+    checkEq "a verdict cannot rescue a worker that failed" failedWithVerdict 1,
     check "the supervisor forwards a failed worker's stdout"
       (failedOut.contains "worker-failed-stdout"),
     check "the supervisor forwards a failed worker's stderr"

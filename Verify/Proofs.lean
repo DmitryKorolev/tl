@@ -841,19 +841,22 @@ private theorem lastNonemptyLine_eq_some (lines : List String) (init : Option St
       · exact Or.inr ⟨[], rest, by rw [Option.some.inj hinit]; rfl, hrest⟩
       · exact Or.inr ⟨line :: before, after, by rw [hsplit]; rfl, hafter⟩
 
-/-- Accepting a run also requires the marker to be the *last* nonempty line the
-    worker printed: it occurs in the output with only blank lines after it. A
-    scan that reported the marker without reading it, or that ignored work
-    printed after it, cannot satisfy this — that unmarked-early-exit and
-    work-after-the-marker detection is the reason the protocol exists. -/
+/-- Accepting a run also requires the protocol's completion verdict to be the
+    *last* nonempty line the worker printed: it occurs in the output with only
+    blank lines after it. A scan that reported the verdict without reading it,
+    or that ignored work printed after it, cannot satisfy this — that
+    unannounced-early-exit and work-after-the-verdict detection is the reason
+    the protocol exists. Stated about `protocol.verdict`, which is derived from
+    the protocol's own fields, so making that line readable cannot loosen what
+    is matched. -/
 theorem completedSuccessfully_markerFinal {protocol : CompletionProtocol}
     {exitCode : UInt32} {stdout : String}
     (h : completedSuccessfully protocol exitCode stdout = true) :
-    ∃ before after, stdout.splitOn "\n" = before ++ protocol.marker :: after ∧
+    ∃ before after, stdout.splitOn "\n" = before ++ protocol.verdict :: after ∧
       ∀ line ∈ after, line.trimAscii.isEmpty = true := by
   rw [completedSuccessfully, Bool.and_eq_true] at h
   have hmarker := eq_of_beq h.2
-  rcases lastNonemptyLine_eq_some (stdout.splitOn "\n") none protocol.marker hmarker with
+  rcases lastNonemptyLine_eq_some (stdout.splitOn "\n") none protocol.verdict hmarker with
     ⟨hnone, -⟩ | hsplit
   · exact absurd hnone nofun
   · exact hsplit

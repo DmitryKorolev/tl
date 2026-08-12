@@ -125,9 +125,9 @@ the semantic arms are silent when empty, so the gate must not read that as
 success. Every live verifier run also loads a hostile exit initializer as
 an end-to-end no-execution/provenance/ownership canary. CI
 invokes a minimal Lean supervisor, which requires the audited worker's fixed
-end-of-run marker as well as status zero. This catches unmarked accidental early
-exits; it does not authenticate the worker against code deliberately forging its
-own public marker. The worker root, launcher, and workflow are therefore an
+end-of-run completion verdict as well as status zero. This catches accidental
+early exits; it does not authenticate the worker against code deliberately
+forging its own public verdict. The worker root, launcher, and workflow are therefore an
 explicit review and branch-protection bootstrap, as for every CI gate.
 
 The verifier also pins a landmark theorem for every row of the table above
@@ -426,9 +426,9 @@ but neither proved in-kernel nor fully testable (AGENTS.md tier 3). Any such
 property must be listed here explicitly, never relied on silently. Current
 entries: verifier-bootstrap integrity — protected review ensures
 `Verify/Main.lean`, `Verify/Launcher.lean`, and the CI invocation execute the
-reviewed checks and do not deliberately forge the public completion marker; a
+reviewed checks and do not deliberately forge the public completion verdict; a
 process cannot authenticate which of its own initializers printed an in-band
-string, so the marker detects accidental unmarked early exits rather than
+string, so the verdict detects accidental early exits rather than
 self-authenticating the gate (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
 total even then, so this guards segment-ownership, not convergence, ADR-0007;
