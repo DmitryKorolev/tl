@@ -80,6 +80,10 @@ structure VersionSources where
   lakefileText : String
   releaseTestsPath : String
   releaseTestsText : String
+  identityPath : String
+  identityText : String
+  /-- The launcher manifest first: its `name` is the published package, and is
+      held to `release/identity.json`. -/
   manifests : List (String × String)
   deriving Inhabited
 
@@ -107,6 +111,26 @@ def versionCopies (sources : VersionSources) : Except String (List VersionCopy) 
   return { label := s!"{sources.lakefilePath} package version", value := lakefile }
     :: { label := s!"{sources.releaseTestsPath} pinned `tl version` payload", value := pinned }
     :: fromManifests
+
+/-- The published package name, and what the launcher manifest calls itself.
+
+    A separate comparison from the version because it is a different identity:
+    `release/identity.json` is what every consumer is pinned to, and a launcher
+    published under another name is a package nobody installs. The gate this
+    replaces checked it and the first port dropped it. -/
+def packageNameChecks (sources : VersionSources) : Except String (List Check) := do
+  let cursor : Cursor := { document := sources.identityPath }
+  let identity ← parseDocument cursor sources.identityText
+  let pinned ← nonEmptyStringField cursor identity "npmPackage"
+  match sources.manifests with
+  | [] =>
+      .error s!"no npm manifests were read, so the published package name was compared against nothing. That is this gate failing to look rather than the name being right."
+  | (launcherPath, launcherText) :: _ =>
+      let launcherCursor : Cursor := { document := launcherPath }
+      let launcher ← parseDocument launcherCursor launcherText
+      let name ← nonEmptyStringField launcherCursor launcher "name"
+      return [{ held := name == pinned,
+                failure := s!"{launcherPath} calls itself '{name}', and {sources.identityPath} pins the published package as '{pinned}'. Every consumer — VERIFYING.md, the installer, the prose documents — is pinned to that name, so a launcher published under another one is a package nobody installs." }]
 
 /-! ## The verdict -/
 
@@ -238,26 +262,50 @@ private def armPattern (line : String) : Option (String × String) :=
       else none
   | _ => none
 
-/-- The value a `NAME=value` assignment gives, if this line is one. -/
-private def assignedValue (line : String) : Option String :=
-  match line.splitOn "=" with
-  | name :: rest :: _ =>
-      let identifier := name.trimAscii.toString
-      if identifier.isEmpty || !identifier.toList.all (fun c =>
-          ('A' ≤ c && c ≤ 'Z') || ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '_')
-      then none
-      else
-        let value := (rest.splitOn " ").headD ""
-        if value.isEmpty then none else some value
-  | _ => none
+/-- Every `NAME=value` assignment on a line, in order.
 
-/-- Which pattern maps to which target, for every arm of the mapping.
+    A line can carry more than one — `os=darwin; os=linux` is two statements,
+    and reading only the first is how a copy that ends up selecting the wrong
+    target reads as one that selects the right one. Split on `;` first, so each
+    statement is considered on its own. -/
+private def assignedValues (line : String) : List String :=
+  (line.splitOn ";").filterMap fun statement =>
+    match statement.splitOn "=" with
+    | name :: rest :: _ =>
+        let identifier := name.trimAscii.toString
+        if identifier.isEmpty || !identifier.toList.all (fun c =>
+            ('A' ≤ c && c ≤ 'Z') || ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '_')
+        then none
+        else
+          let value := ((rest.trimAscii.toString).splitOn " ").headD ""
+          -- The value, not the whole assignment. The variable names differ
+          -- legitimately and by design: the library namespaces its own with
+          -- `rc_`, install.sh uses `install_os`, and the npm launcher uses
+          -- `os`. What has to agree is which target each pattern selects.
+          if value.isEmpty then none else some value
+    | _ => none
 
-    Arms that only refuse assign nothing and are kept with no value, so a copy
-    that dropped an arm entirely is drift even when the arms that remain agree. -/
-def caseClassification (body : String) : List (String × Option String) :=
+/-- Which patterns map to which targets, for every arm of the mapping.
+
+    *Every* assignment in an arm, in order, not the first one. The shell runs
+    them all and the last one wins, so keeping only the first reads
+
+        Darwin)
+          os=darwin
+          os=linux
+          ;;
+
+    as an arm that selects darwin, while the shell selects linux — a copy that
+    installs the Linux binary on macOS, with a green gate. Comparing the whole
+    sequence needs no model of which assignment survives: two files that run
+    different statements are different, whichever one wins.
+
+    Arms that only refuse assign nothing and are kept with an empty list, so a
+    copy that dropped an arm entirely is drift even when the arms that remain
+    agree. -/
+def caseClassification (body : String) : List (String × List String) :=
   let rec walk (lines : List String) (current : Option String)
-      (acc : List (String × Option String)) : List (String × Option String) :=
+      (acc : List (String × List String)) : List (String × List String) :=
     match lines with
     | [] => acc.reverse
     | line :: rest =>
@@ -266,18 +314,21 @@ def caseClassification (body : String) : List (String × Option String) :=
         else
           match armPattern line with
           | some (pattern, tail) =>
-              let value := assignedValue tail
-              walk rest (some pattern) ((pattern, value) :: acc)
+              walk rest (some pattern) ((pattern, (assignedValues tail)) :: acc)
           | none =>
-              match current, assignedValue line with
-              | some pattern, some value =>
-                  -- Only the first assignment in an arm: later ones are
-                  -- refinements, and the classification is what the arm decides.
-                  let updated := acc.map fun (name, existing) =>
-                    if name == pattern && existing.isNone then (name, some value)
-                    else (name, existing)
-                  walk rest current updated
-              | _, _ => walk rest current acc
+              match current with
+              | none => walk rest current acc
+              | some pattern =>
+                  match assignedValues line with
+                  | [] => walk rest current acc
+                  | values =>
+                      -- Appended to the arm being read, which is the head of the
+                      -- accumulator: `acc` is built by prepending.
+                      let updated := match acc with
+                        | (name, existing) :: older =>
+                            if name == pattern then (name, existing ++ values) :: older else acc
+                        | [] => acc
+                      walk rest current updated
   walk (comparableLines body) none []
 
 /-- One guarded copy: where it lives, what it is called there, and how it is
@@ -311,9 +362,10 @@ def guardedCopies : List EmbeddedCopy :=
    { consumer := "npm/tl/bin/tl", blockName := "detect_arch",
      libraryFunction := "rc_detect_arch", mode := .classification }]
 
-private def renderClassification (rows : List (String × Option String)) : String :=
-  String.intercalate ", " (rows.map fun (pattern, value) =>
-    s!"{pattern} -> {value.getD "<refuses>"}")
+private def renderClassification (rows : List (String × List String)) : String :=
+  String.intercalate "; " (rows.map fun (pattern, values) =>
+    if values.isEmpty then s!"{pattern} -> <refuses>"
+    else s!"{pattern} -> {String.intercalate ", " values}")
 
 /-- One copy against its library original. -/
 def copyCheck (copy : EmbeddedCopy) (consumerText : String) (libraryText : String) :
@@ -338,21 +390,18 @@ def copyCheck (copy : EmbeddedCopy) (consumerText : String) (libraryText : Strin
 
 private def versionOptions : List OptionSpec :=
   [{ name := "targets", takesValue := true },
-   { name := "tag", takesValue := true },
-   { name := "print", takesValue := false }]
+   { name := "tag", takesValue := true }]
 
 private def versionUsage : String :=
-  "usage: tlrelease version-consistency --targets <targets.json> [--tag <vX.Y.Z>] [--print]"
+  "usage: tlrelease version-consistency --targets <targets.json> [--tag <vX.Y.Z>]"
 
 private structure VersionArgs where
   targetsPath : String
   tag : Option String
-  printOnly : Bool
 
 private def versionArgs (options : Options) : Except String VersionArgs := do
   return { targetsPath := ← options.required "targets"
-           tag := options.value? "tag"
-           printOnly := options.given "print" }
+           tag := options.value? "tag" }
 
 /-- Read every file the comparison needs.
 
@@ -362,6 +411,7 @@ private def versionArgs (options : Options) : Except String VersionArgs := do
 private def readSources (targetsPath : String) : Decision VersionSources := do
   let targets ← readParsed targetsPath Targets.parse
   let commandsText ← ofIO (readTextFile "Tl/Cli/Commands.lean")
+  let identityText ← ofIO (readTextFile "release/identity.json")
   let lakefileText ← ofIO (readTextFile "lakefile.lean")
   let releaseTestsText ← ofIO (readTextFile "Tests/ReleaseTests.lean")
   let manifestPaths := "npm/tl/package.json"
@@ -372,19 +422,15 @@ private def readSources (targetsPath : String) : Decision VersionSources := do
   return { commandsPath := "Tl/Cli/Commands.lean", commandsText
            lakefilePath := "lakefile.lean", lakefileText
            releaseTestsPath := "Tests/ReleaseTests.lean", releaseTestsText
+           identityPath := "release/identity.json", identityText
            manifests }
 
 private def versionDecision (args : VersionArgs) : Decision String := do
   let sources ← readSources args.targetsPath
   let product ← ofExcept (productVersionOf sources)
-  if args.printOnly then
-    -- The value alone on stdout, for a workflow to capture. Nothing else is
-    -- printed on this path: a caller reading it into a variable would ship
-    -- whatever prose accompanied it.
-    IO.println product
-    return s!"the release version is {product}"
   let copies ← ofExcept (versionCopies sources)
-  match versionProblems product copies args.tag with
+  let names ← ofExcept (packageNameChecks sources)
+  match versionProblems product copies args.tag ++ Check.failures names with
   | [] =>
       return s!"one version everywhere: {product}, across {copies.length + 1} places"
   | problems =>
@@ -394,7 +440,7 @@ private def versionDecision (args : VersionArgs) : Decision String := do
 
 private def versionCommand : Command := {
   name := "version-consistency"
-  arguments := "--targets <targets.json> [--tag <vX.Y.Z>] [--print]"
+  arguments := "--targets <targets.json> [--tag <vX.Y.Z>]"
   summary := "Refuse unless every copy of the release version agrees with the binary's own."
   run := runWithOptions "tlrelease version-consistency" versionOptions versionUsage
     versionArgs versionDecision }

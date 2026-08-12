@@ -2083,6 +2083,89 @@ private def goldenManifestDocument : Except String String := do
     [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
   renderManifest manifest
 
+/-- The directory a real signing job produces, assembled the way the workflow
+    assembles it.
+
+    This exists because two release-blocking defects got past unit tests that
+    each passed on a hand-built directory: `manifest-verify` refused the very
+    set `manifest` had just described, because the bundles for `SHA256SUMS` and
+    the manifest itself are named for the two files a manifest structurally
+    cannot describe. Nothing that tests one command at a time can see that —
+    only the sequence can. So the sequence is the test: describe, list the
+    assets the way the workflow's `find` does, write the sums, sign every one of
+    them and the sums file, and only then verify. -/
+private def lifecycleTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let dist := base / "dist"
+  IO.FS.createDirAll dist
+  let write (name : String) (contents : String) : IO Unit :=
+    IO.FS.writeFile (dist / name).toString contents
+  let commit := String.ofList (List.replicate 40 '7')
+  let workflowRef := "o/r/.github/workflows/release.yml@refs/tags/v1.2.3"
+  let targets ← IO.FS.readFile "release/targets.json"
+  let names : List String := match Targets.parse "t" targets with
+    | .ok parsed => parsed.targets.map (fun target => target.name)
+    | .error _ => []
+  for name in names do
+    write ("tl-" ++ name) s!"binary for {name}\n"
+    write ("link-audit-" ++ name ++ ".txt") s!"audit for {name}\n"
+  write "LICENSE" "license\n"
+  write "THIRD-PARTY-LICENSES" "notice\n"
+  write "REBUILDING.md" "docs\n"
+  write "tl.spdx.json" "{}\n"
+  let manifestName := "release-manifest.json"
+  let manifestPath := (dist / manifestName).toString
+  -- Each leg's record, written by the command a leg runs.
+  let mut legStatuses : List UInt32 := []
+  for name in names do
+    let tier := match Targets.parse "t" targets with
+      | .ok parsed => match parsed.find? name with
+        | some target => target.tier.wire
+        | none => "supported"
+      | .error _ => "supported"
+    let (status, _, _) ← runCommand "build-metadata"
+      ["--target", name, "--binary", (dist / ("tl-" ++ name)).toString,
+       "--commit", commit, "--tier", tier, "--runner", "ubuntu-latest",
+       "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
+       "--workflow-ref", workflowRef, "--run-id", "42",
+       "--output", (dist / ("build-metadata-" ++ name ++ ".json")).toString]
+    legStatuses := legStatuses ++ [status]
+  let (describeStatus, _, describeErr) ← runCommand "manifest"
+    ["--dist", dist.toString, "--tag", "v1.2.3", "--commit", commit,
+     "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
+     "--targets", "release/targets.json", "--identity", "release/identity.json",
+     "--workflow-ref", workflowRef, "--run-id", "42", "--output", manifestPath]
+  -- What the workflow's `find` collects: every regular file except the sums
+  -- file and the bundles. The manifest is in this list, which is why its own
+  -- bundle exists.
+  let entries ← System.FilePath.readDir dist
+  let assetNames := (entries.toList.map (·.fileName)).filter fun name =>
+    name != "SHA256SUMS" && !name.endsWith ".sigstore.json"
+  write "SHA256SUMS" "sums\n"
+  write "SHA256SUMS.sigstore.json" "bundle\n"
+  for name in assetNames do
+    write (name ++ ".sigstore.json") "bundle\n"
+  let (verifyStatus, _, verifyErr) ← runCommand "manifest-verify"
+    ["--dist", dist.toString, "--manifest", manifestPath]
+  -- And a bundle for nothing at all is still refused: the tightening that made
+  -- the two above legitimate must not have re-admitted the whole suffix.
+  write "not-an-asset.sigstore.json" "bundle\n"
+  let (rogueStatus, _, _) ← runCommand "manifest-verify"
+    ["--dist", dist.toString, "--manifest", manifestPath]
+  IO.FS.removeDirAll base
+  return [
+    check "lifecycle: every build leg records what it built"
+      (legStatuses.all (· == 0)) s!"leg statuses were {legStatuses}",
+    check "lifecycle: the sign job describes the release" (describeStatus == 0) describeErr,
+    check "lifecycle: the manifest is listed among the assets the workflow signs"
+      (assetNames.contains manifestName)
+      "the manifest is a regular file in dist, so the workflow signs it and its bundle exists",
+    -- The one the unit tests could not see.
+    check "lifecycle: the signed directory verifies against its own manifest"
+      (verifyStatus == 0) verifyErr,
+    checkEq "lifecycle: a bundle named for nothing in the release is still refused"
+      rogueStatus 1]
+
 private def goldenManifestTests : IO (List Outcome) := do
   let golden ← IO.FS.readFile goldenManifestPath
   let rendered := okOr "<the golden fixtures stopped assembling>" goldenManifestDocument
@@ -2324,6 +2407,7 @@ private def consistencyTests : IO (List Outcome) := do
   let lakefileText ← IO.FS.readFile "lakefile.lean"
   let releaseTestsText ← IO.FS.readFile "Tests/ReleaseTests.lean"
   let libraryText ← IO.FS.readFile "scripts/lib/release-common.sh"
+  let identityText ← IO.FS.readFile "release/identity.json"
   let manifestPaths : List String := match Targets.parse "release/targets.json" targetsText with
     | .ok targets =>
         "npm/tl/package.json"
@@ -2337,6 +2421,7 @@ private def consistencyTests : IO (List Outcome) := do
     { commandsPath := "Tl/Cli/Commands.lean", commandsText
       lakefilePath := "lakefile.lean", lakefileText
       releaseTestsPath := "Tests/ReleaseTests.lean", releaseTestsText
+      identityPath := "release/identity.json", identityText
       manifests := manifests.toList }
   let product := productVersionOf sources
   let copies := versionCopies sources
@@ -2374,8 +2459,22 @@ private def consistencyTests : IO (List Outcome) := do
              | .ok check => !check.held
              | .error _ => false))
           "a mutated classification was not detected, so this guard proves nothing")
+  let nameProblems := match packageNameChecks sources with
+    | .ok checks => Check.failures checks
+    | .error message => [message]
   return [
     checkEq "version: every copy of the release version agrees" problems [],
+    -- The published package name is a second identity, and the first port of
+    -- this gate dropped it.
+    checkEq "version: the launcher is published under the pinned package name"
+      nameProblems [],
+    check "version: a launcher under another name is refused"
+      (match packageNameChecks
+          { sources with manifests :=
+              ("npm/tl/package.json", "{\"name\": \"@other/tl\", \"version\": \"0.1.0\"}")
+                :: sources.manifests.drop 1 } with
+       | .ok checks => !(Check.failures checks).isEmpty
+       | .error _ => false) "a launcher published under another name was accepted",
     -- The gate must also be able to fail: a comparison that accepted anything
     -- would satisfy the row above without establishing it.
     check "version: a tag naming another version is refused"
@@ -2387,6 +2486,126 @@ private def consistencyTests : IO (List Outcome) := do
       (mentions (oneLiteral "f" "it" "nothing here" "def productVersion : String := \"" "\"") "has no")
       "an absent definition was not distinguished from a duplicated one",
     driftRow] ++ copyRows
+
+/-! ## The prerequisite audit, driven over a stubbed GitHub
+
+The pure predicates are covered above. These drive `collectRows` and the ruleset
+loop themselves, over a client that answers from a table — which is what makes
+the 404, malformed-response, unreachable and truncated-page branches reachable
+without a repository in a particular state. -/
+
+private def stubClient (answers : List (String × ApiResult)) : GithubClient :=
+  fun path => pure ((answers.lookup path).getD (.failed s!"the stub was not asked about {path}"))
+
+private def jsonOf (text : String) : Json :=
+  match Json.parse text with | .ok value => value | .error _ => Json.null
+
+private def repoPath : String := "repos/Owner/tl"
+private def envPath : String := "repos/Owner/tl/environments/release"
+private def policyPath : String := "repos/Owner/tl/environments/release/deployment-branch-policies"
+private def rulesetsPath : String := "repos/Owner/tl/rulesets"
+
+private def healthyAnswers : List (String × ApiResult) :=
+  [(repoPath, .body (jsonOf "{\"visibility\": \"public\"}")),
+   (envPath, .body (jsonOf
+     "{\"protection_rules\": [{\"type\": \"required_reviewers\", \"reviewers\": [{\"a\": 1}]}]}")),
+   (policyPath, .body (jsonOf
+     "{\"total_count\": 1, \"branch_policies\": [{\"type\": \"tag\", \"name\": \"v*\"}]}")),
+   (rulesetsPath, .body (jsonOf "[{\"target\": \"tag\", \"id\": 7}]")),
+   ("repos/Owner/tl/rulesets/7", .body (jsonOf
+     "{\"enforcement\": \"active\", \"conditions\": {\"ref_name\": {\"include\": [\"~ALL\"], \"exclude\": []}}, \"rules\": [{\"type\": \"creation\"}]}"))]
+
+private def reachable : IO (Except String Unit) := pure (.ok ())
+
+private def auditWith (answers : List (String × ApiResult)) (npm homebrew : Bool)
+    (reach : IO (Except String Unit) := reachable) : IO (List Row) := do
+  match planWith npm homebrew with
+  | .error _ => return []
+  | .ok plan => collectRows (stubClient answers) reach sampleIdentity plan
+
+private def outcomeNames (rows : List Row) : List String :=
+  rows.map fun row =>
+    match row.outcome with
+    | .verified => "ok" | .carried _ => "carried"
+    | .missing _ => "MISSING" | .operationalError _ => "unchecked"
+
+private def prerequisiteIoTests : IO (List Outcome) := do
+  let healthy ← auditWith healthyAnswers false false
+  let privateRepo ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == repoPath then (p, .body (jsonOf "{\"visibility\": \"private\"}")) else (p, r))
+    false false
+  let noEnvironment ← auditWith
+    (healthyAnswers.map fun (p, r) => if p == envPath then (p, .notFound) else (p, r)) false false
+  let unreadableEnvironment ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == envPath then (p, .failed "HTTP 502") else (p, r)) false false
+  let emptyReviewers ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == envPath then (p, .body (jsonOf
+        "{\"protection_rules\": [{\"type\": \"required_reviewers\", \"reviewers\": []}]}"))
+      else (p, r)) false false
+  let truncatedPolicy ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == policyPath then (p, .body (jsonOf
+        "{\"total_count\": 31, \"branch_policies\": [{\"type\": \"tag\", \"name\": \"v*\"}]}"))
+      else (p, r)) false false
+  let unreadableRuleset ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == "repos/Owner/tl/rulesets/7" then (p, .failed "HTTP 500") else (p, r)) false false
+  let narrowRuleset ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == "repos/Owner/tl/rulesets/7" then (p, .body (jsonOf
+        "{\"enforcement\": \"active\", \"conditions\": {\"ref_name\": {\"include\": [\"refs/tags/v1.0.0\"], \"exclude\": []}}, \"rules\": [{\"type\": \"creation\"}]}"))
+      else (p, r)) false false
+  let malformed ← auditWith
+    (healthyAnswers.map fun (p, r) =>
+      if p == repoPath then (p, .body (jsonOf "{\"visibility\": 7}")) else (p, r)) false false
+  let unauthenticated ← auditWith healthyAnswers false false
+    (pure (.error "gh is not authenticated ('gh auth login')"))
+  let withChannels ← auditWith
+    (healthyAnswers ++ [("repos/Owner/homebrew-tap", .body (jsonOf "{}"))]) true true
+  return [
+    -- A repository in the state the pipeline needs.
+    checkEq "audit: a healthy configuration produces five verified rows"
+      (outcomeNames healthy) ["ok", "ok", "ok", "ok", "ok"],
+    check "audit: a healthy configuration permits the release" (auditPermits healthy) "refused",
+    -- Each row, one wrong thing at a time.
+    check "audit: a private repository stops the release"
+      ((auditMissing privateRepo).length == 1 && !auditPermits privateRepo) "accepted",
+    -- 404 is an answer; anything else is not.
+    check "audit: a 404 on the environment is missing"
+      ((auditMissing noEnvironment).length > 0) "a 404 was not read as absent",
+    check "audit: any other API failure is unchecked, not missing"
+      ((auditUnchecked unreadableEnvironment).length > 0
+        && (auditMissing unreadableEnvironment).length == 0)
+      "an unreachable endpoint was reported as an absent environment",
+    check "audit: a reviewer rule with nobody in it is missing, not verified"
+      (!auditPermits emptyReviewers) "an empty reviewer list approved itself",
+    -- The page-is-not-a-list defect.
+    check "audit: a deployment policy longer than one page is unchecked"
+      ((auditUnchecked truncatedPolicy).length == 1 && !auditPermits truncatedPolicy)
+      "one page of a longer policy list was read as the whole list",
+    -- An unreadable ruleset is not an absent one.
+    check "audit: a ruleset the API could not read is unchecked"
+      ((auditUnchecked unreadableRuleset).length == 1) "an unreadable ruleset read as absent",
+    check "audit: a ruleset covering one tag is missing, not verified"
+      ((auditMissing narrowRuleset).length == 1) "a ruleset over one tag read as full coverage",
+    -- A response this audit does not understand is not a finding about the thing.
+    check "audit: a malformed field is unchecked, not missing"
+      ((auditUnchecked malformed).length == 1) "an unreadable response read as a finding",
+    -- gh itself unavailable: every applicable row, one stated reason, and no
+    -- row claiming the thing is absent.
+    check "audit: an unauthenticated gh makes every row unchecked"
+      (unauthenticated.length == 5 && (auditMissing unauthenticated).isEmpty
+        && !auditPermits unauthenticated) "gh being unavailable was not reported as unchecked",
+    -- Applicability, end to end rather than over the kind list alone.
+    checkEq "audit: a GitHub-only release collects five rows" healthy.length 5,
+    checkEq "audit: enabling both channels collects four more" withChannels.length 9,
+    check "audit: the deferred channels are named, not silently dropped"
+      (match planWith false false with
+       | .ok plan => (deferredNotes plan).length == 2
+       | .error _ => false) "a deferred channel produced no note"]
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
@@ -2446,6 +2665,6 @@ def releaseToolTests : IO (List Outcome) := do
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← lifecycleTests)
 
 end Tl.Tests

@@ -115,9 +115,10 @@ express:
   in seconds for the whole build matrix. `--list` names them under what a
   different gate covers, so the one place that answers "what does the policy
   cover" does not fall silent about them.
-- `tlrelease prereqs` checks the *reporting* of the
-  external-state audit — that an unreadable row is counted as unchecked and
-  never as a pass — and drives `audit` itself over stubbed `gh` and `npm`, so
+- `Tests/ReleaseToolTests.lean` checks the *reporting* of `tlrelease prereqs` —
+  that an unreadable row is counted as unchecked and never as a pass — and
+  drives `collectRows` itself over an injected `GithubClient` answering from a
+  table, so
   each branch that decides a release has a row: a deferred channel producing no
   prerequisites, a 404 kept apart from any other status, a deployment policy
   that also admits branches, a tag ruleset that covers one tag rather than the

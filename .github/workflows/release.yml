@@ -835,6 +835,11 @@ jobs:
             echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit, and this job holds the signing identity. Nothing is written."
             exit 1
           fi
+          # Here, not at the first use: an uploaded artifact downloads as 0644,
+          # so every step below that runs this binary would otherwise fail with
+          # "permission denied" — including the identity check, which is the
+          # first thing this job does with it.
+          chmod +x tool/tlrelease
           echo "the release tool is the one the gates job built (${got})"
 
       # ADR-0006 requires the notice file, an SBOM and the link-time audit to
@@ -920,8 +925,6 @@ jobs:
         run: |
           set -euo pipefail
           cp LICENSE THIRD-PARTY-LICENSES REBUILDING.md dist/
-          # An uploaded artifact does not carry its executable bit.
-          chmod +x tool/tlrelease
           # The two files that fix the build, named at the call site: the SBOM
           # is a function of them, so which ones it read is not a detail to
           # discover by reading the generator.

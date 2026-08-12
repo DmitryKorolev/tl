@@ -356,13 +356,26 @@ private def notFoundMarkers : List String := ["HTTP 404", "Not Found"]
 private def looksNotFound (text : String) : Bool :=
   notFoundMarkers.any fun marker => (text.splitOn marker).length > 1
 
+/-- The largest page GitHub will return, so one request covers every
+    configuration this audit is realistically asked about. -/
+def maximumPageSize : Nat := 100
+
 /-- One `gh api` call, with its status as a value and its body parsed here.
 
     `--cache 0s` because this audit is asked precisely when someone has just
     changed the configuration, and a cached answer would report the state before
-    the change with no sign that it had. -/
+    the change with no sign that it had.
+
+    `per_page` because a page is not a list. GitHub defaults these endpoints to
+    thirty rows, so thirty tag policies followed by a branch policy on page two
+    would be read as a policy admitting only tags — a false pass on the one row
+    that decides whether a push can reach the job that signs. A hundred is not a
+    proof that everything was read, which is why the callers that can tell also
+    check the count the API reports and refuse when it exceeds what arrived. -/
 def githubApi (path : String) (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResult := do
-  let outcome ← run "gh" #["api", path, "--cache", "0s"] timeoutMs
+  let separator := if (path.splitOn "?").length > 1 then "&" else "?"
+  let paged := s!"{path}{separator}per_page={maximumPageSize}"
+  let outcome ← run "gh" #["api", paged, "--cache", "0s"] timeoutMs
   match outcome, outcome.failureMessage with
   | _, some message => return .failed message
   | .completed output, none =>
@@ -370,11 +383,21 @@ def githubApi (path : String) (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResu
         match Json.parse output.stdout with
         | .ok json => return .body json
         | .error why =>
-            return .failed s!"'gh api {path}' succeeded and returned something that is not JSON ({why}). That is not evidence about the thing being asked for."
+            return .failed s!"'gh api {paged}' succeeded and returned something that is not JSON ({why}). That is not evidence about the thing being asked for."
       else if looksNotFound output.stderr then return .notFound
       else
-        return .failed s!"'gh api {path}' failed: {output.stderr.trimAscii.toString}"
-  | _, none => return .failed s!"'gh api {path}' produced neither an outcome nor a reason."
+        return .failed s!"'gh api {paged}' failed: {output.stderr.trimAscii.toString}"
+  | _, none => return .failed s!"'gh api {paged}' produced neither an outcome nor a reason."
+
+/-- How this module asks GitHub anything.
+
+    A function rather than a direct call, so the audit can be driven from a
+    table in a test. Everything below the API boundary — the ruleset loop, the
+    row classification, the aggregation, the command's own verdict — was
+    otherwise reachable only by having a real repository in a particular state,
+    which is to say not reachable at all. The default is the real client; the
+    tests pass one that answers from a list. -/
+abbrev GithubClient := String → IO ApiResult
 
 /-! ## Reading the answers
 
@@ -457,16 +480,29 @@ def policyEntriesOf (json : Json) : List PolicyEntry :=
     | some entryType, some name => some { entryType, name }
     | _, _ => none
 
+/-- The verdict over a *complete* entry list. Separated so the truncation
+    check in the row above it cannot be reached around. -/
+private def deploymentVerdict (entries : List PolicyEntry) : AuditOutcome :=
+  if policyAdmitsOnlyReleaseTags entries then .verified
+  else if entries.isEmpty then
+    .missing "the 'release' environment's deployment policy names nothing, so it restricts nothing. Add a tag pattern of v* per docs/release-prerequisites.md."
+  else
+    .missing s!"the 'release' environment admits {String.intercalate ", " (entries.map fun entry => s!"{entry.entryType}:{entry.name}")}. A branch entry lets a push reach the job that signs, and a tag pattern outside v* admits a ref this pipeline never releases from; the policy must name tag patterns beginning with v and nothing else."
+
 def deploymentPolicyRow (result : ApiResult) : Row :=
   rowOf .deploymentPolicy "the 'release' environment admits only release tags" result
     "the 'release' environment has no custom deployment policy, so every ref may deploy to it."
     fun json =>
       let entries := policyEntriesOf json
-      if policyAdmitsOnlyReleaseTags entries then .verified
-      else if entries.isEmpty then
-        .missing "the 'release' environment's deployment policy names nothing, so it restricts nothing. Add a tag pattern of v* per docs/release-prerequisites.md."
-      else
-        .missing s!"the 'release' environment admits {String.intercalate ", " (entries.map fun entry => s!"{entry.entryType}:{entry.name}")}. A branch entry lets a push reach the job that signs, and a tag pattern outside v* admits a ref this pipeline never releases from; the policy must name tag patterns beginning with v and nothing else."
+      -- The endpoint reports how many rows exist. Fewer arriving than it counts
+      -- means a page was read as a list, and the entries missing from it are
+      -- exactly the ones this row would have refused for.
+      match (json.getObjVal? "total_count").toOption.bind (·.getNat?.toOption) with
+      | some total =>
+          if total > entries.length then
+            .operationalError s!"the deployment policy reports {total} entries and {entries.length} arrived, so this read one page of a longer list. The entries that did not arrive are the ones this check would refuse for, so a pass here would mean nothing."
+          else deploymentVerdict entries
+      | none => deploymentVerdict entries
 
 /-- One ruleset, reduced to what qualifies it. -/
 def tagRulesetOf (identifier : String) (json : Json) : TagRuleset :=
@@ -514,9 +550,9 @@ private def carriedTokenRow : Row :=
     is not a ruleset that fails to qualify: skipping them silently turned one
     5xx on a detail call into "no active ruleset restricts creation of v* tags",
     a missing row that aborts a correctly configured release. -/
-private def tagRulesetRow (repository : String) : IO Row := do
+private def tagRulesetRow (ask : GithubClient) (repository : String) : IO Row := do
   let summary := "an active ruleset restricts creation of v* tags"
-  match ← githubApi s!"repos/{repository}/rulesets" with
+  match ← ask s!"repos/{repository}/rulesets" with
   | .failed detail =>
       return uncheckedRow .tagRuleset summary
         s!"the rulesets listing could not be read ({detail}). That is not evidence that no ruleset exists."
@@ -542,7 +578,7 @@ private def tagRulesetRow (repository : String) : IO Row := do
           if identifier.isEmpty then
             unreadable := unreadable + 1
           else
-            match ← githubApi s!"repos/{repository}/rulesets/{identifier}" with
+            match ← ask s!"repos/{repository}/rulesets/{identifier}" with
             | .body detail =>
                 if restrictsTagCreation (tagRulesetOf identifier detail) then
                   qualifying := some identifier
@@ -568,7 +604,7 @@ private def tagRulesetRow (repository : String) : IO Row := do
 /-- Whether `gh` is present and authenticated. Asked once: without it every row
     below is unchecked for the same reason, and saying so nine times is not a
     report. -/
-private def githubReachable : IO (Except String Unit) := do
+def githubReachable : IO (Except String Unit) := do
   match ← run "gh" #["auth", "status"] with
   | .completed output =>
       if output.succeeded then return .ok ()
@@ -577,11 +613,12 @@ private def githubReachable : IO (Except String Unit) := do
       return .error ((outcome.failureMessage).getD "gh could not be run.")
 
 /-- The whole audit, for the channels this release publishes through. -/
-def collectRows (identity : Identity) (plan : ReleasePlan) : IO (List Row) := do
+def collectRows (ask : GithubClient) (reachable : IO (Except String Unit))
+    (identity : Identity) (plan : ReleasePlan) : IO (List Row) := do
   let repository := identity.repository
   let applicable := applicableKinds plan
   let wanted (kind : PrerequisiteKind) : Bool := applicable.contains kind
-  match ← githubReachable with
+  match ← reachable with
   | .error reason =>
       -- Every applicable row, unchecked for one stated reason. Emitting them
       -- rather than none is what keeps the count honest: an audit that printed
@@ -590,17 +627,17 @@ def collectRows (identity : Identity) (plan : ReleasePlan) : IO (List Row) := do
         uncheckedRow kind "the GitHub configuration this release depends on" reason
   | .ok () =>
       let mut rows : Array Row := #[]
-      rows := rows.push (repositoryRow repository (← githubApi s!"repos/{repository}"))
-      let environment ← githubApi s!"repos/{repository}/environments/release"
+      rows := rows.push (repositoryRow repository (← ask s!"repos/{repository}"))
+      let environment ← ask s!"repos/{repository}/environments/release"
       rows := rows.push (environmentRow environment)
       rows := rows.push (reviewersRow environment)
       rows := rows.push (deploymentPolicyRow
-        (← githubApi s!"repos/{repository}/environments/release/deployment-branch-policies"))
-      rows := rows.push (← tagRulesetRow repository)
+        (← ask s!"repos/{repository}/environments/release/deployment-branch-policies"))
+      rows := rows.push (← tagRulesetRow ask repository)
       if wanted .homebrewTap then
         let tap := s!"{identity.owner}/homebrew-tap"
         rows := rows.push (rowOf .homebrewTap s!"the Homebrew tap {tap} exists"
-          (← githubApi s!"repos/{tap}")
+          (← ask s!"repos/{tap}")
           s!"the Homebrew tap {tap} does not exist or is not visible. A release with this channel enabled pushes the generated formula there and fails if it cannot. Create the tap per docs/release-prerequisites.md, or defer the Homebrew channel in release/plan.json — that file is where the decision lives."
           fun _ => .verified)
         rows := rows.push carriedTokenRow
@@ -656,7 +693,8 @@ private def outcomeLine (row : Row) : String :=
 private def prereqsDecision (args : PrereqsArgs) : Decision String := do
   let identity ← readParsed args.identityPath Identity.parse
   let plan ← readParsed args.planPath ReleasePlan.parse
-  let rows ← attempt "the prerequisite audit could not run" (collectRows identity plan)
+  let rows ← attempt "the prerequisite audit could not run"
+    (collectRows githubApi githubReachable identity plan)
   -- Every row, in order, before any verdict. An audit that printed only its
   -- failures would leave an operator unable to tell a clean sweep from a run
   -- that checked two things.

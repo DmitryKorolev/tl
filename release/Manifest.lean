@@ -130,25 +130,38 @@ structure DirectoryEvidence where
 /-- The signature bundle for an asset, by name. -/
 def bundleName (asset : String) : String := asset ++ ".sigstore.json"
 
+/-- The two files a manifest structurally cannot describe.
+
+    They are hashed *into* each other's world: `SHA256SUMS` lists the manifest,
+    so the manifest cannot list the sums file without one of them having to be
+    written twice. Named once, because three things depend on the same answer —
+    what generation omits, what verification tolerates, and which bundles are
+    accounted for — and two of those disagreeing is a release that refuses
+    itself. -/
+def structurallyUndescribable (manifestName : String) : List String :=
+  ["SHA256SUMS", manifestName]
+
+/-- Everything a signature bundle may be named for.
+
+    The described assets *and* the two above. The workflow signs `SHA256SUMS`
+    explicitly and every name in its asset list — which includes the manifest,
+    because that is a regular file in the directory — so the bundles for those
+    two exist in every real release. An earlier version of this admitted
+    bundles only for described assets and therefore rejected every directory the
+    pipeline actually produces. -/
+def bundleSubjects (manifestName : String) (assets : List Asset) : List String :=
+  structurallyUndescribable manifestName ++ assets.map (·.name)
+
 /-- What a release directory may hold without the manifest describing it.
 
-    Three things, each because the manifest cannot describe it. `SHA256SUMS`
-    and the manifest are hashed *into* each other's world — the sums file lists
-    the manifest, so the manifest cannot list the sums file without one of them
-    having to be written twice. The Sigstore bundles are produced *after* this
-    manifest is written and are signed alongside it, so listing them would be a
-    promise this file cannot keep.
-
-    The bundles are admitted *by asset*, not by suffix. Written as "anything
+    The bundles are admitted *by subject*, not by suffix. Written as "anything
     ending .sigstore.json", the one category of file this check cannot inspect
     became a category anyone could add a member to: a file named for nothing in
-    the release would be published beside the signed set and accounted for by
-    neither the manifest nor SHA256SUMS, which excludes the same suffix. A
-    bundle is now allowed exactly when it is named for something the manifest
-    describes. -/
+    the release would be published beside the signed set, and accounted for by
+    neither the manifest nor SHA256SUMS, which excludes the same suffix. -/
 def allowedUndescribed (manifestName : String) (assets : List Asset) (name : String) : Bool :=
-  name == "SHA256SUMS" || name == manifestName
-    || assets.any fun asset => bundleName asset.name == name
+  (structurallyUndescribable manifestName).contains name
+    || (bundleSubjects manifestName assets).any fun subject => bundleName subject == name
 
 /-- One described asset: it is present, and its bytes are the ones the manifest
     names. -/
@@ -670,11 +683,12 @@ def collectNames (directory : String) : IO (Except String (List String)) := do
     then reported as an extra asset by the job that verifies it — a release
     that refuses itself. -/
 def describableNames (manifestName : String) (names : List String) : List String :=
-  -- Bundles are excluded by suffix here and admitted by asset there, and the
+  -- Bundles are excluded by suffix here and admitted by subject there, and the
   -- two agree: this runs before anything is signed, so no bundle exists yet,
-  -- and one that did would be named for an asset that is about to be described.
+  -- and one that did would be named for something about to be described or for
+  -- one of the two files that cannot be.
   names.filter fun name =>
-    !(name == "SHA256SUMS" || name == manifestName || name.endsWith ".sigstore.json")
+    !((structurallyUndescribable manifestName).contains name || name.endsWith ".sigstore.json")
 
 /-- One target's evidence, from files already listed and hashed.
 

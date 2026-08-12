@@ -3,8 +3,15 @@
 #
 #   scripts/check-release-policy.sh                     everything runnable here
 #   scripts/check-release-policy.sh --strict            …and no gate may be skipped
-#   scripts/check-release-policy.sh --tag v0.1.0        …and the tag must agree
+#   scripts/check-release-policy.sh --tag v0.1.0        …and this is a tag run
 #   scripts/check-release-policy.sh --list              name the gates and exit
+#
+# `--tag` states that this is a release run rather than a working-tree check.
+# It no longer gates tag agreement: that moved to `tlrelease version-consistency
+# --tag`, which the release workflow's gates job runs on the tagged commit
+# before the build matrix, because it needs a Lean toolchain this job does not
+# have. What `--tag` still decides here is the development-stamp gate, which a
+# tag run is expected to fail: a tag stamps on purpose.
 #
 # There were two definitions of "the release policy". `ci.yml` ran nine gates
 # on every commit; `release.yml`'s `gates` job ran four and described itself as
