@@ -101,7 +101,8 @@ silent on whether it is the right one.
 Neither half is one of the product's proved claims, so neither appears in the
 table above and neither gets a landmark; that split and its reasoning are
 recorded in [ADR-0026](adr/ADR-0026-continuous-integration.md) and
-[the codebase map](codebase-map.md).
+[the codebase map](codebase-map.md); what the gate checks, arm by arm, is
+described in [trust-verifier.md](trust-verifier.md).
 Required evidence is typed rather than accumulated in optional clean
 arrays: import audit, replay, expected landmarks, seven named scope reports,
 inventory findings, typed source-scope ownership, and unclaimed sources must all

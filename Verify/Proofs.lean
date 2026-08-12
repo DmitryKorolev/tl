@@ -807,6 +807,41 @@ theorem directImportAllowed_cases {policy : ImportPolicy} {definingModule import
 
 /-! ### Supervision -/
 
+/-- The two shipped verdicts are different strings.
+
+    Proved rather than sampled, because it is what keeps the two gates from
+    accepting each other: `completedSuccessfully` compares the rendered line, and
+    nothing in `CompletionProtocol` stops two protocols from rendering the same
+    one. A row asserting it holds for the constants as they stand today; this
+    holds for any edit that leaves the file compiling. -/
+private theorem shippedVerdicts_beq_false :
+    (verifierCompletionProtocol.verdict == testCompletionProtocol.verdict) = false := rfl
+
+theorem shippedVerdicts_distinct :
+    verifierCompletionProtocol.verdict ≠ testCompletionProtocol.verdict := by
+  intro h
+  have hbeq : (verifierCompletionProtocol.verdict == testCompletionProtocol.verdict) = true :=
+    beq_iff_eq.mpr h
+  rw [shippedVerdicts_beq_false] at hbeq
+  exact Bool.noConfusion hbeq
+
+/-- No output satisfies both gates at once, whatever it is and whatever the
+    worker exited with. This is the property the supervisors rest on: each one
+    selects a protocol from its own executable name, so one gate's worker
+    finishing must never read as the other's — a trust run accepted because a
+    test suite reached its own end would report a boundary nothing checked.
+
+    Stated over an arbitrary run rather than over the two verdicts alone, so it
+    is about the decision the launcher makes rather than about the strings it
+    happens to compare. -/
+theorem completedSuccessfully_oneProtocol {exitCode : UInt32} {stdout : String}
+    (verifierAccepts : completedSuccessfully verifierCompletionProtocol exitCode stdout = true)
+    (testAccepts : completedSuccessfully testCompletionProtocol exitCode stdout = true) :
+    False := by
+  rw [completedSuccessfully, Bool.and_eq_true] at verifierAccepts testAccepts
+  exact shippedVerdicts_distinct
+    (Option.some.inj ((eq_of_beq verifierAccepts.2).symm.trans (eq_of_beq testAccepts.2)))
+
 /-- The completion marker never rescues a worker that failed: accepting a run
     requires status zero independently of what it printed. -/
 theorem completedSuccessfully_exitZero {protocol : CompletionProtocol}
