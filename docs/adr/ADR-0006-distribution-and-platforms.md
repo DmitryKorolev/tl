@@ -164,6 +164,15 @@ forbids is a *user* of the enabled channels needing an interpreter this project
 chose for its own convenience, which is what a Python one-liner in the artifact
 verifier was.
 
+**When it must hold.** Before v0.1.0 is tagged. The budget is not a direction of
+travel to be settled later: a release that shipped with `python3` on a
+first-party release path would establish the opposite precedent at exactly the
+moment the precedent is set, and the two user-facing paths — the ones a
+*reader* of VERIFYING.md runs — are already clean, so what remains is the
+maintainer-facing half rather than the hard part. Until this section is written,
+that deadline lived only in three task descriptions, which is the decay this
+repository's own artifact rule exists to prevent.
+
 **What is enforced today, and what is not.** This budget is a decision being
 implemented, and the difference matters more than the intent does — a rule
 stated as though it already held is how the last three review rounds each found
