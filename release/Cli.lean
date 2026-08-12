@@ -42,6 +42,8 @@ that contains it.
 -/
 
 import release.Identity
+import release.Manifest
+import release.Metadata
 import release.Plan
 import release.Sbom
 
@@ -53,7 +55,8 @@ namespace Release
     A table rather than a `match`, so `help` is generated from the same list
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
-def commands : List Command := identityCommands ++ planCommands ++ sbomCommands
+def commands : List Command :=
+  identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ sbomCommands
 
 def usage : String :=
   let header :=

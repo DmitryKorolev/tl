@@ -25,6 +25,7 @@ Parsers return `Except String`; only validated values reach a decision
 function. Nothing here does I/O, so every function in this module is total and
 testable without a filesystem.
 -/
+import release.Check
 import release.Json
 
 namespace Release
@@ -522,6 +523,44 @@ def Identity.parse (document : String) (text : String) : Except String Identity 
     certificateOidcIssuer := ← nonEmptyStringField cursor root "certificateOidcIssuer"
     certificateIdentityRegexp := ← nonEmptyStringField cursor root "certificateIdentityRegexp" }
 
+/-! ## The pinned compiler -/
+
+/-- The shape elan reads: an origin and a channel, `leanprover/lean4:v4.33.0`.
+    A bare channel name (`stable`, a local toolchain) is not one — it names
+    whatever that channel points at today, which is the opposite of the pin the
+    documents reading this are supposed to record. -/
+private def toolchainPin (text : String) : Bool :=
+  match text.splitOn ":" with
+  | [origin, channel] =>
+      !channel.isEmpty &&
+      (match origin.splitOn "/" with
+       | [owner, repository] => !owner.isEmpty && !repository.isEmpty
+       | _ => false)
+  | _ => false
+
+/-- `lean-toolchain` is one line naming the compiler. A file with more is
+    refused rather than embedded, newline and all, in the version a release
+    claims to have been built with.
+
+    Read by three commands — the SBOM records it as what ships, each build leg
+    records it as what it compiled with, and the manifest generator compares the
+    two. One parser, so a file the SBOM refuses cannot be one a build leg
+    accepts. -/
+def parseToolchain (document : String) (text : String) : Except String String :=
+  let toolchain := text.trimAscii.toString
+  if toolchain.isEmpty then
+    .error s!"{document}: is empty. It names the compiler this release was built with, and through it the runtime, GMP and libuv that the ADR-0006 licensing section is about; a release described without it would understate what ships. Restore it from the commit being released."
+  else if toolchain.any (fun c => c == '\n' || c == '\r') then
+    .error s!"{document}: has more than one line. It names exactly one compiler; a second line is either an editing accident or a file this generator does not understand, and either way the version recorded here would not be one elan could install."
+  else if toolchain.any (fun c => c.toNat < 0x21 || c.toNat > 0x7e) then
+    -- Named as possibly invisible on purpose: the usual causes are a
+    -- non-breaking space or a stray control byte, and both look like an
+    -- ordinary space when the offending line is echoed back.
+    .error s!"{document}: '{toolchain}' carries a character elan would not accept in a toolchain name — a space, or something that looks like one: a non-breaking space, or a control byte. Retype the line rather than editing around what you can see; this string is recorded as the compiler every consumer of this document reads."
+  else if !toolchainPin toolchain then
+    .error s!"{document}: '{toolchain}' is not a toolchain pin. elan names one as <owner>/<repository>:<channel>, for example leanprover/lean4:v4.33.0. It is recorded here as the compiler this release was built with, so a name that resolves to whatever a channel points at today would describe a build nobody can reproduce."
+  else .ok toolchain
+
 /-! ## What a build leg recorded -/
 
 /-- One leg's record of what it built. Every field is required and non-empty:
@@ -579,6 +618,146 @@ def BuildMetadata.parse (document : String) (text : String) : Except String Buil
     containerImage := ← optional "containerImage"
     runAttempt := ← optional "runAttempt" }
 
+/-! ## The run every leg has to belong to -/
+
+/-- Which workflow run a release is being cut by.
+
+    Not two strings that might be empty. An absent environment variable is
+    indistinguishable from one set to the empty string once it has been read
+    into a string, and `if workflow_ref and …` is what that indistinguishability
+    looked like in the Python this replaces: inside Actions the variable is
+    always set, so the guard read as "always compare" to its author and as
+    "never compare" to the selftest that ran outside Actions — which is why the
+    gate was green on every developer machine and would have been red on the
+    first push.
+
+    `outsideWorkflow` is therefore an assertion a caller makes, not a default it
+    falls into. It exists for the local rehearsal, where there is no run to
+    agree with; every workflow path passes `inWorkflow` with values named at the
+    call site. -/
+inductive RunContext where
+  | inWorkflow (workflowRef : String) (runId : String)
+  | outsideWorkflow
+  deriving DecidableEq, Repr
+
+/-- Whether a leg's record names the run this release is being cut by. Outside a
+    workflow there is no run to name and so nothing to disagree with; the legs
+    are still held to agreeing with *each other*, which is a property of the set
+    and is checked where the set is. -/
+def RunContext.agreesWith : RunContext → BuildMetadata → Bool
+  | .inWorkflow workflowRef runId, build =>
+      build.workflowRef == workflowRef && build.runId == runId
+  | .outsideWorkflow, _ => true
+
+def RunContext.describe : RunContext → String
+  | .inWorkflow workflowRef runId => s!"{workflowRef} (run {runId})"
+  | .outsideWorkflow => "no workflow run"
+
+/-- What the job assembling a release knows about it independently of any leg,
+    and what every leg's record is therefore held to.
+
+    One value rather than four arguments threaded through the comparison, so
+    that adding a fact to compare is a field here plus a row in
+    `metadataChecks` — and a caller that has not got the fact cannot construct
+    this and call the check anyway. -/
+structure ReleaseFacts where
+  commit : Commit
+  toolchain : String
+  lakeManifestSha256 : Sha256
+  run : RunContext
+  deriving Repr
+
+/-! ## When a leg's record agrees -/
+
+/-- Everything one leg's record has to agree about, each with what to say when
+    it does not.
+
+    Seven rows, which is the whole comparison. Six are facts the assembling job
+    derived for itself — the target's name and tier from `release/targets.json`,
+    the digest from the bytes that arrived, and the commit, toolchain and
+    dependency digest from the checkout being released — and the seventh is the
+    run that did the deriving.
+
+    A `Check` list rather than a chain of `if`s, so the verdict and the report
+    are the same data: the shell had nine `if`s that each raised their own
+    message, and adding a comparison without a message, or a message without a
+    comparison, was a one-line mistake in either direction. -/
+def metadataChecks (facts : ReleaseFacts) (target : Target) (digest : Sha256)
+    (build : BuildMetadata) : List Check :=
+  [{ held := build.target == target.name,
+     failure := s!"the record for '{target.name}' names target '{build.target}'. The records were crossed between legs, so none of them describes its own binary." },
+   { held := build.tier == target.tier,
+     failure := s!"the '{target.name}' leg recorded tier '{build.tier.wire}', but release/targets.json says '{target.tier.wire}'. The tier decides whether a missing artifact blocks the release, so the build matrix and the target list cannot disagree about it." },
+   { held := build.sha256 == digest,
+     failure := s!"the artifact for '{target.name}' hashes to {digest.hex}, but its build leg recorded {build.sha256.hex}. These are not the bytes that leg built and smoke-tested — the artifact was replaced in transit, or the wrong one was uploaded. Nothing is signed." },
+   { held := build.commit == facts.commit,
+     failure := s!"the '{target.name}' leg recorded commit {build.commit.hex}, but this release is {facts.commit.hex}. The legs did not all build the same source." },
+   { held := build.toolchain == facts.toolchain,
+     failure := s!"the '{target.name}' leg built with toolchain '{build.toolchain}', but this checkout pins '{facts.toolchain}'. The artifacts do not all come from the pinned toolchain." },
+   { held := build.lakeManifestSha256 == facts.lakeManifestSha256,
+     failure := s!"the '{target.name}' leg recorded a lake-manifest digest of {build.lakeManifestSha256.hex}, but this checkout's is {facts.lakeManifestSha256.hex}. The legs did not all build against the same dependency set." },
+   { held := facts.run.agreesWith build,
+     failure := s!"the '{target.name}' leg records workflow {build.workflowRef} run {build.runId}, and this release is being cut by {facts.run.describe}. That record was produced somewhere else and carried in — legs agreeing with each other establishes nothing here, because four artifacts from one earlier run agree with each other perfectly." }]
+
+/-- Whether this record may be published. -/
+def metadataAccepts (facts : ReleaseFacts) (target : Target) (digest : Sha256)
+    (build : BuildMetadata) : Bool :=
+  Check.allHeld (metadataChecks facts target digest build)
+
+/-- **A record is accepted exactly when it agrees on all seven facts.**
+
+    An if-and-only-if in both useful directions. Left to right is soundness: a
+    record that gets published really does agree with the release, so a
+    disagreement cannot pass. Right to left is what stops the check from being
+    satisfiable vacuously — a comparison that accepted nothing, or one whose
+    seven rows had collapsed to six through an editing accident, could not prove
+    this. The shell had exactly that failure mode available: its nine
+    comparisons lived in a loop an empty target list could skip, and skipping
+    them all was indistinguishable in the output from passing them all.
+
+    The run conjunct is an implication rather than an equality because
+    `outsideWorkflow` has nothing to compare against. It says "and, if this is a
+    workflow run, the record names that run", which is the whole content of the
+    case. -/
+theorem metadataAccepts_iff (facts : ReleaseFacts) (target : Target)
+    (digest : Sha256) (build : BuildMetadata) :
+    metadataAccepts facts target digest build = true ↔
+      build.target = target.name
+        ∧ build.tier = target.tier
+        ∧ build.sha256 = digest
+        ∧ build.commit = facts.commit
+        ∧ build.toolchain = facts.toolchain
+        ∧ build.lakeManifestSha256 = facts.lakeManifestSha256
+        ∧ (∀ workflowRef runId, facts.run = .inWorkflow workflowRef runId →
+            build.workflowRef = workflowRef ∧ build.runId = runId) := by
+  rw [metadataAccepts, metadataChecks, Check.allHeld]
+  simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, beq_iff_eq]
+  constructor
+  · rintro ⟨hTarget, hTier, hDigest, hCommit, hToolchain, hManifest, hRun⟩
+    refine ⟨hTarget, hTier, hDigest, hCommit, hToolchain, hManifest, ?_⟩
+    intro workflowRef runId isWorkflow
+    rw [isWorkflow, RunContext.agreesWith] at hRun
+    simp only [Bool.and_eq_true, beq_iff_eq] at hRun
+    exact hRun
+  · rintro ⟨hTarget, hTier, hDigest, hCommit, hToolchain, hManifest, hRun⟩
+    refine ⟨hTarget, hTier, hDigest, hCommit, hToolchain, hManifest, ?_⟩
+    match isRun : facts.run with
+    | .outsideWorkflow => rfl
+    | .inWorkflow workflowRef runId =>
+        obtain ⟨hRef, hId⟩ := hRun workflowRef runId isRun
+        rw [RunContext.agreesWith]
+        simp only [Bool.and_eq_true, beq_iff_eq]
+        exact ⟨hRef, hId⟩
+
+/-- Why a record was refused, or nothing at all.
+
+    Tied to `metadataAccepts` by `Check.allHeld_iff_noFailures`: this list is
+    empty exactly when that verdict is `true`, so a refusal always says why and
+    a pass never leaves a complaint unprinted. -/
+def metadataFailures (facts : ReleaseFacts) (target : Target) (digest : Sha256)
+    (build : BuildMetadata) : List String :=
+  Check.failures (metadataChecks facts target digest build)
+
 /-- A target that was built and will be published. It carries its digest and
     its leg's complete record *by construction*, so no consumer can reach a
     published target whose evidence was never collected — which is exactly what
@@ -593,22 +772,21 @@ structure PublishedTarget where
 /-- Pair a target with the evidence that it was built, refusing any pairing the
     evidence does not support.
 
-    Private constructor, because the three fields are independently plausible
-    and only agree by accident otherwise: nothing in the types stops a record
-    from one leg being attached to another leg's target, or a digest from being
-    paired with metadata recording a different one. The shell checked exactly
-    these three things in three separate places, one of which an empty target
-    list could skip entirely — here there is no way to hold the value without
-    them having been checked. -/
-def PublishedTarget.of (target : Target) (digest : Sha256) (build : BuildMetadata) :
-    Except String PublishedTarget :=
-  if build.target != target.name then
-    .error s!"the build metadata for '{target.name}' records target '{build.target}'. The records were crossed between legs; each leg's record describes its own artifact."
-  else if build.tier != target.tier then
-    .error s!"the build metadata for '{target.name}' records tier '{build.tier.wire}', but release/targets.json says '{target.tier.wire}'. The tier decides whether a missing artifact blocks the release, so the two cannot disagree."
-  else if build.sha256 != digest then
-    .error s!"the artifact for '{target.name}' hashes to {digest.hex}, but its build leg recorded {build.sha256.hex}. These are not the bytes that leg built and smoke-tested. Nothing is signed."
-  else .ok ⟨target, digest, build⟩
+    Private constructor, because the fields are independently plausible and only
+    agree by accident otherwise: nothing in the types stops a record from one
+    leg being attached to another leg's target, or a digest from being paired
+    with metadata recording a different one. There is no way to hold this value
+    without `metadataAccepts` having held for it — which is what
+    `metadataAccepts_iff` then says about the seven facts.
+
+    Every failure is reported, not the first. A release directory with two
+    problems would otherwise take two runs of the pipeline to diagnose, one
+    refusal at a time, and each run rebuilds four binaries. -/
+def PublishedTarget.of (facts : ReleaseFacts) (target : Target) (digest : Sha256)
+    (build : BuildMetadata) : Except String PublishedTarget :=
+  match metadataFailures facts target digest build with
+  | [] => .ok ⟨target, digest, build⟩
+  | failures => .error (String.intercalate " " failures)
 
 def PublishedTarget.asset (published : PublishedTarget) : String := published.target.asset
 

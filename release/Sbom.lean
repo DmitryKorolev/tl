@@ -249,38 +249,11 @@ def parseLakeManifest (document : String) (text : String) :
     inner.fail "lists no packages, which cannot be right — every build of tl resolves at least one Lake dependency. An empty SBOM would read as 'nothing ships' rather than as a broken generator, so it is refused; regenerate the manifest with `lake update` against this commit."
   return dependencies
 
-/-! ## The toolchain and the version -/
+/-! ## The version
 
-/-- The shape elan reads: an origin and a channel, `leanprover/lean4:v4.33.0`.
-    A bare channel name (`stable`, a local toolchain) is not one — it names
-    whatever that channel points at today, which is the opposite of the pin this
-    document is supposed to record. -/
-private def toolchainPin (text : String) : Bool :=
-  match text.splitOn ":" with
-  | [origin, channel] =>
-      !channel.isEmpty &&
-      (match origin.splitOn "/" with
-       | [owner, repository] => !owner.isEmpty && !repository.isEmpty
-       | _ => false)
-  | _ => false
-
-/-- `lean-toolchain` is one line naming the compiler. A file with more is
-    refused rather than embedded, newline and all, in the version this release
-    claims to have been built with. -/
-def parseToolchain (document : String) (text : String) : Except String String :=
-  let toolchain := text.trimAscii.toString
-  if toolchain.isEmpty then
-    .error s!"{document}: is empty. It names the compiler this release was built with, and through it the runtime, GMP and libuv that the ADR-0006 licensing section is about; an SBOM without it would understate what ships. Restore it from the commit being released."
-  else if toolchain.any (fun c => c == '\n' || c == '\r') then
-    .error s!"{document}: has more than one line. It names exactly one compiler; a second line is either an editing accident or a file this generator does not understand, and either way the version recorded here would not be one elan could install."
-  else if toolchain.any (fun c => c.toNat < 0x21 || c.toNat > 0x7e) then
-    -- Named as possibly invisible on purpose: the usual causes are a
-    -- non-breaking space or a stray control byte, and both look like an
-    -- ordinary space when the offending line is echoed back.
-    .error s!"{document}: '{toolchain}' carries a character elan would not accept in a toolchain name — a space, or something that looks like one: a non-breaking space, or a control byte. Retype the line rather than editing around what you can see; this string is recorded as the compiler every consumer of this document reads."
-  else if !toolchainPin toolchain then
-    .error s!"{document}: '{toolchain}' is not a toolchain pin. elan names one as <owner>/<repository>:<channel>, for example leanprover/lean4:v4.33.0. It is recorded here as the compiler this release was built with, so a name that resolves to whatever a channel points at today would describe a build nobody can reproduce."
-  else .ok toolchain
+The toolchain is parsed by `parseToolchain` in `release/Model.lean`: three
+commands read `lean-toolchain` now, and a second reading of it would be a
+second opinion about what this release was built with. -/
 
 /-- The release being described, which is the bare version and never the tag.
     The document composes the tag form itself for its namespace, so accepting

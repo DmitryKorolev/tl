@@ -358,6 +358,20 @@ private def targetsOf (rows : List String) : String :=
 private def sampleTarget (name : String) (tier : Tier) : Target :=
   { name, tier, os := "linux", cpu := "x64", libc := some "glibc" }
 
+private def sampleWorkflowRef : String :=
+  "owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3"
+
+/-- The release-wide facts `completeBuildMetadata` agrees with, so a row that
+    varies one of them differs from a passing comparison in exactly that one
+    thing. -/
+private def factsOf (run : RunContext) : Except String ReleaseFacts := do
+  let commit ← Commit.parse "c" commit40
+  let lakeManifestSha256 ← Sha256.parse "m" digest64
+  return { commit, toolchain := "leanprover/lean4:v4.33.0", lakeManifestSha256, run }
+
+private def sampleFacts : Except String ReleaseFacts :=
+  factsOf (.inWorkflow sampleWorkflowRef "42")
+
 private def planRow (channel : String) (enabled : Bool) (plannedFor : Option String) : String :=
   let base := s!"\"channel\": \"{channel}\", \"enabled\": {if enabled then "true" else "false"}"
   match plannedFor with
@@ -396,7 +410,8 @@ private def documentTests : IO (List Outcome) := do
   let publishedOf (target : Target) (digestText : String) : Except String PublishedTarget := do
     let build ← BuildMetadata.parse "b" completeBuildMetadata
     let digest ← Sha256.parse "d" digestText
-    PublishedTarget.of target digest build
+    let facts ← sampleFacts
+    PublishedTarget.of facts target digest build
   -- The deferral deadline, against the committed plan. `none` means a fixture
   -- stopped parsing, which must not read as "no stale deferrals".
   let staleAt (text : String) : Option (List String) :=
