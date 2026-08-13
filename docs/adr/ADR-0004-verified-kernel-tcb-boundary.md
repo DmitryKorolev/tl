@@ -332,6 +332,66 @@ proof:
   differential checks above — explicitly not part of the kernel's
   correctness obligation and never a substitute for the theorems (AGENTS.md
   tier 1; the "a test is not a substitute for a provable property" rule).
+  What that cross-check must keep covering is fixed below.
+
+#### The compiled-kernel cross-check, as a contract
+
+`Tests/CrossTests.lean` samples the compiled kernel against its proved spec.
+The mechanism exists; what this section fixes is what it is *for*, so that it
+can be strengthened freely and cannot be narrowed by accident.
+
+**What it establishes, and what it does not.** Sampling the compiled binary is a
+regression net over compilation — it asks whether the toolchain still produces
+functions that satisfy the statements proved about their source. It is never
+evidence for a kernel property: every statement it samples is proved in
+`Tl/Kernel`, and a sample that disagreed would mean the executable had stopped
+matching the proof, not that the proof was wrong.
+
+**Deterministic, never fuzz-dependent.** The corpus is generated from fixed
+seeds, so a failure reproduces from the failing row alone and a green run is the
+same evidence on every machine. Nothing here draws on wall-clock time, the
+environment, or a random device; a check that passes because it happened not to
+generate the awkward case is not a gate.
+
+**The sampled properties.** Each is proved; each is re-checked against the
+compiled functions:
+
+- encoding order-preservation: the canonical wire strings compare bytewise in
+  the order the kernel proves over the decoded stamp triple — the linchpin
+  between the proved order and the on-disk bytes, checked over every pair of a
+  seeded set;
+- fold order-insensitivity and duplicate re-delivery;
+- the two join laws a state fingerprint can observe, commutativity and
+  idempotence (associativity is proved and not sampled);
+- the ready queue's soundness and its proved ranking order;
+- `unblocks` as exactly the ready-set difference;
+- rollup totality on whatever cyclic and dangling graphs the generator
+  produces;
+- the fast/spec refinement bridges — the batched rollup, the fast ready queue,
+  the fast `unblocks`/`why` including the bucketed form the CLI calls, and the
+  pre-hoisted view forms of the cycle diagnostics;
+- the cycle implementations, and that the certificate fast path is the branch
+  actually taken rather than the proved fallback.
+
+**Crafted fixtures stay alongside the random corpus.** The seeded generator
+covers what it happens to reach; the SCC fixtures (ring, twin components, self
+loop, parent cycle, mutual block, dangling edge) and the wire-order near-ties
+cover the cases whose *absence* would be invisible — each tie-break level of the
+stamp order, and each shape whose certificate the checker must accept or reject.
+Both are the corpus; neither replaces the other.
+
+**Strengthening is additive; narrowing is an ADR edit.** Adding a property, a
+seed, a fixture or an operation to the generator needs nothing from this file.
+Removing a property from the list above, dropping a fixture class, or shrinking
+the corpus is a change to what the project claims this net catches, and is made
+here first — the failure mode being prevented is a cross-check quietly reduced
+to the cases that still pass.
+
+**The numbers live in the test.** How many seeds, how many operations per seed,
+how wide the id pool, how many sampled stamps — `seeds`, `genOps`, `idPool` and
+`sampleStamps` in `Tests/CrossTests.lean` — are named here and quantified there.
+A second copy of a count in prose is a copy that drifts, and this project has
+deleted enough of those to know which way it goes.
 
 The TCB is therefore: the Lean kernel (and its checker), the file/JSONL
 I/O, git, and the system clock. Nothing else is trusted.

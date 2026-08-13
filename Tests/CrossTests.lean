@@ -18,6 +18,15 @@
    fingerprint, the ready queue's soundness and proved sortedness, the
    `unblocks` = ready-diff identity, and rollup totality on random cyclic
    graphs.
+
+What this file must keep covering — the sampled property list, the crafted
+fixtures that stay alongside the seeded corpus, and the rule that strengthening
+is additive while *narrowing* is an ADR edit — is stated in ADR-0004 under "The
+compiled-kernel cross-check, as a contract". The numeric parameters stay here
+and are named there: `seeds`, `genOps`, `idPool`, `sampleStamps`. Renaming one
+of those, or dropping a property or a fixture class, means editing that section
+in the same change; a cross-check quietly reduced to the cases that still pass
+is the failure the contract exists to prevent.
 -/
 import Tl.Format.Codec
 import Tl.Kernel.Apply
