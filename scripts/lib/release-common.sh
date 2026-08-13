@@ -404,3 +404,78 @@ esac
 UNAME
   chmod +x "$1/uname"
 }
+
+# ---------------------------------------------------------------------------
+# Policy-gate harness
+#
+# The counting, reporting and strictness rules the policy scripts share. They
+# were one script's private helpers until the release path and the deferred
+# channels needed separate profiles; a second copy of "what a skipped gate
+# means" is exactly the drift this library exists to stop, and this one decides
+# an exit code.
+# ---------------------------------------------------------------------------
+
+# rc_policy_begin <label> — start a run. `RC_POLICY_STRICT=1` before this call
+# makes a skipped gate a failure.
+rc_policy_begin() {
+  RC_POLICY_LABEL=$1
+  RC_POLICY_STRICT=${RC_POLICY_STRICT:-0}
+  RC_POLICY_PASSED=0
+  RC_POLICY_FAILED=0
+  RC_POLICY_SKIPPED=0
+  RC_POLICY_FAILED_NAMES=''
+  RC_POLICY_SKIPPED_NAMES=''
+  echo "$RC_POLICY_LABEL"
+}
+
+# rc_gate <name> <command>… — run one gate, remember the outcome, keep going.
+# Deliberately not `set -e` on the first failure: a policy run that stops at the
+# first problem makes the operator fix and re-run once per gate, and the gates
+# are independent. The exit code at the end is what matters.
+rc_gate() {
+  rc__gate_name=$1
+  shift
+  echo "── $rc__gate_name"
+  if "$@"; then
+    RC_POLICY_PASSED=$((RC_POLICY_PASSED + 1))
+  else
+    echo "::error::release-policy gate failed: $rc__gate_name" >&2
+    RC_POLICY_FAILED=$((RC_POLICY_FAILED + 1))
+    RC_POLICY_FAILED_NAMES="$RC_POLICY_FAILED_NAMES
+  - $rc__gate_name"
+  fi
+}
+
+# rc_skip_gate <name> <reason> — a gate that could not run. Never silent, and
+# never counted as a pass; fatal under strict.
+rc_skip_gate() {
+  if [ "$RC_POLICY_STRICT" -eq 1 ]; then
+    echo "::error::release-policy gate cannot be skipped under --strict: $1 ($2)" >&2
+    RC_POLICY_FAILED=$((RC_POLICY_FAILED + 1))
+    RC_POLICY_FAILED_NAMES="$RC_POLICY_FAILED_NAMES
+  - $1 (tool missing: $2)"
+    return 0
+  fi
+  echo "── $1: SKIPPED — $2"
+  RC_POLICY_SKIPPED=$((RC_POLICY_SKIPPED + 1))
+  RC_POLICY_SKIPPED_NAMES="$RC_POLICY_SKIPPED_NAMES
+  - $1 ($2)"
+}
+
+# rc_policy_end <what> — the summary, and the run's exit status as a return
+# value. Returns 1 when anything failed, so the caller's `exit` is one line and
+# no arithmetic decides a release outside this file.
+rc_policy_end() {
+  echo
+  if [ "$RC_POLICY_FAILED" -ne 0 ]; then
+    echo "$1: $RC_POLICY_FAILED gate(s) failed, $RC_POLICY_PASSED passed, $RC_POLICY_SKIPPED skipped.$RC_POLICY_FAILED_NAMES" >&2
+    echo "Nothing above is advisory: each of these gates stands between a defect and a published artifact." >&2
+    return 1
+  fi
+  if [ "$RC_POLICY_SKIPPED" -ne 0 ]; then
+    echo "$1: $RC_POLICY_PASSED gate(s) passed, $RC_POLICY_SKIPPED skipped.$RC_POLICY_SKIPPED_NAMES"
+    echo "A skipped gate is not a passing one. CI and the release workflow run this with --strict, where a missing tool is a failure."
+    return 0
+  fi
+  echo "$1: all $RC_POLICY_PASSED gates passed"
+}

@@ -97,19 +97,25 @@ jobs:
           tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
           install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
 
-      # The same command ci.yml runs, against the commit actually being
+      # The same script ci.yml runs, against the commit actually being
       # released, plus the tag-agreement check that only makes sense here. This
       # job used to run four of the policy's gates and describe itself as
       # running them all, so the installer, the artifact verifier, the npm
       # packages and the formula were never exercised on the tagged commit —
       # the one commit where a stale gate becomes a published artifact.
       #
+      # --profile release is the one difference from ci.yml, and it removes
+      # rather than skips: the deferred channels' gates invoke npm, python3 and
+      # ruby, which ADR-0026's v0.1 dependency boundary forbids anywhere this
+      # workflow reaches. They still run on every commit, in ci.yml, so nothing
+      # about them rots while the channels wait.
+      #
       # --strict: in CI a missing tool is a broken job, not a smaller policy.
       - name: release policy, on the tagged commit
-        run: ./scripts/check-release-policy.sh --strict --tag "${GITHUB_REF_NAME}"
+        run: ./scripts/check-release-policy.sh --profile release --strict --tag "${GITHUB_REF_NAME}"
         if: github.ref_type == 'tag'
       - name: release policy
-        run: ./scripts/check-release-policy.sh --strict
+        run: ./scripts/check-release-policy.sh --profile release --strict
         if: github.ref_type != 'tag'
 
       # Restore-only. ci.yml's policy is that only protected main saves the
