@@ -73,25 +73,29 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
   -- The gate's own production roots, not a hand-written `#[`Tl]`: `Main` is a
   -- production root too, so selecting only the library root would leave it and
   -- anything reachable only from it outside every pin below.
-  let production ← loadEnvironmentNoInitializers auditLayout.productionRoots
+  let production ← loadScope auditLayout .production
   let imported := modulesInEnvironment env #[`Verify.Report, `Verify.Policy, `Absent.Module]
   let projectModules ← projectModulesIn env
-  let productionModules ← projectModulesIn production
+  let productionModules ← production.projectModules
   -- This must go through `observeEnvironment`, not manually compose its
   -- helpers: it pins the production wiring from replay closure through
   -- `propagatedAxioms` into each reported declaration. Injected audit findings
   -- make both mandatory evidence fields non-clean, so dropping either result is
   -- observable without checking a bad artifact into the repository.
-  let stateObservation ← observeEnvironment "loaded transitive-axiom wiring"
-    production #[`Tl.Kernel.State] #[`Tl.Kernel.State] productionModules
+  -- One module of the loaded production scope, observed under that scope: the
+  -- environment carries which scope it was loaded for, so this cannot be an
+  -- observation of production's modules tagged as anything else.
+  let stateModules : ScopeModules :=
+    { expected := #[`Tl.Kernel.State], inspected := #[`Tl.Kernel.State],
+      project := productionModules }
+  let stateObservation ← observeEnvironment production stateModules
     #[`Tl.Kernel.State.merge_comm, `Absent.Landmark]
     (importAudit := fun _ _ _ => #["injected import-audit finding"])
     (replayAudit := fun _ _ => pure (some "injected replay-audit finding"))
   -- The refusal arm, through the shipped wiring: a propagation that declines to
   -- answer must reach the verdict as a *finding*, never as an empty axiom map,
   -- which would read as clean and silence every axiom arm below it.
-  let refusedObservation ← observeEnvironment "loaded propagation refusal"
-    production #[`Tl.Kernel.State] #[`Tl.Kernel.State] productionModules
+  let refusedObservation ← observeEnvironment production stateModules
     #[`Tl.Kernel.State.merge_comm]
     (propagationAudit := fun _ => none)
   let reportNames := declarationNamesOf env #[`Verify.Report]
@@ -155,7 +159,7 @@ private unsafe def verifyLoadedTestsRequired (sysroot : System.FilePath) :
   -- production scope is the pin that has neither ceiling: every module the gate
   -- actually audits, every edge each one declares, and it widens by itself as
   -- the project grows.
-  let scopeRows := directImportRows production productionModules
+  let scopeRows := directImportRows production.env productionModules
   let (scopeWritten, scopeReadErrors) ← writtenRowsOf scopeRows
   sourceReadErrors := sourceReadErrors ++ scopeReadErrors
   let scopeEdges := scopeRows.foldl (fun total (_, imports) => total + imports.size) 0

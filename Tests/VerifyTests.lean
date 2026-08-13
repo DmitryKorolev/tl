@@ -44,12 +44,24 @@ private def pinnedVerdictLogicTheorems : Unit :=
 private def cfg : Config :=
   { allowedAxioms := #[`propext, `Classical.choice, `Quot.sound] }
 
+/-- Every audited gate scope. Written out rather than derived: the rows that use
+    it are about the registry the scope types are checked against, and a list
+    generated from that registry would agree with it by construction. A case
+    added to `GateScope` belongs here too. -/
+private def gateScopes : List GateScope :=
+  [.production, .tests, .verifier, .supervisor, .testSupervisor, .tooling, .release]
+
+private def gateRootSets : List (Array Name) :=
+  gateScopes.map auditLayout.gateRoots
+
 private def okDecl (name : Name) (kind := DeclKind.other) : Decl :=
   { name, «module» := `Tl.Kernel.Op, kind, axioms := #[`propext] }
 
-private def clean : Observation :=
-  { scope := "fixture"
-    localModules := #[`Tl, `Tl.Kernel.Op, `Main]
+/-- The base fixture at whichever scope a row needs. The scope is the type's
+    parameter now, so a fixture is per-scope; the arm rows below use the
+    `production` one and the assembly rows need all seven. -/
+private def cleanIn (scope : GateScope) : Observation scope :=
+  { localModules := #[`Tl, `Tl.Kernel.Op, `Main]
     expectedModules := #[`Tl, `Tl.Kernel.Op, `Main]
     decls := #[okDecl `a .theoremDecl, okDecl `b]
     expectedLandmarks := #[`claimA]
@@ -60,6 +72,14 @@ private def clean : Observation :=
       propagationError? := none
       replayedConstants := 2
       importEdges := 3 } }
+
+private def clean : Observation .production := cleanIn .production
+
+/-- `analyze` at the fixture's scope. `analyze` takes the scope as an implicit
+    argument of its observation's type, and a `{ clean with … }` update carries
+    no expected type of its own, so fixing it once here keeps every row below a
+    one-line edit of the base fixture. -/
+private def analyzeFixture (o : Observation .production) : Report := analyze cfg o
 
 private def mentions (report : Report) (needle : String) : Bool :=
   report.errors.any fun error => error.contains needle
@@ -77,56 +97,56 @@ is quantified over observations, so a fixture that quietly went dirty would keep
 every `mentions` row green while stopping it from isolating the arm it names.
 -/
 private def reportTests : List Outcome :=
-  let environmentFailure := analyze cfg {
+  let environmentFailure := analyzeFixture {
     clean with evidence := { clean.evidence with
       replayError? := some "kernel replay rejected Bad.proof" } }
-  let missing := analyze cfg {
+  let missing := analyzeFixture {
     clean with expectedModules := clean.expectedModules.push `Tl.Kernel.Missing }
-  let unexpected := analyze cfg {
+  let unexpected := analyzeFixture {
     clean with localModules := clean.localModules.push `Tests.Accidental }
-  let absentLandmark := analyze cfg {
+  let absentLandmark := analyzeFixture {
     clean with landmarks := #[{ name := `claimA, kind? := none }] }
-  let changedLandmark := analyze cfg {
+  let changedLandmark := analyzeFixture {
     clean with landmarks := #[{ name := `claimA, kind? := some .other }] }
-  let duplicateLandmark := analyze cfg {
+  let duplicateLandmark := analyzeFixture {
     clean with
       expectedLandmarks := clean.expectedLandmarks ++ clean.expectedLandmarks
       landmarks := clean.landmarks ++ clean.landmarks }
-  let localAxiom := analyze cfg {
+  let localAxiom := analyzeFixture {
     clean with decls := clean.decls.push {
       name := `unproved
       «module» := `Tl.Kernel.Op
       kind := .axiomDecl
       axioms := #[`unproved]
     } }
-  let sorryDependency := analyze cfg {
+  let sorryDependency := analyzeFixture {
     clean with decls := clean.decls.push {
       name := `unfinished
       «module» := `Tl.Kernel.Op
       kind := .theoremDecl
       axioms := #[`propext, `sorryAx]
     } }
-  let propagationFailure := analyze cfg {
+  let propagationFailure := analyzeFixture {
     clean with evidence := { clean.evidence with
       propagationError? := some "stored-body axiom propagation did not drain its \
         worklist within the bound, so this scope's transitive axiom rows are \
         incomplete and were discarded. Raise `propagationFuel`." } }
-  let noDecls := analyze cfg { clean with decls := #[] }
-  let noReplay := analyze cfg { clean with evidence := { clean.evidence with
+  let noDecls := analyzeFixture { clean with decls := #[] }
+  let noReplay := analyzeFixture { clean with evidence := { clean.evidence with
     replayedConstants := 0 } }
-  let noImportEdges := analyze cfg { clean with evidence := { clean.evidence with
+  let noImportEdges := analyzeFixture { clean with evidence := { clean.evidence with
     importEdges := 0 } }
-  let emptyScope := analyze cfg {
+  let emptyScope := analyzeFixture {
     clean with localModules := #[], expectedModules := #[], decls := #[],
                expectedLandmarks := #[], landmarks := #[],
                evidence := { clean.evidence with replayedConstants := 0, importEdges := 0 } }
-  let truncated := analyze cfg {
+  let truncated := analyzeFixture {
     clean with expectedModules := clean.expectedModules ++
       (Array.range 25).map fun index => Name.mkSimple s!"Absent{index}" }
-  let axiomLandmark := analyze cfg {
+  let axiomLandmark := analyzeFixture {
     clean with landmarks := #[{ name := `claimA, kind? := some .axiomDecl }] }
-  let droppedLandmarks := analyze cfg { clean with landmarks := #[] }
-  let customRemedy := analyze cfg {
+  let droppedLandmarks := analyzeFixture { clean with landmarks := #[] }
+  let customRemedy := analyzeFixture {
     clean with
       localModules := clean.localModules.push `Verify.Helper
       moduleRemedy := "edit the typed scope registry" }
@@ -135,27 +155,53 @@ private def reportTests : List Outcome :=
   -- The split of labour with `analyzedGateEvidence_clean_iff` runs the other
   -- way from what it looks like: the theorem is *false* if a scope is audited
   -- twice or dropped from the assembly, since its right-hand side still demands
-  -- a `GateClean` the verdict no longer depends on — that arm needs no row. Two
-  -- things the theorem genuinely cannot see are covered here: it characterises
-  -- only the empty verdict, where the two same-typed `Array String` arguments
-  -- both reach it as `= #[]`, so nothing in it pins which becomes the inventory
-  -- arm and which the unclaimed-source arm; and the findings themselves — that
-  -- each observation reaches the verdict at all, labelled with its own scope.
-  -- A pure permutation of the seven observations is invisible to both: each
-  -- finding carries the scope from the observation it was built from, and the
-  -- seven are only flattened, never read per field.
+  -- a `GateClean` the verdict no longer depends on — that arm needs no row, and
+  -- permuting the seven no longer elaborates at all. Two things the theorem
+  -- genuinely cannot see are covered here: it characterises only the empty
+  -- verdict, where the two same-typed `Array String` arguments both reach it as
+  -- `= #[]`, so nothing in it pins which becomes the inventory arm and which the
+  -- unclaimed-source arm; and the findings themselves — that each observation
+  -- reaches the verdict at all, under its own scope's name. The expected names
+  -- below are written out rather than derived, which is what makes them a pin on
+  -- `GateScope.label`: two scopes sharing a name would fail the row.
   let inventoryFinding :=
-    ({ refusedSymlinks := #["Tl/Linked"] } : SourceInventory).errors "production"
-      "Replace it with a regular in-tree directory or .lean file in the production source scope."
-  let scopeFailure (scope : String) : Observation :=
-    { clean with scope, evidence := { clean.evidence with
-        replayError? := some s!"{scope} sentinel" } }
+    ({ refusedSymlinks := #["Tl/Linked"] } : SourceInventory).errors .production
+  -- The other half of the inventory arm: the join that takes the whole registry
+  -- to the findings the verdict sees. One refused link per source scope, and the
+  -- expected scope words written out rather than read back from
+  -- `AuditScope.label`, so a fold that dropped an entry, doubled one, or filed
+  -- every finding under one scope's name fails a row instead of reading as
+  -- silence — and so does a label table that stopped telling two scopes apart.
+  let sourceScopeNames : List (AuditScope × String) :=
+    [(.production, "production"), (.tests, "tests"), (.verifier, "verifier"),
+      (.tooling, "tooling"), (.release, "release")]
+  let scopedFindings := scopedInventoryErrors (sourceScopeNames.toArray.map
+    fun (scope, name) =>
+      { source := { scope, path := name, modulePrefix := `Fixture }
+        inventory := { refusedSymlinks := #[s!"{name}/Linked"] } })
+  let scopeFailure (scope : GateScope) : Observation scope :=
+    { cleanIn scope with evidence := { (cleanIn scope).evidence with
+        replayError? := some s!"{scope.label} sentinel" } }
+  let sized (scope : GateScope) (count : Nat) : Observation scope :=
+    { cleanIn scope with
+        decls := (Array.range count).map fun index =>
+          okDecl (Name.mkSimple s!"decl{index}") }
+  let summaryLine := ScopeObservations.summary
+    { production := sized .production 1
+      tests := sized .tests 2
+      verifier := sized .verifier 3
+      supervisor := sized .supervisor 4
+      testSupervisor := sized .testSupervisor 5
+      tooling := sized .tooling 6
+      release := sized .release 7 }
   let gateErrors := (gateEvidenceOf cfg
-    (production := scopeFailure "production") (tests := scopeFailure "tests")
-    (verifier := scopeFailure "verifier") (supervisor := scopeFailure "supervisor")
-    (testSupervisor := scopeFailure "test supervisor")
-    (tooling := scopeFailure "tooling")
-    (release := scopeFailure "release")
+    { production := scopeFailure .production
+      tests := scopeFailure .tests
+      verifier := scopeFailure .verifier
+      supervisor := scopeFailure .supervisor
+      testSupervisor := scopeFailure .testSupervisor
+      tooling := scopeFailure .tooling
+      release := scopeFailure .release }
     (inventoryErrors := #["inventory sentinel"])
     (unclaimedSources := #["Bench"])).errors
   [ checkEq "the base fixture is clean, so every row below isolates its own defect"
@@ -191,8 +237,8 @@ private def reportTests : List Outcome :=
     checkEq "the shipped assembly retains all scope, inventory, and claim findings"
       gateErrors.size 9,
     check "the shipped assembly audits each observation under its own scope name"
-      (["production", "tests", "verifier", "supervisor", "test supervisor", "tooling",
-        "release"].all fun scope =>
+      (["production", "tests", "verifier", "verifier supervisor", "test supervisor",
+        "tooling", "release"].all fun scope =>
         gateErrors.any fun error =>
           error.contains s!"trust verification ({scope}): {scope} sentinel"),
     check "the shipped assembly retains inventory and unclaimed-source findings"
@@ -242,7 +288,26 @@ private def reportTests : List Outcome :=
     check "a refused symlink carries its scope's own repair instruction"
       (inventoryFinding.any (·.contains "regular in-tree directory or .lean file in the production")),
     check "an inventory with nothing refused reports nothing"
-      (({ modules := #[`Tl] } : SourceInventory).errors "production" "irrelevant").isEmpty ]
+      (({ modules := #[`Tl] } : SourceInventory).errors .production).isEmpty,
+    checkEq "every source scope's refusal reaches the findings, once each"
+      scopedFindings.size sourceScopeNames.length,
+    check "each refusal carries its own scope's name and repair instruction"
+      (sourceScopeNames.all fun (_, name) =>
+        scopedFindings.any fun error =>
+          error.startsWith s!"trust verification ({name}):" &&
+            error.contains s!"{name}/Linked" &&
+            error.contains s!"in the {name} source scope")
+      s!"{scopedFindings.toList}",
+    -- The clean-run summary is the other place a scope name and a number are
+    -- printed together. Each scope here carries a distinct declaration count, so
+    -- a count filed under another scope's name fails a row rather than reading
+    -- as an unremarkable different number.
+    check "the summary reports each scope's own declaration count under its own name"
+      (["production=1", "tests=2", "verifier=3", "verifier supervisor=4",
+        "test supervisor=5", "tooling=6", "release=7"].all fun entry =>
+        summaryLine.contains entry),
+    check "the summary reports the landmark count of the scope that carries landmarks"
+      (summaryLine.contains s!"landmarks={clean.landmarks.size}") ]
 
 private def project : Std.HashSet Name :=
   (#[`Tl.Kernel.Op, `Tl.Kernel.Reach, `Tl.Kernel.Ready] : Array Name).foldl (·.insert ·) ∅
@@ -666,7 +731,23 @@ private def inventoryTests : IO (List Outcome) := do
           #[`Verify.Launcher, `Verify.SecondSupervisor] }).verifierScopeModules
         #[`Verify.Main, `Verify.Launcher, `Verify.SecondSupervisor,
           `Verify.TestLauncher, `Verify.Supervise])
-      #[`Verify.Main, `Verify.Supervise]
+      #[`Verify.Main, `Verify.Supervise],
+    -- The registry is what the scope types are read against: `loadScope` takes a
+    -- scope and looks its roots up here, so a swapped or duplicated arm is the
+    -- one remaining way to load one environment under two scopes' names — and
+    -- the second of them would never be inspected at all.
+    check "every gate scope loads the roots its own registry entry names"
+      (auditLayout.gateRoots .production == auditLayout.productionRoots &&
+        auditLayout.gateRoots .tests == auditLayout.testRoots &&
+        auditLayout.gateRoots .verifier == auditLayout.verifierRoots &&
+        auditLayout.gateRoots .supervisor == auditLayout.supervisorRoots &&
+        auditLayout.gateRoots .testSupervisor == auditLayout.testSupervisorRoots &&
+        auditLayout.gateRoots .tooling == auditLayout.toolingRoots &&
+        auditLayout.gateRoots .release == auditLayout.releaseRoots),
+    check "no two gate scopes load the same roots, and none loads nothing"
+      (gateRootSets.all (fun roots => !roots.isEmpty) &&
+        gateRootSets.eraseDups.length == gateRootSets.length)
+      s!"{gateScopes.map fun scope => (scope.label, auditLayout.gateRoots scope)}"
   ]
 
 private def theoremInfo (name : Name) (type value : Expr) : ConstantInfo :=

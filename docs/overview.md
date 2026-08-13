@@ -106,7 +106,9 @@ described in [trust-verifier.md](trust-verifier.md).
 Required evidence is typed rather than accumulated in optional clean
 arrays: import audit, replay, expected landmarks, seven named scope reports,
 inventory findings, typed source-scope ownership, and unclaimed sources must all
-reach the verdict.
+reach the verdict. Each scope's observation is typed by *which* scope it is, and
+so is the loaded environment it comes from, so the seven cannot be swapped,
+duplicated, or observed under one another's names at the call site.
 `Tests/VerifyTests.lean` covers each report branch's message and remedy, the
 cleanliness of its own base fixture, source inventory
 and symlink refusal, the pinned direct-dependency policy and its violation
@@ -430,7 +432,13 @@ entries: verifier-bootstrap integrity — protected review ensures
 reviewed checks and do not deliberately forge the public completion verdict; a
 process cannot authenticate which of its own initializers printed an in-band
 string, so the verdict detects accidental early exits rather than
-self-authenticating the gate (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
+self-authenticating the gate. What review no longer carries is the wiring: an
+observation and the loaded environment it is built from each carry their audited
+scope in their *type*, so passing one scope's evidence as another's — the
+mistake that would leave an environment uninspected under a name saying it was
+inspected — does not compile. What review does carry is the registry those types
+are read against, the roots and source directories each scope owns; a mismatch
+there is reported by the module arms rather than passed over (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
 total even then, so this guards segment-ownership, not convergence, ADR-0007;
 minting draws from the ADR-0019 shim's OS CSPRNG — the earlier `IO.rand`

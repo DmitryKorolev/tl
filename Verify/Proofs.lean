@@ -105,14 +105,14 @@ that arm is silent, so the aggregate theorem below can neither lose a condition
 nor invent one. The stored-body axiom propagation those arms report on is
 characterised separately, at the end of this file. -/
 
-theorem replayFindings_eq_empty_iff (o : Observation) :
+theorem replayFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     replayFindings o = #[] ↔ o.evidence.replayError? = none := by
   unfold replayFindings
   split
   · next h => exact iff_of_true rfl h
   · next replayError h => exact iff_of_false (singleton_ne_empty _) (by rw [h]; exact nofun)
 
-theorem propagationFindings_eq_empty_iff (o : Observation) :
+theorem propagationFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     propagationFindings o = #[] ↔ o.evidence.propagationError? = none := by
   unfold propagationFindings
   split
@@ -120,21 +120,21 @@ theorem propagationFindings_eq_empty_iff (o : Observation) :
   · next propagationError h =>
       exact iff_of_false (singleton_ne_empty _) (by rw [h]; exact nofun)
 
-theorem missingModules_eq_empty_iff (o : Observation) :
+theorem missingModules_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     missingModules o = #[] ↔ ∀ name ∈ o.expectedModules, name ∈ o.localModules := by
   unfold missingModules
   rw [Array.filter_eq_empty_iff]
   refine forall_congr' fun name => imp_congr_right fun _ => ?_
   rw [not_not_eq_true, contains_foldl_insert_empty_iff]
 
-theorem unexpectedModules_eq_empty_iff (o : Observation) :
+theorem unexpectedModules_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     unexpectedModules o = #[] ↔ ∀ name ∈ o.localModules, name ∈ o.expectedModules := by
   unfold unexpectedModules
   rw [Array.filter_eq_empty_iff]
   refine forall_congr' fun name => imp_congr_right fun _ => ?_
   rw [not_not_eq_true, contains_foldl_insert_empty_iff]
 
-theorem missingModuleFindings_eq_empty_iff (o : Observation) :
+theorem missingModuleFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     missingModuleFindings o = #[] ↔ ∀ name ∈ o.expectedModules, name ∈ o.localModules := by
   unfold missingModuleFindings
   rw [← missingModules_eq_empty_iff]
@@ -143,7 +143,7 @@ theorem missingModuleFindings_eq_empty_iff (o : Observation) :
   · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
-theorem unexpectedModuleFindings_eq_empty_iff (o : Observation) :
+theorem unexpectedModuleFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     unexpectedModuleFindings o = #[] ↔ ∀ name ∈ o.localModules, name ∈ o.expectedModules := by
   unfold unexpectedModuleFindings
   rw [← unexpectedModules_eq_empty_iff]
@@ -152,7 +152,7 @@ theorem unexpectedModuleFindings_eq_empty_iff (o : Observation) :
   · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
-theorem vacuityReasons_eq_nil_iff (o : Observation) :
+theorem vacuityReasons_eq_nil_iff {scope : GateScope} (o : Observation scope) :
     vacuityReasons o = [] ↔
       o.decls ≠ #[] ∧ o.evidence.replayedConstants ≠ 0 ∧ o.evidence.importEdges ≠ 0 := by
   unfold vacuityReasons
@@ -162,7 +162,7 @@ theorem vacuityReasons_eq_nil_iff (o : Observation) :
 
 /-- The vacuity arm is silent exactly when the scope inspected some module and
     every kind of evidence the later arms depend on was actually observed. -/
-theorem vacuityFindings_eq_empty_iff (o : Observation) :
+theorem vacuityFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     vacuityFindings o = #[] ↔
       o.localModules ≠ #[] ∧ o.decls ≠ #[] ∧ o.evidence.replayedConstants ≠ 0
         ∧ o.evidence.importEdges ≠ 0 := by
@@ -182,7 +182,7 @@ theorem vacuityFindings_eq_empty_iff (o : Observation) :
       rintro ⟨-, hdecls, hreplay, hedges⟩
       exact hvacuous ((vacuityReasons_eq_nil_iff o).mpr ⟨hdecls, hreplay, hedges⟩)
 
-theorem landmarkPolicyFindings_eq_empty_iff (o : Observation) :
+theorem landmarkPolicyFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     landmarkPolicyFindings o = #[] ↔ o.landmarks.map (·.name) = o.expectedLandmarks := by
   unfold landmarkPolicyFindings
   by_cases h : o.landmarks.map (·.name) = o.expectedLandmarks
@@ -191,7 +191,7 @@ theorem landmarkPolicyFindings_eq_empty_iff (o : Observation) :
   · rw [if_pos (bne_iff_ne.mpr h)]
     exact iff_of_false (singleton_ne_empty _) h
 
-theorem landmarkKindFindings_eq_empty_iff (o : Observation) :
+theorem landmarkKindFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     landmarkKindFindings o = #[] ↔
       ∀ landmark ∈ o.landmarks, landmark.kind? = some .theoremDecl := by
   unfold landmarkKindFindings
@@ -294,7 +294,7 @@ theorem repeatedLandmarks_eq_empty_iff (landmarks : Array Landmark) :
   · rintro ⟨hnodup, -⟩; exact hnodup
   · exact fun hnodup => ⟨hnodup, fun _ _ => Std.HashSet.contains_empty⟩
 
-theorem duplicateLandmarkFindings_eq_empty_iff (o : Observation) :
+theorem duplicateLandmarkFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     duplicateLandmarkFindings o = #[] ↔ (o.landmarks.map (·.name)).toList.Nodup := by
   unfold duplicateLandmarkFindings
   rw [← repeatedLandmarks_eq_empty_iff]
@@ -303,7 +303,7 @@ theorem duplicateLandmarkFindings_eq_empty_iff (o : Observation) :
   · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
-theorem axiomDeclarations_eq_empty_iff (o : Observation) :
+theorem axiomDeclarations_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     axiomDeclarations o = #[] ↔ ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl := by
   unfold axiomDeclarations
   rw [Array.filter_eq_empty_iff]
@@ -312,7 +312,7 @@ theorem axiomDeclarations_eq_empty_iff (o : Observation) :
   · exact fun h hkind => h (by rw [hkind]; exact beq_self_eq_true _)
   · exact fun h hbeq => h (of_decide_eq_true hbeq)
 
-theorem axiomDeclarationFindings_eq_empty_iff (o : Observation) :
+theorem axiomDeclarationFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
     axiomDeclarationFindings o = #[] ↔ ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl := by
   unfold axiomDeclarationFindings
   rw [← axiomDeclarations_eq_empty_iff]
@@ -323,7 +323,8 @@ theorem axiomDeclarationFindings_eq_empty_iff (o : Observation) :
 
 /-- A first-party axiom is reported by its own arm, so this arm's silence is
     conditional on the declaration not being one. -/
-theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) (o : Observation) :
+theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) {scope : GateScope}
+    (o : Observation scope) :
     axiomDependencyOffenders cfg o = #[] ↔
       ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl →
         ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
@@ -346,7 +347,8 @@ theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) (o : Observation) :
     · rw [if_neg (fun hc => hbad (Array.isEmpty_iff.mp hc))]
       exact iff_of_false nofun (fun h => hbad (allowed.mpr (h hkind)))
 
-theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) (o : Observation) :
+theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) {scope : GateScope}
+    (o : Observation scope) :
     axiomDependencyFindings cfg o = #[] ↔
       ∀ decl ∈ o.decls, decl.kind ≠ .axiomDecl →
         ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
@@ -363,7 +365,7 @@ theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) (o : Observation) :
     positively. A field per arm: adding an arm without adding a field here
     breaks `analyze_clean_iff`, so the verdict cannot grow a condition this
     characterisation does not mention. -/
-structure GateClean (cfg : Config) (o : Observation) : Prop where
+structure GateClean (cfg : Config) {scope : GateScope} (o : Observation scope) : Prop where
   /-- The ADR-0009 direct-import audit found nothing. -/
   importAuditClean : o.evidence.importErrors = #[]
   /-- Independent kernel replay accepted the stored dependency cone. -/
@@ -376,7 +378,7 @@ structure GateClean (cfg : Config) (o : Observation) : Prop where
   everyExpectedModuleImported : ∀ name ∈ o.expectedModules, name ∈ o.localModules
   /-- Every imported first-party module is inside the declared scope. -/
   everyImportedModuleExpected : ∀ name ∈ o.localModules, name ∈ o.expectedModules
-  /-- The scope is one of the mandatory six, so it must inspect something. -/
+  /-- The scope is one of the mandatory seven, so it must inspect something. -/
   modulesInspected : o.localModules ≠ #[]
   /-- Declaration ownership selected something to audit. -/
   declsSelected : o.decls ≠ #[]
@@ -401,7 +403,7 @@ structure GateClean (cfg : Config) (o : Observation) : Prop where
   axiomsWithinAllowance : ∀ decl ∈ o.decls, ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms
 
 /-- The verdict for one scope is the conjunction of its arms staying silent. -/
-theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
+theorem analyze_errors_eq_empty_iff_arms (cfg : Config) {scope : GateScope} (o : Observation scope) :
     (analyze cfg o).errors = #[] ↔
       o.evidence.importErrors = #[] ∧ replayFindings o = #[]
         ∧ propagationFindings o = #[]
@@ -427,7 +429,7 @@ theorem analyze_errors_eq_empty_iff_arms (cfg : Config) (o : Observation) :
     `o.evidence.replayError?` is a real kernel replay are properties of
     `Verify.Environment`'s collection layer, which stays in the tested tier
     (ADR-0026). -/
-theorem analyze_clean_iff (cfg : Config) (o : Observation) :
+theorem analyze_clean_iff (cfg : Config) {scope : GateScope} (o : Observation scope) :
     (analyze cfg o).errors = #[] ↔ GateClean cfg o := by
   rw [analyze_errors_eq_empty_iff_arms, replayFindings_eq_empty_iff,
     propagationFindings_eq_empty_iff,
@@ -532,14 +534,13 @@ theorem gateEvidence_errors_eq_empty_iff_scopes (evidence : GateEvidence) :
     is only the emission — `runChecked` writing `verdict.diagnostics` to stderr
     and `verdict.report` to stdout and returning `verdict.status` — plus the
     supervisor's handling of that marker. -/
-theorem analyzedGateEvidence_clean_iff (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling release : Observation)
+theorem analyzedGateEvidence_clean_iff (cfg : Config) (observations : ScopeObservations)
     (inventoryErrors unclaimedSources : Array String) :
-    (gateEvidenceOf cfg production tests verifier supervisor testSupervisor tooling release
-      inventoryErrors unclaimedSources).errors = #[] ↔
-      GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
-        ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor
-        ∧ GateClean cfg tooling ∧ GateClean cfg release
+    (gateEvidenceOf cfg observations inventoryErrors unclaimedSources).errors = #[] ↔
+      GateClean cfg observations.production ∧ GateClean cfg observations.tests
+        ∧ GateClean cfg observations.verifier ∧ GateClean cfg observations.supervisor
+        ∧ GateClean cfg observations.testSupervisor ∧ GateClean cfg observations.tooling
+        ∧ GateClean cfg observations.release
         ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
   rw [gateEvidenceOf, gateEvidence_errors_eq_empty_iff_scopes]
   rw [analyze_clean_iff, analyze_clean_iff, analyze_clean_iff, analyze_clean_iff,
@@ -609,13 +610,14 @@ theorem workerVerdict_report_empty (summary marker : String) (evidence : GateEvi
     marker is printed exactly when all seven scopes are `GateClean` and both
     inventory scans are silent. -/
 theorem workerVerdict_marker_iff_clean (summary marker : String) (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling release : Observation)
+    (observations : ScopeObservations)
     (inventoryErrors unclaimedSources : Array String) :
-    marker ∈ (workerVerdict summary marker (gateEvidenceOf cfg production tests verifier
-        supervisor testSupervisor tooling release inventoryErrors unclaimedSources)).report ↔
-      GateClean cfg production ∧ GateClean cfg tests ∧ GateClean cfg verifier
-        ∧ GateClean cfg supervisor ∧ GateClean cfg testSupervisor ∧ GateClean cfg tooling
-        ∧ GateClean cfg release
+    marker ∈ (workerVerdict summary marker
+        (gateEvidenceOf cfg observations inventoryErrors unclaimedSources)).report ↔
+      GateClean cfg observations.production ∧ GateClean cfg observations.tests
+        ∧ GateClean cfg observations.verifier ∧ GateClean cfg observations.supervisor
+        ∧ GateClean cfg observations.testSupervisor ∧ GateClean cfg observations.tooling
+        ∧ GateClean cfg observations.release
         ∧ inventoryErrors = #[] ∧ unclaimedSources = #[] := by
   rw [workerVerdict_marker_iff, analyzedGateEvidence_clean_iff]
 

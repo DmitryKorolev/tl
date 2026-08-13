@@ -35,23 +35,20 @@ unsafe def runChecked : IO UInt32 := do
     IO.eprintln s!"trust verification: could not find lakefile.lean above {cwd}; run this command inside the tl checkout"
     return 1
   let sourceInventories ← collectSourceInventories root auditLayout
-  let productionInventory := sourceInventoryFor .production sourceInventories
-  let testsInventory := sourceInventoryFor .tests sourceInventories
-  let verifierInventory := sourceInventoryFor .verifier sourceInventories
-  let toolingInventory := sourceInventoryFor .tooling sourceInventories
-  let releaseInventory := sourceInventoryFor .release sourceInventories
-  let production ← loadEnvironmentNoInitializers auditLayout.productionRoots
-  let productionModules ← projectModulesIn production
+  let production ← loadScope auditLayout .production
+  let productionModules ← production.projectModules
   let expectedProduction := auditLayout.expectedSourceModules .production sourceInventories
-  let productionObservation ← observeEnvironment "production" production
-    expectedProduction productionModules productionModules landmarkTheorems
+  let productionObservation ← observeEnvironment production
+    { expected := expectedProduction, inspected := productionModules,
+      project := productionModules }
+    landmarkTheorems
 
   let expectedVerifierAll := auditLayout.expectedSourceModules .verifier sourceInventories
   let expectedRelease := auditLayout.expectedSourceModules .release sourceInventories
   let expectedSupervisor := auditLayout.supervisorModules
   let expectedVerifier := auditLayout.verifierScopeModules expectedVerifierAll
-  let tests ← loadEnvironmentNoInitializers auditLayout.testRoots
-  let testProjectModules ← projectModulesIn tests
+  let tests ← loadScope auditLayout .tests
+  let testProjectModules ← tests.projectModules
   -- Release modules are subtracted here for the same reason production and
   -- verifier ones are: a test that exercises `tlrelease` pulls them into this
   -- environment, and the tests scope would then report first-party modules
@@ -61,31 +58,37 @@ unsafe def runChecked : IO UInt32 := do
     (without (without testProjectModules productionModules) expectedVerifierAll)
     expectedRelease
   let expectedTests := auditLayout.expectedSourceModules .tests sourceInventories
-  let testObservation ← observeEnvironment "tests" tests expectedTests testModules
-    testProjectModules
+  let testObservation ← observeEnvironment tests
+    { expected := expectedTests, inspected := testModules,
+      project := testProjectModules }
 
-  let verifier ← loadEnvironmentNoInitializers auditLayout.verifierRoots
-  let verifierProjectModules ← projectModulesIn verifier
+  let verifier ← loadScope auditLayout .verifier
+  let verifierProjectModules ← verifier.projectModules
   let verifierModules := without verifierProjectModules productionModules
-  let verifierObservation ← observeEnvironment "verifier" verifier
-    expectedVerifier verifierModules verifierProjectModules
+  let verifierObservation ← observeEnvironment verifier
+    { expected := expectedVerifier, inspected := verifierModules,
+      project := verifierProjectModules }
 
-  let launcher ← loadEnvironmentNoInitializers auditLayout.supervisorRoots
-  let launcherModules ← projectModulesIn launcher
-  let launcherObservation ← observeEnvironment "verifier supervisor" launcher
-    expectedSupervisor launcherModules launcherModules (moduleRemedy := supervisorModuleRemedy)
+  let launcher ← loadScope auditLayout .supervisor
+  let launcherModules ← launcher.projectModules
+  let launcherObservation ← observeEnvironment launcher
+    { expected := expectedSupervisor, inspected := launcherModules,
+      project := launcherModules }
+    (moduleRemedy := supervisorModuleRemedy)
 
-  let testLauncher ← loadEnvironmentNoInitializers auditLayout.testSupervisorRoots
-  let testLauncherModules ← projectModulesIn testLauncher
-  let testLauncherObservation ← observeEnvironment "test supervisor" testLauncher
-    auditLayout.testSupervisorModules testLauncherModules testLauncherModules
+  let testLauncher ← loadScope auditLayout .testSupervisor
+  let testLauncherModules ← testLauncher.projectModules
+  let testLauncherObservation ← observeEnvironment testLauncher
+    { expected := auditLayout.testSupervisorModules, inspected := testLauncherModules,
+      project := testLauncherModules }
     (moduleRemedy := testSupervisorModuleRemedy)
 
-  let tooling ← loadEnvironmentNoInitializers auditLayout.toolingRoots
-  let toolingModules ← projectModulesIn tooling
-  let toolingObservation ← observeEnvironment "tooling" tooling
-    (auditLayout.expectedSourceModules .tooling sourceInventories)
-    toolingModules toolingModules (moduleRemedy := toolingModuleRemedy)
+  let tooling ← loadScope auditLayout .tooling
+  let toolingModules ← tooling.projectModules
+  let toolingObservation ← observeEnvironment tooling
+    { expected := auditLayout.expectedSourceModules .tooling sourceInventories,
+      inspected := toolingModules, project := toolingModules }
+    (moduleRemedy := toolingModuleRemedy)
 
   -- Its own environment, not a corner of `tooling`: both roots define `main`,
   -- and two roots in one array load into one environment. Inspected to the
@@ -94,37 +97,36 @@ unsafe def runChecked : IO UInt32 := do
   -- is not a proof obligation" means concretely. It carries no landmarks,
   -- because landmarks guard the product's proved claims and this is not the
   -- product.
-  let release ← loadEnvironmentNoInitializers auditLayout.releaseRoots
-  let releaseModules ← projectModulesIn release
-  let releaseObservation ← observeEnvironment "release" release
-    expectedRelease releaseModules releaseModules (moduleRemedy := releaseModuleRemedy)
+  let release ← loadScope auditLayout .release
+  let releaseModules ← release.projectModules
+  let releaseObservation ← observeEnvironment release
+    { expected := expectedRelease, inspected := releaseModules,
+      project := releaseModules }
+    (moduleRemedy := releaseModuleRemedy)
 
   let unclaimed ← unclaimedSources root auditLayout
-  let inventoryErrors :=
-    productionInventory.errors "production"
-      "Replace it with a regular in-tree directory or .lean file in the production source scope." ++
-    testsInventory.errors "tests"
-      "Replace it with a regular in-tree directory or .lean file in the test source scope." ++
-    verifierInventory.errors "verifier"
-      "Replace it with a regular in-tree directory or .lean file in the verifier source scope." ++
-    toolingInventory.errors "tooling"
-      "Replace it with a regular in-tree directory or .lean file in the tooling source scope." ++
-    releaseInventory.errors "release"
-      "Replace it with a regular in-tree directory or .lean file in the release source scope."
-  -- Named arguments: seven same-typed observations are otherwise swappable, and
-  -- a scope audited twice would leave another entirely uninspected.
-  let evidence : GateEvidence := gateEvidenceOf config
-    (production := productionObservation) (tests := testObservation)
-    (verifier := verifierObservation) (supervisor := launcherObservation)
-    (testSupervisor := testLauncherObservation) (tooling := toolingObservation)
-    (release := releaseObservation)
+  -- Derived from the typed registry rather than one hand-paired call per source
+  -- scope: a scope added to `auditLayout` reports its refusals through this
+  -- without a second edit somewhere else.
+  let inventoryErrors := scopedInventoryErrors sourceInventories
+  -- Each field admits one scope's observation and no other, so a swapped or
+  -- duplicated observation — which would leave a scope entirely uninspected —
+  -- does not elaborate.
+  let observations : ScopeObservations :=
+    { production := productionObservation
+      tests := testObservation
+      verifier := verifierObservation
+      supervisor := launcherObservation
+      testSupervisor := testLauncherObservation
+      tooling := toolingObservation
+      release := releaseObservation }
+  let evidence : GateEvidence := gateEvidenceOf config observations
     (inventoryErrors := inventoryErrors) (unclaimedSources := unclaimed)
   -- No branch here on purpose: `workerVerdict` decides, and is characterised in
   -- `Verify.Proofs`. Both outcomes then execute the same three lines, so the
   -- emission path CI exercises on every clean run is the one that runs on a
   -- failure too.
-  let verdict := workerVerdict
-    s!"trust verification: ok; inspected production={productionObservation.decls.size}, tests={testObservation.decls.size}, verifier={verifierObservation.decls.size}, verifier-supervisor={launcherObservation.decls.size}, test-supervisor={testLauncherObservation.decls.size}, tooling={toolingObservation.decls.size}, release={releaseObservation.decls.size} declarations; safe total dependency cones independently replay-validated; landmarks={productionObservation.landmarks.size}"
+  let verdict := workerVerdict observations.summary
     verifierCompletionProtocol.verdict evidence
   for diagnostic in verdict.diagnostics do IO.eprintln diagnostic
   for line in verdict.report do IO.println line

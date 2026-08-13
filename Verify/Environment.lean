@@ -24,6 +24,17 @@ inductive AuditScope where
   | release
   deriving DecidableEq, Repr, Inhabited
 
+/-- How a source-inventory finding names the scope it came from, and the scope
+    word its repair instruction uses. Derived from the constructor for the same
+    reason `GateScope.label` is: the alternative is a scope word written out
+    beside each call, which is one more thing that can name the wrong scope. -/
+def AuditScope.label : AuditScope → String
+  | .production => "production"
+  | .tests => "tests"
+  | .verifier => "verifier"
+  | .tooling => "tooling"
+  | .release => "release"
+
 structure ScopedSourceDirectory where
   scope : AuditScope
   path : String
@@ -92,6 +103,39 @@ unsafe def loadEnvironmentNoInitializers (moduleNames : Array Name) : IO Environ
       { module := name, importAll := true, isMeta := true }) {}
     (loadExts := false)
 
+/-- The roots each audited environment is loaded from. A `match`, so a new
+    `GateScope` case cannot be added without deciding what it loads — and the
+    decision is here, next to the registry, rather than at a call site that
+    happened to name it. -/
+def AuditLayout.gateRoots (layout : AuditLayout) : GateScope → Array Name
+  | .production => layout.productionRoots
+  | .tests => layout.testRoots
+  | .verifier => layout.verifierRoots
+  | .supervisor => layout.supervisorRoots
+  | .testSupervisor => layout.testSupervisorRoots
+  | .tooling => layout.toolingRoots
+  | .release => layout.releaseRoots
+
+/-- An environment together with the scope it was loaded for.
+
+    The constructor is private, so the only way to obtain one is `loadScope`,
+    which reads the roots out of the registry under the same scope. That is what
+    makes the scope on an `Observation` mean something: an observation tagged
+    `.production` cannot have been built from the tests environment, because
+    `observeEnvironment` accepts only a matching `ScopedEnvironment`. Without
+    this, tagging the observation alone would leave the identical hole one step
+    earlier — the tests environment observed twice, once under each name, with
+    every field of both observations internally consistent. -/
+structure ScopedEnvironment (scope : GateScope) where
+  private mk ::
+  env : Environment
+
+/-- Load one audited scope from its registered roots, with initializers
+    unexecuted. -/
+unsafe def loadScope (layout : AuditLayout) (scope : GateScope) :
+    IO (ScopedEnvironment scope) :=
+  return ⟨← loadEnvironmentNoInitializers (layout.gateRoots scope)⟩
+
 def declarationKind : ConstantInfo → DeclKind
   | .axiomInfo _ => .axiomDecl
   | .thmInfo _ => .theoremDecl
@@ -127,9 +171,9 @@ structure ScopedSourceInventory where
   inventory : SourceInventory
   deriving Inhabited
 
-def SourceInventory.errors (inventory : SourceInventory) (scope remedy : String) : Array String :=
+def SourceInventory.errors (inventory : SourceInventory) (scope : AuditScope) : Array String :=
   inventory.refusedSymlinks.map fun path =>
-    s!"trust verification ({scope}): source inventory refuses symbolic link {path} because it is a .lean path, a directory, or could not be classified safely. {remedy}"
+    s!"trust verification ({scope.label}): source inventory refuses symbolic link {path} because it is a .lean path, a directory, or could not be classified safely. Replace it with a regular in-tree directory or .lean file in the {scope.label} source scope."
 
 /-- Inventory importable Lean modules without crossing a nested checkout or a
     symbolic-link source boundary. Semantic refusals are returned as data, not
@@ -178,6 +222,13 @@ def collectSourceInventories (root : System.FilePath)
   layout.sourceDirectories.mapM fun source => do
     let parts := source.modulePrefix.components.map toString
     return { source, inventory := ← modulesUnder (root / source.path) parts }
+
+/-- Every source-inventory refusal of the run, taken from the registry itself.
+    A scope added to `auditLayout.sourceDirectories` reports through this with no
+    second edit; the five hand-paired calls this replaces were a list a new scope
+    could be left off, leaving a scan whose findings nobody read. -/
+def scopedInventoryErrors (inventories : Array ScopedSourceInventory) : Array String :=
+  inventories.flatMap fun entry => entry.inventory.errors entry.source.scope
 
 def sourceInventoryFor (scope : AuditScope)
     (inventories : Array ScopedSourceInventory) : SourceInventory :=
@@ -267,6 +318,10 @@ def projectModulesIn (env : Environment) : IO (Array Name) := do
   env.allImportedModuleNames.filterM fun name => do
     let olean ← realPathNormalized (← findOLean name)
     return pathWithin projectLib olean
+
+def ScopedEnvironment.projectModules {scope : GateScope}
+    (env : ScopedEnvironment scope) : IO (Array Name) :=
+  projectModulesIn env.env
 
 def declarationsOf (env : Environment) (modulesToInspect : Array Name)
     (axiomsByName : Std.HashMap Name (Std.HashSet Name)) :
@@ -484,15 +539,35 @@ abbrev ReplayAudit :=
 abbrev PropagationAudit :=
   Std.HashMap Name ConstantInfo → Option (Std.HashMap Name (Std.HashSet Name))
 
-def observeEnvironment (scope : String) (env : Environment)
-    (expectedModules modulesToInspect projectModules : Array Name)
+/-- The three module sets one observation is built from. All three are
+    `Array Name` and were three adjacent positional parameters, so a swap
+    compiled; a call site now has to name each set it supplies. A set that
+    disagrees with the registry is not silent the way a swapped scope was: it is
+    what the missing- and unexpected-module arms report. The one thing those arms
+    cannot see is an `expected` read out of the environment itself, since the two
+    sides would then agree by construction — which is why every call site derives
+    it from the source inventory or the registered module list. -/
+structure ScopeModules where
+  /-- Every source the registry says this scope owns; the environment is
+      required to have imported all of them and nothing else first-party. -/
+  expected : Array Name
+  /-- The modules whose declarations and stored import rows this scope
+      inspects. -/
+  inspected : Array Name
+  /-- Every first-party module in the environment, so the import audit can tell
+      a project import from an external dependency. -/
+  project : Array Name
+
+def observeEnvironment {scope : GateScope} (environment : ScopedEnvironment scope)
+    (modules : ScopeModules)
     (landmarkNames : Array Name := #[])
     (moduleRemedy : String := defaultModuleRemedy)
     (importAudit : ImportAudit := importViolations importPolicy)
     (replayAudit : ReplayAudit := replayConstantsError?)
     (propagationAudit : PropagationAudit := propagatedAxioms) :
-    IO Observation := do
-  let imported := modulesInEnvironment env modulesToInspect
+    IO (Observation scope) := do
+  let env := environment.env
+  let imported := modulesInEnvironment env modules.inspected
   let replayConstants := replayClosure env (declarationNamesOf env imported)
   -- A refusal must not degrade into "no axioms found", which reads as clean.
   -- The empty map silences the axiom-dependency arm, and `propagationError?`
@@ -507,16 +582,15 @@ def observeEnvironment (scope : String) (env : Environment)
         `lake exe tlverify`; the bound assumes one worklist entry per \
         (declaration, axiom) pair, so needing more of it means the propagation \
         itself is enqueuing duplicates.")
-  let project := projectModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
+  let project := modules.project.foldl (·.insert ·) (∅ : Std.HashSet Name)
   let importRows := directImportRows env imported
-  let importErrors := importAudit scope project importRows
+  let importErrors := importAudit scope.label project importRows
   let replayError? ← replayAudit (← mkEmptyEnvironment) replayConstants
   let landmarks := landmarkNames.map fun name =>
     { name, kind? := (env.find? name).map declarationKind : Landmark }
   return {
-    scope
     localModules := imported
-    expectedModules
+    expectedModules := modules.expected
     moduleRemedy
     decls := ← declarationsOf env imported axiomsByName
     expectedLandmarks := landmarkNames

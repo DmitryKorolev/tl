@@ -274,9 +274,11 @@ trust boundary. Its executable is under `Verify/` and does the following:
 
 1. dynamically imports raw `.olean` data for the production roots (`Tl`,
    `Main`), test roots (`Tests` plus an adversarial fixture), its own root
-   (`Verify.Main`), executable Lean tooling (`scripts.GenLicenses`), and the
-   release-decision layer (`release.Main`) into
-   separate environments, with extension/initializer execution disabled;
+   (`Verify.Main`), the two launcher supervisors (`Verify.Launcher`,
+   `Verify.TestLauncher`), executable Lean tooling (`scripts.GenLicenses`), and
+   the release-decision layer (`release.Main`) into
+   seven separate environments, each loaded from the roots its scope registers,
+   with extension/initializer execution disabled;
 2. enumerates current importable `.lean` sources from the repository and
    compares each scoped inventory with Lean's actual imported-module graph;
 3. classifies imported first-party modules by actual artifact provenance—their
@@ -442,10 +444,17 @@ rules (entry and root), typed scope claims feeding their expected-module sets,
 the pinned dependency, landmark
 and supervision policies, the ADR-0009 violation findings themselves, the
 vacuity self-check, stored-body axiom propagation, and kernel replay. Import
-audit, replay, expected-landmark, six named scope-report, source-inventory, and
+audit, replay, expected-landmark, seven named scope-report, source-inventory, and
 unclaimed-source evidence are required structure fields; tests inject negative
 sentinels through the composed observation/verdict paths, so clean checked-in
-environments cannot make their wiring mutation-silent. The
+environments cannot make their wiring mutation-silent. Which scope a piece of
+evidence belongs to is carried by its type rather than by a name written beside
+it: `GateScope` indexes both an observation and the loaded environment it is
+built from, and the seven reach the verdict through a structure with one
+differently-typed field each, so a swapped, duplicated or dropped scope does not
+elaborate. The registry that maps a scope to its roots and its source
+directories is what review still carries — and a mismatch there is reported by
+the missing- and unexpected-module arms rather than passed over. The
 replay regression constructs an ill-typed theorem value—representing
 the result of unchecked insertion—and asserts that replay rejects it. The
 supervision decision is driven against real worker processes (completed,

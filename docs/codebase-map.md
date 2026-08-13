@@ -596,13 +596,24 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   Main.lean             --   tltest entry point
 
 Verify/                 -- Lean-native trust gate: `lake exe tlverify`
-  Report.lean           --   typed semantic/gate evidence and pure policy decisions
+  Report.lean           --   typed semantic/gate evidence and pure policy
+                        --   decisions. The seven-case GateScope indexes
+                        --   Observation, so a scope's evidence has a type no
+                        --   other scope's fits, its human label is read off
+                        --   that type, and the run's seven observations are
+                        --   assembled through a structure whose fields all
+                        --   differ in type
   Policy.lean           --   axiom allowance, ADR-0009 direct-import allowlist,
                         --   and proved-claim landmarks
   Environment.lean      --   typed audit layout (source paths carry their owning
-                        --   scope and derive both claims + expected modules),
-                        --   classified inventory, symlink boundaries,
-                        --   import/axiom inspection, kernel replay
+                        --   scope and derive both claims + expected modules;
+                        --   gate roots and inventory findings are derived from
+                        --   the same registry by scope), classified inventory,
+                        --   symlink boundaries, import/axiom inspection, kernel
+                        --   replay. A loaded environment is sealed behind a
+                        --   private constructor together with the scope it was
+                        --   loaded for, so an observation cannot be minted for
+                        --   one scope out of another's environment
   Main.lean             --   dynamically loads production, tests, itself, and
                         --   Lean tooling without initializers; worker verdict
   Supervise.lean        --   the completion protocol and the supervision
@@ -800,6 +811,24 @@ itself inspected as a separate scope. Its tier is split, deliberately:
   (one replay step enqueues every constant the stored body uses, plus an
   inductive's mutual siblings — the fixed-point walk in the
   `partial def replayClosure` is not proved).
+- **Which scope a piece of evidence belongs to is carried by the types**, and
+  so belongs to neither tier. `GateScope` has one case per audited environment
+  and indexes `Observation`; `ScopedEnvironment` seals a loaded environment
+  together with the scope it was loaded for behind a private constructor, so
+  only `loadScope` — which reads that scope's roots out of the registry — can
+  mint one; and the run's seven observations are assembled through
+  `ScopeObservations`, whose fields all differ in type. The mistakes that would
+  leave a scope unaudited while every theorem and every test stayed green —
+  passing the tests observation as `production`, auditing one scope twice,
+  observing one environment under another scope's name — therefore do not
+  elaborate, and the scope word in a finding is derived from the type rather
+  than written beside it. What is left is the registry those types are read
+  against: which roots and which source directories a scope owns
+  (`auditLayout`, `AuditLayout.gateRoots`). That is not silent either — the
+  missing- and unexpected-module arms compare each environment's first-party
+  imports against its scope's own source inventory — but it is reviewed data,
+  and it is what the verifier-bootstrap assumption in the
+  [overview](overview.md) now covers.
 - The **rest of the collection stays tested**. `Verify/Environment.lean` reads
   Lean's stored module and declaration data, walks the filesystem, and replays
   declarations through the kernel; nothing in `Verify/Proofs.lean` says that

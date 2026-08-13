@@ -5,6 +5,42 @@ open Lean (Name)
 
 namespace Tl.Verify
 
+/-- The seven environments one run audits, each loaded and inspected on its own.
+
+    This is deliberately not `Verify.Environment.AuditScope`, which owns
+    *filesystem locations*: the two supervisors have no sources of their own,
+    and three of these scopes are inspected out of the one `Verify/` source
+    claim. A gate scope names an environment; a source scope names a directory.
+
+    Every observation is indexed by one of these, so the scope an observation
+    belongs to is fixed when it is built and cannot be reassigned by where it is
+    passed. Adding a case here is a compile error in `GateScope.label` and in
+    `AuditLayout.gateRoots`, which is where a new environment's name and roots
+    are decided. Reaching the verdict additionally needs a field in
+    `ScopeObservations`, and nothing forces that: a case added here and nowhere
+    else names an environment the gate never audits. -/
+inductive GateScope where
+  | production
+  | tests
+  | verifier
+  | supervisor
+  | testSupervisor
+  | tooling
+  | release
+  deriving DecidableEq, Repr, Inhabited
+
+/-- How a finding names its scope, and how the summary line lists it. Derived
+    from the constructor rather than carried alongside it, so no observation can
+    report itself under another scope's name. -/
+def GateScope.label : GateScope → String
+  | .production => "production"
+  | .tests => "tests"
+  | .verifier => "verifier"
+  | .supervisor => "verifier supervisor"
+  | .testSupervisor => "test supervisor"
+  | .tooling => "tooling"
+  | .release => "release"
+
 inductive DeclKind where
   | axiomDecl
   | theoremDecl
@@ -41,8 +77,11 @@ structure SemanticEvidence where
   importEdges : Nat
   deriving Inhabited
 
-structure Observation where
-  scope : String
+/-- One scope's collected evidence. The scope is the structure's parameter, not
+    a field: `Observation .production` and `Observation .tests` are different
+    types, so an observation cannot be passed where another scope's is expected,
+    and the scope name every finding below carries is read off the type. -/
+structure Observation (scope : GateScope) where
   localModules : Array Name
   expectedModules : Array Name
   decls : Array Decl
@@ -74,8 +113,9 @@ def summarize (xs : Array String) (limit : Nat := 20) : String :=
   String.intercalate "\n"
     (shown.toList ++ if rest == 0 then [] else [s!"  … and {rest} more"])
 
-/-- The six independently audited worker scopes. Named fields make silently
-    dropping one from the final verdict a type error rather than an array edit. -/
+/-- The seven independently audited worker scopes, one report each. Named fields
+    make silently dropping one from the final verdict a type error rather than an
+    array edit. -/
 structure AuditedReports where
   production : Report
   tests : Report
@@ -117,74 +157,74 @@ condition is stated — and proved equivalent to its finding being absent — in
 `Verify.Proofs` without restating any message text.
 -/
 
-def replayFindings (o : Observation) : Array String :=
+def replayFindings {scope : GateScope} (o : Observation scope) : Array String :=
   match o.evidence.replayError? with
   | none => #[]
-  | some replayError => #[s!"trust verification ({o.scope}): {replayError}"]
+  | some replayError => #[s!"trust verification ({scope.label}): {replayError}"]
 
 /-- Axiom propagation refused to answer, so the axiom rows below it are
     incomplete and were discarded. Its own arm: silence here is what lets the
     axiom-dependency arm's silence mean anything. -/
-def propagationFindings (o : Observation) : Array String :=
+def propagationFindings {scope : GateScope} (o : Observation scope) : Array String :=
   match o.evidence.propagationError? with
   | none => #[]
-  | some propagationError => #[s!"trust verification ({o.scope}): {propagationError}"]
+  | some propagationError => #[s!"trust verification ({scope.label}): {propagationError}"]
 
 /-- Expected source modules the inspected environment did not import. -/
-def missingModules (o : Observation) : Array Name :=
+def missingModules {scope : GateScope} (o : Observation scope) : Array Name :=
   let localSet := o.localModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
   o.expectedModules.filter fun name => !localSet.contains name
 
-def missingModuleFindings (o : Observation) : Array String :=
+def missingModuleFindings {scope : GateScope} (o : Observation scope) : Array String :=
   let missing := missingModules o
   if missing.isEmpty then #[] else
-    #[s!"trust verification ({o.scope}): {missing.size} source module(s) are absent from the imported environment:\n\
+    #[s!"trust verification ({scope.label}): {missing.size} source module(s) are absent from the imported environment:\n\
       {summarize (missing.map fun name => s!"  {name}")}\n\
       {o.moduleRemedy}"]
 
 /-- Imported first-party modules the scope never declared. -/
-def unexpectedModules (o : Observation) : Array Name :=
+def unexpectedModules {scope : GateScope} (o : Observation scope) : Array Name :=
   let expectedSet := o.expectedModules.foldl (·.insert ·) (∅ : Std.HashSet Name)
   o.localModules.filter fun name => !expectedSet.contains name
 
-def unexpectedModuleFindings (o : Observation) : Array String :=
+def unexpectedModuleFindings {scope : GateScope} (o : Observation scope) : Array String :=
   let unexpected := unexpectedModules o
   if unexpected.isEmpty then #[] else
-    #[s!"trust verification ({o.scope}): {unexpected.size} imported first-party module(s) are outside the declared scope:\n\
+    #[s!"trust verification ({scope.label}): {unexpected.size} imported first-party module(s) are outside the declared scope:\n\
       {summarize (unexpected.map fun name => s!"  {name}")}\n\
       {o.moduleRemedy}"]
 
 /-- Why a nonempty scope's findings would be vacuous. -/
-def vacuityReasons (o : Observation) : List String :=
+def vacuityReasons {scope : GateScope} (o : Observation scope) : List String :=
   (if o.decls.isEmpty then ["no declarations were selected from them"] else []) ++
   (if o.evidence.replayedConstants == 0 then ["nothing reached independent replay validation"] else []) ++
   (if o.evidence.importEdges == 0 then ["no direct import edges were read"] else [])
 
-/-- Every semantic arm is silent when nothing was selected. All six named
+/-- Every semantic arm is silent when nothing was selected. All seven named
     scopes are mandatory, so an empty module set is itself vacuous; otherwise
     declarations, replay validation, and import traversal must each have
     observable evidence. -/
-def vacuityFindings (o : Observation) : Array String :=
+def vacuityFindings {scope : GateScope} (o : Observation scope) : Array String :=
   if o.localModules.isEmpty then
-    #[s!"trust verification ({o.scope}): the named scope imported no first-party modules. Restore its registered roots and source inventory before trusting this run."]
+    #[s!"trust verification ({scope.label}): the named scope imported no first-party modules. Restore its registered roots and source inventory before trusting this run."]
   else
     let vacuous := vacuityReasons o
     if vacuous.isEmpty then #[] else
-      #[s!"trust verification ({o.scope}): {o.localModules.size} module(s) were inspected but {String.intercalate ", and " vacuous}. Declaration ownership, the replay cone, or the stored import traversal has regressed, so the axiom and kernel-replay findings below are vacuous. Restore the selection before trusting this run."]
+      #[s!"trust verification ({scope.label}): {o.localModules.size} module(s) were inspected but {String.intercalate ", and " vacuous}. Declaration ownership, the replay cone, or the stored import traversal has regressed, so the axiom and kernel-replay findings below are vacuous. Restore the selection before trusting this run."]
 
-def landmarkPolicyFindings (o : Observation) : Array String :=
+def landmarkPolicyFindings {scope : GateScope} (o : Observation scope) : Array String :=
   if o.landmarks.map (·.name) != o.expectedLandmarks then
-    #[s!"trust verification ({o.scope}): landmark observation did not preserve the policy list. Restore the one-for-one landmark lookup before trusting this run."]
+    #[s!"trust verification ({scope.label}): landmark observation did not preserve the policy list. Restore the one-for-one landmark lookup before trusting this run."]
   else #[]
 
-def landmarkKindFindings (o : Observation) : Array String :=
+def landmarkKindFindings {scope : GateScope} (o : Observation scope) : Array String :=
   o.landmarks.filterMap fun landmark =>
     match landmark.kind? with
     | some .theoremDecl => none
     | some kind =>
-      some s!"trust verification ({o.scope}): landmark {landmark.name} is {declKindName kind}, not a theorem. Restore the theorem, or retire the proved claim and its landmark together."
+      some s!"trust verification ({scope.label}): landmark {landmark.name} is {declKindName kind}, not a theorem. Restore the theorem, or retire the proved claim and its landmark together."
     | none =>
-      some s!"trust verification ({o.scope}): landmark theorem {landmark.name} is absent. Restore it, or retire the proved claim and its landmark together."
+      some s!"trust verification ({scope.label}): landmark theorem {landmark.name} is absent. Restore it, or retire the proved claim and its landmark together."
 
 /-- One pass of the duplicate-landmark scan: the names seen so far, and the
     names seen more than once. -/
@@ -197,27 +237,27 @@ def repeatedLandmarkStep (state : Std.HashSet Name × Array Name)
 def repeatedLandmarks (landmarks : Array Landmark) : Array Name :=
   (landmarks.foldl repeatedLandmarkStep (∅, #[])).2
 
-def duplicateLandmarkFindings (o : Observation) : Array String :=
+def duplicateLandmarkFindings {scope : GateScope} (o : Observation scope) : Array String :=
   let repeated := repeatedLandmarks o.landmarks
   if repeated.isEmpty then #[] else
-    #[s!"trust verification ({o.scope}): duplicate landmark(s):\n\
+    #[s!"trust verification ({scope.label}): duplicate landmark(s):\n\
       {summarize (repeated.map fun name => s!"  {name}")}\n\
       Give each documented proved claim its own landmark exactly once."]
 
-def axiomDeclarations (o : Observation) : Array Decl :=
+def axiomDeclarations {scope : GateScope} (o : Observation scope) : Array Decl :=
   o.decls.filter (·.kind == .axiomDecl)
 
-def axiomDeclarationFindings (o : Observation) : Array String :=
+def axiomDeclarationFindings {scope : GateScope} (o : Observation scope) : Array String :=
   let axiomDecls := axiomDeclarations o
   if axiomDecls.isEmpty then #[] else
-    #[s!"trust verification ({o.scope}): {axiomDecls.size} first-party axiom declaration(s):\n\
+    #[s!"trust verification ({scope.label}): {axiomDecls.size} first-party axiom declaration(s):\n\
       {summarize (axiomDecls.map fun decl => s!"  {decl.name}  ({decl.module})")}\n\
       Prove the claim or record the residual as an explicit carried assumption; do not extend the kernel trust boundary locally."]
 
 /-- Inspected declarations whose stored axiom dependencies leave the allowance.
     A first-party axiom is reported by its own arm, never also as depending on
     itself. -/
-def axiomDependencyOffenders (cfg : Config) (o : Observation) : Array String :=
+def axiomDependencyOffenders (cfg : Config) {scope : GateScope} (o : Observation scope) : Array String :=
   o.decls.filterMap fun decl =>
     if decl.kind == .axiomDecl then none
     else
@@ -225,14 +265,14 @@ def axiomDependencyOffenders (cfg : Config) (o : Observation) : Array String :=
       if bad.isEmpty then none
       else some s!"  {decl.name}  ({decl.module})  depends on: {String.intercalate ", " (bad.toList.map toString)}"
 
-def axiomDependencyFindings (cfg : Config) (o : Observation) : Array String :=
+def axiomDependencyFindings (cfg : Config) {scope : GateScope} (o : Observation scope) : Array String :=
   let offenders := axiomDependencyOffenders cfg o
   if offenders.isEmpty then #[] else
-    #[s!"trust verification ({o.scope}): {offenders.size} declaration(s) depend on axioms outside {cfg.allowedAxioms.toList}:\n\
+    #[s!"trust verification ({scope.label}): {offenders.size} declaration(s) depend on axioms outside {cfg.allowedAxioms.toList}:\n\
       {summarize offenders}\n\
       Finish the proof without `sorry` or native evaluation. If a residual is genuinely unprovable, decompose it and document the carried assumption."]
 
-def analyze (cfg : Config) (o : Observation) : Report :=
+def analyze (cfg : Config) {scope : GateScope} (o : Observation scope) : Report :=
   { errors :=
       o.evidence.importErrors
         ++ replayFindings o
@@ -271,6 +311,41 @@ def workerVerdict (summary marker : String) (evidence : GateEvidence) : WorkerVe
   if errors.isEmpty then { diagnostics := #[], report := #[summary, marker], status := 0 }
   else { diagnostics := errors, report := #[], status := 1 }
 
+/-- The seven observations one run produces, one per audited environment.
+
+    Every field has a *different* type, so this is what closes the call-site
+    hole seven same-typed parameters left open: passing the tests observation as
+    `production` no longer compiles, and neither does duplicating one scope while
+    dropping another. Field names are how the structure is written, but they are
+    no longer the only thing standing between a swapped argument and a scope that
+    is never audited. -/
+structure ScopeObservations where
+  production : Observation .production
+  tests : Observation .tests
+  verifier : Observation .verifier
+  supervisor : Observation .supervisor
+  testSupervisor : Observation .testSupervisor
+  tooling : Observation .tooling
+  release : Observation .release
+
+/-- One scope's entry in the clean-run summary line. Label and count are one
+    expression over one field, so a count cannot end up filed under another
+    scope's name. -/
+def Observation.summaryEntry {scope : GateScope} (o : Observation scope) : String :=
+  s!"{scope.label}={o.decls.size}"
+
+/-- What a clean run prints before its completion marker: what was inspected, in
+    the scopes it was inspected under. -/
+def ScopeObservations.summary (observations : ScopeObservations) : String :=
+  let inspected := String.intercalate ", "
+    [observations.production.summaryEntry, observations.tests.summaryEntry,
+      observations.verifier.summaryEntry, observations.supervisor.summaryEntry,
+      observations.testSupervisor.summaryEntry, observations.tooling.summaryEntry,
+      observations.release.summaryEntry]
+  s!"trust verification: ok; inspected {inspected} declarations; safe total \
+    dependency cones independently replay-validated; \
+    landmarks={observations.production.landmarks.size}"
+
 /-- Assemble the whole run's evidence from the seven scope observations and the
     two inventory scans. The worker calls exactly this, so the verdict the
     theorems in `Verify.Proofs` characterise is the verdict it ships: a scope
@@ -278,22 +353,22 @@ def workerVerdict (summary marker : String) (evidence : GateEvidence) : WorkerVe
     `analyzedGateEvidence_clean_iff` false rather than merely unproved, so the
     build cannot go green on it.
 
-    What that does not cover is the call site. The seven parameters share a type,
-    so passing `testObservation` into `production` compiles, leaves a scope
-    unaudited, and no theorem or test sees it — named arguments at the call site
-    are the mitigation, and the residual is the recorded verifier-bootstrap
-    assumption in docs/overview.md, not something proved here. -/
-def gateEvidenceOf (cfg : Config)
-    (production tests verifier supervisor testSupervisor tooling release : Observation)
+    The call site is covered by the argument types rather than by convention:
+    each field of `ScopeObservations` accepts one scope's observation and no
+    other, and `observeEnvironment` mints an `Observation scope` only from an
+    environment loaded under that same scope. What remains is the registry those
+    two read — which roots and which sources belong to a scope — and a mismatch
+    there is reported by the module arms rather than passed over. -/
+def gateEvidenceOf (cfg : Config) (observations : ScopeObservations)
     (inventoryErrors unclaimedSources : Array String) : GateEvidence :=
   { reports :=
-      { production := analyze cfg production
-        tests := analyze cfg tests
-        verifier := analyze cfg verifier
-        supervisor := analyze cfg supervisor
-        testSupervisor := analyze cfg testSupervisor
-        tooling := analyze cfg tooling
-        release := analyze cfg release }
+      { production := analyze cfg observations.production
+        tests := analyze cfg observations.tests
+        verifier := analyze cfg observations.verifier
+        supervisor := analyze cfg observations.supervisor
+        testSupervisor := analyze cfg observations.testSupervisor
+        tooling := analyze cfg observations.tooling
+        release := analyze cfg observations.release }
     inventoryErrors
     unclaimedSources }
 

@@ -32,8 +32,12 @@ own verdict.
 
 ### Source and module coverage
 
-The worker loads raw compiled production, test, verifier, and Lean-tooling
-environments without executing their initializers. For each scope it:
+The worker loads seven raw compiled environments — production, tests, the
+verifier, its two launcher supervisors, executable Lean tooling, and the
+`tlrelease` release-decision layer — without executing their initializers. Each
+is loaded from the roots its scope registers, and carries that scope in its
+type, so the evidence collected from one environment cannot be reported as
+another's. For each scope the worker:
 
 - reads the current source inventory on every invocation;
 - compares that inventory with Lean's stored import graph;
@@ -133,6 +137,14 @@ printing that public marker and forging a clean result. `Verify/Main.lean`,
 `Verify/Launcher.lean`, and the CI workflow are therefore protected-review
 bootstrap code. Branch protection and review policy remain part of the gate's
 operational trust, as they do for any CI enforcement mechanism.
+
+Assembling the run is not part of what that review has to catch. A scope's
+observation, and the environment it is built from, are typed by which scope they
+belong to, and the seven reach the verdict through a structure with one
+differently-typed field each, so a swapped, duplicated, or missing scope does
+not compile. Review still covers the registry those types are checked against —
+the roots and the source directories each scope claims — which the missing- and
+unexpected-module arms also compare against each other on every run.
 
 The design rationale and exact policy are recorded in
 [ADR-0026](adr/ADR-0026-continuous-integration.md); module ownership and the
