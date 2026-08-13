@@ -2805,6 +2805,21 @@ private def boundaryTests : List Outcome :=
       ((boundaryCommands' "NODE_ENV=production npm run build").contains "npm"),
     check "boundary: a quoted command name is still a command name"
       ((boundaryCommands' "'ruby' -c Formula/tl.rb").contains "ruby"),
+    -- The spellings that are the same command. Each was a live evasion: an
+    -- absolute path defeats the PATH-shim arm too, a shebang chooses the
+    -- interpreter for a whole file, and a CRLF line ending glues a carriage
+    -- return to the only token on its line.
+    check "boundary: an absolute path is the command it ends in"
+      ((boundaryCommands' "/usr/bin/python3 -c 'print(1)'").any
+        (fun word => commandName word == "python3")),
+    check "boundary: an interpreter reached through env is still that interpreter"
+      ((invocationsIn .shell "/usr/bin/env python3 -c 'print(1)'").any (·.command == "python3")),
+    check "boundary: a shebang is not a comment"
+      ((invocationsIn .shell "#!/usr/bin/env ruby\nputs 1\n").any (·.command == "ruby")),
+    check "boundary: a CRLF line ending does not hide the command on it"
+      ((invocationsIn .shell "npm\r\necho hi\r\n").any (·.command == "npm")),
+    check "boundary: a script whose name ends in a command name is not that command"
+      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
     check "boundary: a longer word that starts with a forbidden one is not it"
       (!(boundaryCommands' "npm-pack --selftest").contains "npm"),
     check "boundary: a script named after the tool is not the tool"

@@ -220,7 +220,11 @@ def commandWords (line : String) : List String :=
       else if c == '"' && !state.single then walk rest { state with double := !state.double }
       else if state.single || state.double then
         walk rest { state with token := c :: state.token }
-      else if c == ' ' || c == '\t' then walk rest (state.endToken false)
+      -- `\r` is whitespace here: a file with CRLF endings otherwise leaves the
+      -- carriage return glued to the last token on the line, so a step whose
+      -- whole line is one command — `npm\r` — would be read as a command named
+      -- `npm\r` and matched against nothing.
+      else if c == ' ' || c == '\t' || c == '\r' then walk rest (state.endToken false)
       else if c == ';' || c == '|' || c == '&' || c == '(' || c == ')'
           || c == '{' || c == '}' || c == '`' || c == '<' || c == '>' then
         walk rest (state.endToken true)
