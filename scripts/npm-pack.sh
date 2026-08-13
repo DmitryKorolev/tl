@@ -20,6 +20,11 @@ repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
 RC_LIB_SELF="$script_dir/lib/release-common.sh"
 # shellcheck source=lib/release-common.sh
 . "$RC_LIB_SELF"
+# The npm and Homebrew helpers, which read release/targets.json and
+# release/plan.json with python3. Their own file because the v0.1 release path
+# sources release-common.sh and may reach no interpreter (ADR-0026).
+# shellcheck source=lib/channel-common.sh
+. "$script_dir/lib/channel-common.sh"
 
 # The Supported tier is release-blocking; macOS x86-64 is Best-effort, so a
 # release may legitimately ship without it (ADR-0006). Staging follows that

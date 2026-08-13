@@ -44,6 +44,11 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 RC_LIB_SELF="$script_dir/lib/release-common.sh"
 # shellcheck source=lib/release-common.sh
 . "$RC_LIB_SELF"
+# The npm and Homebrew helpers, which read release/targets.json and
+# release/plan.json with python3. Their own file because the v0.1 release path
+# sources release-common.sh and may reach no interpreter (ADR-0026).
+# shellcheck source=lib/channel-common.sh
+. "$script_dir/lib/channel-common.sh"
 
 usage() {
   echo "usage: $0 [--plan] <staging-dir> <dist-tag> | $0 --selftest" >&2
