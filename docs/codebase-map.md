@@ -230,17 +230,29 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- tlrelease embedded-copies (guards the copies of
                         -- lib/release-common.sh that cannot source it),
                         -- check-release-policy.sh (all of the above as one
-                        -- command, called identically by ci.yml and by the
-                        -- release workflow against the tagged commit)
+                        -- command, in two profiles: `ci` adds
+                        -- check-channel-policy.sh, whose five gates invoke npm,
+                        -- python3 and ruby for the deferred channels, and
+                        -- `release` — what the release workflow runs against
+                        -- the tagged commit — does not have them),
+                        -- check-release-runtimes.sh (the release profile again,
+                        -- with python, python3, ruby, brew, node and npm
+                        -- shimmed to fail, each shim proved to fire first)
 
 scripts/lib/            -- shared by the release scripts
   release-common.sh     --   digests, the SHA256SUMS lookup, the file-mode
-                        --   reader, the uname mapping, the ADR-0006 tiers from
-                        --   release/targets.json, the stub cosign and the
-                        --   selftest harness. install.sh and npm/tl/bin/tl
-                        --   carry marked copies of the parts they need,
-                        --   because neither can source a file from this
-                        --   repository at the moment it runs
+                        --   reader, the uname mapping, the stub cosign, and
+                        --   the selftest and policy-gate harnesses. install.sh
+                        --   and npm/tl/bin/tl carry marked copies of the parts
+                        --   they need, because neither can source a file from
+                        --   this repository at the moment it runs
+  channel-common.sh     --   the deferred channels' reads of
+                        --   release/targets.json and release/plan.json, which
+                        --   use python3. Sourced only by the four npm and
+                        --   Homebrew scripts: the v0.1 release path sources
+                        --   release-common.sh, and ADR-0026's dependency
+                        --   boundary keeps an interpreter out of everything it
+                        --   can reach
 
 release/                -- what a release is, machine-readable
   identity.json         --   the signing pin every verifier checks against
@@ -250,7 +262,8 @@ release/                -- what a release is, machine-readable
                         --   ADR-0006 describes how each channel works; this
                         --   says which are switched on. The publish jobs
                         --   (via `tlrelease plan-channels`) and the external
-                        --   prerequisite audit (via `rc_channel_state`) are
+                        --   prerequisite audit (via `rc_channel_state`,
+                        --   which is why that helper is channel-only) are
                         --   both derived from it: a deferred channel has no
                         --   job to run and no prerequisite to be missing. The
                         --   per-commit gate list in check-release-policy.sh is
@@ -721,6 +734,23 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   forwards is a channel that was forgotten, not one
                         --   that was postponed
   plan.json             --   (data) the channels this release publishes through
+  Boundary.lean         --   `dependency-boundary` states the four v0.1 entry
+                        --   points, walks the first-party scripts they reach,
+                        --   and refuses on an invocation of python, python3,
+                        --   ruby, brew, node or npm in command position. It
+                        --   reads what a script says — comments stripped with
+                        --   quote awareness, since these files discuss npm and
+                        --   Homebrew throughout, and a gate answered by
+                        --   rewording a comment would teach the wrong lesson.
+                        --   Deferred channel files and publish jobs leave the
+                        --   scan by name and by channel, a missing referenced
+                        --   script is a refusal rather than a skip, and a clean
+                        --   verdict names the files it read so a walk that
+                        --   stopped following references is visible as a short
+                        --   list rather than a plausible count. What it cannot
+                        --   see — a command name in a variable, or inside the
+                        --   string `sh -c` runs — is what
+                        --   scripts/check-release-runtimes.sh observes instead
 ```
 
 Each type in `Model.lean` exists because the shell could hold a value that

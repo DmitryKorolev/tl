@@ -35,8 +35,8 @@ Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
 of the build so a lexical or policy failure and a build failure are both
 visible from one run, and they fail in seconds rather than after the matrix.
 
-`release-policy` runs one command — `scripts/check-release-policy.sh --strict`
-— and that script *is* the gate list. It was previously a `steps:` block, and
+`release-policy` runs `scripts/check-release-policy.sh --strict` and then
+`scripts/check-release-runtimes.sh`, and those two scripts *are* the gate list. It was previously a `steps:` block, and
 `release.yml`'s own `gates` job was a second, shorter one that described itself
 as running the same policy: four gates against the tagged commit where CI ran
 nine, so the installer, the artifact verifier, the npm packages and the formula
@@ -158,45 +158,61 @@ Each of those scripts carries a `--selftest` arm on the same reasoning as the
 task-ID lint: a checker that quietly stopped detecting would pass forever, so
 it proves it can still fail before its silence is believed.
 
-### The policy needs two profiles, because it gates two different things
+### The policy has two profiles, because it gates two different things
 
-**Decided, not yet built.** The flag does not exist; `check-release-policy.sh`
-takes `--strict` and runs every gate. This records the shape the split must
-take and why, so the gate list is not reorganised twice.
+`check-release-policy.sh --profile release` is the release gate: exactly the
+checks standing between a defect and a *published* artifact through the channels
+`release/plan.json` enables — the GitHub Release, the installer, and the
+artifact verifier. It is what `release.yml` runs on the tagged commit and what a
+rehearsal runs.
 
-`--profile v0.1` is to be the release gate: exactly the checks standing between
-a defect and a *published* artifact through the channels `release/plan.json`
-enables — the GitHub Release, the installer, and the artifact verifier. It is
-what `release.yml` should run on the tagged commit and what the local rehearsal
-should run.
-
-`--profile full` is repository hygiene: everything above plus the checks for
-channels that are built but switched off — the npm selftests and `ruby -c` on
-the formula. It is what `ci.yml` should run on every commit, so a deferred
-channel cannot rot while it waits.
+`--profile ci`, the default, is repository hygiene: everything above plus the
+gates for channels that are built but switched off, which live in
+`scripts/check-channel-policy.sh` — the three npm selftests, the Homebrew
+formula generator, and `ruby -c` on the formula. `ci.yml` runs it on every
+commit, so a deferred channel cannot rot while it waits.
 
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
-and `npm` on any path reachable from an enabled channel, and the single
-`--strict` policy violates it: measured under failing PATH shims, thirteen of
-its twenty-one gates invoke `python3` or `ruby`. Five of those are the npm and
-Homebrew gates, which the split removes from the release profile outright; the
-other eight are v0.1 gates whose generators have to move to `tlrelease` before
-the budget can hold. One profile could not both enforce the budget and keep the
-deferred channels covered.
+and `npm` on any path reachable from an enabled channel, and one profile could
+not both enforce the budget and keep the deferred channels covered: measured
+under failing PATH shims, thirteen of the old policy's twenty-one gates invoked
+`python3` or `ruby`. Five were the npm and Homebrew gates, which the split
+removes from the release profile outright; the rest were v0.1 gates whose
+generators have since moved into `tlrelease`.
 
-A gate for a disabled channel must be *absent* from the release profile rather
-than skipped-as-passing, because a skip is a report about this run and absence
-is a statement about the release.
+A gate for a disabled channel is *absent* from the release profile rather than
+skipped-as-passing, because a skip is a report about this run and absence is a
+statement about the release. Absence is structural, not conditional: the
+deferred gates are in a file the release profile never names, so there is no
+flag that could turn them back on there.
 
-The budget is then to be enforced twice rather than documented once: an
-inventory of the enabled entry points rejecting a forbidden invocation in the
-first-party scripts they reach, and the release profile, the installer and
-verifier selftests, and the rehearsal all running under failing
-PATH-precedence shims for the six commands. That second arm must prove each
-shim can fire before a silent run is read as evidence — a shim that was never
-on `PATH` would make every run look clean. Both selftests already pass under
-exactly that treatment; the policy does not.
+The budget is enforced twice rather than documented once.
+
+The first arm is `tlrelease dependency-boundary`, which states the v0.1 entry
+points — `install.sh`, `scripts/verify-release-artifacts.sh`,
+`scripts/check-release-policy.sh` and `.github/workflows/release.yml` — walks
+the first-party scripts they reach, and refuses on an invocation of one of the
+six in command position. It reads what a script *says*: comments are stripped
+with quote awareness, because these files discuss npm and Homebrew at length and
+a gate answered by rewording a comment teaches the wrong lesson. Deferred
+channel files are excluded by name and by channel, and a deferred channel's
+publish job leaves the workflow scan by name too; a referenced script that is
+missing is a refusal rather than a skip. A clean verdict names the files it
+read, so a walk that stopped following references is visible as a list with
+something missing rather than as a plausible count.
+
+The second arm is `scripts/check-release-runtimes.sh`, which puts a failing shim
+for each of the six first on `PATH` and runs the release profile under them —
+carrying the installer and artifact-verifier selftests with it, since both are
+gates inside that profile. It observes what a script *executes*. Each shim is
+invoked and required to fail before the run is read as evidence: a shim that was
+never on `PATH` would make every run look clean, which is the silently-green
+shape this whole file exists to prevent.
+
+Neither arm subsumes the other. A command name held in a variable, or inside the
+string `sh -c` runs, executes without being readable; a branch this run did not
+take is readable without executing.
 
 `.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
 tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs the whole
