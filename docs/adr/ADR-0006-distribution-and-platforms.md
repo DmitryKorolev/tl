@@ -313,8 +313,9 @@ The generator's output is a pure function of `lean-toolchain`,
 same *stamp* from the same commit. That is a claim about the stamp only.
 Whether the compiled binary comes out bit-identical rests on the Lean and
 system toolchains, which the generator does not touch and nothing here checks —
-reproducible builds remain the open item recorded below, and a stamp match is
-not evidence of binary-to-source correspondence.
+binary-payload reproducibility remains the open item recorded below (*What
+reproduces, and what cannot*), and a stamp match is not evidence of
+binary-to-source correspondence.
 
 The generator fails closed throughout, because a stamp reading `clean` is taken
 as an exact-correspondence claim: it refuses when `git status` cannot run
@@ -491,6 +492,63 @@ Binary distribution is gated on a verifiable release pipeline:
   conflating them aborts a legitimate release with a remedy telling the
   operator to fix something already correct.
 
+### What reproduces, and what cannot
+
+"Reproducible" has to be defined before it can be built, because half of what a
+release publishes is *evidence about a particular run* and no second build can
+reproduce that — a rebuilder who found their `runId` differing from the
+release's would have found nothing wrong. Stated as payload versus run evidence
+rather than as a list of filenames, since a list goes stale the first time an
+asset is added.
+
+**The payload reproduces.** A second build of the same tag, from a different
+absolute path, on the same target with the same toolchain and the same pinned
+dependency set, must produce byte-identical:
+
+- the unsigned executables, one per target;
+- the deterministic packaging payload built from them; and
+- the SBOM, which is already there: `release/Sbom.lean` fixes
+  `creationInfo.created` to the epoch, mints no document id, and derives every
+  row from `lean-toolchain` and `lake-manifest.json` — the two files that
+  already fix the build — precisely so two generations of one release agree
+  byte for byte.
+
+**Evidence about a run does not, and is not asked to.** These describe the run
+that produced the payload, so a second run producing different values is the
+mechanism working:
+
+- `build-metadata-<target>.json`, which records which leg ran, on which runner,
+  in which container;
+- inside `release-manifest.json`, the run-identity fields — `workflowRef`,
+  `runId`, `runAttempt`, `runner`, `runnerOs`, `runnerArch`, `containerImage` —
+  and the embedded per-leg build records that carry them;
+- the Sigstore bundles, the Rekor inclusion proofs, and any GitHub attestation:
+  a signature over identical bytes is not itself identical, and is not supposed
+  to be.
+
+The manifest is deliberately *not* excluded wholesale. Everything in it other
+than those fields — the tag, the version, the commit, the toolchain, the
+dependency-manifest digest, the asset list and its digests, the target rows,
+and the npm and Homebrew blocks derived from them — is a function of the
+payload, and that is what makes it worth verifying rather than merely signing.
+
+**What an independent rebuilder therefore does.** Rebuild the binary for their
+target, take its SHA-256, and compare it against the digest for that target in
+the signed release evidence. They reproduce the *digest*, and check it against
+evidence they did not produce; they do not reproduce the evidence. That is the
+whole procedure, and `REBUILDING.md` is where it is written for the person doing
+it.
+
+**Status.** The SBOM half holds today and is tested. Whether the compiled
+binaries reproduce is not established: it rests on the Lean and system
+toolchains, which nothing here controls, and no CI leg builds a target twice
+from two paths to find out. So the open item this ADR carries is now scoped —
+*binary payload* reproducibility, with the definition above fixed — rather than
+"reproducible builds" in general, and until a second build is run and compared,
+`REBUILDING.md`, docs/overview.md and this ADR all say the same thing: a
+rebuild gives a binary that behaves identically and passes the same proofs, and
+byte-identity is not yet a claim this project makes.
+
 ## Consequences
 
 - The marginal cost of each channel is small; the cost is the per-target
@@ -513,8 +571,9 @@ Binary distribution is gated on a verifiable release pipeline:
 - Supply-chain trust is explicit. Users trust the Lean compiler/checker,
   GitHub release infrastructure, the signing identity, and the pinned build
   workflow; signatures make that trust auditable rather than implicit today,
-  and reproducibility would extend the audit below the signature to the bytes
-  themselves once it exists (ADR-0014).
+  and reproducibility of the binary payload would extend the audit below the
+  signature to the bytes themselves once it exists — the boundary it would have
+  to hold to, payload versus run evidence, is fixed above (ADR-0014).
 
 ## Licensing boundary (GMP / LGPL)
 

@@ -20,6 +20,22 @@ claim about its own inputs, not a property you can re-derive. Rebuilding from
 the same commit gives you a binary that behaves identically and passes the same
 proofs; it will not generally be byte-identical.
 
+When it does become one, here is the shape it will take, so that this file is
+not read as promising more than it will deliver. What a second build is asked to
+reproduce is the *payload*: the unsigned binaries, the packaging built from
+them, and the SBOM — which already reproduces, being derived from
+`lean-toolchain` and `lake-manifest.json` with no timestamp and no generated
+document id. What no second build can reproduce is evidence about the run that
+produced the payload: `build-metadata-<target>.json`, the run-identity fields
+inside `release-manifest.json` (the workflow ref, the run id and attempt, the
+runner and its image), and the Sigstore bundles and transparency-log proofs. A
+signature over identical bytes is not itself identical, and your run id
+differing from the release's is the mechanism working rather than a mismatch.
+
+So the procedure below is the one that will still be right: rebuild, take the
+binary's SHA-256, and compare it against the digest the release signed. You
+reproduce the digest and check it against evidence you did not produce.
+
 ## Rebuilding from source
 
 ```sh

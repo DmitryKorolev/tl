@@ -76,7 +76,16 @@ def renderBuildMetadata (build : BuildMetadata) : Except String String :=
 
     Every argument is already a parsed type or is one of the four descriptive
     strings, so this cannot fail and there is nothing here to get wrong. The
-    checking happens in the command below, at the boundary. -/
+    checking happens in the command below, at the boundary.
+
+    Which of these fields a rebuild is expected to reproduce is decided by
+    ADR-0006's reproducibility boundary (*What reproduces, and what cannot*):
+    `target`, `sha256`, `commit`, `tier`, `toolchain` and `lakeManifestSha256`
+    are functions of the payload; the rest identify the run that produced it and
+    are excluded by name there. A field added here is one or the other, and
+    saying which — in that list — is part of adding it, because a rebuilder
+    comparing against an unclassified field has no way to tell a real mismatch
+    from a different run. -/
 structure BuildMetadataInputs where
   target : String
   digest : Sha256

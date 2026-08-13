@@ -575,9 +575,11 @@ against real cosign by the v0.1 release candidate.
 A user-facing claim the binary makes also enters here. `tl version` reporting
 `clean build — commit X` asserts that the binary corresponds exactly to that
 source commit, and nothing in the artifact can establish that: the stamp is
-generated from git state before compilation, and reproducible builds — which
-would let a third party check binary-to-source correspondence — remain the open
-item ADR-0006 records. What the claim rests on is the release workflow stamping
+generated from git state before compilation, and reproducibility of the binary
+payload — which would let a third party check binary-to-source correspondence —
+remains the open item ADR-0006 records, now with its boundary fixed there:
+payload reproduces, evidence about a particular run does not and is not asked
+to. What the claim rests on is the release workflow stamping
 a clean checkout of the tagged commit and the Sigstore certificate identity
 binding those artifacts to this workflow, so the honest reading is "this binary
 was built by that workflow from that commit", not "these bytes are derivable
