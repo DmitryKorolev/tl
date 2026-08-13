@@ -183,6 +183,23 @@ def commandWords (line : String) : List String :=
       else walk rest { state with token := c :: state.token }
   (walk line.toList {}).found.reverse
 
+/-- The shell a workflow line runs, if it runs any.
+
+    A step written on one line — `- run: brew install coreutils` — puts the
+    command after a YAML key, and a shell lexer reads that key as the command and
+    everything after it as arguments. Stripping it is what makes those steps
+    scannable at all.
+
+    `run:` is the only key stripped, because it is the only one whose value is
+    shell. `name:` and `if:` carry prose and expressions, and stripping those
+    would put an English sentence in command position — `- name: npm publish the
+    packages` would become a finding about a step title. A `run: |` block needs
+    nothing here: its lines are already shell, one per line. -/
+def workflowShell (line : String) : String :=
+  let body := line.trimAsciiStart.toString
+  let body := if body.startsWith "- " then (body.drop 2).toString else body
+  if body.startsWith "run:" then (body.drop 4).toString else line
+
 /-- Line number, the command, and the line it is on. The line travels with the
     finding because the fix is almost never "delete this word". -/
 structure Invocation where
@@ -191,10 +208,15 @@ structure Invocation where
   text : String
   deriving Repr, DecidableEq
 
-def invocationsIn (text : String) : List Invocation :=
+/-- Every forbidden command one file invokes. The line is reported as written,
+    whatever had to be stripped from it to find the command. -/
+def invocationsIn (kind : SourceKind) (text : String) : List Invocation :=
   let lines := (text.splitOn "\n").zipIdx 1
   lines.flatMap fun (line, number) =>
-    (commandWords (codeOf line)).filterMap fun word =>
+    let code := match kind with
+      | .shell => codeOf line
+      | .workflow => workflowShell (codeOf line)
+    (commandWords code).filterMap fun word =>
       if forbiddenCommands.contains word then
         some { line := number, command := word, text := line.trimAscii.toString }
       else none
@@ -219,11 +241,13 @@ private def rootScripts : List String := ["install.sh"]
 
 /-- The repository path a reference token names, if it names one.
 
-    Scripts write each other's paths through a variable — `"$repo_root/scripts/x.sh"`,
-    `"$script_dir/lib/y.sh"` — and `$` is not part of a path token, so what
-    arrives here is a tail with an unknown head. Taking the path from its
-    first-party directory is what makes those the same file as the plain
-    `./scripts/x.sh` written elsewhere. A token with a directory this does not
+    Scripts write each other's paths through a variable —
+    `"$repo_root/scripts/lib/release-common.sh"` — and `$` is not part of a path
+    token, so what arrives here is a tail with an unknown head. Taking the path
+    from its first-party directory is what makes that the same file as the plain
+    `./scripts/lib/release-common.sh` written elsewhere. A tail that begins below
+    one of those directories, as `"$script_dir/lib/x.sh"` does, carries nothing
+    to anchor it and is not resolved. A token with a directory this does not
     recognise is deliberately not a reference: it is a path in a temporary
     fixture, and treating it as one would make this gate refuse because a file it
     invented is missing. -/
@@ -351,16 +375,6 @@ private def boundaryUsage : String :=
 private def boundaryOptions : List OptionSpec :=
   [{ name := "root", takesValue := true }]
 
-/-- Read one file of the closure, refusing rather than skipping when it is
-    absent: a reference to a script that is not there means either the reference
-    or this inventory is wrong, and both readings end with a file nobody
-    scanned. -/
-private def readReachable (root path reachedFrom : String) : Decision ScannedFile := do
-  let full := if root == "." then path else root ++ "/" ++ path
-  let text ← ofIO (readTextFile full)
-  return { path, reachedFrom, invocations := invocationsIn text,
-           lines := (text.splitOn "\n").length }
-
 private def deferredNames : List String := deferredPaths.map (·.path)
 
 /-- Walk the closure breadth-first, entry points first. `fuel` is the visited
@@ -377,9 +391,10 @@ private def walkClosure (root : String) : Nat → List (String × String) → Li
       let entry := entryPoints.find? (·.path == path)
       let full := if root == "." then path else root ++ "/" ++ path
       let text ← ofIO (readTextFile full)
-      let scanText := scanText (entry.map (·.kind) |>.getD .shell) text
+      let kind := entry.map (·.kind) |>.getD .shell
+      let scanText := scanText kind text
       let found : ScannedFile :=
-        { path, reachedFrom, invocations := invocationsIn scanText,
+        { path, reachedFrom, invocations := invocationsIn kind scanText,
           lines := (scanText.splitOn "\n").length }
       let next := (referencedScripts scanText).filterMap fun reference =>
         if visited.contains reference || deferredNames.contains reference then none

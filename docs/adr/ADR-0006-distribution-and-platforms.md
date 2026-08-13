@@ -164,43 +164,53 @@ forbids is a *user* of the enabled channels needing an interpreter this project
 chose for its own convenience, which is what a Python one-liner in the artifact
 verifier was.
 
-**When it must hold.** Before v0.1.0 is tagged. The budget is not a direction of
-travel to be settled later: a release that shipped with `python3` on a
-first-party release path would establish the opposite precedent at exactly the
-moment the precedent is set, and the two user-facing paths — the ones a
-*reader* of VERIFYING.md runs — are already clean, so what remains is the
-maintainer-facing half rather than the hard part. Until this section is written,
-that deadline lived only in three task descriptions, which is the decay this
-repository's own artifact rule exists to prevent.
+**When it must hold.** Before v0.1.0 is tagged, and it does. The budget was not
+a direction of travel to be settled later: a release that shipped with `python3`
+on a first-party release path would have established the opposite precedent at
+exactly the moment the precedent is set. Both arms below run on every commit and
+on the tagged commit, so the deadline is now a property of the gate rather than
+a date written down — which is the decay this repository's own artifact rule
+exists to prevent.
 
-**What is enforced today, and what is not.** This budget is a decision being
-implemented, and the difference matters more than the intent does — a rule
-stated as though it already held is how the last three review rounds each found
-a check that could not run.
+**How it is enforced.** The budget is enforced twice, because the two arms see
+different things and neither subsumes the other.
 
-Enforced, and verified by running the six commands as failing PATH-precedence
-shims after proving each shim fires: `install.sh --selftest` and
-`scripts/verify-release-artifacts.sh --selftest` complete with zero
-invocations. Those are the two user-facing paths, and the interpreter is gone
-from both.
+`tlrelease dependency-boundary --root .` reads what the release path *says*: it
+states the four v0.1 entry points — `install.sh`,
+`scripts/verify-release-artifacts.sh`, `scripts/check-release-policy.sh` and
+`.github/workflows/release.yml` — walks the first-party scripts they reach, and
+refuses on an invocation of one of the six in command position. Comments are
+stripped, since these files discuss npm and Homebrew throughout; a deferred
+channel's files and publish jobs leave the scan by name and by channel; a
+referenced script that is missing is a refusal rather than a skip; and a clean
+verdict names the files it read, so a walk that stopped following references
+shows up as a short list rather than a plausible count.
 
-Not yet enforced: of the release policy's twenty-one gates, thirteen fail when
-`python3` and `ruby` are replaced by refusing shims — twelve need `python3` and
-two need `ruby`, and the Homebrew formula generator needs both. The generators
-behind them are the version check, the identity check, the embedded-copy check,
-the manifest, the prerequisite audit, the three npm gates and the Homebrew
-formula generator. The SBOM is the one that has moved: it is `tlrelease sbom`,
-it needs no interpreter, and it is covered by `lake exe tltest` rather than by a
-policy gate, which is why the policy has one gate fewer than it did. The count
-is a consequence of that list rather than a number to maintain by hand: it is
-re-derived by running each gate with counting `python3`/`ruby` shims first on
-`PATH`, and separately with each interpreter shimmed alone, since a gate that
-reaches `python3` first would otherwise hide that it needs `ruby` too. That is
-the same method that established the two clean paths above. The eventual enforcement is twofold: an
-inventory of the enabled entry points rejecting a forbidden invocation in the
-first-party scripts they reach, and the policy, selftests and rehearsal all
-running under those shims. Until both exist, the honest claim is the one above:
-two paths clean, the policy not yet.
+`scripts/check-release-runtimes.sh` observes what it *executes*: it puts a
+failing shim for each of the six first on `PATH`, proves each one fires, and
+then runs the release profile of the policy under them — which carries the
+installer and artifact-verifier selftests with it, since both are gates inside
+that profile. Both workflows run it, so the evidence for a tagged commit is that
+the release path did not reach for a runtime rather than that a runner happened
+to have one.
+
+What made this possible was splitting the policy: `--profile release` does not
+have the npm and Homebrew gates at all, and `--profile ci` keeps running them on
+every commit so a deferred channel does not rot
+([ADR-0026](ADR-0026-continuous-integration.md) records the split and both
+arms). The measurement that motivated it — thirteen of the old policy's
+twenty-one gates failing under refusing `python3`/`ruby` shims, five of them the
+npm and Homebrew gates and the rest generators that have since moved into
+`tlrelease` — is kept there as the reason, not as a description of the present.
+
+The interpreters that remain belong to the deferred channels: the three npm
+scripts, the Homebrew formula generator, the `python3` release-data reads those
+four share in `scripts/lib/channel-common.sh`, the `node` launcher inside the
+npm package, and the gates for all of them in
+`scripts/check-channel-policy.sh`. None is reachable from the four entry points
+above while `release/plan.json` defers both channels; enabling one puts its
+scripts back on the release path, and its reads have to move into `tlrelease`
+first.
 
 - GitHub Releases — the source of truth. CI uploads the prebuilt
   binaries here; everything else wraps them.

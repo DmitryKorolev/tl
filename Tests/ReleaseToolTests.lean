@@ -2654,11 +2654,11 @@ private def boundaryTests : List Outcome :=
     check "boundary: a longer word that starts with a forbidden one is not it"
       (!(boundaryCommands' "npm-pack --selftest").contains "npm"),
     check "boundary: a script named after the tool is not the tool"
-      (!(invocationsIn "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
+      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
     -- What a finding carries. The line is what makes the message actionable;
     -- the number is what makes it findable.
     checkEq "boundary: a finding carries its line number and its line"
-      (invocationsIn "set -eu\necho hi\nbrew install tl")
+      (invocationsIn .shell "set -eu\necho hi\nbrew install tl")
       [{ line := 3, command := "brew", text := "brew install tl" }],
     -- References, as the scripts really write them.
     check "boundary: a plain reference is followed"
@@ -2680,8 +2680,25 @@ private def boundaryTests : List Outcome :=
     check "boundary: a step key inside a job does not open one"
       (jobOpener? "    steps:").isNone,
     check "boundary: the top-level jobs key does not open one" (jobOpener? "jobs:").isNone,
-    check "boundary: a deferred channel's publish job is not read"
-      (!(invocationsIn running).any (·.command == "npm"))
+    -- A workflow step written on one line puts its command after a YAML key.
+    -- Read as plain shell the key takes the command position and the command
+    -- becomes an argument, which is how fifteen steps of the real release
+    -- workflow were invisible to this scan.
+    check "boundary: a single-line run: step is read as the shell it runs"
+      ((invocationsIn .workflow "      - run: brew install coreutils").any
+        (·.command == "brew")),
+    check "boundary: a step's title is prose, not a command line"
+      ((invocationsIn .workflow "      - name: npm publish the packages").isEmpty),
+    check "boundary: a run: block's lines are read too"
+      ((invocationsIn .workflow "      - run: |\n          npm publish\n").any
+        (·.command == "npm")),
+    -- Both directions over one fixture: the npm step is there to be found, and
+    -- what removes it is the deferred-job filter. Asserting only the second
+    -- would hold just as well if the filter were the identity.
+    check "boundary: a deferred channel's publish job is there to be found"
+      ((invocationsIn .workflow jobs).any (·.command == "npm")) jobs,
+    check "boundary: and it is not read"
+      (!(invocationsIn .workflow running).any (·.command == "npm"))
       running,
     check "boundary: the job after a deferred one is still read"
       (((running.splitOn "publish-release").length > 1) &&
@@ -2732,12 +2749,14 @@ private def boundaryCommandTests : IO (List Outcome) := do
     let full := root / path
     if let some parent := full.parent then IO.FS.createDirAll parent
     IO.FS.writeFile full text
-  let plant (name : String) (installer : String) (extra : String) : IO System.FilePath := do
+  let cleanWorkflow := "jobs:\n  gates:\n    steps:\n      - run: true\n"
+  let plant (name : String) (installer : String) (extra : String)
+      (workflow : String := cleanWorkflow) : IO System.FilePath := do
     let root := base / name
     write root "install.sh" installer
     write root "scripts/verify-release-artifacts.sh" "#!/bin/sh\nsha256sum \"$1\"\n"
     write root "scripts/check-release-policy.sh" ("#!/bin/sh\n" ++ extra)
-    write root ".github/workflows/release.yml" "jobs:\n  gates:\n    steps:\n      - run: true\n"
+    write root ".github/workflows/release.yml" workflow
     return root
   let cleanRoot ← plant "clean" "#!/bin/sh\necho install\n" "echo policy\n"
   let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
@@ -2746,12 +2765,18 @@ private def boundaryCommandTests : IO (List Outcome) := do
   write deferredRoot "scripts/npm-pack.sh" "#!/bin/sh\nnpm pack\n"
   let danglingRoot ← plant "dangling" "#!/bin/sh\necho install\n"
     "./scripts/absent-helper.sh\n"
+  -- A single-line step in a job that runs, and the same command in one that
+  -- does not: the workflow entry point is scanned per job, by name.
+  let workflowRoot ← plant "workflow" "#!/bin/sh\necho install\n" "echo policy\n"
+    ("jobs:\n  gates:\n    steps:\n      - run: brew install coreutils\n" ++
+      "  publish-npm:\n    steps:\n      - run: npm publish\n")
   let run (root : System.FilePath) : IO (UInt32 × String × String) :=
     dispatchCaptured ["dependency-boundary", "--root", root.toString]
   let (cleanStatus, cleanOut, _) ← run cleanRoot
   let (violatingStatus, _, violatingErr) ← run violatingRoot
   let (deferredStatus, deferredOut, deferredErr) ← run deferredRoot
   let (danglingStatus, _, danglingErr) ← run danglingRoot
+  let (workflowStatus, _, workflowErr) ← run workflowRoot
   IO.FS.removeDirAll base
   return [
     -- The real tree. This row is the boundary itself, not a fixture of it.
@@ -2778,7 +2803,16 @@ private def boundaryCommandTests : IO (List Outcome) := do
     -- the inventory is wrong, and both readings end in a file nobody scanned.
     check "boundary: a referenced script that is missing refuses" (danglingStatus == 1) danglingErr,
     check "boundary: the refusal names the file it could not read"
-      ((danglingErr.splitOn "absent-helper.sh").length > 1) danglingErr]
+      ((danglingErr.splitOn "absent-helper.sh").length > 1) danglingErr,
+    check "boundary: a one-line run: step in a job that runs is a refusal"
+      (workflowStatus == 1) workflowErr,
+    check "boundary: the refusal names the workflow, the line and the command"
+      (((workflowErr.splitOn "release.yml:4").length > 1) &&
+        ((workflowErr.splitOn "invokes brew").length > 1)) workflowErr,
+    -- Against `invokes npm`, not against `npm`: the refusal's closing sentence
+    -- names all six commands, so a bare search would pass whatever happened.
+    check "boundary: the same command in a deferred channel's job is not one"
+      ((workflowErr.splitOn "invokes npm").length == 1) workflowErr]
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
