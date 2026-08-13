@@ -76,12 +76,26 @@ jobs:
           shellcheck --version
 
       # The whole policy, from the one place that defines it. The release
-      # workflow runs this same command against the tagged commit; keeping the
+      # workflow runs the same script against the tagged commit; keeping the
       # list in a script rather than in two `steps:` blocks is what stops the
       # two definitions of "ready to release" from drifting apart, which is
       # exactly what they had already done.
+      #
+      # The default ci profile, which additionally runs the deferred channels'
+      # gates: npm and Homebrew are not published by a v0.1 release, but their
+      # machinery is exercised on every commit so it does not rot while it
+      # waits (ADR-0006). Those gates invoke npm, python3 and ruby, which is
+      # exactly why the release workflow runs a profile without them.
       - name: release policy
         run: ./scripts/check-release-policy.sh --strict
+
+      # And the same release path the release workflow runs, under failing
+      # shims for python, python3, ruby, brew, node and npm. Here on every
+      # commit rather than only on a tag: the point of the boundary is to find
+      # a reach for an interpreter while it is still a commit to fix, not after
+      # a tag exists.
+      - name: the v0.1 release path under its runtime boundary
+        run: ./scripts/check-release-runtimes.sh
 
   # The formula, judged by Homebrew rather than by us.
   #

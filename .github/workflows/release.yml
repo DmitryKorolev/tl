@@ -111,11 +111,17 @@ jobs:
       # about them rots while the channels wait.
       #
       # --strict: in CI a missing tool is a broken job, not a smaller policy.
-      - name: release policy, on the tagged commit
-        run: ./scripts/check-release-policy.sh --profile release --strict --tag "${GITHUB_REF_NAME}"
+      # Through check-release-runtimes.sh rather than directly: it puts a
+      # failing shim for each of the six forbidden runtimes first on PATH,
+      # proves each one fires, and then runs the release profile under them. So
+      # this job's evidence is not that the policy passed on a runner that
+      # happened to have python — it is that the release path did not reach for
+      # any of them, on the commit being released and on a rehearsal alike.
+      - name: release policy under the v0.1 runtime boundary, on the tagged commit
+        run: ./scripts/check-release-runtimes.sh --tag "${GITHUB_REF_NAME}"
         if: github.ref_type == 'tag'
-      - name: release policy
-        run: ./scripts/check-release-policy.sh --profile release --strict
+      - name: release policy under the v0.1 runtime boundary
+        run: ./scripts/check-release-runtimes.sh
         if: github.ref_type != 'tag'
 
       # Restore-only. ci.yml's policy is that only protected main saves the

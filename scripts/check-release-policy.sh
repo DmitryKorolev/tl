@@ -127,6 +127,7 @@ release-policy gates, in order:
   shell static analysis               shellcheck over every tracked shell file
   build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
+  release runtime boundary selftest   scripts/check-release-runtimes.sh --selftest
   installer selftest                  sh install.sh --selftest
   workflow lint                       actionlint .github/workflows/*.yml (needs actionlint)
   the checked-in build stamp is       git diff after regenerating it
@@ -154,6 +155,11 @@ covered by a different required gate, and deliberately not run here:
   the v0.1 dependency boundary        `tlrelease dependency-boundary`, in the
                                       job that has a Lean toolchain; this script
                                       is itself one of the entry points it reads
+  the same boundary at runtime        `scripts/check-release-runtimes.sh`, which
+                                      runs this script's release profile with
+                                      the six runtimes shimmed to fail — so it
+                                      wraps this one rather than running inside
+                                      it
 ELSEWHERE
   exit 0
 fi
@@ -204,6 +210,13 @@ rc_gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh 
 # The code path behind VERIFYING.md, the installer, and the release workflow's
 # own pre-publish check. Its refusal paths are the whole point of it.
 rc_gate "artifact verifier selftest" ./scripts/verify-release-artifacts.sh --selftest
+
+# The PATH-shim arm of the v0.1 dependency boundary proves it can fire here,
+# and only that. The arm itself runs the whole release profile under the shims,
+# so running it as a gate *inside* that profile would run the profile twice;
+# what belongs here is the evidence that its shims still refuse, since a shim
+# that silently stopped shadowing would make a clean release path mean nothing.
+rc_gate "release runtime boundary selftest" ./scripts/check-release-runtimes.sh --selftest
 
 # The installer is piped into a shell by people who cannot inspect it first, so
 # a check that silently stopped running would be invisible to exactly the users
