@@ -2607,6 +2607,164 @@ private def prerequisiteIoTests : IO (List Outcome) := do
        | .ok plan => (deferredNotes plan).length == 2
        | .error _ => false) "a deferred channel produced no note"]
 
+/-! ### The client, and what it makes of an answer
+
+`collectRows` above is driven over a table of `ApiResult`s. What produces those
+in a release is `githubApiWith`, and its decision — a page of JSON is an answer,
+a 404 is an answer, anything else is not — was reachable only with a real `gh`
+against a real repository. These rows drive it against scripts that answer the
+way each of those cases does, so the classification that decides which remedy an
+operator is shown is exercised rather than assumed. -/
+
+private def writeStub (path : System.FilePath) (body : String) : IO String := do
+  IO.FS.writeFile path ("#!/bin/sh\n" ++ body)
+  -- 0o755. The script is executed, so a stub that is merely written would make
+  -- every row below report `unavailable` and none of them would be about what
+  -- they name.
+  let _ ← IO.Process.run { cmd := "chmod", args := #["755", path.toString] }
+  return path.toString
+
+private def resultLabel : ApiResult → String
+  | .body _ => "body"
+  | .notFound => "notFound"
+  | .failed _ => "failed"
+
+private def resultDetail : ApiResult → String
+  | .body json => json.compress
+  | .notFound => ""
+  | .failed detail => detail
+
+private def clientTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  -- Each stub answers the way one real `gh` outcome does. The first echoes the
+  -- path it was given, which is the only way to observe what was actually
+  -- requested.
+  let echo ← writeStub (base / "gh-echo") "printf '\"%s\"' \"$2\"\n"
+  let notFound ← writeStub (base / "gh-404")
+    "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n"
+  let garbage ← writeStub (base / "gh-garbage") "printf 'not json at all'\n"
+  let broken ← writeStub (base / "gh-500")
+    "echo 'gh: Internal Server Error (HTTP 500)' >&2\nexit 1\n"
+  let slow ← writeStub (base / "gh-slow") "sleep 30\n"
+  let plain ← githubApiWith echo "repos/Owner/tl"
+  let queried ← githubApiWith echo "repos/Owner/tl/rulesets?includes_parents=false"
+  let missing ← githubApiWith notFound "repos/Owner/tl"
+  let unparseable ← githubApiWith garbage "repos/Owner/tl"
+  let serverError ← githubApiWith broken "repos/Owner/tl"
+  let timedOut ← githubApiWith slow "repos/Owner/tl" 300
+  let absent ← githubApiWith (base / "gh-absent").toString "repos/Owner/tl"
+  IO.FS.removeDirAll base
+  return [
+    checkEq "client: a page of JSON is an answer" (resultLabel plain) "body",
+    -- Not a page: GitHub defaults these endpoints to thirty rows, and one that
+    -- asked for the default would read a policy on page two as absent.
+    check "client: every request asks for a whole page"
+      (((resultDetail plain).splitOn "per_page=100").length > 1) (resultDetail plain),
+    check "client: a path that already carries a query keeps it"
+      (((resultDetail queried).splitOn "includes_parents=false&per_page=100").length > 1)
+      (resultDetail queried),
+    -- A 404 is an answer about the thing being asked for; everything else is
+    -- the absence of one, and the two have opposite remedies.
+    checkEq "client: a 404 is an answer, and it is missing" (resultLabel missing) "notFound",
+    checkEq "client: a server error is not an answer" (resultLabel serverError) "failed",
+    check "client: the server's own diagnosis reaches the operator"
+      (((resultDetail serverError).splitOn "HTTP 500").length > 1) (resultDetail serverError),
+    -- Exit zero with a body that is not JSON is the shape that would otherwise
+    -- reach a predicate as an empty document and satisfy nothing quietly.
+    checkEq "client: a success that is not JSON is not evidence"
+      (resultLabel unparseable) "failed",
+    check "client: and it says so, naming the request"
+      (((resultDetail unparseable).splitOn "is not JSON").length > 1 &&
+        ((resultDetail unparseable).splitOn "repos/Owner/tl").length > 1)
+      (resultDetail unparseable),
+    checkEq "client: a client that does not finish is not an answer"
+      (resultLabel timedOut) "failed",
+    check "client: a timeout says the tool established nothing"
+      (((resultDetail timedOut).splitOn "established nothing").length > 1)
+      (resultDetail timedOut),
+    checkEq "client: a client that is not there is not an answer"
+      (resultLabel absent) "failed",
+    check "client: and it cannot be read as a clean audit"
+      (((resultDetail absent).splitOn "cannot be skipped").length > 1) (resultDetail absent)]
+
+/-! ### What the audit prints, and what it decides
+
+`auditReport` is the whole of it: the lines an operator reads and the verdict
+the workflow branches on, from the rows. Pure, so both are reachable here rather
+than only through a run against a configured repository — which is what left the
+four row renderings, the deferred notes and the two-count refusal uncovered. -/
+
+private def row (kind : PrerequisiteKind) (summary : String) (outcome : AuditOutcome) : Row :=
+  { kind, summary, outcome }
+
+private def reportOf (rows : List Row) (npm := false) (homebrew := false) :
+    List String × Except String String :=
+  match planWith npm homebrew with
+  | .ok plan => auditReport "Owner/tl" plan rows
+  | .error message => ([message], .error message)
+
+private def reportTestsForAudit : List Outcome :=
+  let clean := reportOf [row .repositoryPublic "the repository is public" .verified,
+    row .releaseReviewers "the release environment requires a reviewer"
+      (.carried "reviewer lists are not readable without admin")]
+  -- Two missing and one unchecked, not one each: with equal counts a report
+  -- that swapped them would read the same, and the two have opposite remedies.
+  let stopped := reportOf [row .repositoryPublic "the repository is public" .verified,
+    row .tagRuleset "a ruleset protects every v* tag" (.missing "create the ruleset"),
+    row .npmPackages "the five npm packages exist" (.missing "publish the bootstrap version"),
+    row .releaseEnvironment "the release environment exists"
+      (.operationalError "HTTP 502 from the environments endpoint")]
+  let published := reportOf [] (npm := true) (homebrew := true)
+  [ -- One line per row, in order, whatever the outcome: an audit that printed
+    -- only its failures leaves a reader unable to tell a clean sweep from a run
+    -- that checked two things.
+    checkEq "report: every row is rendered, in the order it was collected"
+      (clean.1.length) 4,
+    check "report: a verified row reads as ok"
+      (clean.1.any fun line => (line.splitOn "  ok        the repository is public").length > 1)
+      s!"{clean.1}",
+    check "report: a carried row names the assumption under it"
+      (clean.1.any fun line =>
+        ((line.splitOn "  carried").length > 1) &&
+          ((line.splitOn "not readable without admin").length > 1))
+      s!"{clean.1}",
+    check "report: a missing row shouts, and carries its remedy"
+      (stopped.1.any fun line =>
+        ((line.splitOn "  MISSING").length > 1) && ((line.splitOn "create the ruleset").length > 1))
+      s!"{stopped.1}",
+    check "report: an unchecked row is distinguishable from a missing one"
+      (stopped.1.any fun line =>
+        ((line.splitOn "  unchecked").length > 1) && ((line.splitOn "HTTP 502").length > 1))
+      s!"{stopped.1}",
+    -- A deferred channel is reported, and reported as deferred: not as a row,
+    -- and not by silence.
+    check "report: a deferred channel is named above the rows"
+      (clean.1.take 2 |>.all fun line => (line.splitOn "  deferred").length > 1)
+      s!"{clean.1}",
+    check "report: an enabled channel contributes no deferral note"
+      (published.1.isEmpty) s!"{published.1}",
+    -- The verdict, both ways.
+    check "report: verified and carried rows permit the release, and it says how many"
+      (match clean.2 with
+       | .ok established =>
+         ((established.splitOn "2 prerequisite(s) for Owner/tl hold").length > 1)
+       | .error _ => false) s!"{clean.2.toOption}",
+    check "report: a blocked audit refuses"
+      (match stopped.2 with | .ok _ => false | .error _ => true) "a blocked audit permitted the release",
+    -- The two counts separately: they have opposite remedies, and the mixed
+    -- case is the one an operator most needs named.
+    check "report: the refusal counts missing and unchecked apart"
+      (match stopped.2 with
+       | .ok _ => false
+       | .error message => ((message.splitOn "3 prerequisite(s) stop this release").length > 1) &&
+           ((message.splitOn "2 missing, 1 unchecked").length > 1))
+      (match stopped.2 with | .ok m => m | .error m => m),
+    check "report: the refusal says why silence is not consent"
+      (match stopped.2 with
+       | .ok _ => false
+       | .error message => (message.splitOn "reading its silence as consent").length > 1)
+      (match stopped.2 with | .ok m => m | .error m => m)]
+
 /-! ## The v0.1 dependency boundary
 
 The lexical arm of ADR-0026's boundary. Its whole job is to notice a command
@@ -2617,10 +2775,6 @@ rewording a comment would teach exactly the wrong lesson, and one that missed an
 invocation is a gate reporting a clean release path it never read. -/
 
 private def boundaryCommands' (line : String) : List String := commandWords (codeOf line)
-
-private def scanned (path : String) (invocations : List Invocation) (lines : Nat := 12) :
-    ScannedFile :=
-  { path, reachedFrom := "a test", invocations, lines }
 
 private def boundaryTests : List Outcome :=
   let jobs :=
@@ -2704,29 +2858,9 @@ private def boundaryTests : List Outcome :=
       (((running.splitOn "publish-release").length > 1) &&
         ((running.splitOn "gh release create").length > 1))
       running,
-    -- The verdict.
-    check "boundary: a clean run names the files it read"
-      (match boundaryVerdict [scanned "install.sh" [], scanned "scripts/a.sh" []] with
-       | .ok established => ((established.splitOn "scripts/a.sh").length > 1)
-       | .error _ => false),
-    check "boundary: a finding refuses, naming the file, the line and the command"
-      (match boundaryVerdict [scanned "install.sh"
-          [{ line := 4, command := "ruby", text := "ruby -e 1" }]] with
-       | .ok _ => false
-       | .error message =>
-         ((message.splitOn "install.sh:4").length > 1) &&
-           ((message.splitOn "invokes ruby").length > 1)),
-    check "boundary: a finding teaches where the decision belongs instead"
-      (match boundaryVerdict [scanned "install.sh"
-          [{ line := 4, command := "ruby", text := "ruby -e 1" }]] with
-       | .ok _ => false
-       | .error message => (message.splitOn "Move the decision into tlrelease").length > 1),
-    -- A file that scans as empty produces no findings for the same reason a
-    -- clean one does. Without this arm the whole gate could go quiet.
-    check "boundary: a file that read as empty is reported, not counted clean"
-      (match boundaryVerdict [scanned "install.sh" [] 0] with
-       | .ok _ => false
-       | .error message => (message.splitOn "read no lines").length > 1),
+    -- The verdict is not reachable from fabricated evidence any more:
+    -- `ScannedFile` has a private constructor, so every row about what the gate
+    -- decides is a row about a real tree, in `boundaryFixtureTests` below.
     -- The inventories themselves.
     check "boundary: no entry point is also excluded as deferred"
       (entryPoints.all fun entry => !(deferredPaths.map (·.path)).contains entry.path),
@@ -2735,13 +2869,39 @@ private def boundaryTests : List Outcome :=
         ((deferredPaths.map (·.path)).eraseDups.length == deferredPaths.length) &&
         ((deferredJobs.map (·.job)).eraseDups.length == deferredJobs.length)),
     check "boundary: every deferred exclusion names the channel that owns it"
-      (deferredPaths.all fun deferred => !deferred.channel.isEmpty && !deferred.why.isEmpty) ]
+      (deferredPaths.all fun deferred => !deferred.channels.isEmpty && !deferred.why.isEmpty),
+    -- The exclusions are only sound while the plan defers those channels, and
+    -- this is the pair that says so: nothing is stale for the release being cut,
+    -- and enabling a channel makes its own exclusions stale.
+    check "boundary: no exclusion is stale for the release this repository cuts"
+      (match ReleasePlan.parse "p" (planOf
+          [planRow "github-release" true none, planRow "installer" true none,
+           planRow "npm" false (some "\"0.2.0\""),
+           planRow "homebrew" false (some "\"0.2.0\"")]) with
+       | .ok plan => (staleExclusions plan).isEmpty
+       | .error _ => false),
+    check "boundary: enabling a channel makes its exclusions stale, by name"
+      (match planWith true false with
+       | .ok plan =>
+         let stale := staleExclusions plan
+         stale.any (fun line => (line.splitOn "npm-pack.sh").length > 1)
+           && stale.any (fun line => (line.splitOn "publish-npm").length > 1)
+           && !stale.any (fun line => (line.splitOn "gen-homebrew-formula.sh").length > 1)
+       | .error _ => false) ]
 
-/-- The boundary against real trees: this checkout, and fixtures that plant each
-    refusal. The pure rows above characterise the scan; these pin that the
-    command reads the world the release actually runs. -/
+/-! ### The boundary against real trees
+
+Every mutation an adversarial review found is a fixture here, driven through the
+public `dependency-boundary` command over a planted checkout. That is the whole
+point of the group: the first version of this file tested the verdict on
+evidence it built by hand, and the two defects that reached `main` — an empty
+entry point, and an interpreter spelled as an absolute path — were both invisible
+to rows shaped that way while being one command away from visible. -/
+
 private def boundaryCommandTests : IO (List Outcome) := do
-  let (realStatus, realOut, realErr) ← dispatchCaptured ["dependency-boundary", "--root", "."]
+  let plan := "release/plan.json"
+  let (realStatus, realOut, realErr) ←
+    dispatchCaptured ["dependency-boundary", "--root", ".", "--plan", plan]
   let base ← IO.FS.createTempDir
   -- A minimal checkout with all four entry points, so a refusal below is the
   -- one the row plants rather than a missing file.
@@ -2770,13 +2930,38 @@ private def boundaryCommandTests : IO (List Outcome) := do
   let workflowRoot ← plant "workflow" "#!/bin/sh\necho install\n" "echo policy\n"
     ("jobs:\n  gates:\n    steps:\n      - run: brew install coreutils\n" ++
       "  publish-npm:\n    steps:\n      - run: npm publish\n")
+  -- The mutants, one per defect a review found. Named for what they do, so a
+  -- failure here says which bypass came back.
+  let emptyRoot ← plant "empty-entry-point" "" "echo policy\n"
+  let absoluteRoot ← plant "absolute-interpreter"
+    "#!/bin/sh\n/usr/bin/python3 -c 'print(1)'\n" "echo policy\n"
+  let shebangRoot ← plant "absolute-shebang" "#!/bin/sh\n./scripts/helper.sh\n" "echo policy\n"
+  write shebangRoot "scripts/helper.sh" "#!/usr/bin/env ruby\nputs 1\n"
+  let chainRoot ← plant "beyond-the-bound" "#!/bin/sh\n./scripts/c1.sh\n" "echo policy\n"
+  for index in [:closureBound + 5] do
+    write chainRoot s!"scripts/c{index + 1}.sh" s!"#!/bin/sh\n./scripts/c{index + 2}.sh\n"
+  write chainRoot s!"scripts/c{closureBound + 6}.sh" "#!/bin/sh\nnpm publish\n"
   let run (root : System.FilePath) : IO (UInt32 × String × String) :=
-    dispatchCaptured ["dependency-boundary", "--root", root.toString]
+    dispatchCaptured ["dependency-boundary", "--root", root.toString, "--plan", plan]
   let (cleanStatus, cleanOut, _) ← run cleanRoot
   let (violatingStatus, _, violatingErr) ← run violatingRoot
   let (deferredStatus, deferredOut, deferredErr) ← run deferredRoot
   let (danglingStatus, _, danglingErr) ← run danglingRoot
   let (workflowStatus, _, workflowErr) ← run workflowRoot
+  let (emptyStatus, _, emptyErr) ← run emptyRoot
+  let (absoluteStatus, _, absoluteErr) ← run absoluteRoot
+  let (shebangStatus, _, shebangErr) ← run shebangRoot
+  let (chainStatus, _, chainErr) ← run chainRoot
+  -- The plan the exclusions are read against, rather than the repository's own:
+  -- a channel this release publishes through must make its exclusions a
+  -- refusal, and that transition has no other test that runs the real command.
+  let enabledPlan := (base / "plan-npm-enabled.json").toString
+  IO.FS.writeFile enabledPlan (planOf
+    [planRow "github-release" true none, planRow "installer" true none,
+     planRow "npm" true none, planRow "homebrew" false (some "\"0.2.0\"")])
+  let (enabledStatus, _, enabledErr) ←
+    dispatchCaptured ["dependency-boundary", "--root", cleanRoot.toString,
+      "--plan", enabledPlan]
   IO.FS.removeDirAll base
   return [
     -- The real tree. This row is the boundary itself, not a fixture of it.
@@ -2812,7 +2997,39 @@ private def boundaryCommandTests : IO (List Outcome) := do
     -- Against `invokes npm`, not against `npm`: the refusal's closing sentence
     -- names all six commands, so a bare search would pass whatever happened.
     check "boundary: the same command in a deferred channel's job is not one"
-      ((workflowErr.splitOn "invokes npm").length == 1) workflowErr]
+      ((workflowErr.splitOn "invokes npm").length == 1) workflowErr,
+    -- An entry point with nothing in it produces no findings for the same
+    -- reason a clean one does. This is the row that fabricated evidence could
+    -- not supply, and the defect it describes reached main.
+    check "boundary: an empty entry point is not a clean release path"
+      (emptyStatus == 1) emptyErr,
+    check "boundary: and the refusal names the file that held nothing"
+      (((emptyErr.splitOn "read nothing").length > 1) &&
+        ((emptyErr.splitOn "install.sh").length > 1)) emptyErr,
+    -- An absolute path is the spelling neither arm would otherwise catch: a
+    -- PATH shim cannot shadow /usr/bin/python3 either.
+    check "boundary: an interpreter spelled as an absolute path is the same interpreter"
+      (absoluteStatus == 1) absoluteErr,
+    check "boundary: and the refusal names it by its program name"
+      ((absoluteErr.splitOn "invokes python3").length > 1) absoluteErr,
+    check "boundary: a shebang chooses an interpreter, so it is read as one"
+      (shebangStatus == 1) shebangErr,
+    check "boundary: and the shebang refusal names the script and the interpreter"
+      (((shebangErr.splitOn "helper.sh:1").length > 1) &&
+        ((shebangErr.splitOn "invokes ruby").length > 1)) shebangErr,
+    -- Running out of the bound is a refusal, not a shorter verdict over the
+    -- prefix it managed to read.
+    check "boundary: a closure that outgrows its bound refuses"
+      (chainStatus == 1) chainErr,
+    check "boundary: and it says what it did not reach, and how to answer that"
+      (((chainErr.splitOn "still queued").length > 1) &&
+        ((chainErr.splitOn "closureBound").length > 1)) chainErr,
+    -- The exclusions are only sound while the plan defers those channels.
+    check "boundary: a channel this release publishes through cannot stay excluded"
+      (enabledStatus == 1) enabledErr,
+    check "boundary: and the refusal names the file and the edit that clears it"
+      (((enabledErr.splitOn "npm-pack.sh").length > 1) &&
+        ((enabledErr.splitOn "deferredPaths").length > 1)) enabledErr]
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
@@ -2869,9 +3086,9 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← lifecycleTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests

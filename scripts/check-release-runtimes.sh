@@ -27,6 +27,7 @@
 # six is invoked and required to fail first.
 set -eu
 
+self=$0
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
 cd "$repo_root"
@@ -123,6 +124,41 @@ PROBE
   done
   rc_expect_status 0 "a script reaching for a command outside the list is unaffected" \
     env PATH="$shims:$PATH" "$probe" git
+  # The argument surface of the three policy entry points. None of it decides a
+  # release, but all of it decides whether the caller ran what they meant to:
+  # a profile name that silently fell back, or an option consumed as a value,
+  # produces a green run of something other than the gate that was asked for.
+  # Status 2 throughout, kept distinct from a gate failure's 1.
+  rc_expect_output 2 "unknown profile" \
+    "an unknown policy profile is refused, not silently narrowed" \
+    ./scripts/check-release-policy.sh --profile nonesuch
+  rc_expect_output 2 "takes ci or release" \
+    "a profile with no value is refused rather than binding the next argument" \
+    ./scripts/check-release-policy.sh --profile
+  rc_expect_output 2 "unknown argument" \
+    "an unknown policy argument is refused" \
+    ./scripts/check-release-policy.sh --evrything
+  rc_expect_output 2 "takes the tag" \
+    "a tag with no value is refused" \
+    ./scripts/check-release-policy.sh --tag
+  rc_expect_output 2 "unknown argument" \
+    "an unknown channel-policy argument is refused" \
+    ./scripts/check-channel-policy.sh --stirct
+  rc_expect_output 2 "unknown argument" \
+    "an unknown runtime-boundary argument is refused" \
+    "$self" --selftets
+  rc_expect_output 2 "takes the tag" \
+    "a runtime-boundary tag with no value is refused" \
+    "$self" --tag
+  # Naming the gates is what makes the profiles reviewable, so it is a listed
+  # behaviour rather than a debugging aid: the release profile must not name a
+  # gate that invokes one of the six.
+  rc_expect_output 0 "deferred-channel gates" \
+    "the ci profile lists the deferred channels' gates" \
+    ./scripts/check-release-policy.sh --list
+  rc_expect_output 0 "absent rather than skipped" \
+    "the release profile says those gates are absent, not skipped" \
+    ./scripts/check-release-policy.sh --profile release --list
   rc_selftest_end "The shim mechanism is what makes a clean run of the release path mean anything; fix it before trusting one."
 fi
 

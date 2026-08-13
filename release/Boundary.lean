@@ -28,6 +28,7 @@ channel, rather than exempting a directory that would go on absorbing new
 scripts nobody looked at.
 -/
 import release.Command
+import release.Model
 
 namespace Release
 
@@ -75,24 +76,27 @@ def entryPoints : List EntryPoint :=
     reads behind them have to move into this executable first. -/
 structure DeferredPath where
   path : String
-  channel : String
+  /-- The channel that owns the runtime this file needs. Typed, so an exclusion
+      names a channel `release/plan.json` has an opinion about rather than a
+      word; the check below refuses if that channel is no longer deferred. -/
+  channels : List Channel
   why : String
   deriving Repr
 
 def deferredPaths : List DeferredPath :=
-  [{ path := "scripts/check-channel-policy.sh", channel := "npm, homebrew",
+  [{ path := "scripts/check-channel-policy.sh", channels := [.npm, .homebrew],
      why := "the deferred channels' own gates; the ci profile runs them on every commit and the release profile does not have them" },
-   { path := "scripts/npm-pack.sh", channel := "npm",
+   { path := "scripts/npm-pack.sh", channels := [.npm],
      why := "stages the packages and drives npm pack/install over them" },
-   { path := "scripts/npm-publish.sh", channel := "npm",
+   { path := "scripts/npm-publish.sh", channels := [.npm],
      why := "publishes the packages with npm" },
-   { path := "scripts/npm-bootstrap.sh", channel := "npm",
+   { path := "scripts/npm-bootstrap.sh", channels := [.npm],
      why := "the one-time manual npm bootstrap before the channel can authenticate" },
-   { path := "npm/tl/bin/tl", channel := "npm",
+   { path := "npm/tl/bin/tl", channels := [.npm],
      why := "the launcher inside the npm package, run by node" },
-   { path := "scripts/gen-homebrew-formula.sh", channel := "homebrew",
+   { path := "scripts/gen-homebrew-formula.sh", channels := [.homebrew],
      why := "generates Formula/tl.rb and parses it with ruby" },
-   { path := "scripts/lib/channel-common.sh", channel := "npm, homebrew",
+   { path := "scripts/lib/channel-common.sh", channels := [.npm, .homebrew],
      why := "the release-data reads those four scripts share, which use python3" }]
 
 /-- A workflow job the scan does not read, and why it does not run.
@@ -104,12 +108,36 @@ def deferredPaths : List DeferredPath :=
     written for an old one. -/
 structure DeferredJob where
   job : String
-  channel : String
+  channel : Channel
   deriving Repr
 
 def deferredJobs : List DeferredJob :=
-  [{ job := "publish-npm", channel := "npm" },
-   { job := "publish-homebrew", channel := "homebrew" }]
+  [{ job := "publish-npm", channel := .npm },
+   { job := "publish-homebrew", channel := .homebrew }]
+
+/-- Every exclusion this run is entitled to, checked against the plan that
+    decides which channels publish.
+
+    An exclusion says "this file is not on the release path *because* its channel
+    is deferred", and until now nothing connected that clause to the switch it
+    depends on. Enabling npm puts its scripts and its publish job back on the
+    release path, and the scan would have gone on removing them by name — a gate
+    reporting a clean path it no longer describes.
+
+    The two directions are not symmetric, deliberately. A deferred channel whose
+    file is excluded is the intended state. An *enabled* channel with an
+    exclusion still standing is a refusal here, naming the file and the edit,
+    because that is the moment the boundary silently stops meaning anything. -/
+def staleExclusions (plan : ReleasePlan) : List String :=
+  let livePaths := deferredPaths.filterMap fun deferred =>
+    let live := deferred.channels.filter (plan.enabled ·)
+    if live.isEmpty then none
+    else some s!"  {deferred.path} is excluded for {String.intercalate ", " (live.map (·.wire))}, which this release publishes through"
+  let liveJobs := deferredJobs.filterMap fun deferred =>
+    if plan.enabled deferred.channel then
+      some s!"  the '{deferred.job}' job is excluded for {deferred.channel.wire}, which this release publishes through"
+    else none
+  livePaths ++ liveJobs
 
 /-! ## Reading one line
 
@@ -123,6 +151,10 @@ the wrong lesson. -/
     text — both matter here, since these scripts contain digests, format strings
     and `printf` patterns. -/
 def codeOf (line : String) : String :=
+  -- A shebang is not a comment: `#!/usr/bin/env python3` is the line that
+  -- decides which interpreter runs the whole file, and reading it as prose is
+  -- how a script written in one of the six would pass as shell.
+  if line.startsWith "#!" then line else
   let rec walk : List Char → Bool → Bool → Bool → List Char → List Char
     | [], _, _, _, acc => acc.reverse
     | c :: rest, single, double, afterSpace, acc =>
@@ -132,11 +164,23 @@ def codeOf (line : String) : String :=
       else walk rest single double (c == ' ' || c == '\t') (c :: acc)
   String.ofList (walk line.toList false false true [])
 
+/-- The program a command word names.
+
+    A release step can spell an interpreter as a path — `/usr/bin/python3`,
+    `$HOME/.local/bin/npm`, `./tool/node` — and comparing the whole word would
+    read those as different commands. That spelling is the one *neither* arm
+    would otherwise catch: PATH shims cannot shadow an absolute path either, so
+    a lexical check on the last segment is the only place it is visible.
+    `./scripts/npm-pack.sh` stays a script, because its last segment is. -/
+def commandName (word : String) : String := (word.splitOn "/").getLast!
+
 /-- Words that hold the command position open rather than taking it: the shell
-    keywords a command can follow, and the wrappers that run their argument. -/
+    keywords a command can follow, and the wrappers that run their argument.
+    Matched on the program name, so `/usr/bin/env python3` reaches `python3`. -/
 private def keepsCommandPosition (word : String) : Bool :=
   ["if", "then", "elif", "else", "do", "while", "until", "!", "&&", "||",
-    "exec", "env", "sudo", "command", "time", "nohup", "xargs", "builtin"].contains word
+    "exec", "env", "sudo", "command", "time", "nohup", "xargs", "builtin"].contains
+      (commandName word)
     || word.startsWith "-"
     -- `VAR=value cmd …`: an assignment prefix, not a command. `=` before any
     -- `/` distinguishes it from a path that happens to contain one.
@@ -217,8 +261,9 @@ def invocationsIn (kind : SourceKind) (text : String) : List Invocation :=
       | .shell => codeOf line
       | .workflow => workflowShell (codeOf line)
     (commandWords code).filterMap fun word =>
-      if forbiddenCommands.contains word then
-        some { line := number, command := word, text := line.trimAscii.toString }
+      if forbiddenCommands.contains (commandName word) then
+        some { line := number, command := commandName word,
+               text := line.trimAscii.toString }
       else none
 
 /-! ## Reachability
@@ -329,12 +374,24 @@ def workflowRunningText (text : String) : String :=
 
 /-! ## The scan -/
 
-/-- One file the scan read, and what it found in it. -/
+/-- One file the scan read, and what it found in it.
+
+    The constructor is private, so a value of this type is evidence the scanner
+    actually produced. That is not ceremony: the first version of this module
+    was covered by rows that built a `ScannedFile` by hand, and one of them
+    described a state the scanner could not reach — a file whose line count was
+    zero — so the guard it exercised was unreachable in production and an empty
+    entry point passed the real gate. A test can no longer describe a scan that
+    did not happen. -/
 structure ScannedFile where
+  private mk ::
   path : String
   reachedFrom : String
   invocations : List Invocation
-  lines : Nat
+  /-- What the file contained, in bytes, rather than a count derived from it.
+      The question this answers is "was there anything here to read at all",
+      and a derived number invites a shape — no lines — that no file has. -/
+  bytesRead : Nat
   deriving Repr
 
 def scanText (kind : SourceKind) (text : String) : String :=
@@ -347,15 +404,40 @@ def fileFindings (scanned : ScannedFile) : List String :=
   scanned.invocations.map fun invocation =>
     s!"  {scanned.path}:{invocation.line}: invokes {invocation.command} — {invocation.text}"
 
-/-- Every finding of a whole run, and the counts that make silence meaningful.
-    A scan that read nothing, or that reached only the entry points it was
-    handed, is reported rather than returned as a clean verdict: the shape this
-    gate exists to catch is a check that stopped looking. -/
-def boundaryVerdict (scanned : List ScannedFile) : Except String String :=
+/-- How many files one walk may read. The whole tracked shell surface several
+    times over; reaching it means the closure is walking in circles, which is a
+    defect here rather than a large repository. -/
+def closureBound : Nat := 500
+
+/-- What a walk of the closure came back with.
+
+    Completion is a constructor rather than a convention. The bound exists so a
+    walk cannot loop forever, and the first version returned the files it had
+    read when it hit that bound — which reported a clean verdict over a *prefix*
+    of the release path, the one answer this gate must never give. Only
+    `complete` reaches the verdict now, so a walk that stopped early cannot be
+    mistaken for one that finished. -/
+inductive ClosureResult where
+  | complete (files : List ScannedFile)
+  | exhausted (pending : List String) (read : List ScannedFile)
+
+/-- The verdict over a walk that finished. `exhausted` refuses here rather than
+    at the walk, so the reason a release stopped is written in one place with
+    every other reason it can stop. -/
+def boundaryVerdict : ClosureResult → Except String String
+  | .exhausted pending read =>
+    .error s!"the reachability walk stopped at its bound of {closureBound} file(s) with {pending.length} still queued, having read {read.length}: {String.intercalate ", " (pending.take 5)}{if pending.length > 5 then ", …" else ""}. What it did not reach is unchecked, so this is a refusal rather than a shorter verdict. Either the closure is walking in circles — a defect in this gate — or the release path has outgrown the bound, and raising `closureBound` in release/Boundary.lean is the deliberate answer to the second."
+  | .complete scanned =>
   let findings := scanned.flatMap fileFindings
-  let empty := scanned.filter (·.lines == 0) |>.map (·.path)
-  if !empty.isEmpty then
-    .error s!"read no lines from {String.intercalate ", " empty}. A file that scans as empty produces no findings for the same reason a clean one does, so this is reported rather than counted as a pass."
+  let missedEntry := entryPoints.filterMap fun entry =>
+    if scanned.any (·.path == entry.path) then none else some entry.path
+  let empty := scanned.filter (·.bytesRead == 0) |>.map (·.path)
+  if !missedEntry.isEmpty then
+    -- By identity, not by count: a walk that read four files none of which was
+    -- an entry point would satisfy a count.
+    .error s!"did not read {String.intercalate ", " missedEntry}. An entry point this gate did not read is a release path it did not check."
+  else if !empty.isEmpty then
+    .error s!"read nothing from {String.intercalate ", " empty}. A file with no content produces no findings for the same reason a clean one does, so this is reported rather than counted as a pass — an entry point that was emptied, or a reference to a file that is a placeholder, is not a release path that was checked."
   else if findings.isEmpty then
     -- The files are named, not counted. A closure that stopped following
     -- references still reports a plausible number, and the reader of a release
@@ -370,20 +452,28 @@ def boundaryVerdict (scanned : List ScannedFile) : Except String String :=
 /-! ## The command -/
 
 private def boundaryUsage : String :=
-  "usage: tlrelease dependency-boundary --root <checkout>"
+  "usage: tlrelease dependency-boundary --root <checkout> --plan <plan.json>"
 
 private def boundaryOptions : List OptionSpec :=
-  [{ name := "root", takesValue := true }]
+  [{ name := "root", takesValue := true }, { name := "plan", takesValue := true }]
+
+private structure BoundaryArgs where
+  root : String
+  planPath : String
 
 private def deferredNames : List String := deferredPaths.map (·.path)
 
 /-- Walk the closure breadth-first, entry points first. `fuel` is the visited
     bound: every step either consumes a queued path or stops, and the queue only
-    ever grows by paths not yet visited, so the file count bounds it. -/
+    ever grows by paths not yet visited, so the file count bounds it. Running out
+    of it produces `exhausted`, which the verdict refuses — the walk does not get
+    to decide that what it managed to read is enough. -/
 private def walkClosure (root : String) : Nat → List (String × String) → List String →
-    List ScannedFile → Decision (List ScannedFile)
-  | 0, _, _, scanned => pure scanned
-  | _ + 1, [], _, scanned => pure scanned
+    List ScannedFile → Decision ClosureResult
+  | 0, queue, _, scanned =>
+    if queue.isEmpty then pure (.complete scanned)
+    else pure (.exhausted (queue.map (·.1)) scanned)
+  | _ + 1, [], _, scanned => pure (.complete scanned)
   | fuel + 1, (path, reachedFrom) :: queue, visited, scanned =>
     if visited.contains path || deferredNames.contains path then
       walkClosure root fuel queue visited scanned
@@ -395,29 +485,35 @@ private def walkClosure (root : String) : Nat → List (String × String) → Li
       let scanText := scanText kind text
       let found : ScannedFile :=
         { path, reachedFrom, invocations := invocationsIn kind scanText,
-          lines := (scanText.splitOn "\n").length }
+          bytesRead := text.trimAscii.toString.length }
       let next := (referencedScripts scanText).filterMap fun reference =>
         if visited.contains reference || deferredNames.contains reference then none
         else some (reference, path)
       walkClosure root fuel (queue ++ next) (path :: visited) (scanned ++ [found])
 
-private def boundaryDecision (root : String) : Decision String := do
+private def boundaryDecision (args : BoundaryArgs) : Decision String := do
+  let plan ← readParsed args.planPath ReleasePlan.parse
+  -- Before the scan, not after: if an exclusion has gone stale the scan below
+  -- is reading a smaller release path than the one this release publishes, and
+  -- its verdict would be about the wrong set of files.
+  match staleExclusions plan with
+  | [] => pure ()
+  | stale =>
+      decline ("an exclusion no longer matches release/plan.json.\n"
+        ++ String.intercalate "\n" stale
+        ++ "\nA file or job is excluded from this scan because the channel that needs its runtime is deferred. Enabling that channel puts it back on the release path: take its row out of deferredPaths/deferredJobs in release/Boundary.lean, and move the interpreter reads behind it into tlrelease, in the change that enables the channel.")
   let queue := entryPoints.map fun entry => (entry.path, entry.entered)
-  -- The bound is the whole tracked shell surface several times over; reaching
-  -- it means the closure is walking in circles, which is a defect here rather
-  -- than a large repository.
-  let scanned ← walkClosure root 500 queue [] []
-  if scanned.length < entryPoints.length then
-    decline s!"read {scanned.length} file(s) for {entryPoints.length} entry point(s). An entry point that is not read is one this gate did not check."
-  else
-    ofExcept (boundaryVerdict scanned)
+  let result ← walkClosure args.root closureBound queue [] []
+  ofExcept (boundaryVerdict result)
 
 def boundaryCommand : Command := {
   name := "dependency-boundary"
-  arguments := "--root <checkout>"
+  arguments := "--root <checkout> --plan <plan.json>"
   summary := "Refuse unless every script the v0.1 release path reaches is free of python, ruby, brew, node and npm."
   run := runWithOptions "tlrelease dependency-boundary" boundaryOptions boundaryUsage
-    (fun options => options.required "root") boundaryDecision }
+    (fun options => do
+      return { root := ← options.required "root", planPath := ← options.required "plan" })
+    boundaryDecision }
 
 def boundaryCommands : List Command := [boundaryCommand]
 

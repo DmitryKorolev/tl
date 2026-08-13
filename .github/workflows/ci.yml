@@ -249,7 +249,7 @@ jobs:
       - name: build the release tool warning-free
         run: lake build tlrelease --wfail
       - name: the v0.1 dependency boundary
-        run: ./.lake/build/bin/tlrelease dependency-boundary --root .
+        run: ./.lake/build/bin/tlrelease dependency-boundary --root . --plan release/plan.json
 
       # Exact source/module inventory, transitive axiom inspection, direct
       # dependency policy, and independent kernel replay of the safe, total

@@ -353,13 +353,14 @@ same evidence on every machine. Nothing here draws on wall-clock time, the
 environment, or a random device; a check that passes because it happened not to
 generate the awkward case is not a gate.
 
-**The sampled properties.** Each is proved; each is re-checked against the
-compiled functions:
+**The sampled properties, and what each sample is evidence about.** They are not
+all the same kind of claim, and calling them all "proved" would misdescribe two
+of them:
 
-- encoding order-preservation: the canonical wire strings compare bytewise in
-  the order the kernel proves over the decoded stamp triple — the linchpin
-  between the proved order and the on-disk bytes, checked over every pair of a
-  seeded set;
+*Re-checks of a proved statement.* Each is proved over `Tl/Kernel`'s source and
+re-checked against the compiled function, so a disagreement means compilation
+stopped preserving the theorem:
+
 - fold order-insensitivity and duplicate re-delivery;
 - the two join laws a state fingerprint can observe, commutativity and
   idempotence (associativity is proved and not sampled);
@@ -370,8 +371,19 @@ compiled functions:
 - the fast/spec refinement bridges — the batched rollup, the fast ready queue,
   the fast `unblocks`/`why` including the bucketed form the CLI calls, and the
   pre-hoisted view forms of the cycle diagnostics;
-- the cycle implementations, and that the certificate fast path is the branch
-  actually taken rather than the proved fallback.
+- the cycle implementations against their spec forms.
+
+*A delegation the kernel makes to the shell, which only a test can discharge.*
+Encoding order-preservation: the kernel proves the LWW/OR-Set order over the
+decoded `(hlc, replica, nonce)` triple and delegates that the canonical wire
+strings compare bytewise in the same order. Nothing proves that — it is a fact
+about the encoding, checked over every pair of a seeded set plus the crafted
+near-ties, and it is the linchpin tying the proved order to the on-disk bytes.
+
+*Which branch the compiled code took*, which no theorem states: that
+`cyclesCertAccepted` accepts Tarjan's partition, so the certificate fast path
+runs and the proved fallback is not what produced the answer. The fallback's
+agreement is proved; that the fast branch was taken is observed.
 
 **Crafted fixtures stay alongside the random corpus.** The seeded generator
 covers what it happens to reach; the SCC fixtures (ring, twin components, self

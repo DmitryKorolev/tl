@@ -371,11 +371,19 @@ def maximumPageSize : Nat := 100
     would be read as a policy admitting only tags — a false pass on the one row
     that decides whether a push can reach the job that signs. A hundred is not a
     proof that everything was read, which is why the callers that can tell also
-    check the count the API reports and refuse when it exceeds what arrived. -/
-def githubApi (path : String) (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResult := do
+    check the count the API reports and refuse when it exceeds what arrived.
+
+    The command is a parameter for the same reason `Digest`'s candidates are:
+    what this function *decides* — a page of JSON is an answer, a 404 is an
+    answer, anything else is not — was otherwise reachable only by having a real
+    `gh`, a real repository and a real network in a particular state, which is
+    to say not reachable at all. The tests pass the path of a script that
+    answers the way each of those cases does. -/
+def githubApiWith (command : String) (path : String)
+    (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResult := do
   let separator := if (path.splitOn "?").length > 1 then "&" else "?"
   let paged := s!"{path}{separator}per_page={maximumPageSize}"
-  let outcome ← run "gh" #["api", paged, "--cache", "0s"] timeoutMs
+  let outcome ← run command #["api", paged, "--cache", "0s"] timeoutMs
   match outcome, outcome.failureMessage with
   | _, some message => return .failed message
   | .completed output, none =>
@@ -383,11 +391,14 @@ def githubApi (path : String) (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResu
         match Json.parse output.stdout with
         | .ok json => return .body json
         | .error why =>
-            return .failed s!"'gh api {paged}' succeeded and returned something that is not JSON ({why}). That is not evidence about the thing being asked for."
+            return .failed s!"'{command} api {paged}' succeeded and returned something that is not JSON ({why}). That is not evidence about the thing being asked for."
       else if looksNotFound output.stderr then return .notFound
       else
-        return .failed s!"'gh api {paged}' failed: {output.stderr.trimAscii.toString}"
-  | _, none => return .failed s!"'gh api {paged}' produced neither an outcome nor a reason."
+        return .failed s!"'{command} api {paged}' failed: {output.stderr.trimAscii.toString}"
+  | _, none => return .failed s!"'{command} api {paged}' produced neither an outcome nor a reason."
+
+def githubApi (path : String) (timeoutMs : Nat := defaultTimeoutMs) : IO ApiResult :=
+  githubApiWith "gh" path timeoutMs
 
 /-- How this module asks GitHub anything.
 
@@ -683,35 +694,49 @@ private structure PrereqsArgs where
 private def prereqsArgs (options : Options) : Except String PrereqsArgs := do
   return { identityPath := ← options.required "identity", planPath := ← options.required "plan" }
 
-private def outcomeLine (row : Row) : String :=
+def outcomeLine (row : Row) : String :=
   match row.outcome with
   | .verified => s!"  ok        {row.summary}"
   | .carried assumption => s!"  carried   {row.summary}\n            {assumption}"
   | .missing remedy => s!"  MISSING   {row.summary}\n            {remedy}"
   | .operationalError detail => s!"  unchecked {row.summary}\n            {detail}"
 
-private def prereqsDecision (args : PrereqsArgs) : Decision String := do
-  let identity ← readParsed args.identityPath Identity.parse
-  let plan ← readParsed args.planPath ReleasePlan.parse
-  let rows ← attempt "the prerequisite audit could not run"
-    (collectRows githubApi githubReachable identity plan)
-  -- Every row, in order, before any verdict. An audit that printed only its
-  -- failures would leave an operator unable to tell a clean sweep from a run
-  -- that checked two things.
-  for note in deferredNotes plan do
-    IO.println s!"  deferred  {note}"
-  for row in rows do
-    IO.println (outcomeLine row)
+/-- What the audit prints, and what it decides, from the rows it collected.
+
+    Pure, and separated from the reading and the printing for the reason
+    `Verify.Report.workerVerdict` is: everything a reader of a release log sees,
+    and the difference between a release proceeding and stopping, is decided
+    here rather than in the `IO` that surrounds it — so both are reachable in a
+    test over rows, including the mixed case where some rows are configuration
+    to create and others are questions that could not be asked.
+
+    Every row is rendered, in order, before any verdict. An audit that printed
+    only its failures would leave an operator unable to tell a clean sweep from
+    a run that checked two things. -/
+def auditReport (repository : String) (plan : ReleasePlan) (rows : List Row) :
+    List String × Except String String :=
+  let lines :=
+    (deferredNotes plan).map (fun note => s!"  deferred  {note}") ++ rows.map outcomeLine
   match auditBlockers rows with
   | [] =>
-      return s!"{rows.length} prerequisite(s) for {identity.repository} hold, for the channels this release publishes through"
+      (lines, .ok s!"{rows.length} prerequisite(s) for {repository} hold, for the channels this release publishes through")
   | blockers =>
       let missing := (auditMissing rows).length
       let unchecked := (auditUnchecked rows).length
       -- The two counts separately, because they have opposite remedies and the
       -- mixed case is the one worth naming: some of this is configuration to
       -- create, and some of it is an API to come back to.
-      decline s!"{blockers.length} prerequisite(s) stop this release — {missing} missing, {unchecked} unchecked. A missing row is configuration this repository does not have; an unchecked one is a question that could not be asked, and reading its silence as consent is what this audit exists to prevent. Neither permits a release."
+      (lines, .error s!"{blockers.length} prerequisite(s) stop this release — {missing} missing, {unchecked} unchecked. A missing row is configuration this repository does not have; an unchecked one is a question that could not be asked, and reading its silence as consent is what this audit exists to prevent. Neither permits a release.")
+
+private def prereqsDecision (args : PrereqsArgs) : Decision String := do
+  let identity ← readParsed args.identityPath Identity.parse
+  let plan ← readParsed args.planPath ReleasePlan.parse
+  let rows ← attempt "the prerequisite audit could not run"
+    (collectRows githubApi githubReachable identity plan)
+  let (lines, verdict) := auditReport identity.repository plan rows
+  for line in lines do
+    IO.println line
+  ofExcept verdict
 
 private def prereqsCommand : Command := {
   name := "prereqs"
