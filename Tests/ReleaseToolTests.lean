@@ -2607,6 +2607,179 @@ private def prerequisiteIoTests : IO (List Outcome) := do
        | .ok plan => (deferredNotes plan).length == 2
        | .error _ => false) "a deferred channel produced no note"]
 
+/-! ## The v0.1 dependency boundary
+
+The lexical arm of ADR-0026's boundary. Its whole job is to notice a command
+invocation on the release path, so the rows that matter are the ones separating
+an invocation from a mention: these scripts explain themselves at length, and
+every one of the six forbidden names appears in that prose. A scan answered by
+rewording a comment would teach exactly the wrong lesson, and one that missed an
+invocation is a gate reporting a clean release path it never read. -/
+
+private def boundaryCommands' (line : String) : List String := commandWords (codeOf line)
+
+private def scanned (path : String) (invocations : List Invocation) (lines : Nat := 12) :
+    ScannedFile :=
+  { path, reachedFrom := "a test", invocations, lines }
+
+private def boundaryTests : List Outcome :=
+  let jobs :=
+    "on:\n  push:\n\njobs:\n  gates:\n    steps:\n      - run: ./scripts/check-task-ids.sh\n" ++
+    "  publish-npm:\n    steps:\n      - run: npm publish --provenance\n" ++
+    "  publish-release:\n    steps:\n      - run: gh release create\n"
+  let running := workflowRunningText jobs
+  [ -- Comments, in the four shapes these files actually contain.
+    check "boundary: a commented invocation is prose, not a finding"
+      ((boundaryCommands' "  # npm publish is deferred").isEmpty),
+    check "boundary: a trailing comment does not hide the invocation before it"
+      ((boundaryCommands' "npm publish # deferred").contains "npm"),
+    check "boundary: a `#` inside a word is not a comment"
+      ((boundaryCommands' "echo ${name#prefix} npm").contains "echo"),
+    check "boundary: a quoted `#` is text"
+      ((boundaryCommands' "printf '# %s' npm").contains "printf"),
+    -- Command position. Each row is one way a real script writes an invocation.
+    check "boundary: a bare invocation is found" ((boundaryCommands' "npm publish").contains "npm"),
+    check "boundary: an argument is not an invocation"
+      (!(boundaryCommands' "echo npm").contains "npm"),
+    check "boundary: a probe for the tool counts as reaching for it"
+      ((boundaryCommands' "if command -v npm >/dev/null 2>&1; then").contains "npm"),
+    check "boundary: an invocation after a pipe is found"
+      ((boundaryCommands' "curl -sSf https://example.invalid | node -").contains "node"),
+    check "boundary: an invocation inside a substitution is found"
+      ((boundaryCommands' "version=$(python3 -c 'print(1)')").contains "python3"),
+    check "boundary: an assignment prefix does not consume the command"
+      ((boundaryCommands' "NODE_ENV=production npm run build").contains "npm"),
+    check "boundary: a quoted command name is still a command name"
+      ((boundaryCommands' "'ruby' -c Formula/tl.rb").contains "ruby"),
+    check "boundary: a longer word that starts with a forbidden one is not it"
+      (!(boundaryCommands' "npm-pack --selftest").contains "npm"),
+    check "boundary: a script named after the tool is not the tool"
+      (!(invocationsIn "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
+    -- What a finding carries. The line is what makes the message actionable;
+    -- the number is what makes it findable.
+    checkEq "boundary: a finding carries its line number and its line"
+      (invocationsIn "set -eu\necho hi\nbrew install tl")
+      [{ line := 3, command := "brew", text := "brew install tl" }],
+    -- References, as the scripts really write them.
+    check "boundary: a plain reference is followed"
+      ((referencedScripts "./scripts/check-task-ids.sh --selftest").contains "scripts/check-task-ids.sh"),
+    check "boundary: a reference through a variable resolves to the same file"
+      ((referencedScripts "RC_LIB_SELF=\"$repo_root/scripts/lib/release-common.sh\"").contains
+        "scripts/lib/release-common.sh"),
+    check "boundary: a root script is followed without a directory to name it"
+      ((referencedScripts "sh install.sh --selftest").contains "install.sh"),
+    check "boundary: a glob is not a file this can read"
+      ((referencedScripts "git ls-files -- '*.sh'").isEmpty),
+    check "boundary: a path inside a throwaway fixture is not a first-party script"
+      ((referencedScripts "cp x \"$tmp/fixture.sh\"").isEmpty),
+    check "boundary: one file named twice is followed once"
+      ((referencedScripts "./scripts/a.sh\n./scripts/a.sh").length == 1),
+    -- Workflow jobs, excluded by name.
+    checkEq "boundary: a job opener is two spaces, a name and a colon"
+      (jobOpener? "  publish-npm:") (some "publish-npm"),
+    check "boundary: a step key inside a job does not open one"
+      (jobOpener? "    steps:").isNone,
+    check "boundary: the top-level jobs key does not open one" (jobOpener? "jobs:").isNone,
+    check "boundary: a deferred channel's publish job is not read"
+      (!(invocationsIn running).any (·.command == "npm"))
+      running,
+    check "boundary: the job after a deferred one is still read"
+      (((running.splitOn "publish-release").length > 1) &&
+        ((running.splitOn "gh release create").length > 1))
+      running,
+    -- The verdict.
+    check "boundary: a clean run names the files it read"
+      (match boundaryVerdict [scanned "install.sh" [], scanned "scripts/a.sh" []] with
+       | .ok established => ((established.splitOn "scripts/a.sh").length > 1)
+       | .error _ => false),
+    check "boundary: a finding refuses, naming the file, the line and the command"
+      (match boundaryVerdict [scanned "install.sh"
+          [{ line := 4, command := "ruby", text := "ruby -e 1" }]] with
+       | .ok _ => false
+       | .error message =>
+         ((message.splitOn "install.sh:4").length > 1) &&
+           ((message.splitOn "invokes ruby").length > 1)),
+    check "boundary: a finding teaches where the decision belongs instead"
+      (match boundaryVerdict [scanned "install.sh"
+          [{ line := 4, command := "ruby", text := "ruby -e 1" }]] with
+       | .ok _ => false
+       | .error message => (message.splitOn "Move the decision into tlrelease").length > 1),
+    -- A file that scans as empty produces no findings for the same reason a
+    -- clean one does. Without this arm the whole gate could go quiet.
+    check "boundary: a file that read as empty is reported, not counted clean"
+      (match boundaryVerdict [scanned "install.sh" [] 0] with
+       | .ok _ => false
+       | .error message => (message.splitOn "read no lines").length > 1),
+    -- The inventories themselves.
+    check "boundary: no entry point is also excluded as deferred"
+      (entryPoints.all fun entry => !(deferredPaths.map (·.path)).contains entry.path),
+    check "boundary: each entry point, deferred path and deferred job is named once"
+      (((entryPoints.map (·.path)).eraseDups.length == entryPoints.length) &&
+        ((deferredPaths.map (·.path)).eraseDups.length == deferredPaths.length) &&
+        ((deferredJobs.map (·.job)).eraseDups.length == deferredJobs.length)),
+    check "boundary: every deferred exclusion names the channel that owns it"
+      (deferredPaths.all fun deferred => !deferred.channel.isEmpty && !deferred.why.isEmpty) ]
+
+/-- The boundary against real trees: this checkout, and fixtures that plant each
+    refusal. The pure rows above characterise the scan; these pin that the
+    command reads the world the release actually runs. -/
+private def boundaryCommandTests : IO (List Outcome) := do
+  let (realStatus, realOut, realErr) ← dispatchCaptured ["dependency-boundary", "--root", "."]
+  let base ← IO.FS.createTempDir
+  -- A minimal checkout with all four entry points, so a refusal below is the
+  -- one the row plants rather than a missing file.
+  let write (root : System.FilePath) (path : String) (text : String) : IO Unit := do
+    let full := root / path
+    if let some parent := full.parent then IO.FS.createDirAll parent
+    IO.FS.writeFile full text
+  let plant (name : String) (installer : String) (extra : String) : IO System.FilePath := do
+    let root := base / name
+    write root "install.sh" installer
+    write root "scripts/verify-release-artifacts.sh" "#!/bin/sh\nsha256sum \"$1\"\n"
+    write root "scripts/check-release-policy.sh" ("#!/bin/sh\n" ++ extra)
+    write root ".github/workflows/release.yml" "jobs:\n  gates:\n    steps:\n      - run: true\n"
+    return root
+  let cleanRoot ← plant "clean" "#!/bin/sh\necho install\n" "echo policy\n"
+  let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
+  let deferredRoot ← plant "deferred" "#!/bin/sh\necho install\n"
+    "./scripts/npm-pack.sh --selftest\n"
+  write deferredRoot "scripts/npm-pack.sh" "#!/bin/sh\nnpm pack\n"
+  let danglingRoot ← plant "dangling" "#!/bin/sh\necho install\n"
+    "./scripts/absent-helper.sh\n"
+  let run (root : System.FilePath) : IO (UInt32 × String × String) :=
+    dispatchCaptured ["dependency-boundary", "--root", root.toString]
+  let (cleanStatus, cleanOut, _) ← run cleanRoot
+  let (violatingStatus, _, violatingErr) ← run violatingRoot
+  let (deferredStatus, deferredOut, deferredErr) ← run deferredRoot
+  let (danglingStatus, _, danglingErr) ← run danglingRoot
+  IO.FS.removeDirAll base
+  return [
+    -- The real tree. This row is the boundary itself, not a fixture of it.
+    check "boundary: this checkout's v0.1 release path is clean" (realStatus == 0)
+      s!"{realOut}{realErr}",
+    check "boundary: the clean verdict names every entry point it read"
+      (["install.sh", "scripts/verify-release-artifacts.sh", "scripts/check-release-policy.sh",
+        ".github/workflows/release.yml"].all fun path => (realOut.splitOn path).length > 1)
+      realOut,
+    check "boundary: the clean verdict names the shared library it followed into"
+      ((realOut.splitOn "scripts/lib/release-common.sh").length > 1) realOut,
+    check "boundary: a fixture with no interpreter on the path passes" (cleanStatus == 0) cleanOut,
+    check "boundary: an invocation in an entry point refuses" (violatingStatus == 1) violatingErr,
+    check "boundary: the refusal names the file and the interpreter"
+      (((violatingErr.splitOn "install.sh:2").length > 1) &&
+        ((violatingErr.splitOn "python3").length > 1)) violatingErr,
+    -- The exclusion is by name, and it is what keeps the deferred channels'
+    -- own machinery from failing a boundary it is not part of.
+    check "boundary: a deferred channel's script is not entered" (deferredStatus == 0)
+      s!"{deferredOut}{deferredErr}",
+    check "boundary: the deferred script is absent from what was read"
+      ((deferredOut.splitOn "npm-pack").length == 1) deferredOut,
+    -- A reference to a file that is not there means either the reference or
+    -- the inventory is wrong, and both readings end in a file nobody scanned.
+    check "boundary: a referenced script that is missing refuses" (danglingStatus == 1) danglingErr,
+    check "boundary: the refusal names the file it could not read"
+      ((danglingErr.splitOn "absent-helper.sh").length > 1) danglingErr]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -2662,9 +2835,9 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← lifecycleTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← lifecycleTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests

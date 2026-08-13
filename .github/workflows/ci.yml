@@ -227,6 +227,16 @@ jobs:
       - name: build trust verifier warning-free
         run: lake build tlverify --wfail
 
+      # The lexical half of ADR-0026's v0.1 dependency boundary: every script
+      # the release path reaches, read for an invocation of python, python3,
+      # ruby, brew, node or npm. It runs here rather than in the release-policy
+      # job because it is a Lean binary and that job has no toolchain by design;
+      # the other half — the same paths under PATH shims — is a policy gate.
+      - name: build the release tool warning-free
+        run: lake build tlrelease --wfail
+      - name: the v0.1 dependency boundary
+        run: ./.lake/build/bin/tlrelease dependency-boundary --root .
+
       # Exact source/module inventory, transitive axiom inspection, direct
       # dependency policy, and independent kernel replay of the safe, total
       # dependency cones. It reads source inventory on every

@@ -41,6 +41,7 @@ precompiled verifier must not become the only way to authenticate the release
 that contains it.
 -/
 
+import release.Boundary
 import release.Certificate
 import release.Consistency
 import release.Identity
@@ -59,7 +60,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  certificateCommands ++ consistencyCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
+  boundaryCommands ++ certificateCommands ++ consistencyCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
 
 def usage : String :=
   let header :=

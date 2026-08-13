@@ -159,6 +159,15 @@ jobs:
 
       - name: the embedded shell copies still match the library
         run: ./.lake/build/bin/tlrelease embedded-copies --library scripts/lib/release-common.sh
+
+      # Before anything is built or signed: the scripts this workflow is about
+      # to run, read for an invocation of python, python3, ruby, brew, node or
+      # npm. A release that stops at an interpreter the operator's machine does
+      # not have, or at a runtime for a channel it deliberately defers, fails
+      # after the tag exists — which is the one point at which it cannot be
+      # undone by fixing the commit.
+      - name: the v0.1 dependency boundary
+        run: ./.lake/build/bin/tlrelease dependency-boundary --root .
       - name: trust boundary (lake exe tlverify)
         run: lake exe tlverify
       - name: test (lake exe tltest)
