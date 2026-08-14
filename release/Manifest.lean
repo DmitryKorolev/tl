@@ -749,9 +749,6 @@ private def manifestOptions : List OptionSpec :=
    { name := "identity", takesValue := true },
    { name := "output", takesValue := true }] ++ runContextOptions
 
-private def manifestUsage : String :=
-  "usage: tlrelease manifest --dist <dir> --tag <vX.Y.Z> --commit <sha> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --targets <targets.json> --identity <identity.json> --output <path> (--workflow-ref <ref> --run-id <id> | --outside-workflow)"
-
 /-- The basename of a path, for the one thing the manifest cannot describe:
     itself.
 
@@ -822,19 +819,20 @@ private def manifestDecision (args : ManifestArgs) : Decision String := do
   let published := manifest.publishedTargets.length
   return s!"wrote {args.output} — {manifest.assets.length} assets, {published} of {manifest.outcomes.length} targets published"
 
-private def manifestCommand : Command := {
-  name := "manifest"
-  arguments := "--dist <dir> --tag <vX.Y.Z> --commit <sha> …"
-  summary := "Describe this release once, for every job downstream of signing to read instead of re-deriving it."
-  run := runWithOptions "tlrelease manifest" manifestOptions manifestUsage
-    manifestArgs manifestDecision }
+private def manifestCommand : Command :=
+  optionCommand "manifest" "--dist <dir> --tag <vX.Y.Z> --commit <sha> …"
+    "Describe this release once, for every job downstream of signing to read instead of re-deriving it."
+    ["--dist", "dist", "--tag", "v0.1.0", "--commit", "0123456789abcdef0123456789abcdef01234567",
+     "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
+     "--targets", "release/targets.json", "--identity", "release/identity.json",
+     "--output", "dist/release-manifest.json", "--outside-workflow"]
+    manifestOptions manifestArgs manifestDecision
+    (usageArguments :=
+      "--dist <dir> --tag <vX.Y.Z> --commit <sha> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --targets <targets.json> --identity <identity.json> --output <path> (--workflow-ref <ref> --run-id <id> | --outside-workflow)")
 
 private def verifyOptions : List OptionSpec :=
   [{ name := "dist", takesValue := true },
    { name := "manifest", takesValue := true }]
-
-private def verifyUsage : String :=
-  "usage: tlrelease manifest-verify --dist <dir> --manifest <path>"
 
 private structure VerifyArgs where
   dist : String
@@ -868,12 +866,11 @@ private def verifyDecision (args : VerifyArgs) : Decision String := do
         ++ String.join (failures.map fun failure => s!"  {failure}\n")
         ++ "The manifest is signed alongside SHA256SUMS, so a mismatch means either the wrong directory or a modified one. Do not publish it.")
 
-private def verifyCommand : Command := {
-  name := "manifest-verify"
-  arguments := "--dist <dir> --manifest <path>"
-  summary := "Refuse unless the directory holds exactly what the manifest describes, with the digests it names."
-  run := runWithOptions "tlrelease manifest-verify" verifyOptions verifyUsage
-    verifyArgs verifyDecision }
+private def verifyCommand : Command :=
+  optionCommand "manifest-verify" "--dist <dir> --manifest <path>"
+    "Refuse unless the directory holds exactly what the manifest describes, with the digests it names."
+    ["--dist", "dist", "--manifest", "dist/release-manifest.json"]
+    verifyOptions verifyArgs verifyDecision
 
 def manifestCommands : List Command := [manifestCommand, verifyCommand]
 

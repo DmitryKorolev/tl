@@ -684,9 +684,6 @@ def deferredNotes (plan : ReleasePlan) : List String :=
 private def prereqsOptions : List OptionSpec :=
   [{ name := "identity", takesValue := true }, { name := "plan", takesValue := true }]
 
-private def prereqsUsage : String :=
-  "usage: tlrelease prereqs --identity <identity.json> --plan <plan.json>"
-
 private structure PrereqsArgs where
   identityPath : String
   planPath : String
@@ -738,12 +735,11 @@ private def prereqsDecision (args : PrereqsArgs) : Decision String := do
     IO.println line
   ofExcept verdict
 
-private def prereqsCommand : Command := {
-  name := "prereqs"
-  arguments := "--identity <identity.json> --plan <plan.json>"
-  summary := "Audit the external state this release depends on, for the channels it publishes through."
-  run := runWithOptions "tlrelease prereqs" prereqsOptions prereqsUsage
-    prereqsArgs prereqsDecision }
+private def prereqsCommand : Command :=
+  optionCommand "prereqs" "--identity <identity.json> --plan <plan.json>"
+    "Audit the external state this release depends on, for the channels it publishes through."
+    ["--identity", "release/identity.json", "--plan", "release/plan.json"]
+    prereqsOptions prereqsArgs prereqsDecision
 
 def prerequisiteCommands : List Command := [prereqsCommand]
 

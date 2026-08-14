@@ -24,6 +24,34 @@ structure Command where
   name : String
   arguments : String
   summary : String
+  /-- One complete invocation of this command, as the argv that follows its
+      name.
+
+      Machine-readable on purpose, and the reason is drift. `arguments` is the
+      *shape* — it carries brackets for what is optional and a bar for what is
+      alternative, and two of the commands elide the tail of it because the full
+      form is three lines wide — so nothing can execute it. This is one instance
+      of that shape, and `Tests.ReleaseDriftTests` requires the command's own
+      parser to accept it. A required option added here is therefore an option
+      every documented invocation is re-checked against, in the same build. -/
+  invocation : List String
+  /-- The complete usage line, printed on a usage error.
+
+      Stored rather than rebuilt by each command, and complete rather than
+      elided: `arguments` is what the help table shows, and two commands elide
+      the tail of that because the full form is three lines wide. A caller who
+      has just been told they invoked something wrongly is the one reader who
+      needs all of it. -/
+  usage : String
+  /-- Whether an argv would be understood at the usage layer: the option
+      declaration, the refusal of stray positional words, and the check that the
+      values the command needs are present. Refusals about what the values
+      *mean* are not here — those are decisions, and they are `run`'s.
+
+      This is what makes a documented invocation checkable without running it.
+      Both this and `run` go through one implementation, so an invocation this
+      accepts is one the command accepts. -/
+  accepts : List String → Except String Unit
   run : List String → IO UInt32
 
 /-- Read a file, with the failure as a value rather than an exception.
@@ -287,6 +315,24 @@ def Options.describing (options : Options) (name : String) : String :=
 def Options.given (options : Options) (name : String) : Bool :=
   options.present.contains name
 
+/-- Everything a command settles before it decides anything: the option
+    declaration applied to an argv, the refusal of stray positional words, and
+    the resolver saying whether the values it needs are all there.
+
+    Separated from the run so that "would this invocation be understood" has one
+    implementation. A command's `accepts` calls this and so does its `run`; the
+    drift guard over the documentation calls the first. A second implementation
+    of the question is exactly how a documented invocation ends up checked
+    against a parser nothing runs. -/
+def resolveInvocation (specs : List OptionSpec) (resolve : Options → Except String α)
+    (args : List String) : Except String α :=
+  match parseOptions specs args with
+  | .error message => .error message
+  | .ok options =>
+      if !options.positional.isEmpty then
+        .error s!"takes no positional arguments, and was given {options.positional.length}. Every value this command takes is named, so a bare word is a mistyped option rather than something to ignore — and whatever it was meant to name has not been passed."
+      else resolve options
+
 /-- Run a subcommand whose values are named options.
 
     Two phases, because the two failures are different statuses and collapsing
@@ -303,15 +349,65 @@ def Options.given (options : Options) (name : String) : Bool :=
     the operator meant to pass is missing. -/
 def runWithOptions (name : String) (specs : List OptionSpec) (usage : String)
     (resolve : Options → Except String α) (act : α → Decision String)
-    (args : List String) : IO UInt32 := do
-  match parseOptions specs args with
+    (args : List String) : IO UInt32 :=
+  match resolveInvocation specs resolve args with
   | .error message => misuse s!"{name}: {message}\n{usage}"
-  | .ok options =>
-      if !options.positional.isEmpty then
-        misuse s!"{name}: takes no positional arguments, and was given {options.positional.length}. Every value this command takes is named, so a bare word is a mistyped option rather than something to ignore — and whatever it was meant to name has not been passed.\n{usage}"
-      else
-        match resolve options with
-        | .error message => misuse s!"{name}: {message}\n{usage}"
-        | .ok resolved => decide name (act resolved)
+  | .ok resolved => decide name (act resolved)
+
+/-! ## Commands, from one statement of their syntax
+
+A subcommand used to state its own name three times — in `name`, in the prefix
+on its messages, and inside its usage line — and its argument syntax twice.
+Nothing compared them, so the three names were a spelling apart from disagreeing
+and the two syntaxes had already drifted: `--plan` became mandatory on the
+dependency boundary and the sentence documenting it did not.
+
+The two constructors below take each of those once. What a command supplies is
+what only it knows: the option declaration or the argument count, the resolver,
+and what to do with the result. -/
+
+/-- A subcommand whose values are named options.
+
+    `usageArguments` defaults to `arguments` and is passed separately by the two
+    commands whose full syntax is too wide for the help table: the table shows
+    the head of it, and a usage error has to show all of it. -/
+def optionCommand (name arguments summary : String) (invocation : List String)
+    (specs : List OptionSpec) (resolve : Options → Except String α)
+    (act : α → Decision String) (usageArguments : String := arguments) : Command :=
+  let qualified := "tlrelease " ++ name
+  let usage := s!"usage: {qualified} {usageArguments}"
+  { name, arguments, summary, invocation, usage
+    accepts := fun args => (resolveInvocation specs resolve args).map fun _ => ()
+    run := runWithOptions qualified specs usage resolve act }
+
+/-- The arm a positional command's body cannot reach: the count is checked
+    before it runs. It exists because the destructuring is a pattern match and
+    Lean requires one to be total — and a command must never quietly substitute
+    a default for an argument it did not get. -/
+def wrongArity : IO UInt32 :=
+  misuse "the argument count was checked before this ran and then did not match it. That is a defect in release/Command.lean rather than something you invoked wrongly."
+
+/-- Whether an argv has the count a positional command takes. -/
+def acceptsPositional (arity : Nat) (args : List String) : Except String Unit :=
+  if args.length == arity then .ok ()
+  else .error s!"takes exactly {arity} argument(s) and was given {args.length}."
+
+/-- A subcommand whose values are positional.
+
+    The five that are predate the option parser and keep their shape: each takes
+    files in a fixed order and reads at a call site short enough that naming them
+    would say less than the order does. The count is stated once and both the
+    run and `accepts` read it, so the usage error and the documentation check
+    cannot disagree about how many arguments the command takes. -/
+def positionalCommand (name arguments summary : String) (invocation : List String)
+    (arity : Nat) (act : List String → IO UInt32) : Command :=
+  let qualified := "tlrelease " ++ name
+  let usage := s!"usage: {qualified} {arguments}"
+  { name, arguments, summary, invocation, usage
+    accepts := acceptsPositional arity
+    run := fun args =>
+      match acceptsPositional arity args with
+      | .error message => misuse s!"{qualified}: {message}\n{usage}"
+      | .ok _ => act args }
 
 end Release

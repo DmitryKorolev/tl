@@ -90,11 +90,10 @@ def parsePin (document : String) (text : String) : Except String Identity := do
   | _ =>
       .error s!"{document}: has {rows.length} lines; the pin is exactly two. Extra lines are refused rather than ignored: a reader that skipped them could be handed a second, different pin below the one it used."
 
-private def writePinCommand : Command := {
-  name := "write-pin"
-  arguments := "<identity.json> <output.pin>"
-  summary := "Write the two-line signing pin the shell verifier reads, from the machine-readable identity."
-  run := fun args => do
+private def writePinCommand : Command :=
+  positionalCommand "write-pin" "<identity.json> <output.pin>"
+    "Write the two-line signing pin the shell verifier reads, from the machine-readable identity."
+    ["release/identity.json", "release/identity.pin"] 2 fun args => do
     match args with
     | [identityPath, outputPath] =>
         match ← readTextFile identityPath with
@@ -121,13 +120,12 @@ private def writePinCommand : Command := {
                     | .ok () =>
                         IO.println s!"tlrelease write-pin: wrote {outputPath}"
                         return 0
-    | _ => misuse "usage: tlrelease write-pin <identity.json> <output.pin>" }
+    | _ => wrongArity
 
-private def checkPinCommand : Command := {
-  name := "check-pin"
-  arguments := "<identity.json> <pin>"
-  summary := "Refuse if the two-line pin has drifted from the machine-readable identity."
-  run := fun args => do
+private def checkPinCommand : Command :=
+  positionalCommand "check-pin" "<identity.json> <pin>"
+    "Refuse if the two-line pin has drifted from the machine-readable identity."
+    ["release/identity.json", "release/identity.pin"] 2 fun args => do
     match args with
     | [identityPath, pinPath] =>
         match ← readTextFile identityPath, ← readTextFile pinPath with
@@ -142,7 +140,7 @@ private def checkPinCommand : Command := {
                   return 0
                 else
                   refuse s!"tlrelease check-pin: {pinPath} is not what {identityPath} produces. Regenerate it with `tlrelease write-pin {identityPath} {pinPath}` and commit the result; the pin is what the shell verifier checks signatures against, so a stale one is a check against the wrong identity."
-    | _ => misuse "usage: tlrelease check-pin <identity.json> <pin>" }
+    | _ => wrongArity
 
 def identityCommands : List Command := [writePinCommand, checkPinCommand]
 

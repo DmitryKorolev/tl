@@ -134,9 +134,6 @@ private def buildMetadataOptions : List OptionSpec :=
    { name := "container-image", takesValue := true },
    { name := "run-attempt", takesValue := true }]
 
-private def buildMetadataUsage : String :=
-  "usage: tlrelease build-metadata --target <name> --binary <path> --commit <sha> --tier <supported|best-effort> --runner <label> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --workflow-ref <ref> --run-id <id> --output <path> [--runner-os <s>] [--runner-arch <s>] [--container-image <s>] [--run-attempt <s>]"
-
 /-- Everything the command was told, with the option names resolved.
 
     A structure rather than a fourteen-value tuple: the project rule is that
@@ -209,12 +206,19 @@ private def buildMetadataDecision (args : BuildMetadataArgs) : Decision String :
   ofIO (writeFileAtomically args.output document)
   return s!"wrote {args.output} — {args.target} ({tier.wire}) is {digest.hex}"
 
-private def buildMetadataCommand : Command := {
-  name := "build-metadata"
-  arguments := "--target <name> --binary <path> --commit <sha> --tier <tier> …"
-  summary := "Record what this build leg built, for the sign job to hold the artifact to."
-  run := runWithOptions "tlrelease build-metadata" buildMetadataOptions buildMetadataUsage
-    buildMetadataArgs buildMetadataDecision }
+private def buildMetadataCommand : Command :=
+  optionCommand "build-metadata"
+    "--target <name> --binary <path> --commit <sha> --tier <supported|best-effort> …"
+    "Record what this build leg built, for the sign job to hold the artifact to."
+    ["--target", "darwin-arm64", "--binary", "dist/tl", "--commit",
+     "0123456789abcdef0123456789abcdef01234567", "--tier", "supported",
+     "--runner", "macos-15", "--toolchain", "lean-toolchain",
+     "--lake-manifest", "lake-manifest.json", "--workflow-ref",
+     "owner/repo/.github/workflows/release.yml@refs/tags/v0.1.0", "--run-id", "1",
+     "--output", "dist/build-metadata.json"]
+    buildMetadataOptions buildMetadataArgs buildMetadataDecision
+    (usageArguments :=
+      "--target <name> --binary <path> --commit <sha> --tier <supported|best-effort> --runner <label> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --workflow-ref <ref> --run-id <id> --output <path> [--runner-os <s>] [--runner-arch <s>] [--container-image <s>] [--run-attempt <s>]")
 
 def metadataCommands : List Command := [buildMetadataCommand]
 

@@ -57,11 +57,10 @@ def renderChannelOutputs (plan : ReleasePlan) : String :=
   String.join ((channelDecisions plan).map fun (channel, enabled) =>
     s!"{channel.wire}={if enabled then "true" else "false"}\n")
 
-private def channelsCommand : Command := {
-  name := "plan-channels"
-  arguments := "<plan.json>"
-  summary := "Emit one channel=true|false line per distribution channel, for a workflow to branch on."
-  run := fun args => do
+private def channelsCommand : Command :=
+  positionalCommand "plan-channels" "<plan.json>"
+    "Emit one channel=true|false line per distribution channel, for a workflow to branch on."
+    ["release/plan.json"] 1 fun args => do
     match args with
     | [planPath] =>
         match ← readTextFile planPath with
@@ -72,7 +71,7 @@ private def channelsCommand : Command := {
             | .ok plan =>
                 IO.print (renderChannelOutputs plan)
                 return 0
-    | _ => misuse "usage: tlrelease plan-channels <plan.json>" }
+    | _ => wrongArity
 
 /-- The release being cut, however the caller spells it: a tag (`v0.1.0`) or a
     bare version (`0.1.0`). Both are refused if malformed rather than one being
@@ -83,11 +82,10 @@ private def parseCurrent (text : String) : Except String Version :=
   if text.startsWith "v" then Version.parseTag "the release being cut" text
   else Version.parse "the release being cut" text
 
-private def deferralsCommand : Command := {
-  name := "plan-deferrals"
-  arguments := "<plan.json> <version-or-tag>"
-  summary := "Refuse if a deferred channel names a release this one has already reached."
-  run := fun args => do
+private def deferralsCommand : Command :=
+  positionalCommand "plan-deferrals" "<plan.json> <version-or-tag>"
+    "Refuse if a deferred channel names a release this one has already reached."
+    ["release/plan.json", "v0.1.0"] 2 fun args => do
     match args with
     | [planPath, versionText] =>
         match ← readTextFile planPath with
@@ -109,7 +107,7 @@ private def deferralsCommand : Command := {
                       IO.eprintln
                         s!"tlrelease plan-deferrals: {ReleasePlan.staleDeferralMessage channel planned current}"
                     return 1
-    | _ => misuse "usage: tlrelease plan-deferrals <plan.json> <version-or-tag>" }
+    | _ => wrongArity
 
 def planCommands : List Command := [channelsCommand, deferralsCommand]
 

@@ -392,9 +392,6 @@ private def versionOptions : List OptionSpec :=
   [{ name := "targets", takesValue := true },
    { name := "tag", takesValue := true }]
 
-private def versionUsage : String :=
-  "usage: tlrelease version-consistency --targets <targets.json> [--tag <vX.Y.Z>]"
-
 private structure VersionArgs where
   targetsPath : String
   tag : Option String
@@ -438,18 +435,14 @@ private def versionDecision (args : VersionArgs) : Decision String := do
         ++ String.join (problems.map fun problem => s!"  {problem}\n")
         ++ "A release named for one version, reporting another and resolving to a third is one nobody can reason about.")
 
-private def versionCommand : Command := {
-  name := "version-consistency"
-  arguments := "--targets <targets.json> [--tag <vX.Y.Z>]"
-  summary := "Refuse unless every copy of the release version agrees with the binary's own."
-  run := runWithOptions "tlrelease version-consistency" versionOptions versionUsage
-    versionArgs versionDecision }
+private def versionCommand : Command :=
+  optionCommand "version-consistency" "--targets <targets.json> [--tag <vX.Y.Z>]"
+    "Refuse unless every copy of the release version agrees with the binary's own."
+    ["--targets", "release/targets.json"]
+    versionOptions versionArgs versionDecision
 
 private def embeddedOptions : List OptionSpec :=
   [{ name := "library", takesValue := true }]
-
-private def embeddedUsage : String :=
-  "usage: tlrelease embedded-copies --library <release-common.sh>"
 
 /-- The library is an argument rather than a path this command knows, for the
     same reason the SBOM's two inputs are: which file the copies are compared
@@ -481,12 +474,11 @@ private def embeddedDecision (libraryPath : String) : Decision String := do
         ++ String.join (problems.map fun problem => s!"  {problem}\n")
         ++ "install.sh is piped from curl and the npm launcher ships inside a package, so neither can source the library; the copies are the interface, and a copy that drifts ships the wrong binary to somebody.")
 
-private def embeddedCommand : Command := {
-  name := "embedded-copies"
-  arguments := "--library <release-common.sh>"
-  summary := "Refuse unless every embedded copy still matches its original in the shared release library."
-  run := runWithOptions "tlrelease embedded-copies" embeddedOptions embeddedUsage
-    (fun options => options.required "library") embeddedDecision }
+private def embeddedCommand : Command :=
+  optionCommand "embedded-copies" "--library <release-common.sh>"
+    "Refuse unless every embedded copy still matches its original in the shared release library."
+    ["--library", "scripts/lib/release-common.sh"]
+    embeddedOptions (fun options => options.required "library") embeddedDecision
 
 def consistencyCommands : List Command := [versionCommand, embeddedCommand]
 

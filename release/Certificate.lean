@@ -296,9 +296,6 @@ def identityChecks (identity : Identity) (rendered : String) : List Check :=
 private def identityOptions : List OptionSpec :=
   [{ name := "identity", takesValue := true }]
 
-private def identityUsage : String :=
-  "usage: tlrelease identity-check --identity <identity.json>"
-
 private def identityCheckDecision (identityPath : String) : Decision String := do
   let identity ← readParsed identityPath Identity.parse
   let rendered ← ofExcept (renderIdentityExpression identity)
@@ -310,18 +307,14 @@ private def identityCheckDecision (identityPath : String) : Decision String := d
         ++ String.join (failures.map fun failure => s!"  {failure}\n")
         ++ "Every verifier of this project — VERIFYING.md, the installer, the standalone artifact verifier and the Homebrew formula — is pinned to this expression, so an identity that is wrong here makes genuine releases unverifiable, and one that is too wide makes forged ones verifiable.")
 
-private def identityCheckCommand : Command := {
-  name := "identity-check"
-  arguments := "--identity <identity.json>"
-  summary := "Refuse unless the pinned signing identity is the canonical one and discriminates."
-  run := runWithOptions "tlrelease identity-check" identityOptions identityUsage
-    (fun options => options.required "identity") identityCheckDecision }
+private def identityCheckCommand : Command :=
+  optionCommand "identity-check" "--identity <identity.json>"
+    "Refuse unless the pinned signing identity is the canonical one and discriminates."
+    ["--identity", "release/identity.json"]
+    identityOptions (fun options => options.required "identity") identityCheckDecision
 
 private def acceptsOptions : List OptionSpec :=
   [{ name := "identity", takesValue := true }, { name := "san", takesValue := true }]
-
-private def acceptsUsage : String :=
-  "usage: tlrelease identity-accepts --identity <identity.json> --san <certificate identity>"
 
 private structure AcceptsArgs where
   identityPath : String
@@ -354,12 +347,12 @@ private def acceptsDecision (args : AcceptsArgs) : Decision String := do
             s!"it names the workflow '{signing.workflowPath}', and this project signs from '{identity.releaseWorkflow}'."
     decline s!"{args.san} is not an identity this project accepts: {reason} Every verifier is pinned to that identity, so artifacts signed as this would be unverifiable — which is worse than not shipping them, because a signature nobody can check still looks like one. Either the workflow moved, which is an identity rotation (follow VERIFYING.md), or the tag is outside the accepted SemVer shape."
 
-private def acceptsCommand : Command := {
-  name := "identity-accepts"
-  arguments := "--identity <identity.json> --san <certificate identity>"
-  summary := "Refuse unless that certificate identity is one this project would sign as."
-  run := runWithOptions "tlrelease identity-accepts" acceptsOptions acceptsUsage
-    acceptsArgs acceptsDecision }
+private def acceptsCommand : Command :=
+  optionCommand "identity-accepts" "--identity <identity.json> --san <certificate identity>"
+    "Refuse unless that certificate identity is one this project would sign as."
+    ["--identity", "release/identity.json",
+     "--san", "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v0.1.0"]
+    acceptsOptions acceptsArgs acceptsDecision
 
 def certificateCommands : List Command := [identityCheckCommand, acceptsCommand]
 

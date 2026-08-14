@@ -392,11 +392,10 @@ def renderSbomOfInputs (inputs : SbomInputs) : Except String String :=
 private def missingInputRemedy : String :=
   "The SBOM is derived from the files that fix the build, so without this one the document would understate what ships. Run it from the checkout being released, with paths relative to it."
 
-private def sbomCommand : Command := {
-  name := "sbom"
-  arguments := "<version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>"
-  summary := "Write the release's SPDX 2.3 SBOM, from the files that fix the build."
-  run := fun args => do
+private def sbomCommand : Command :=
+  positionalCommand "sbom" "<version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>"
+    "Write the release's SPDX 2.3 SBOM, from the files that fix the build."
+    ["0.1.0", "lean-toolchain", "lake-manifest.json", "dist/tl.spdx.json"] 4 fun args => do
     match args with
     | [versionText, toolchainPath, manifestPath, outputPath] =>
         -- The version first: it is the argument an operator types, so a
@@ -424,8 +423,7 @@ private def sbomCommand : Command := {
                         | .ok () =>
                             IO.println s!"tlrelease sbom: wrote {outputPath} — {sbom.packages.length} packages for tl {sbom.version.render}"
                             return 0
-    | _ =>
-        misuse "usage: tlrelease sbom <version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>" }
+    | _ => wrongArity
 
 def sbomCommands : List Command := [sbomCommand]
 
