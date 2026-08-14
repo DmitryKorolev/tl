@@ -192,8 +192,8 @@ when the channel is enabled, not a detail to discover mid-release.
 ## Before every release
 
 - The tag is a SemVer `v` tag whose version matches every copy
-  (`tlrelease version-consistency --tag <tag>` — also run by the release
-  policy on the tagged commit).
+  (`tlrelease version-consistency --targets release/targets.json --tag <tag>` —
+  also run by the release policy on the tagged commit).
 - The tagged commit is on `main`. The `sign` job enforces this.
 - `tlrelease prereqs` passes.
 

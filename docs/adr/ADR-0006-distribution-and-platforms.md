@@ -175,11 +175,14 @@ exists to prevent.
 **How it is enforced.** The budget is enforced twice, because the two arms see
 different things and neither subsumes the other.
 
-`tlrelease dependency-boundary --root .` reads what the release path *says*: it
-states the four v0.1 entry points — `install.sh`,
+`tlrelease dependency-boundary --root . --plan release/plan.json` reads what the
+release path *says*: it states the four v0.1 entry points — `install.sh`,
 `scripts/verify-release-artifacts.sh`, `scripts/check-release-policy.sh` and
 `.github/workflows/release.yml` — walks the first-party scripts they reach, and
-refuses on an invocation of one of the six in command position. Comments are
+refuses on an invocation of one of the six in command position. It refuses on a
+line it cannot read, too: a `#!` whose interpreter it cannot identify is a
+refusal naming the line, rather than a file reported clean by a scan that did not
+finish reading it. Comments are
 stripped, since these files discuss npm and Homebrew throughout; a deferred
 channel's files and publish jobs leave the scan by name and by channel; a
 referenced script that is missing is a refusal rather than a skip; and a clean

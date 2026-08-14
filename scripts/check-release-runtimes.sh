@@ -59,9 +59,9 @@ done
 # The same six ADR-0026 names `tlrelease dependency-boundary` refuses, and the
 # duplication is deliberate: one list is the lexical scan's and this one is the
 # runtime's, and a release must not be able to lose a name from both at once by
-# editing one file. `tlrelease dependency-boundary --root .` is what compares
-# them — its own findings are stated in these terms — and the boundary tests
-# name all six on the Lean side.
+# editing one file. `tlrelease dependency-boundary --root . --plan release/plan.json`
+# is what compares them — its own findings are stated in these terms — and the
+# boundary tests name all six on the Lean side.
 FORBIDDEN='python python3 ruby brew node npm'
 
 # write_shims <dir> — a failing stand-in for each forbidden command, first on
@@ -150,6 +150,99 @@ PROBE
   rc_expect_output 2 "takes the tag" \
     "a runtime-boundary tag with no value is refused" \
     "$self" --tag
+  # The optional-tool state machine, crossed. Every gate whose tool may be
+  # absent goes through `rc_tool_gate`, and what it decides is three inputs
+  # together: the tool is on PATH or it is not, the run is strict or it is not,
+  # the command succeeded or it did not. Those decide whether a release proceeds
+  # past a gate that never ran, and until this the whole cross was untested at
+  # four hand-written call sites.
+  #
+  # A fixture tool and a fixture gate rather than npm or ruby: what is under
+  # test is the decision, not any one gate, and naming a real tool here would
+  # both couple these rows to that gate and put one of the six forbidden names
+  # in command position in a file the boundary scan reads.
+  gate_bin="$scratch/gate-bin"
+  mkdir -p "$gate_bin"
+  printf '#!/bin/sh\nexit 0\n' > "$gate_bin/fixture-tool"
+  printf '#!/bin/sh\nexit 0\n' > "$gate_bin/gate-succeeds"
+  printf '#!/bin/sh\nexit 4\n' > "$gate_bin/gate-fails"
+  chmod +x "$gate_bin/fixture-tool" "$gate_bin/gate-succeeds" "$gate_bin/gate-fails"
+  # PATH is the fixture directory and nothing else, so "absent" is a fact about
+  # the run rather than a hope about the machine it runs on.
+  gate_probe="$scratch/tool-gate-probe.sh"
+  cat > "$gate_probe" <<'PROBE'
+#!/bin/sh
+# <library> <strict> <rc_tool_gate arguments…>
+set -eu
+. "$1"
+RC_POLICY_STRICT=$2
+shift 2
+rc_policy_begin "fixture policy"
+rc_tool_gate "the fixture gate" "$@"
+rc_policy_end "fixture policy"
+PROBE
+  chmod +x "$gate_probe"
+  rc_expect_output 0 "SKIPPED" \
+    "a gate whose tool is absent is skipped, and says so" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool-absent -- "$gate_bin/gate-succeeds"
+  rc_expect_output 1 "cannot be skipped" \
+    "the same gate under --strict is a failure, not a skip" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 1 \
+      --tool fixture-tool-absent -- "$gate_bin/gate-succeeds"
+  rc_expect_output 0 "all 1 gates passed" \
+    "a gate whose tool is present runs, and its success is a pass" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool -- "$gate_bin/gate-succeeds"
+  rc_expect_output 0 "all 1 gates passed" \
+    "and --strict does not turn that pass into anything else" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 1 \
+      --tool fixture-tool -- "$gate_bin/gate-succeeds"
+  rc_expect_output 1 "gate failed" \
+    "a present tool whose gate fails is a failure" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool -- "$gate_bin/gate-fails"
+  rc_expect_output 1 "gate failed" \
+    "and --strict does not change that either" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 1 \
+      --tool fixture-tool -- "$gate_bin/gate-fails"
+  # Two tools, where the second one's absence costs something different from the
+  # first one's. This is the shape the workflow lint needs — actionlint without
+  # ShellCheck runs and checks less than it claims — and the row that keeps the
+  # reason from collapsing into "not on PATH" for every requirement.
+  rc_expect_output 0 "runs over less" \
+    "a two-tool gate reports the missing one in its own terms" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool --tool fixture-tool-absent --why "the second tool is absent and the first one then runs over less than it claims" \
+      -- "$gate_bin/gate-succeeds"
+  rc_expect_output 0 "fixture-tool-absent is not on PATH" \
+    "and the first missing requirement is the one that decides" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool-absent --tool fixture-tool-missing-too --why "the second reason, which must not be the one reported" \
+      -- "$gate_bin/gate-succeeds"
+  # A malformed call is a usage error and never a quiet skip: a policy script
+  # that calls this wrongly must stop rather than record a gate that did not run.
+  rc_expect_output 2 "--tool takes a command name" \
+    "a --tool with no value is a usage error" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 --tool
+  rc_expect_output 2 "--why takes a reason" \
+    "a --why with no value is a usage error" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --tool fixture-tool --why
+  rc_expect_output 2 "no --tool to explain" \
+    "a --why before any --tool is a usage error" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      --why "explains nothing" -- "$gate_bin/gate-succeeds"
+  rc_expect_output 2 "expected --tool, --why or --" \
+    "a bare word where a requirement belongs is a usage error" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 \
+      fixture-tool -- "$gate_bin/gate-succeeds"
+  rc_expect_output 2 "names no --tool" \
+    "a gate with no tool that can be absent is a usage error, not a skip" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 -- "$gate_bin/gate-succeeds"
+  rc_expect_output 2 "no command after --" \
+    "a requirement with no command after it is a usage error" \
+    env PATH="$gate_bin" "$gate_probe" "$RC_LIB_SELF" 0 --tool fixture-tool
   # Naming the gates is what makes the profiles reviewable, so it is a listed
   # behaviour rather than a debugging aid: the release profile must not name a
   # gate that invokes one of the six.

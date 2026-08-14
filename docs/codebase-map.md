@@ -581,6 +581,16 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   that every privileged release job needs a pushed
                         --   tag — stated over what makes a job privileged, so
                         --   a privileged job added later is covered
+  ReleaseDriftTests.lean --  the two guards over statements kept beside the
+                        --   release layer: every backticked invocation of
+                        --   `tlrelease` in a tracked .md/.sh/.yml must be one
+                        --   the command's own `accepts` takes (name a command
+                        --   or write an invocation that works — a fragment is
+                        --   what rots), and a script that runs policy gates
+                        --   must decide a missing tool through `rc_tool_gate`
+                        --   alone. Both read the real tree, and the second uses
+                        --   Boundary.lean's own lexer, so a comment explaining
+                        --   the rule is not a violation of it
   ReleaseToolTests.lean --   tlrelease: dispatch, the generated usage, and the
                         --   refusals. Driven in-process against release.Cli;
                         --   a refusal must never share an exit status with
@@ -589,7 +599,17 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   fixtures/sbom-golden.spdx.json, rendered from the
                         --   two committed inputs beside it, so a change to
                         --   what a release describes is a failing row rather
-                        --   than a difference inside a signed asset
+                        --   than a difference inside a signed asset. The
+                        --   boundary's spelling corpus lives here too: one
+                        --   table of the ways a command can be written — bare,
+                        --   relative, absolute, through env/exec/command, after
+                        --   an assignment, quoted, both shebang spellings, on
+                        --   CRLF lines, malformed shebangs, and the dynamic
+                        --   forms the runtime arm owns — with every row
+                        --   asserted through the parser and again through the
+                        --   public command over a planted checkout, since a
+                        --   parser row alone held while the command never
+                        --   reached that code
   PerfTests.lean        --   scaling regression rows: ×4 synthetic ops must
                         --   grow ≤ ×12 on all ratio-asserted paths (cold
                         --   batched fold, warm cached materialize, rollup,
@@ -750,7 +770,16 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   list rather than a plausible count. What it cannot
                         --   see — a command name in a variable, or inside the
                         --   string `sh -c` runs — is what
-                        --   scripts/check-release-runtimes.sh observes instead
+                        --   scripts/check-release-runtimes.sh observes instead.
+                        --   Each line is read as what it is: a `#!` goes to the
+                        --   parser its own syntax has (the marker, optional
+                        --   whitespace, then the interpreter), because read as
+                        --   shell `#! /usr/bin/python3` is a command named `#!`
+                        --   taking a path — no finding, and a Python helper on
+                        --   the release path. Reading a line yields either the
+                        --   commands it understood or the reason it could not,
+                        --   and the second is a refusal: a parser omission
+                        --   costs a release rather than passing as a clean file
 ```
 
 Each type in `Model.lean` exists because the shell could hold a value that

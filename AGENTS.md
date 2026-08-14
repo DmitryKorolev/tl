@@ -152,12 +152,29 @@ CI gates (mirror these locally before declaring done):
   `--profile release` (what the release workflow runs) does not have them —
   absent rather than skipped, because a skip is a report about this run and
   absence is a statement about the release. The boundary itself is enforced
-  twice: `tlrelease dependency-boundary --root .` reads what the reachable
-  scripts *say*, and `scripts/check-release-runtimes.sh` runs the release
-  profile with all six shimmed to fail on `PATH` to observe what they
+  twice: `tlrelease dependency-boundary --root . --plan release/plan.json`
+  reads what the reachable scripts *say*, and `scripts/check-release-runtimes.sh`
+  runs the release profile with all six shimmed to fail on `PATH` to observe what
+  they
   *execute* — proving each shim fires first, since a shim that was never on
   `PATH` would make every run look clean. Deferred-channel files are excluded
-  from the first by name and by channel, never by directory.
+  from the first by name and by channel, never by directory. The lexical arm
+  reads a `#!` line with the syntax a shebang has rather than as shell —
+  `#! /usr/bin/python3` executes, and read as shell it is a command named `#!`
+  taking a path, which was invisible to both arms — and it refuses on a line it
+  cannot read at all, so an omission in the parser stops a release instead of
+  passing as a clean file. The spellings it must keep understanding are a corpus
+  in `Tests/ReleaseToolTests.lean`, each row asserted through the parser *and*
+  through the public command over a planted checkout.
+- A gate whose *tool* may be absent goes through `rc_tool_gate` in
+  `scripts/lib/release-common.sh`, the one place entitled to `command -v` or
+  `rc_skip_gate`: it crosses tool-present/absent × strict/not × passed/failed,
+  and `scripts/check-release-runtimes.sh --selftest` exercises the crossing.
+  `Tests/ReleaseDriftTests.lean` refuses a policy script that branches on tool
+  presence itself, and refuses a backticked `tlrelease` invocation in the docs
+  that the tool's own parser would reject — so an option that becomes mandatory breaks
+  every stale example in the same build. In backticks, name a command or write
+  an invocation that works; a fragment is what rots.
 - A `homebrew-formula` job, which is the other required CI job the four gates
   above do not imply. It taps four generated formulae on macOS and runs
   `brew info --formula`, `brew style` and `brew audit` over each, plus a

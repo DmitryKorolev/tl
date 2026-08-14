@@ -60,28 +60,22 @@ fi
 
 rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]; then echo ", strict"; fi)"
 
-if command -v npm >/dev/null 2>&1; then
-  rc_gate "npm package selftest" ./scripts/npm-pack.sh --selftest
-  # The publisher's refusals are the ones that matter most: an npm version
-  # cannot be reissued, so a mistake here is not correctable after the fact.
-  rc_gate "npm publisher selftest" ./scripts/npm-publish.sh --selftest
-  # The one-time bootstrap is the only manual step before the first release,
-  # and the only one that publishes an immutable version by hand.
-  rc_gate "npm bootstrap selftest" ./scripts/npm-bootstrap.sh --selftest
-else
-  rc_skip_gate "npm package selftest" "npm is not on PATH"
-  rc_skip_gate "npm publisher selftest" "npm is not on PATH"
-  rc_skip_gate "npm bootstrap selftest" "npm is not on PATH"
-fi
+# Each gate states the tool it needs and `rc_tool_gate` decides the rest —
+# present or absent, strict or not, passed or failed. Stating it per gate rather
+# than wrapping three in one `command -v` also stops a fourth npm gate from
+# landing inside a branch written for the three above it.
+rc_tool_gate "npm package selftest" --tool npm -- ./scripts/npm-pack.sh --selftest
+# The publisher's refusals are the ones that matter most: an npm version
+# cannot be reissued, so a mistake here is not correctable after the fact.
+rc_tool_gate "npm publisher selftest" --tool npm -- ./scripts/npm-publish.sh --selftest
+# The one-time bootstrap is the only manual step before the first release,
+# and the only one that publishes an immutable version by hand.
+rc_tool_gate "npm bootstrap selftest" --tool npm -- ./scripts/npm-bootstrap.sh --selftest
 
 rc_gate "Homebrew formula generator selftest" ./scripts/gen-homebrew-formula.sh --selftest
 
-if command -v ruby >/dev/null 2>&1; then
-  # Nothing else evaluates the formula: a syntax error would pass every other
-  # gate here and surface only when the tap tried to use it.
-  rc_gate "the Homebrew formula parses" ruby -c Formula/tl.rb
-else
-  rc_skip_gate "the Homebrew formula parses" "ruby is not on PATH"
-fi
+# Nothing else evaluates the formula: a syntax error would pass every other
+# gate here and surface only when the tap tried to use it.
+rc_tool_gate "the Homebrew formula parses" --tool ruby -- ruby -c Formula/tl.rb
 
 rc_policy_end "channel policy"

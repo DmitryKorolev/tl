@@ -183,11 +183,7 @@ rc_gate "task-id leakage" ./scripts/check-task-ids.sh
 # this gate: a `[ -e "$dir/.tl.install."* ]` test that misbehaves on more than
 # one match, and a comment beginning with the tool's own name, which ShellCheck
 # reads as a malformed directive and treats as an error.
-if command -v shellcheck >/dev/null 2>&1; then
-  rc_gate "shell static analysis" shellcheck_all
-else
-  rc_skip_gate "shell static analysis" "shellcheck is not on PATH"
-fi
+rc_tool_gate "shell static analysis" --tool shellcheck -- shellcheck_all
 
 rc_gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
 # Version consistency and embedded-copy drift are `tlrelease
@@ -223,29 +219,29 @@ rc_gate "release runtime boundary selftest" ./scripts/check-release-runtimes.sh 
 # who most depend on it.
 rc_gate "installer selftest" sh install.sh --selftest
 
-if ! command -v actionlint >/dev/null 2>&1; then
-  rc_skip_gate "workflow lint" "actionlint is not on PATH"
-elif ! command -v shellcheck >/dev/null 2>&1; then
-  # actionlint shells out to ShellCheck for every `run:` block and silently
-  # does without it when it is absent — so on a machine with actionlint and no
-  # ShellCheck the gate passes having checked only the YAML. That is how three
-  # real shell defects in these two workflows survived: the runner has it
-  # preinstalled, so the gate would have failed in CI while passing everywhere
-  # it was tried. Naming the shortfall is the difference between a gate that is
-  # not running and a gate that is running clean.
-  #
-  # (Capitalised deliberately. A comment whose first word after `#` is the
-  # lowercase tool name is parsed as a ShellCheck *directive*, and an
-  # unparseable directive is an error that fails the file — which is what this
-  # very comment used to do.)
-  rc_skip_gate "workflow lint" "actionlint is present but shellcheck is not, and without it actionlint checks the YAML only"
-else
-  # A workflow cannot validate itself: if GitHub refuses to load release.yml,
-  # nothing runs to say so, and the failure surfaces only when someone pushes a
-  # tag. actionlint parses both workflows — expressions, unknown keys, runner
-  # labels, and the embedded shell through shellcheck.
-  rc_gate "workflow lint" actionlint -color .github/workflows/ci.yml .github/workflows/release.yml
-fi
+# A workflow cannot validate itself: if GitHub refuses to load release.yml,
+# nothing runs to say so, and the failure surfaces only when someone pushes a
+# tag. actionlint parses both workflows — expressions, unknown keys, runner
+# labels, and the embedded shell through shellcheck.
+#
+# Two tools, and the second one's absence is not the first one's. actionlint
+# shells out to ShellCheck for every `run:` block and silently does without it
+# when it is absent — so on a machine with actionlint and no ShellCheck this
+# gate passes having checked only the YAML. That is how three real shell defects
+# in these two workflows survived: the runner has ShellCheck preinstalled, so the
+# gate would have failed in CI while passing everywhere it was tried. Naming the
+# shortfall is the difference between a gate that is not running and a gate that
+# is running clean.
+#
+# (Capitalised deliberately. A comment whose first word after `#` is the
+# lowercase tool name is parsed as a ShellCheck *directive*, and an unparseable
+# directive is an error that fails the file — which is what this very comment
+# used to do.)
+rc_tool_gate "workflow lint" \
+  --tool actionlint \
+  --tool shellcheck \
+  --why "actionlint is present but shellcheck is not, and without it actionlint checks the YAML only" \
+  -- actionlint -color .github/workflows/ci.yml .github/workflows/release.yml
 
 if [ -n "$tag" ]; then
   echo "── the checked-in build stamp is the development stamp: not applicable on a tag run (the release workflow stamps the tagged commit on purpose)"

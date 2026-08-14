@@ -187,6 +187,20 @@ statement about the release. Absence is structural, not conditional: the
 deferred gates are in a file the release profile never names, so there is no
 flag that could turn them back on there.
 
+A gate whose *tool* is absent is a different decision, and it is made in one
+place. `rc_tool_gate` in `scripts/lib/release-common.sh` crosses the three
+inputs — the tool is on PATH or it is not, the run is strict or it is not, the
+command passed or it did not — and `scripts/check-release-runtimes.sh
+--selftest` exercises that crossing against fixture tools and a fixture gate,
+including the two-tool case where the second one's absence leaves the first
+running over less than it claims. It was written out per gate before, in four
+places and tested in none, which is four chances to swap the two outcomes that
+matter: a skip that is a smaller policy today, and a strict skip that is a broken
+job. `command -v` and `rc_skip_gate` are the library's alone now, and
+`Tests/ReleaseDriftTests.lean` refuses a policy script that reaches for either —
+found by what the script does (it opens a policy run) rather than by a list of
+script names, so the rule reaches a third policy script the day it is written.
+
 The budget is enforced twice rather than documented once.
 
 The first arm is `tlrelease dependency-boundary`, which states the v0.1 entry

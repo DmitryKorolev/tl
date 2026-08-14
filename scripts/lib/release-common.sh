@@ -462,6 +462,104 @@ rc_skip_gate() {
   - $1 ($2)"
 }
 
+# ---------------------------------------------------------------------------
+# Gates whose tool may be absent
+#
+# Four gates each wrote out the same three-way decision by hand — is the tool on
+# PATH, is this run strict, did the command succeed — and every combination of
+# those decides whether a release may proceed past a gate that did not run. Not
+# one of the combinations was tested, and the two that differ most in
+# consequence differ least in text: a missing tool without --strict is "the
+# policy was smaller today", and the same tool under --strict is "this job is
+# broken". Four hand-written copies of that is four places for the two to be
+# swapped.
+#
+# One helper decides it, so the matrix is exercised once rather than per gate —
+# `scripts/check-release-runtimes.sh --selftest` crosses tool presence,
+# strictness and command status — and a gate added later cannot bring a fifth
+# spelling with it. `command -v` and `rc_skip_gate` are this file's alone for
+# that reason, and Tests/ReleaseDriftTests.lean refuses a policy script that
+# reaches for either directly.
+# ---------------------------------------------------------------------------
+
+# Evaluate the requirement just read, remembering the first that is missing.
+# Separate from the parse loop below because a requirement is only complete when
+# the next --tool arrives, or when they run out: --why belongs to the --tool
+# before it.
+rc__tool_settle() {
+  [ -n "$rc__tg_tool" ] || return 0
+  if [ -z "$rc__tg_missing" ] && ! command -v "$rc__tg_tool" >/dev/null 2>&1; then
+    rc__tg_missing=$rc__tg_why
+  fi
+  rc__tg_tool=''
+}
+
+# rc_tool_gate <name> --tool <command> [--why <reason>] [--tool …] -- <cmd>…
+#
+# One gate, run unless a tool it needs is missing. Requirements are checked in
+# the order written and the first missing one decides, which is what lets a
+# two-tool gate report each absence in its own terms: a tool whose absence stops
+# the gate running and one whose absence leaves it running over less than it
+# claims are not the same report, and the second is the one that reads as a pass.
+#
+# A malformed call returns 2 and prints why, so a caller under `set -e` exits.
+# That is deliberate: a programming mistake in a policy script must not resolve
+# to a skipped gate, which is the outcome this whole file exists to prevent.
+rc_tool_gate() {
+  rc__tg_name=$1
+  shift
+  rc__tg_tool=''
+  rc__tg_why=''
+  rc__tg_missing=''
+  rc__tg_declared=0
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --tool)
+        [ "$#" -ge 2 ] || {
+          echo "rc_tool_gate: --tool takes a command name, and '$rc__tg_name' ended after it" >&2
+          return 2
+        }
+        rc__tool_settle
+        rc__tg_tool=$2
+        rc__tg_why="$2 is not on PATH"
+        rc__tg_declared=$((rc__tg_declared + 1))
+        shift 2
+        ;;
+      --why)
+        [ "$#" -ge 2 ] || {
+          echo "rc_tool_gate: --why takes a reason, and '$rc__tg_name' ended after it" >&2
+          return 2
+        }
+        [ -n "$rc__tg_tool" ] || {
+          echo "rc_tool_gate: --why explains the --tool before it, and '$rc__tg_name' gave one with no --tool to explain" >&2
+          return 2
+        }
+        rc__tg_why=$2
+        shift 2
+        ;;
+      --) shift; break ;;
+      *)
+        echo "rc_tool_gate: expected --tool, --why or --, and '$rc__tg_name' gave '$1'" >&2
+        return 2
+        ;;
+    esac
+  done
+  rc__tool_settle
+  if [ "$rc__tg_declared" -eq 0 ]; then
+    echo "rc_tool_gate: '$rc__tg_name' names no --tool. A gate with no tool that can be absent is rc_gate; going through here would report a skip nobody can reach." >&2
+    return 2
+  fi
+  [ "$#" -gt 0 ] || {
+    echo "rc_tool_gate: '$rc__tg_name' has no command after --" >&2
+    return 2
+  }
+  if [ -n "$rc__tg_missing" ]; then
+    rc_skip_gate "$rc__tg_name" "$rc__tg_missing"
+    return 0
+  fi
+  rc_gate "$rc__tg_name" "$@"
+}
+
 # rc_policy_end <what> — the summary, and the run's exit status as a return
 # value. Returns 1 when anything failed, so the caller's `exit` is one line and
 # no arithmetic decides a release outside this file.
