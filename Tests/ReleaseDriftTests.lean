@@ -76,10 +76,29 @@ private def codeSpans (line : String) : List String :=
       some (if segment.endsWith "\\" then (segment.dropEnd 1).toString else segment)
     else none
 
+/-- Words, on real whitespace. Splitting on the space alone left a span written
+    with a tab as one token that matched nothing, which is a documented
+    invocation this guard read as prose. -/
 private def wordsOf (text : String) : List String :=
-  (text.splitOn " ").filterMap fun word =>
+  ((text.splitOn " ").flatMap (·.splitOn "\t")).filterMap fun word =>
     let word := word.trimAscii.toString
     if word.isEmpty then none else some word
+
+/-- The tokens of a documented span, with the ways a reader is told to run this
+    executable removed: a `lake exe` prefix, and a path to the built binary.
+
+    Normalizing by basename is the same rule the dependency boundary uses on a
+    command word, and for the same reason — `./.lake/build/bin/tlrelease` and
+    `tlrelease` are one command, and a guard that only knew the second was a
+    guard three copyable spellings walked around. -/
+private def invocationTokens (span : String) : List String :=
+  let words := wordsOf span
+  let words := match words with
+    | "lake" :: "exe" :: rest => rest
+    | _ => words
+  match words with
+  | executable :: rest => commandName executable :: rest
+  | [] => []
 
 /-- What one documented span has to be.
 
@@ -88,7 +107,7 @@ private def wordsOf (text : String) : List String :=
     to name a thing without invoking it. Everything else is an invocation, and is
     held to what the command's own parser accepts. -/
 def documentedVerdict (span : String) : Except String Unit :=
-  match wordsOf span with
+  match invocationTokens span with
   | "tlrelease" :: name :: argv =>
       if ["--help", "-h", "help"].contains name then .ok ()
       else match commands.find? (·.name == name) with
@@ -110,9 +129,18 @@ private def documentedFailures (path : String) (text : String) : List String :=
     that says the check had something to read. -/
 private def documentedCount (text : String) : Nat :=
   ((text.splitOn "\n").flatMap codeSpans).countP fun span =>
-    match wordsOf span with
+    match invocationTokens span with
     | "tlrelease" :: _ :: _ :: _ => true
     | _ => false
+
+/-- The option names one usage line mentions, without the punctuation the
+    syntax carries: `(--workflow-ref <ref> … | --outside-workflow)` names two. -/
+def usageOptions (usage : String) : List String :=
+  (wordsOf usage).filterMap fun word =>
+    let word := (word.dropWhile fun c => c == '(' || c == '[' || c == '{').toString
+    let word := (word.takeWhile fun c =>
+      c != ')' && c != ']' && c != '}' && c != '|' && c != ',').toString
+    if word.startsWith "--" && word.length > 2 then some (word.drop 2).toString else none
 
 /-! ## One decision about a missing tool
 
@@ -121,16 +149,28 @@ policy script that reaches for either is writing its own answer to "what happens
 when the tool is absent", and the four that did had already produced two
 spellings of it. -/
 
+/-- The builtins that answer "is this tool here" on their own. `command`
+    is not among them: it takes a flag, and `command npm publish` is an
+    invocation rather than a probe. -/
+private def presenceProbes : List String := ["type", "which", "hash"]
+
 /-- Does this line probe for a command's presence?
 
-    Read from the code half of the line, so the sentence explaining the rule in
-    a comment is prose. Matched as adjacent words — `command` followed by a flag
-    carrying `v` — rather than as the string `command -v`, so the spacing does
-    not decide the verdict. -/
+    Read from the code half of the line with the boundary's own lexer, so the
+    sentence explaining this rule in a comment is prose and a quoted gate name
+    containing one of these words is one token rather than several.
+
+    Every word is normalized to its program name first. A guard that compared
+    whole words forbade a spelling rather than a decision: `type shellcheck` and
+    `/usr/bin/command -v shellcheck` both branch on tool presence, and both were
+    invisible to a rule written for the literal string `command -v`. -/
 def probesForTool (line : String) : Bool :=
-  let words := wordsOf (codeOf line)
-  (words.zip (words.drop 1)).any fun (word, next) =>
-    word == "command" && next.startsWith "-" && next.any (· == 'v')
+  let code := codeOf line
+  let named := (lineWords code).map commandName
+  let commanded := (commandWords code).map commandName
+  (named.zip (named.drop 1)).any (fun (word, next) =>
+      word == "command" && next.startsWith "-" && next.any (· == 'v'))
+    || commanded.any presenceProbes.contains
 
 /-- Does this line call `name` in command position? -/
 def callsDirectly (line : String) (name : String) : Bool :=
@@ -151,7 +191,7 @@ private def runsGates (text : String) : Bool :=
 private def hygieneFailures (path : String) (text : String) : List String :=
   ((text.splitOn "\n").zipIdx 1).filterMap fun (line, number) =>
     if probesForTool line then
-      some s!"  {path}:{number}: probes for a tool with `command -v` — {line.trimAscii}"
+      some s!"  {path}:{number}: decides for itself whether a tool is present — {line.trimAscii}"
     else if callsDirectly line "rc_skip_gate" then
       some s!"  {path}:{number}: calls rc_skip_gate directly — {line.trimAscii}"
     else none
@@ -207,12 +247,35 @@ def releaseDriftTests : IO (List Outcome) := do
       ((documentedVerdict "tlrelease").toOption.isSome),
     check "release docs: a command this build does not offer is rejected"
       ((documentedVerdict "tlrelease depenency-boundary --root .").toOption.isNone),
-    check "release docs: an unrelated span is not read as an invocation"
-      ((documentedVerdict "lake exe tlrelease").toOption.isSome),
+    -- The wrapper forms a reader can copy. Each is the same command, and a
+    -- guard that only knew the bare name let three stale spellings through.
+    check "release docs: a stale invocation behind `lake exe` is rejected"
+      ((documentedVerdict "lake exe tlrelease dependency-boundary --root .").toOption.isNone),
+    check "release docs: a stale invocation behind the built path is rejected"
+      ((documentedVerdict "./.lake/build/bin/tlrelease dependency-boundary --root .").toOption.isNone),
+    check "release docs: a stale invocation separated by a tab is rejected"
+      ((documentedVerdict "tlrelease\tdependency-boundary --root .").toOption.isNone),
+    check "release docs: naming the built path without arguments is prose"
+      ((documentedVerdict "./.lake/build/bin/tlrelease").toOption.isSome),
+    check "release docs: another executable's span is not read as one of these"
+      ((documentedVerdict "lake exe tltest --root .").toOption.isSome),
     check "release policy: a presence probe is recognised"
       (probesForTool "if command -v npm >/dev/null 2>&1; then"),
     check "release policy: spacing does not decide it"
       (probesForTool "command   -v ruby > /dev/null"),
+    -- The spellings that are the same decision. A guard that forbade the string
+    -- `command -v` forbade a spelling, and a policy script could keep its own
+    -- present/strict/passed logic by writing any of these instead.
+    check "release policy: the probe reached through a path is recognised"
+      (probesForTool "if /usr/bin/command -v shellcheck >/dev/null 2>&1; then"),
+    check "release policy: type is a presence probe"
+      (probesForTool "if type shellcheck >/dev/null 2>&1; then"),
+    check "release policy: which is a presence probe"
+      (probesForTool "which actionlint >/dev/null || exit 1"),
+    check "release policy: hash is a presence probe"
+      (probesForTool "hash ruby 2>/dev/null"),
+    check "release policy: a gate name that contains one of those words is not one"
+      (!probesForTool "rc_gate \"the type check\" ./scripts/x.sh"),
     check "release policy: the same words in a comment are prose"
       (!probesForTool "# command -v belongs to the library"),
     check "release policy: a direct skip is recognised"
@@ -237,6 +300,24 @@ def releaseDriftTests : IO (List Outcome) := do
         if missing.isEmpty then none else some s!"{command.name}: {missing}")),
     check "tlrelease: a canonical invocation is the argv after the name, not with it"
       (commands.all fun command => !command.invocation.contains "tlrelease"),
+    -- The declaration against the sentence describing it, both ways. One
+    -- direction catches an option nobody documented — which is how an optional
+    -- option can exist, be accepted, and appear in nothing a reader sees; the
+    -- other catches a documented option the parser would refuse.
+    check "tlrelease: every declared option is named in the usage line"
+      (commands.all fun command =>
+        command.optionNames.all fun named => (command.usage.splitOn s!"--{named}").length > 1)
+      (String.intercalate "; " (commands.filterMap fun command =>
+        let missing := command.optionNames.filter fun named =>
+          (command.usage.splitOn s!"--{named}").length == 1
+        if missing.isEmpty then none else some s!"{command.name}: {missing}")),
+    check "tlrelease: every option the usage line names is one the parser declares"
+      (commands.all fun command =>
+        (usageOptions command.usage).all command.optionNames.contains)
+      (String.intercalate "; " (commands.filterMap fun command =>
+        let undeclared := (usageOptions command.usage).filter fun named =>
+          !command.optionNames.contains named
+        if undeclared.isEmpty then none else some s!"{command.name}: {undeclared}")),
     -- The help table's entry against the usage line, including the two that
     -- elide. An elision is allowed to stop early and not to say something else:
     -- what precedes the ellipsis has to be what the usage line starts with, or

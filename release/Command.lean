@@ -43,6 +43,24 @@ structure Command where
       has just been told they invoked something wrongly is the one reader who
       needs all of it. -/
   usage : String
+  /-- The names of the options this command declares, without their leading
+      dashes. Empty for the commands whose values are positional.
+
+      Carried so that the declaration and the sentence describing it can be
+      compared. They were two independent statements: a newly declared optional
+      option could be absent from the usage line and from the canonical
+      invocation with nothing noticing, which is the same drift this type was
+      extended to stop, one level down.
+
+      Names rather than the declaration itself, and that is the whole claim. The
+      placeholder text after a name — `<vX.Y.Z>` against `<tag>` — stays prose
+      deliberately: a schema rich enough to render it would have to encode
+      optionality, alternation and the two elided help lines as well, and what
+      reached main was a missing name, not a mis-rendered placeholder. (The type
+      is `String` and not `OptionSpec` for a duller reason too: `OptionSpec` is
+      declared below this structure, and naming it here makes `Command`
+      accidentally polymorphic.) -/
+  optionNames : List String
   /-- Whether an argv would be understood at the usage layer: the option
       declaration, the refusal of stray positional words, and the check that the
       values the command needs are present. Refusals about what the values
@@ -376,7 +394,7 @@ def optionCommand (name arguments summary : String) (invocation : List String)
     (act : α → Decision String) (usageArguments : String := arguments) : Command :=
   let qualified := "tlrelease " ++ name
   let usage := s!"usage: {qualified} {usageArguments}"
-  { name, arguments, summary, invocation, usage
+  { name, arguments, summary, invocation, usage, optionNames := specs.map (·.name)
     accepts := fun args => (resolveInvocation specs resolve args).map fun _ => ()
     run := runWithOptions qualified specs usage resolve act }
 
@@ -403,7 +421,7 @@ def positionalCommand (name arguments summary : String) (invocation : List Strin
     (arity : Nat) (act : List String → IO UInt32) : Command :=
   let qualified := "tlrelease " ++ name
   let usage := s!"usage: {qualified} {arguments}"
-  { name, arguments, summary, invocation, usage
+  { name, arguments, summary, invocation, usage, optionNames := []
     accepts := acceptsPositional arity
     run := fun args =>
       match acceptsPositional arity args with
