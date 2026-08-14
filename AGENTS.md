@@ -163,7 +163,13 @@ CI gates (mirror these locally before declaring done):
   `#! /usr/bin/python3` executes, and read as shell it is a command named `#!`
   taking a path, which was invisible to both arms — and it refuses on a line it
   cannot read at all, so an omission in the parser stops a release instead of
-  passing as a clean file. The spellings it must keep understanding are a corpus
+  passing as a clean file. What each arm sees is narrower than "says" and
+  "executes": a shim intercepts a command resolved *through PATH* and cannot
+  shadow `/usr/bin/python3`, so the lexical arm reads a backslash as the shell
+  does and reads a path wherever it is written, not only in command position.
+  An interpreter path assembled at runtime is seen by neither, is pinned as
+  uncovered by a corpus row, and is closed by construction only by a runtime
+  without the interpreter. The spellings it must keep understanding are a corpus
   in `Tests/ReleaseToolTests.lean`, each row asserted through the parser *and*
   through the public command over a planted checkout.
 - A gate whose *tool* may be absent goes through `rc_tool_gate` in

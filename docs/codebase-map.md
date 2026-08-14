@@ -779,7 +779,14 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   the release path. Reading a line yields either the
                         --   commands it understood or the reason it could not,
                         --   and the second is a refusal: a parser omission
-                        --   costs a release rather than passing as a clean file
+                        --   costs a release rather than passing as a clean file.
+                        --   A backslash escapes as the shell's does, and a
+                        --   forbidden path is a finding wherever it is written
+                        --   rather than only in command position — a shim
+                        --   cannot shadow /usr/bin/python3, so an absolute path
+                        --   held in a variable was the one shape neither arm
+                        --   saw. What remains uncovered (a path assembled at
+                        --   runtime) is pinned by a corpus row, not assumed
 ```
 
 Each type in `Model.lean` exists because the shell could hold a value that

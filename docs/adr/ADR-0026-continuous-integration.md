@@ -216,6 +216,31 @@ missing is a refusal rather than a skip. A clean verdict names the files it
 read, so a walk that stopped following references is visible as a list with
 something missing rather than as a plausible count.
 
+What each arm sees is narrower than "says" and "executes", and the gap between
+those readings is where a bypass lived. A PATH shim intercepts a command
+resolved *through PATH*; it cannot shadow `/usr/bin/python3`. The lexical arm
+cannot see a command name that is not a literal word. Compose the two and there
+is a shape neither covered: an absolute interpreter path held in a variable, or
+spelled with a shell escape — `/usr/bin/pyt\hon3` executes and matched neither
+the six names nor a shim. The lexical arm therefore reads a backslash as the
+shell does, and reads a path wherever it is written rather than only in command
+position: a first-party release script naming `/usr/bin/python3` anywhere is a
+refusal, because a path is runnable from a variable and a shim cannot shadow it.
+
+The residual is stated rather than implied: an interpreter path *assembled* at
+runtime, or a name read out of a file, is a literal word to nobody and resolves
+through PATH for nobody. Neither arm sees it, a corpus row pins that as
+uncovered, and what closes it by construction is a runtime with no interpreter
+installed — tracked separately, not claimed here.
+
+Refusing every dynamic command position instead was considered and measured. The
+lexical arm's notion of command position is necessarily broad, since a flag keeps
+the position open and so the value of `--bundle "$bundle"` lands in it, as does a
+redirect target: 236 words on the current release path sit in that position
+carrying a `$`. A rule refusing those would refuse this repository's own release,
+every edit would move the set, and the exception list would be the files
+themselves — a gate nobody can maintain is a gate that gets disabled.
+
 That arm reads each line as what it is, and refuses when it cannot. A `#!` line
 is parsed by the syntax a shebang has rather than by the shell lexer, because
 the two disagree in a way that executed: `#! /usr/bin/python3` — a space after

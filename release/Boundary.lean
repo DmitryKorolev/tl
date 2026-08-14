@@ -12,13 +12,26 @@ present on the runner today and absent on the operator's machine tomorrow, and a
 release that stops for a runtime it deliberately does not publish through.
 
 Enforced twice, deliberately. This arm is lexical: it reads the reachable files
-and refuses on an invocation in command position. It cannot see through
-`sh -c "npm publish"`, through a command name held in a variable, or through a
-tool a *dependency* shells out to. The second arm is
+and refuses on an invocation in command position, and on one of the six written
+as a path anywhere on a line. The second arm is
 `scripts/check-release-runtimes.sh`, which runs the release profile, the
-installer and the verifier with all six commands shimmed to fail on PATH — it
-sees anything that actually executes, whatever it is spelled like, and sees
-nothing about a branch this run did not take. Neither arm subsumes the other.
+installer and the verifier with all six commands shimmed to fail on PATH.
+
+What each arm sees is narrower than "says" and "executes", and the difference is
+where a bypass lived. A PATH shim intercepts a command *resolved through PATH*;
+it cannot shadow `/usr/bin/python3`, so an absolute path is invisible to it
+however it is spelled. This arm cannot see a command name that is not a literal
+word — `"$tool" publish`, or a name inside the string `sh -c` runs. Compose
+those two and there is a shape neither arm covered: an absolute path held in a
+variable. That is why paths are read wherever they are written rather than only
+in command position, and why a backslash escape is a lexer concern rather than a
+curiosity — `/usr/bin/pyt\hon3` executes, and matched neither the six nor a shim.
+
+The residual, stated rather than implied: an interpreter path *assembled* at
+runtime — pieced together from fragments, or read out of a file — is a literal
+word to nobody and resolves through PATH for nobody, so neither arm sees it. A
+runtime with no interpreter installed is what closes that by construction, and
+it is tracked as its own task rather than described here as covered.
 
 Deferred channels are excluded by name, never by directory. npm and Homebrew
 publish through their own runtimes by nature, and their machinery keeps running
@@ -213,6 +226,10 @@ private structure Lexer where
   atCommand : Bool := true
   token : List Char := []
   found : List String := []
+  /-- Every word on the line, command position or not. A path is worth reading
+      wherever it is written: `tool=/usr/bin/python3` puts an interpreter on the
+      release path in a word no notion of command position covers. -/
+  words : List String := []
 
 private def Lexer.endToken (state : Lexer) (separator : Bool) : Lexer :=
   let word := String.ofList state.token.reverse
@@ -223,19 +240,40 @@ private def Lexer.endToken (state : Lexer) (separator : Bool) : Lexer :=
   { state with
       token := []
       atCommand
+      words := if word.isEmpty then state.words else word :: state.words
       found := if !word.isEmpty && state.atCommand && !keepsCommandPosition word
         then word :: state.found else state.found }
 
-/-- The words in command position on one line of shell.
+/-- One line of shell, lexed into words: those in command position, and all of
+    them.
 
     Quote characters are dropped rather than kept in the token, so `'npm' i`
     reads as an invocation of `npm`; a word is only ever compared whole, so
-    `npm-pack.sh` and `nodes` are not. What this cannot see is a command name
-    that is not a literal word — `"$tool" publish`, or `npm` inside the string
-    `sh -c` runs — which is why the PATH-shim arm exists. -/
-def commandWords (line : String) : List String :=
+    `npm-pack.sh` and `nodes` are not.
+
+    A backslash escapes the character after it, everywhere but inside single
+    quotes. That is the shell's own rule and it had to be the lexer's: `pyt\hon3`
+    is one word naming `python3`, the shell runs it, and a lexer that kept the
+    backslash compared `pyt\hon3` against the six and matched nothing. Written
+    as `/usr/bin/pyt\hon3` it was invisible to the PATH-shim arm as well, because
+    a shim cannot shadow an absolute path.
+
+    What this still cannot see is a command name that is not a literal word —
+    `"$tool" publish`, or `npm` inside the string `sh -c` runs. The PATH-shim arm
+    sees those when the name resolves through PATH; when it does not, the
+    remaining case is the one `words` exists for, and past that it is the
+    residual recorded at the top of this file. -/
+private def lexLine (line : String) : Lexer :=
   let rec walk : List Char → Lexer → Lexer
     | [], state => state.endToken false
+    -- The escape, before anything reads the character it protects. Inside single
+    -- quotes a backslash is an ordinary character and the quote it precedes
+    -- still closes, so there the next character is left to be read again.
+    | '\\' :: next :: rest, state =>
+      if state.single then walk (next :: rest) { state with token := '\\' :: state.token }
+      else walk rest { state with token := next :: state.token }
+    -- A line ending in a backslash is continued, and the marker is not a word.
+    | ['\\'], state => state.endToken false
     | c :: rest, state =>
       if c == '\'' && !state.double then walk rest { state with single := !state.single }
       else if c == '"' && !state.single then walk rest { state with double := !state.double }
@@ -250,7 +288,13 @@ def commandWords (line : String) : List String :=
           || c == '{' || c == '}' || c == '`' || c == '<' || c == '>' then
         walk rest (state.endToken true)
       else walk rest { state with token := c :: state.token }
-  (walk line.toList {}).found.reverse
+  walk line.toList {}
+
+/-- The words in command position on one line of shell. -/
+def commandWords (line : String) : List String := (lexLine line).found.reverse
+
+/-- Every word on one line of shell, whatever position it is in. -/
+def lineWords (line : String) : List String := (lexLine line).words.reverse
 
 /-! ### The interpreter a file runs under
 
@@ -322,6 +366,15 @@ def workflowShell (line : String) : String :=
 inductive InvocationSite where
   | commandPosition
   | shebang
+  /-- Written as a path somewhere on the line, in no particular position.
+
+      The class neither arm otherwise covers. A PATH shim cannot shadow
+      `/usr/bin/python3`, and `tool=/usr/bin/python3` followed by `"$tool"` puts
+      the command position out of a lexer's reach — so the release path can
+      reach an interpreter with nothing to see it. What is still visible is the
+      path itself, wherever it is written, and a first-party release script has
+      no business naming one. -/
+  | writtenAsPath
   deriving Repr, DecidableEq
 
 /-- What one line was read as.
@@ -336,16 +389,43 @@ inductive InvocationSite where
 
     What is deliberately *not* `unsupported`: a command name that is not a
     literal word — `"$tool" publish`, or a name inside the string `sh -c` runs.
-    Those are understood to be beyond a lexical scan, they are documented as
-    such at the top of this file, and `scripts/check-release-runtimes.sh` is the
-    arm that sees them. Refusing on them would not close a hole; it would refuse
-    the release path this repository already has, since its own scripts reach
-    commands through `"$1"`. The distinction is between a shape this scan is
-    *supposed* to read and cannot, and a shape no lexical scan can read. -/
+    Those are beyond a lexical scan, and the PATH-shim arm sees them whenever the
+    name resolves through PATH; where it does not, the path form is caught by
+    `writtenAsPath` above.
+
+    Refusing on them instead was considered and measured. The lexer's notion of
+    command position is necessarily broad — a flag keeps the position open, so
+    the *value* of `--bundle "$bundle"` lands in it, as does a redirect target —
+    and 236 words on the current release path sit in that position with a `$` in
+    them. A rule refusing those would refuse this repository's own release,
+    every edit would move the set, and the exception list would be the files
+    themselves: a gate nobody can maintain, which is a gate that gets disabled.
+    The distinction that remains is between a shape this scan is *supposed* to
+    read and cannot, and a shape no lexical scan can read. -/
 inductive ScanLine where
-  | understood (site : InvocationSite) (commands : List CommandIdentity)
+  | understood (reached : List (InvocationSite × CommandIdentity))
   | unsupported (reason : String)
   deriving Repr
+
+/-- What one piece of shell reaches: the words in command position, and then
+    every *other* word that is written as a path.
+
+    The second half is not a second guess at command position. It is the reading
+    that survives a command position no lexer can see: a path is runnable from a
+    variable, from a string another shell evaluates, or from a line this scan
+    read as an argument, and none of those is shadowed by a PATH shim either.
+    A word already reported in command position is not reported twice. -/
+def reachedBy (site : InvocationSite) (code : String) :
+    List (InvocationSite × CommandIdentity) :=
+  -- Lexed once, read twice: the two views are the same pass over the line.
+  let lexed := lexLine code
+  let commands := lexed.found.reverse.map identify
+  let paths := lexed.words.reverse.filterMap fun word =>
+    let identity := identify word
+    if (word.splitOn "/").length > 1 && !commands.contains identity then
+      some (InvocationSite.writtenAsPath, identity)
+    else none
+  commands.map (fun identity => (site, identity)) ++ paths
 
 /-- One line, read as what it is.
 
@@ -369,12 +449,12 @@ def readLine (kind : SourceKind) (line : String) : ScanLine :=
   if bare.startsWith "#!" then
     match shebangBody bare with
     | .error reason => .unsupported reason
-    | .ok body => .understood .shebang ((commandWords body).map identify)
+    | .ok body => .understood (reachedBy .shebang body)
   else
     let code := match kind with
       | .shell => codeOf line
       | .workflow => workflowShell (codeOf line)
-    .understood .commandPosition ((commandWords code).map identify)
+    .understood (reachedBy .commandPosition code)
 
 /-- Line number, the command, how it got there, and the line it is on. The line
     travels with the finding because the fix is almost never "delete this
@@ -408,15 +488,15 @@ def scanLines (kind : SourceKind) (text : String) : TextScan :=
     (number, line.trimAscii.toString, readLine kind line)
   { invocations := read.flatMap fun (number, text, scanned) =>
       match scanned with
-      | .understood site commands =>
-        commands.filterMap fun command =>
+      | .understood reached =>
+        reached.filterMap fun (site, command) =>
           if forbiddenCommands.contains command.basename then
             some { line := number, command, site, text }
           else none
       | .unsupported _ => []
     unsupported := read.filterMap fun (number, text, scanned) =>
       match scanned with
-      | .understood _ _ => none
+      | .understood _ => none
       | .unsupported reason => some { line := number, reason, text } }
 
 /-! ## Reachability
@@ -566,6 +646,7 @@ def fileFindings (scanned : ScannedFile) : List String :=
     let how := match invocation.site with
       | .commandPosition => "invokes"
       | .shebang => "runs under"
+      | .writtenAsPath => "names the path of"
     let named :=
       if invocation.command.written == invocation.command.basename then
         invocation.command.basename

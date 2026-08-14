@@ -3027,11 +3027,35 @@ private def spellingCorpus : List SpellingRow :=
    { label := "a tool whose name ends in a command name"
      helper := "#!/bin/sh\n./tool/npm-pack --selftest\n"
      expect := .clean },
-   { label := "a command name held in a variable (the runtime arm's)"
+   { label := "a command name held in a variable, resolved through PATH (the runtime arm's)"
      helper := "#!/bin/sh\ntool=npm\n\"$tool\" publish\n"
      expect := .clean },
    { label := "a command inside the string another shell runs (the runtime arm's)"
      helper := "#!/bin/sh\nsh -c \"npm publish\"\n"
+     expect := .clean },
+   -- The composition neither arm covered: a shim cannot shadow an absolute
+   -- path, and a lexer cannot see the command position a variable holds. What
+   -- is left visible is the path, wherever it is written.
+   { label := "an interpreter path escaped into a different word"
+     helper := "#!/bin/sh\n/usr/bin/pyt\\hon3 -c 'print(1)'\n"
+     expect := .reaches .commandPosition "python3" },
+   { label := "an interpreter path assigned to a variable"
+     helper := "#!/bin/sh\ntool=/usr/bin/python3\n\"$tool\" -c 'print(1)'\n"
+     expect := .reaches .writtenAsPath "python3" },
+   -- The directory is a variable and the tail is literal, so the word is still
+   -- in command position and still ends in the interpreter's name: caught as an
+   -- invocation rather than as a path, which is the stronger of the two.
+   { label := "an interpreter path built from a directory held in a variable"
+     helper := "#!/bin/sh\ndir=/usr/bin\n\"$dir/python3\" -c 'print(1)'\n"
+     expect := .reaches .commandPosition "python3" },
+   { label := "an interpreter path passed as an argument, not run"
+     helper := "#!/bin/sh\ncp /usr/bin/ruby \"$dest\"\n"
+     expect := .reaches .writtenAsPath "ruby" },
+   -- The residual, pinned as uncovered rather than left to be assumed covered:
+   -- a name that is a literal word to nobody and resolves through PATH for
+   -- nobody. A runtime without the interpreter installed is what closes it.
+   { label := "an interpreter name read out of a file (neither arm's, and tracked as such)"
+     helper := "#!/bin/sh\ntool=$(cat toolname)\n\"$tool\" -c 'print(1)'\n"
      expect := .clean }]
 
 /-- What the scan made of one helper, in the terms a row states. -/
@@ -3049,6 +3073,7 @@ private def spellingObserved (helper : String) : Spelling :=
 private def spellingNeedle : Spelling → String
   | .reaches .commandPosition command => s!"invokes {command}"
   | .reaches .shebang command => s!"runs under {command}"
+  | .reaches .writtenAsPath command => s!"names the path of {command}"
   | .unreadable => "could not read a line"
   | .clean => "invoke none of"
 
