@@ -202,6 +202,22 @@ missing is a refusal rather than a skip. A clean verdict names the files it
 read, so a walk that stopped following references is visible as a list with
 something missing rather than as a plausible count.
 
+That arm reads each line as what it is, and refuses when it cannot. A `#!` line
+is parsed by the syntax a shebang has rather than by the shell lexer, because
+the two disagree in a way that executed: `#! /usr/bin/python3` — a space after
+the marker, which every platform this project ships to accepts — read as shell
+is a command named `#!` taking a path as its argument, so it produced no finding
+and a clean verdict over a Python helper on the release path. An absolute
+interpreter also defeats the PATH-shim arm, so that spelling was invisible to
+both. Reading one line therefore returns either the commands it understood or
+the reason it could not, and a line in the second class is a refusal naming it —
+an omission in the parser now costs a release rather than passing as a clean
+file. What stays deliberately readable-but-invisible is the class no lexical
+scan can see: a command name held in a variable, or one inside the string
+`sh -c` runs. Those are the second arm's, they are pinned as such in the
+spelling corpus, and refusing on them would refuse the release path this
+repository already has.
+
 The second arm is `scripts/check-release-runtimes.sh`, which puts a failing shim
 for each of the six first on `PATH` and runs the release profile under them —
 carrying the installer and artifact-verifier selftests with it, since both are

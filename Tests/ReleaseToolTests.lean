@@ -2776,6 +2776,12 @@ invocation is a gate reporting a clean release path it never read. -/
 
 private def boundaryCommands' (line : String) : List String := commandWords (codeOf line)
 
+/-- The forbidden commands one text reaches. The scan also reports the lines it
+    could not read, and the rows below that care about those read them from the
+    same value rather than from a second call. -/
+private def invocationsIn (kind : SourceKind) (text : String) : List Invocation :=
+  (scanLines kind text).invocations
+
 private def boundaryTests : List Outcome :=
   let jobs :=
     "on:\n  push:\n\njobs:\n  gates:\n    steps:\n      - run: ./scripts/check-task-ids.sh\n" ++
@@ -2813,22 +2819,27 @@ private def boundaryTests : List Outcome :=
       ((boundaryCommands' "/usr/bin/python3 -c 'print(1)'").any
         (fun word => commandName word == "python3")),
     check "boundary: an interpreter reached through env is still that interpreter"
-      ((invocationsIn .shell "/usr/bin/env python3 -c 'print(1)'").any (·.command == "python3")),
+      ((invocationsIn .shell "/usr/bin/env python3 -c 'print(1)'").any (·.command.basename == "python3")),
     check "boundary: a shebang is not a comment"
-      ((invocationsIn .shell "#!/usr/bin/env ruby\nputs 1\n").any (·.command == "ruby")),
+      ((invocationsIn .shell "#!/usr/bin/env ruby\nputs 1\n").any (·.command.basename == "ruby")),
     check "boundary: a CRLF line ending does not hide the command on it"
-      ((invocationsIn .shell "npm\r\necho hi\r\n").any (·.command == "npm")),
+      ((invocationsIn .shell "npm\r\necho hi\r\n").any (·.command.basename == "npm")),
     check "boundary: a script whose name ends in a command name is not that command"
-      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
+      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command.basename == "npm")),
     check "boundary: a longer word that starts with a forbidden one is not it"
       (!(boundaryCommands' "npm-pack --selftest").contains "npm"),
     check "boundary: a script named after the tool is not the tool"
-      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command == "npm")),
+      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command.basename == "npm")),
     -- What a finding carries. The line is what makes the message actionable;
     -- the number is what makes it findable.
-    checkEq "boundary: a finding carries its line number and its line"
+    checkEq "boundary: a finding carries its line number, its line and how it got there"
       (invocationsIn .shell "set -eu\necho hi\nbrew install tl")
-      [{ line := 3, command := "brew", text := "brew install tl" }],
+      [{ line := 3, command := { written := "brew", basename := "brew" },
+         site := .commandPosition, text := "brew install tl" }],
+    checkEq "boundary: an interpreter is reported as written and as identified"
+      (invocationsIn .shell "#! /usr/bin/python3\nprint(1)\n")
+      [{ line := 1, command := { written := "/usr/bin/python3", basename := "python3" },
+         site := .shebang, text := "#! /usr/bin/python3" }],
     -- References, as the scripts really write them.
     check "boundary: a plain reference is followed"
       ((referencedScripts "./scripts/check-task-ids.sh --selftest").contains "scripts/check-task-ids.sh"),
@@ -2855,19 +2866,28 @@ private def boundaryTests : List Outcome :=
     -- workflow were invisible to this scan.
     check "boundary: a single-line run: step is read as the shell it runs"
       ((invocationsIn .workflow "      - run: brew install coreutils").any
-        (·.command == "brew")),
+        (·.command.basename == "brew")),
     check "boundary: a step's title is prose, not a command line"
       ((invocationsIn .workflow "      - name: npm publish the packages").isEmpty),
     check "boundary: a run: block's lines are read too"
       ((invocationsIn .workflow "      - run: |\n          npm publish\n").any
-        (·.command == "npm")),
+        (·.command.basename == "npm")),
+    -- YAML removes a block scalar's common indentation, so a `#!` written ten
+    -- spaces in is at the first byte of the script the step writes. Read as a
+    -- workflow comment it would be prose, and the helper it heads would run
+    -- under an interpreter the release path may not have.
+    check "boundary: a shebang indented inside a block scalar is still a shebang"
+      ((invocationsIn .workflow "          #!/usr/bin/env python3").any
+        (·.command.basename == "python3")),
+    check "boundary: and in a shell file the same line is not one, because the kernel would not honour it"
+      ((invocationsIn .shell "          #!/usr/bin/env python3").isEmpty),
     -- Both directions over one fixture: the npm step is there to be found, and
     -- what removes it is the deferred-job filter. Asserting only the second
     -- would hold just as well if the filter were the identity.
     check "boundary: a deferred channel's publish job is there to be found"
-      ((invocationsIn .workflow jobs).any (·.command == "npm")) jobs,
+      ((invocationsIn .workflow jobs).any (·.command.basename == "npm")) jobs,
     check "boundary: and it is not read"
-      (!(invocationsIn .workflow running).any (·.command == "npm"))
+      (!(invocationsIn .workflow running).any (·.command.basename == "npm"))
       running,
     check "boundary: the job after a deferred one is still read"
       (((running.splitOn "publish-release").length > 1) &&
@@ -2913,26 +2933,175 @@ evidence it built by hand, and the two defects that reached `main` — an empty
 entry point, and an interpreter spelled as an absolute path — were both invisible
 to rows shaped that way while being one command away from visible. -/
 
+/-! ### The spellings of one command
+
+A corpus rather than scattered rows, because the defect this closes was not a
+missing check — it was two parsers that disagreed about what a command word is.
+`#!/usr/bin/env python3` was read as an invocation and `#! /usr/bin/python3` as
+a command named `#!` taking a path, and both spellings execute Python on every
+platform this project ships to.
+
+Each row is asserted twice, and the pair is the point. The parser row says what
+the scan makes of the text; the command row plants the same text in a checkout
+and runs the public `dependency-boundary` over it. A parser row alone can hold
+while the command never reaches that code — which is how the spaced shebang
+survived a group of rows that already covered shebangs — and a command row alone
+cannot say *why* a verdict came out the way it did.
+
+Three of the rows are the documented blind spots, asserted as clean on purpose.
+A command name held in a variable, a name inside the string another shell runs,
+and a script whose name ends in a command name are not findings here: the first
+two are what `scripts/check-release-runtimes.sh` exists to catch by running the
+path, and pinning them keeps a later "improvement" from turning this arm into
+one that refuses the release path this repository already has. -/
+
+/-- What the scan must make of one spelling. -/
+private inductive Spelling where
+  /-- The text reaches a forbidden command, by this route. -/
+  | reaches (site : InvocationSite) (command : String)
+  /-- The text was read, and reaches nothing forbidden. -/
+  | clean
+  /-- The text is shaped like something this scan reads and is not, so it
+      refuses rather than reporting nothing. -/
+  | unreadable
+  deriving DecidableEq, Repr
+
+private structure SpellingRow where
+  label : String
+  /-- A whole helper script, not a line: a `#!` is only a shebang at the start
+      of one, and the rows about heredocs need the lines around it. -/
+  helper : String
+  expect : Spelling
+
+private def spellingCorpus : List SpellingRow :=
+  [{ label := "a bare command", helper := "#!/bin/sh\nnpm publish\n"
+     expect := .reaches .commandPosition "npm" },
+   { label := "a relative path", helper := "#!/bin/sh\n./tool/node --version\n"
+     expect := .reaches .commandPosition "node" },
+   { label := "an absolute path", helper := "#!/bin/sh\n/usr/bin/python3 -c 'print(1)'\n"
+     expect := .reaches .commandPosition "python3" },
+   { label := "an interpreter reached through env"
+     helper := "#!/bin/sh\n/usr/bin/env python3 helper.py\n"
+     expect := .reaches .commandPosition "python3" },
+   { label := "exec, which replaces the shell with the command"
+     helper := "#!/bin/sh\nexec npm publish\n"
+     expect := .reaches .commandPosition "npm" },
+   { label := "a probe for the tool", helper := "#!/bin/sh\ncommand -v ruby >/dev/null 2>&1\n"
+     expect := .reaches .commandPosition "ruby" },
+   { label := "an assignment prefix", helper := "#!/bin/sh\nNODE_ENV=production npm run build\n"
+     expect := .reaches .commandPosition "npm" },
+   { label := "a quoted command name", helper := "#!/bin/sh\n'ruby' -c Formula/tl.rb\n"
+     expect := .reaches .commandPosition "ruby" },
+   { label := "a shebang written against the marker"
+     helper := "#!/usr/bin/env ruby\nputs 1\n"
+     expect := .reaches .shebang "ruby" },
+   { label := "a shebang written with a space after the marker"
+     helper := "#! /usr/bin/python3\nprint(1)\n"
+     expect := .reaches .shebang "python3" },
+   { label := "a shebang with whitespace on both sides of env"
+     helper := "#!  /usr/bin/env  node\nconsole.log(1)\n"
+     expect := .reaches .shebang "node" },
+   { label := "a spaced shebang on a CRLF line"
+     helper := "#! /usr/bin/python3\r\nprint(1)\r\n"
+     expect := .reaches .shebang "python3" },
+   { label := "a command on a CRLF line", helper := "#!/bin/sh\r\nnpm\r\necho hi\r\n"
+     expect := .reaches .commandPosition "npm" },
+   { label := "a heredoc's shebang, which is the script it writes"
+     helper := "#!/bin/sh\ncat > helper.py <<EOF\n#!/usr/bin/env python3\nEOF\n"
+     expect := .reaches .shebang "python3" },
+   { label := "a shebang that names no interpreter", helper := "#!\necho hi\n"
+     expect := .unreadable },
+   { label := "a shebang naming a variable the kernel will not expand"
+     helper := "#!$INTERPRETER\necho hi\n"
+     expect := .unreadable },
+   { label := "a shebang whose interpreter is literal and whose argument is not"
+     helper := "#!/usr/bin/env $INTERPRETER\necho hi\n"
+     expect := .unreadable },
+   { label := "a shebang with an interpreter flag, which is literal"
+     helper := "#!/usr/bin/env -S ruby -w\nputs 1\n"
+     expect := .reaches .shebang "ruby" },
+   { label := "a commented invocation", helper := "#!/bin/sh\n# npm publish is deferred\n"
+     expect := .clean },
+   { label := "an argument that is not a command", helper := "#!/bin/sh\necho npm\n"
+     expect := .clean },
+   { label := "a tool whose name ends in a command name"
+     helper := "#!/bin/sh\n./tool/npm-pack --selftest\n"
+     expect := .clean },
+   { label := "a command name held in a variable (the runtime arm's)"
+     helper := "#!/bin/sh\ntool=npm\n\"$tool\" publish\n"
+     expect := .clean },
+   { label := "a command inside the string another shell runs (the runtime arm's)"
+     helper := "#!/bin/sh\nsh -c \"npm publish\"\n"
+     expect := .clean }]
+
+/-- What the scan made of one helper, in the terms a row states. -/
+private def spellingObserved (helper : String) : Spelling :=
+  let scan := scanLines .shell helper
+  match scan.unsupported, scan.invocations with
+  | _ :: _, _ => .unreadable
+  | [], invocation :: _ => .reaches invocation.site invocation.command.basename
+  | [], [] => .clean
+
+/-- The refusal a row expects to find in the command's output. Deliberately the
+    *finding* form and not the bare command name: the refusal's closing sentence
+    names all six commands, so a row searching for `npm` would pass whatever the
+    scan had done. -/
+private def spellingNeedle : Spelling → String
+  | .reaches .commandPosition command => s!"invokes {command}"
+  | .reaches .shebang command => s!"runs under {command}"
+  | .unreadable => "could not read a line"
+  | .clean => "invoke none of"
+
+/-- One file inside a planted checkout. -/
+private def writeIn (root : System.FilePath) (path : String) (text : String) : IO Unit := do
+  let full := root / path
+  if let some parent := full.parent then IO.FS.createDirAll parent
+  IO.FS.writeFile full text
+
+private def cleanWorkflow : String := "jobs:\n  gates:\n    steps:\n      - run: true\n"
+
+/-- A minimal checkout with all four entry points, so a refusal is the one the
+    row plants rather than a missing file. Shared by the fixture rows and the
+    spelling corpus: both run the real command over a real tree, and a second
+    way to build one is a second thing to keep in step with `entryPoints`. -/
+private def plantCheckout (base : System.FilePath) (name installer extra : String)
+    (workflow : String := cleanWorkflow) : IO System.FilePath := do
+  let root := base / name
+  writeIn root "install.sh" installer
+  writeIn root "scripts/verify-release-artifacts.sh" "#!/bin/sh\nsha256sum \"$1\"\n"
+  writeIn root "scripts/check-release-policy.sh" ("#!/bin/sh\n" ++ extra)
+  writeIn root ".github/workflows/release.yml" workflow
+  return root
+
+/-- Every spelling, through both the parser and the public command. -/
+private def boundarySpellingTests : IO (List Outcome) := do
+  let plan := "release/plan.json"
+  let base ← IO.FS.createTempDir
+  let mut outcomes : List Outcome := []
+  for (row, index) in spellingCorpus.zipIdx 1 do
+    let root ← plantCheckout base s!"spelling-{index}"
+      "#!/bin/sh\n./scripts/helper.sh\n" "echo policy\n"
+    writeIn root "scripts/helper.sh" row.helper
+    let (status, out, err) ← dispatchCaptured
+      ["dependency-boundary", "--root", root.toString, "--plan", plan]
+    let wanted : UInt32 := if row.expect == .clean then 0 else 1
+    outcomes := outcomes ++
+      [checkEq s!"boundary spelling: {row.label} — the parser"
+         (spellingObserved row.helper) row.expect,
+       check s!"boundary spelling: {row.label} — the command"
+         (status == wanted && ((out ++ err).splitOn (spellingNeedle row.expect)).length > 1)
+         s!"exit {status}: {out}{err}"]
+  IO.FS.removeDirAll base
+  return outcomes
+
 private def boundaryCommandTests : IO (List Outcome) := do
   let plan := "release/plan.json"
   let (realStatus, realOut, realErr) ←
     dispatchCaptured ["dependency-boundary", "--root", ".", "--plan", plan]
   let base ← IO.FS.createTempDir
-  -- A minimal checkout with all four entry points, so a refusal below is the
-  -- one the row plants rather than a missing file.
-  let write (root : System.FilePath) (path : String) (text : String) : IO Unit := do
-    let full := root / path
-    if let some parent := full.parent then IO.FS.createDirAll parent
-    IO.FS.writeFile full text
-  let cleanWorkflow := "jobs:\n  gates:\n    steps:\n      - run: true\n"
-  let plant (name : String) (installer : String) (extra : String)
-      (workflow : String := cleanWorkflow) : IO System.FilePath := do
-    let root := base / name
-    write root "install.sh" installer
-    write root "scripts/verify-release-artifacts.sh" "#!/bin/sh\nsha256sum \"$1\"\n"
-    write root "scripts/check-release-policy.sh" ("#!/bin/sh\n" ++ extra)
-    write root ".github/workflows/release.yml" workflow
-    return root
+  let write := writeIn
+  let plant (name installer extra : String) (workflow : String := cleanWorkflow) :
+      IO System.FilePath := plantCheckout base name installer extra workflow
   let cleanRoot ← plant "clean" "#!/bin/sh\necho install\n" "echo policy\n"
   let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
   let deferredRoot ← plant "deferred" "#!/bin/sh\necho install\n"
@@ -2945,6 +3114,10 @@ private def boundaryCommandTests : IO (List Outcome) := do
   let workflowRoot ← plant "workflow" "#!/bin/sh\necho install\n" "echo policy\n"
     ("jobs:\n  gates:\n    steps:\n      - run: brew install coreutils\n" ++
       "  publish-npm:\n    steps:\n      - run: npm publish\n")
+  -- The interpreter of a helper a step writes, indented as YAML indents it.
+  let scalarRoot ← plant "block-scalar" "#!/bin/sh\necho install\n" "echo policy\n"
+    ("jobs:\n  gates:\n    steps:\n      - run: |\n          cat > helper.py <<'PY'\n" ++
+      "          #!/usr/bin/env python3\n          PY\n          ./helper.py\n")
   -- The mutants, one per defect a review found. Named for what they do, so a
   -- failure here says which bypass came back.
   let emptyRoot ← plant "empty-entry-point" "" "echo policy\n"
@@ -2963,6 +3136,7 @@ private def boundaryCommandTests : IO (List Outcome) := do
   let (deferredStatus, deferredOut, deferredErr) ← run deferredRoot
   let (danglingStatus, _, danglingErr) ← run danglingRoot
   let (workflowStatus, _, workflowErr) ← run workflowRoot
+  let (scalarStatus, _, scalarErr) ← run scalarRoot
   let (emptyStatus, _, emptyErr) ← run emptyRoot
   let (absoluteStatus, _, absoluteErr) ← run absoluteRoot
   let (shebangStatus, _, shebangErr) ← run shebangRoot
@@ -3013,6 +3187,12 @@ private def boundaryCommandTests : IO (List Outcome) := do
     -- names all six commands, so a bare search would pass whatever happened.
     check "boundary: the same command in a deferred channel's job is not one"
       ((workflowErr.splitOn "invokes npm").length == 1) workflowErr,
+    -- The helper a step writes runs under whatever its first line names, and
+    -- YAML's indentation is not part of that line.
+    check "boundary: an interpreter a workflow step writes into a helper is a refusal"
+      (scalarStatus == 1) scalarErr,
+    check "boundary: and the refusal says the helper runs under it"
+      ((scalarErr.splitOn "runs under python3").length > 1) scalarErr,
     -- An entry point with nothing in it produces no findings for the same
     -- reason a clean one does. This is the row that fabricated evidence could
     -- not supply, and the defect it describes reached main.
@@ -3031,7 +3211,7 @@ private def boundaryCommandTests : IO (List Outcome) := do
       (shebangStatus == 1) shebangErr,
     check "boundary: and the shebang refusal names the script and the interpreter"
       (((shebangErr.splitOn "helper.sh:1").length > 1) &&
-        ((shebangErr.splitOn "invokes ruby").length > 1)) shebangErr,
+        ((shebangErr.splitOn "runs under ruby").length > 1)) shebangErr,
     -- Running out of the bound is a refusal, not a shorter verdict over the
     -- prefix it managed to read.
     check "boundary: a closure that outgrows its bound refuses"
@@ -3104,6 +3284,6 @@ def releaseToolTests : IO (List Outcome) := do
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests
