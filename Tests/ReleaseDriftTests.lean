@@ -207,6 +207,10 @@ that must denote the same staged bytes. -/
 private def occursExactlyOnce (text needle : String) : Bool :=
   (text.splitOn needle).length == 2
 
+private def refusesWith (expected : String) : Except String Unit → Bool
+  | .error actual => actual == expected
+  | .ok () => false
+
 def releaseToolHandoffShape (workflow : String) : Except String Unit := do
   let stage := "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease"
   let digest := "line=$(sha256sum release-tool/tlrelease)"
@@ -313,14 +317,33 @@ def releaseDriftTests : IO (List Outcome) := do
     check "release policy: going through the helper is not one"
       (!callsDirectly "rc_tool_gate \"workflow lint\" --tool actionlint -- actionlint" "rc_skip_gate"),
     check "release workflow: a hidden upload source is refused"
-      (releaseToolHandoffShape
-        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: .lake/build/bin/tlrelease").toOption.isNone,
+      (refusesWith "upload-artifact excludes the hidden .lake path by default" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease\npath: .lake/build/bin/tlrelease"),
     check "release workflow: hashing the build path instead of the upload source is refused"
-      (releaseToolHandoffShape
-        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum .lake/build/bin/tlrelease)\npath: release-tool/tlrelease").toOption.isNone,
+      (refusesWith "the raw transition digest must hash exactly the staged artifact bytes" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum .lake/build/bin/tlrelease)\npath: release-tool/tlrelease"),
     check "release workflow: an unstaged upload is refused"
-      (releaseToolHandoffShape
-        "line=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease").toOption.isNone,
+      (refusesWith "the release tool must be staged once from the gated binary into a non-hidden artifact path" <|
+        releaseToolHandoffShape
+          "line=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
+    check "release workflow: staging the release tool twice is refused"
+      (refusesWith "the release tool must be staged once from the gated binary into a non-hidden artifact path" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\ninstall -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
+    check "release workflow: hashing the staged release tool twice is refused"
+      (refusesWith "the raw transition digest must hash exactly the staged artifact bytes" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
+    check "release workflow: omitting the staged upload is refused"
+      (refusesWith "upload-artifact must upload exactly the staged non-hidden release-tool path" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)"),
+    check "release workflow: uploading the staged release tool twice is refused"
+      (refusesWith "upload-artifact must upload exactly the staged non-hidden release-tool path" <|
+        releaseToolHandoffShape
+          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease\npath: release-tool/tlrelease"),
     check "release workflow: the canonical staged handoff is accepted"
       (releaseToolHandoffShape
         "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease").toOption.isSome,
