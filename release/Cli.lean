@@ -18,11 +18,14 @@ and total functions is the response to it.
 What this is not. Being written in Lean does not make it verified. Almost all
 of it is tested I/O-shell code (ADR-0004 tiering) that happens to compile in
 Lean, and it is **not part of the product TCB**: `release/` imports nothing
-from `Tl/`, so release administration cannot reach the shipped binary. Only
-small pure verdict functions — the ones whose failure mode is a silent false
-negative rather than an odd answer — carry theorems, in the `Verify/Proofs.lean`
-style. This tool makes no new proved claim in docs/overview.md and adds no
-landmark theorem.
+from `Tl/`, so release administration cannot reach the shipped binary. Pure,
+total acceptance and verdict functions whose silent false negative could make a
+gate, evidence set, or publication decision read as valid carry characterization
+theorems in the `Verify/Proofs.lean` style. Other release parsers, renderers, and
+transformations remain comprehensively tested unless a relied-on invariant is
+promoted to a formal claim; purity alone does not make the whole release program
+part of the proof surface. This tool makes no new proved product claim in
+docs/overview.md and adds no landmark theorem.
 
 Why `release/` and not `Release/`. The repository already tracks a lowercase
 `release/` holding `identity.json`, `targets.json` and `plan.json`. This
@@ -36,9 +39,13 @@ name are the same trade.
 
 The boundaries that stay native, deliberately: `install.sh` is piped from curl
 and has no checkout to read; `Formula/tl.rb` is a Ruby DSL because Homebrew
-formulas are; and `scripts/verify-release-artifacts.sh` stays shell because a
+formulas are; `scripts/verify-release-artifacts.sh` stays shell because a
 precompiled verifier must not become the only way to authenticate the release
-that contains it.
+that contains it; and `npm/tl/bin/tl` stays POSIX shell because npm needs a
+static `bin` entry to locate and `exec` the installed platform-native optional
+dependency without starting Node or running a lifecycle hook. ADR-0028 owns the
+bounded contracts for all four native surfaces and the exact three-file shell
+inventory.
 -/
 
 import release.Boundary

@@ -37,9 +37,9 @@ def channelDecisions (plan : ReleasePlan) : List (Channel × Bool) :=
   Channel.all.map fun channel => (channel, plan.enabled channel)
 
 /-- Every channel is decided, exactly once, and each decision is that channel's
-    own `enabled`. Stated about the list `renderChannelOutputs` renders from, so
-    a rendering that dropped or duplicated a channel would have to change this
-    to compile. -/
+    own `enabled`. This theorem protects the decision list. Separate rendering
+    tests protect its external encoding; a renderer bug does not have to change
+    this theorem to compile. -/
 theorem channelDecisions_eq (plan : ReleasePlan) :
     channelDecisions plan = Channel.all.map (fun c => (c, plan.enabled c)) := rfl
 

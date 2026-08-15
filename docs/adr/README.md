@@ -40,3 +40,4 @@ not reference task-tracker IDs.
 | 0025 | [Incremental change feed: `tl log --since` and the version-vector cursor](ADR-0025-incremental-change-feed.md) |
 | 0026 | [Continuous integration: platform, job graph, gates, and caches](ADR-0026-continuous-integration.md) |
 | 0027 | [Notes as an append-only journal (`note add` / `note list` / `note remove`)](ADR-0027-notes-append-only-journal.md) |
+| 0028 | [Release machinery: typed decisions and narrow adapters](ADR-0028-release-machinery-architecture.md) |

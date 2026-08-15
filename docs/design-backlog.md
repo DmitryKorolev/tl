@@ -42,75 +42,62 @@ forever-contract surface that freezes on first implementation.
 
 ## Distribution (before release)
 
-- Known defects in the release shell, pending the Lean port [high] — seven
-  confirmed findings are deliberately unfixed in shell, because the files that
-  contain them are being replaced and patching-then-deleting would be wasted
-  work. Recorded here rather than left to the tracker, so a reader of this
-  branch can see what is known-broken.
+- Release-shell defect migration record [high] — seven confirmed findings were
+  recorded here so deleting their original scripts could not make the defects
+  disappear from the architecture record.
 
-  **Four of them are active blockers for the first release, not inert.** That
-  correction matters: the entry previously said all seven were inert because
-  "no release is possible until the repository is public, the npm packages
-  exist and the tap and `release` environment are configured" — but v0.1.0
-  publishes through the GitHub Release and the installer only (ADR-0006,
-  `release/plan.json`), so the npm packages and the tap are not prerequisites
-  of it at all. Removing them from the critical path does not make the
-  remaining defects inert; it exposes them. The manifest is signed and every
-  downstream job verifies it, and the prerequisite audit runs in the signing
-  job before anything is signed — both on the GitHub-only path.
+  **The four GitHub-only blockers are retired.** The Lean ports replaced the
+  affected scripts and close each defect at the decision layer:
 
-  Only the three npm findings are genuinely inert, and they stay inert until
-  that channel is enabled for v0.2.0.
+  - `Targets.parse` plus manifest assembly refuse an unreadable or empty target
+    set, replacing the generator path that swallowed a failed target-list read;
+  - `RunContext` / `runContextOf` bind build records to the workflow run that is
+    executing, rather than merely checking that the records agree with each
+    other;
+  - the prerequisite GitHub client keeps a 404 answer distinct from a response
+    it could not read, so an operational API failure cannot become a false
+    "missing prerequisite" verdict; and
+  - `restrictsTagCreation` requires a ruleset to cover the whole release-tag
+    namespace, not merely one pattern beginning with `refs/tags/v`.
 
-  In the manifest generator (**active**): a failing target-list read is
-  swallowed by a shell assignment prefix, so the generator writes a manifest
-  with an empty target list and exits 0, skipping every build-metadata check;
-  and the build run id is compared only between legs, never against the run
-  actually executing, so a self-consistent artifact set from a different run
-  would pass.
+  Their pure decisions and public-command refusal rows remain part of the
+  release tests. The deleted shell generator and prerequisite checker are no
+  longer first-release blockers; ADR-0028 requires these replacement checks to
+  survive the remaining cutover.
 
-  Two more in the same file were found by running its selftest the way CI does
-  rather than the way a developer does, and **fixed in shell rather than left
-  for the port**, because the rule against patching code that is about to be
-  deleted is outranked by not leaving the branch unable to pass its own gates.
-  Its fixture hardcoded a `workflowRef`, and the generator compares that field
+  Two additional generator selftest defects were found by running it the way CI
+  does rather than the way a developer does, and were **fixed in shell before
+  the port**, because the rule against patching code that is about to be deleted
+  is outranked by not leaving the branch unable to pass its own gates. Its
+  fixture hardcoded a `workflowRef`, and the generator compared that field
   against `GITHUB_WORKFLOW_REF` whenever the variable is non-empty — which
   inside Actions it always is. So the selftest passed on every developer
   machine and failed in CI, and since both workflows run it through the release
   policy, the first push would have failed the gates job for a reason nothing
-  local could show. The selftest now scrubs the variable, rather than adopting
-  it: a fixture that copied the ambient value would compare a thing with
-  itself, which is the check not running. Exercising that comparison properly
-  belongs with the port, where the run identity is an injected value.
+  local could show. Before deletion, the selftest was corrected to scrub the
+  variable rather than adopt it: a fixture that copied the ambient value would
+  compare a thing with itself, which is the check not running. The Lean port
+  instead exercises the comparison with an injected run identity.
 
   The second is why that failure was hard to read: one invocation was not
   wrapped in the harness, so under `set -eu` a failure aborted the whole
   selftest with its diagnostic sent to `/dev/null` — no failing row, no count,
   no remedy line. A selftest that cannot report its own failure is the same
-  defect class as a gate that cannot fail, one level up. It goes through the
-  harness now.
+  defect class as a gate that cannot fail, one level up. That invocation was
+  moved through the harness before the generator was retired.
 
-  In the prerequisite audit (**active**): an API failure collapses into an
-  empty policy and is reported as a *missing* prerequisite, which aborts a legitimate release
-  with a remedy telling the operator to fix something already correct; and the
-  tag-ruleset check accepts any include pattern beginning `refs/tags/v`, so a
-  ruleset covering one specific tag reads as restricting every `v*` tag. That
-  second one has been a proxy for the property in three consecutive reviews —
-  first a count of rulesets, then a prefix — which is the argument for stating
-  it as a typed predicate rather than guarding it once more.
+  **Three npm findings remain as port obligations, but are no longer live
+  defects in the current shell.** The publisher's normalized snapshot includes
+  executable mode and refuses symbolic links it cannot compare to npm's served
+  tree; an already-published version must resolve from the intended dist-tag;
+  and the bootstrap latest-guard uses the corrected line-oriented pattern plus
+  a planted command that proves the row can fire. Each has a discrete public
+  selftest row.
 
-  In the npm channel (**inert until npm is enabled**): package-content
-  comparison is blind to symlinks and file
-  modes, so a published package whose launcher lost its executable bit compares
-  equal to a staged one that has it; nothing establishes that the `latest`
-  dist-tag is not the bootstrap placeholder, which matters because a
-  prerelease-first launch publishes under `next` and leaves `latest` where the
-  bootstrap put it; and a bracket-class typo makes the selftest row guarding
-  that unfireable.
-
-  The fixes land with the port; the tasks that absorb each are named in the
-  tracker. Deleting this entry without them would leave the defects recorded
-  nowhere, which is what happened to reproducible builds once already.
+  Retain these three findings until the npm port carries the same properties
+  and replacement tests into `tlrelease`; deleting the record merely because
+  the shell files disappear is what happened to reproducible builds once
+  already.
 - Reproducible builds [medium] — the one ADR-0006 release-integrity item still
   open, and the only bullet under ADR-0014 T3 not built. The inputs are already
   pinned and recorded per release (`build-metadata-<target>.json`, the SBOM,

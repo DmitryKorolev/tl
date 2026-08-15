@@ -254,7 +254,8 @@ scripts/lib/            -- shared by the release scripts
                         --   boundary keeps an interpreter out of everything it
                         --   can reach
 
-release/                -- what a release is, machine-readable
+release/                -- what a release is, machine-readable; ADR-0028 owns
+                        -- the release-machinery boundaries and migration end state
   identity.json         --   the signing pin every verifier checks against
   targets.json          --   the distributed targets and their ADR-0006 tiers,
                         --   read by every consumer instead of being repeated
@@ -675,10 +676,20 @@ scripts/GenLicenses.lean -- executable Lean tooling, audited as a separate root
 ```
 
 The `tlrelease` decision layer is the seventh audited scope, and shares the
-`release/` directory with the data it decides over:
+`release/` directory with the data it decides over. ADR-0028 owns its
+architectural boundary: typed release decisions and channel administration
+live here; workflows schedule them; exactly `install.sh`,
+`scripts/verify-release-artifacts.sh`, and `npm/tl/bin/tl` remain as standalone
+shell adapters after migration. `Formula/tl.rb` remains the channel-required
+Ruby DSL and is not release administration.
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
+  Sys.lean              --   current release-prefixed native binding. ADR-0028
+                        --   migration target: an exact extern/signature and
+                        --   linker/build-recipe registry plus explicit output-
+                        --   directory capabilities, component-list paths, and
+                        --   typed sync/commit observations; imports no `Tl.*`
   Json.lean             --   typed access (every read returns Except with the
                         --   document and path in the message, where the Python
                         --   it replaces raised tracebacks) and deterministic

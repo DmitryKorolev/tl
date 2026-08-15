@@ -118,9 +118,11 @@ bootstrap that is unrelated to publishing a GitHub Release:
   packages by hand and then registering the publisher. That is a decision about
   the npm namespace, not about whether the binaries are ready.
 - Homebrew needs the tap repository to exist and a credential that can write to
-  it. `Formula/tl.rb` stays here as the source of truth and stays inside the
-  identity drift guard, so enabling the channel later is a tap plus a secret
-  rather than new code.
+  it. During the ADR-0028 migration, `Formula/tl.rb` is the checked-in template
+  and stays inside the identity drift guard. In the accepted end state the
+  authenticated typed release manifest is the data authority and
+  `Formula/tl.rb` is a render-and-compare channel artifact; enabling the channel
+  later remains a tap plus a secret rather than new decision code.
 
 Deferring them is what makes the first release reachable at all. It is recorded
 here rather than left implicit because three separate mechanisms were treating
@@ -133,8 +135,13 @@ No path reachable from the GitHub-release workflow, `install.sh`,
 `python`, `python3`, `ruby`, `brew`, `node`, or `npm`. Lean owns JSON parsing,
 typed decisions, manifest and metadata generation, prerequisite classification,
 SBOM generation and identity-pin generation, through the separately built
-`tlrelease` executable; POSIX shell remains thin orchestration and the user
-bootstrap boundary.
+`tlrelease` executable. [ADR-0028](ADR-0028-release-machinery-architecture.md)
+refines the steady-state boundary: exactly
+`install.sh`, `scripts/verify-release-artifacts.sh`, and `npm/tl/bin/tl` remain
+as narrow POSIX-shell bootstrap or runtime adapters. The broader shell
+orchestration and its two enforcement arms described below remain mandatory
+migration machinery until that typed cutover lands; they are not the target
+architecture.
 
 Three kinds of dependency, and the budget binds only the first:
 
@@ -172,8 +179,13 @@ on the tagged commit, so the deadline is now a property of the gate rather than
 a date written down — which is the decay this repository's own artifact rule
 exists to prevent.
 
-**How it is enforced.** The budget is enforced twice, because the two arms see
-different things and neither subsumes the other.
+**How it is enforced during the ADR-0028 migration.** The budget is enforced
+twice, because the two current arms see different things and neither subsumes
+the other. The atomic cutover in ADR-0028 replaces this subsection, its entry
+point list, and the filename inventory below with the exact adapter inventory,
+typed tool declarations, privileged-workflow invocation guard, nested hermetic
+Linux execution, and the explicitly carried macOS residual; deleting an arm
+without those updates would weaken the documented budget.
 
 `tlrelease dependency-boundary --root . --plan release/plan.json` reads what the
 release path *says*: it states the four v0.1 entry points — `install.sh`,
@@ -206,14 +218,14 @@ twenty-one gates failing under refusing `python3`/`ruby` shims, five of them the
 npm and Homebrew gates and the rest generators that have since moved into
 `tlrelease` — is kept there as the reason, not as a description of the present.
 
-The interpreters that remain belong to the deferred channels: the three npm
-scripts, the Homebrew formula generator, the `python3` release-data reads those
-four share in `scripts/lib/channel-common.sh`, the `node` launcher inside the
-npm package, and the gates for all of them in
-`scripts/check-channel-policy.sh`. None is reachable from the four entry points
-above while `release/plan.json` defers both channels; enabling one puts its
-scripts back on the release path, and its reads have to move into `tlrelease`
-first.
+The interpreter-backed administration that remains belongs to the deferred
+channels: the three npm scripts, the Homebrew formula generator, the `python3`
+release-data reads those four share in `scripts/lib/channel-common.sh`, and the
+gates for them in `scripts/check-channel-policy.sh`. The npm launcher itself is
+POSIX shell and starts neither Node nor a lifecycle hook. None of the
+interpreter-backed administration is reachable from the four entry points above
+while `release/plan.json` defers both channels; enabling one puts its scripts
+back on the release path, and its reads have to move into `tlrelease` first.
 
 - GitHub Releases — the source of truth. CI uploads the prebuilt
   binaries here; everything else wraps them.
@@ -239,10 +251,14 @@ first.
   Windows npm installation is refused; npm under WSL selects Linux normally.
 - Homebrew tap — `DmitryKorolev/homebrew-tap`; a formula that downloads the
   Release artifact per platform (not build-from-source, which would require
-  users to have Lean). The formula's source of truth is `Formula/tl.rb` in this
-  repository, beside `release/identity.json`, so the release-identity drift
-  guard covers it; the release workflow fills in the version and the four
-  digests from the *verified* `SHA256SUMS` and pushes the result to the tap.
+  users to have Lean). During migration, `Formula/tl.rb` in this repository is
+  the template and the release workflow fills in the version and available
+  digests from verified `SHA256SUMS`. After the ADR-0028 Homebrew port, the
+  authenticated typed manifest is the source of version, target, and digest
+  data; `tlrelease` renders the complete formula, refuses a missing Supported
+  target, and render-and-compares the checked-in channel artifact without
+  rediscovering facts from `SHA256SUMS`. The signing identity remains derived
+  from `release/identity.json` in both states.
   Two independent fail-closed checks and no bypass: Homebrew's own `sha256` on
   each url, and a cosign verification against the pinned identity in `install`,
   with `cosign` a hard dependency rather than an optional one. Homebrew has no
@@ -250,7 +266,10 @@ first.
   cannot run cosign, `brew` would simply install it first. A Best-effort target
   that did not build has its block dropped from the generated formula rather
   than pinning a digest that does not exist, so `brew` offers nothing on that
-  platform for that release instead of the release failing.
+  platform for that release instead of the release failing. A missing Supported
+  target is different: formula rendering refuses, because a stable spec with no
+  URL for a Supported platform can fail while Homebrew loads the formula, before
+  any install branch can explain the problem.
 - Prereleases reach each channel differently, and deliberately. GitHub marks
   them prerelease, so `install.sh`'s `/releases/latest` resolution skips them
   and a user must name one with `TL_VERSION`. npm publishes them under the

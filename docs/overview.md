@@ -556,6 +556,69 @@ gate. Each of those is exercised only by a real tagged run, and until one
 happens the pipeline's behaviour past the artifact boundary is asserted by
 review and by drift guards over YAML, not by execution.
 
+ADR-0028's accepted shell cutover carries one additional platform-scoped
+assumption once its lexical dependency-boundary gate is removed. The pinned
+inner Linux container can establish that no forbidden interpreter exists for
+the Linux-exercised GitHub-only policy and adapter paths. It cannot establish
+the same fact for an actual macOS-only branch of `install.sh`: hosted macOS has
+absolute interpreter paths the job cannot remove. The npm launcher is not part
+of this residual; its post-pack bytes and every injected platform/libc branch
+run in the runtime-stripped container against a planted native executable.
+The standalone verifier is not part of it either: its
+`sha256sum`-versus-`shasum` fallback depends only on tool availability, both arms
+run on Linux against reached-stub fixtures, and the real macOS `shasum` is an
+explicitly permitted digest tool despite being implemented in Perl. The
+criterion is actual Darwin-only reachability of a **forbidden** runtime, not
+whether an adapter also runs on macOS.
+Injected-platform installer tests exercise its branch bodies and
+permitted-action contract, but after the lexical arm is retired, the claim that
+no unobserved Darwin-only installer branch invokes `/usr/bin/python3`,
+`/usr/bin/ruby`, or another preinstalled interpreter remains protected-review
+evidence, not a proved or hermetic fact. Until the cutover, the existing lexical
+arm still covers literal and escaped paths on every platform; the new assumption
+begins only when that arm is deleted.
+
+This is intentionally scoped by ADR-0028's threat model. The release controls
+are a regression boundary over protected-reviewed source, not a sandbox against
+malicious code already admitted to an adapter. The hermetic run supplies
+evidence against accidental forbidden-runtime growth on paths it executes; it
+does not imply that every host-conditional branch ran.
+
+ADR-0028's end-state release writer is a native directory-capability operation,
+not a no-follow flag applied only to the staging leaf. Its caller establishes
+one explicit `--output-dir` base, defaulting to the working directory, and a
+sealed non-empty list of validated relative components. The native side follows
+the operator's chosen spelling of the base, verifies ownership of the opened
+directory, and starts its no-follow walk at the first component beneath that
+held descriptor. It performs no path-string split, exclusively creates the
+predictable staging sibling in the held final directory, and removes that
+sibling only after its own create succeeds. A typed outcome distinguishes a
+pre-commit failure and cleanup disposition from a committed replacement carrying
+its file-sync strength and directory-sync status; formatted native error prose
+is not a classification interface.
+
+Release evidence promises atomic visibility to later steps in the same run, not
+power-loss durability after the run has died. It therefore accepts an ordinary
+`fsync` fallback when Darwin reports `F_FULLFSYNC` unsupported and treats a
+post-rename directory-sync error as a reportable durability observation on a
+committed write, not as a false assertion that nothing landed. Operational file
+sync failures still refuse before commit. The product's stronger acknowledged-
+write contract is a separate ADR-0015/ADR-0019 decision. Public-command and
+injected-fault fixtures cover the cross-product of hostile path shapes, both
+sync strengths, write, close, rename, directory-sync, and cleanup phases.
+
+That mechanism still relies on one environmental fact: the trusted base and
+the directories accepted beneath it remain controlled by the operator for the
+duration of the write. A process with concurrent mutation authority can unlink
+or replace names after their directory descriptors have been accepted. The
+release command therefore refuses what it can observe but does not claim to be
+an isolation boundary against another writer with the same directory
+authority. Until the ADR-0028 migration lands this interface and its phase
+matrix, the existing release writer receives no credit for the stronger
+end-state guarantee. This residual is another direct application of ADR-0028's
+threat model: the capability constrains traversal below the chosen anchor; it is
+not isolation from a peer process already holding the same directory authority.
+
 One assumption is *narrowed* rather than removed by the certificate-identity
 port, and the residual is worth stating precisely. `tlrelease` defines which
 certificate this project accepts **structurally** — a parser over the SAN,

@@ -42,8 +42,10 @@ a precedent that needs a stated boundary before it exists.
 
 ### A minimal, self-contained C shim
 
-A small C file vendored in-repo (`ffi/tlsys.c`), exposed to Lean as
-`Tl/Store/Sys.lean`. It owns its file descriptors end-to-end and touches
+A small C file vendored in-repo (`ffi/tlsys.c`), exposed to the product as
+`Tl/Store/Sys.lean` and to the separately audited release scope through the
+disjoint release-prefixed bindings in `release/Sys.lean`. Neither Lean scope
+imports the other. The shim owns its file descriptors end-to-end and touches
 **no Lean runtime internals** (no peeking into `Handle`'s external object),
 so toolchain bumps cannot break it. Functions — *mechanism only*, each
 existing because a specific ADR-pinned behavior requires it:
@@ -52,9 +54,12 @@ existing because a specific ADR-pinned behavior requires it:
   `O_APPEND` / `O_CREAT|O_EXCL`, returning an fd. `O_NOFOLLOW` guards only
   the final path component, and §6 refuses a symlink at *any* `.tl`
   component — so the directory chain is walked component-by-component via
-  `openat(…, O_NOFOLLOW)`, hardened where available by
-  `openat2(RESOLVE_NO_SYMLINKS)` on Linux and `O_NOFOLLOW_ANY` on Darwin
-  (reparse-point refusal is the Win32 analog).
+  `openat(…, O_NOFOLLOW)` (reparse-point refusal is the Win32 analog).
+  `openat2(RESOLVE_NO_SYMLINKS)` requires Linux 5.6+ and
+  `O_NOFOLLOW_ANY` requires macOS 12+; both still need the per-component
+  fallback on supported systems. The portable held-descriptor walk is the
+  shipped mechanism, so this ADR does not claim an optional fast path that the
+  implementation and tests do not exercise.
 - `readAll fd` / `writeAll fd bytes` — segment and clock I/O on the shim's
   own fds (§5 reads are `.tl` opens too, so they ride the same discipline).
 - `sync fd` — `fsync`; `F_FULLFSYNC` on Darwin (where plain `fsync` stops at
@@ -69,20 +74,39 @@ existing because a specific ADR-pinned behavior requires it:
   requirement with a contract core does not promise.
 - `ownedByCaller fd` — the §6 ownership check, computed in C (owner uid vs
   caller euid; the Win32 owner-SID analog is designed but unimplemented, per §7).
+- `releaseWriteAtomic base components bytes` — ADR-0028's release-evidence
+  replacement. The caller explicitly supplies an operator-selected base
+  directory and a non-empty array of validated relative components. Opening the
+  base follows the symlink by which the operator selected it and then verifies
+  ownership; the no-follow walk begins beneath the held base. The shim performs
+  no path-string splitting, exclusively creates the predictable sibling in the
+  final directory, writes and syncs it, and renames within that directory. Its
+  typed result is either a pre-commit failure with cleanup disposition or a
+  committed replacement carrying file-sync strength and directory-sync status.
+  Release policy requires atomic visibility, so a post-rename directory-sync
+  error is a reportable durability observation rather than a false claim that
+  the write did not land. Operation and errno are data, not a formatted string
+  contract. The product's stronger durable-write policy remains separate.
 - `close fd`.
 
 The §6 *policy* — the `.tl` path discipline, what to refuse, the error codes
-(`lock-busy`, the T4 refusals) — stays in tested Lean above the shim. The
-shim ships with per-branch tests like any shell code (AGENTS.md DoD: tests in
-the same change): symlink refusal at final and intermediate components,
-`O_EXCL` collision, append+sync round-trips, lock contention, plus
-hostile-fixture tests at the Store layer.
+(`lock-busy`, the T4 refusals) — stays in tested Lean above the product
+bindings. ADR-0028's release error mapping and trusted-base policy likewise
+stay above the release binding. The shim ships with per-branch tests like any
+shell code (AGENTS.md DoD: tests in the same change): symlink refusal at final
+and intermediate components, `O_EXCL` collision, append+sync round-trips, lock
+contention, every atomic-write phase, plus hostile public-command fixtures at
+the Store and release layers.
 
 ### Build wiring (and its one-time cost)
 
 The C file is compiled by the toolchain's bundled compiler via a custom Lake
 target linked through `moreLinkObjs` (the pinned Lake deprecates `extern_lib`
-in favor of exactly this). Custom targets are Lean-DSL-only and Lake's TOML
+in favor of exactly this). The product and `tlrelease` may both link that
+object, but ADR-0028 requires a drift gate to pin `tlrelease`'s complete native
+linker inputs, the `tlsys.o` source/build recipe, and every release-scope extern's
+declaring module, native symbol, and full Lean signature: Lean's stored import
+graph cannot observe those dependencies. Custom targets are Lean-DSL-only and Lake's TOML
 loader supports none of them — so landing the shim **migrates the root
 `lakefile.toml` to `lakefile.lean`**, a one-time mechanical change recorded
 here. (The alternative — a path-`require`d subpackage holding the C target —
@@ -96,12 +120,18 @@ problems.** Crypto, compression, JSON, hashing: those get pure-Lean
 implementations or explicit ADRs rejecting them (ADR-0018 is the worked
 example — it rejects libsodium under this policy). Mechanism lives in C;
 policy, error mapping, and every branch the tests must cover live in Lean. A
-shim addition cites the ADR that pins the behavior requiring it.
+shim addition cites the ADR that pins the behavior requiring it. A second Lean
+scope does not receive ambient access merely because it links the object: its
+exact extern declarations and signatures are a reviewed registry,
+product-prefixed `tl_sys_*`
+bindings are forbidden from `release/`, and widening either side is an ADR and
+test change rather than an unrecorded `@[extern]` declaration.
 
 ### What the shim is deliberately not
 
-Not rename (`IO.FS.rename` covers §3), not temp-dir plumbing (core
-`withTempDir`), not a general POSIX binding layer. Platform scope follows
+Not a standalone rename binding (`IO.FS.rename` covers §3; `renameat` is only
+an internal phase of ADR-0028's directory-capability replacement), not temp-dir
+plumbing (core `withTempDir`), not a general POSIX binding layer. Platform scope follows
 ADR-0015 §7: the POSIX implementation is the gating, fully-tested path
 (Linux, macOS, Windows-via-WSL — ADR-0006); the native-Win32 column is
 designed there but unimplemented, so native Windows is deferred and no artifact
@@ -118,8 +148,8 @@ patch; a strengthened contract for `IO.getRandomBytes` (or a core
 the corresponding shim function is deleted. The no-follow open machinery is
 *not* expected to upstream (it needs an open-options API redesign plus a
 Win32 reparse-semantics debate) and stays vendored. Because call sites reach
-the shim only through `Tl/Store/Sys`, swapping mechanism for a core API never
-touches the Store.
+the shim only through their scope-specific binding module, swapping mechanism
+for a core API does not couple product Store code to release administration.
 
 ## Consequences
 

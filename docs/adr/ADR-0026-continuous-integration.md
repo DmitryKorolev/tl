@@ -35,6 +35,27 @@ Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
 of the build so a lexical or policy failure and a build failure are both
 visible from one run, and they fail in seconds rather than after the matrix.
 
+ADR-0028 changes one edge during the typed release-machinery cutover. Once the
+build stamp is produced by `tlrelease`, the release workflow first builds and
+tests that separately scoped executable in `gates`, hands it off with a
+same-run file-set-hash comparison, and only then runs `stamp`; product build
+jobs remain downstream of the resulting stamp. The bootstrap comparison cannot
+be delegated to the binary being compared. The gated binary is staged as
+`release-tool/tlrelease`, and an unprivileged runner step binds
+`hashFiles('release-tool/tlrelease')` in its `env:`, writes the distinctly
+named `releaseToolFileSetHash` step output through `$GITHUB_OUTPUT`, and the job
+output maps that value; `hashFiles` is deliberately not used directly in a job
+output expression. The upload action names that same non-hidden staged path;
+the stage, upload, and hash source are pinned together. Each side's pinned
+pattern must match exactly one file, and the consumer compares its post-download
+`hashFiles('tool/tlrelease')` result
+with the producer value before running `/bin/chmod 0755 tool/tlrelease`. This
+proves only same-run transport equality and is never compared with a raw
+SHA-256 digest. Until that port lands, the independent
+shell-based `stamp` job described here remains the current graph. The port must
+update this graph, the authority-flow guard, and its handoff evidence in the
+same change rather than silently serializing jobs.
+
 `release-policy` runs `scripts/check-release-policy.sh --strict` and then
 `scripts/check-release-runtimes.sh`, and those two scripts *are* the gate list. It was previously a `steps:` block, and
 `release.yml`'s own `gates` job was a second, shorter one that described itself
