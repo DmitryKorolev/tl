@@ -580,9 +580,25 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   plus release/plan.json's enabled channels and the
                         --   VERIFYING.md sentence stating them, and the rule
                         --   that every privileged release job needs a pushed
-                        --   tag — stated over what makes a job privileged, so
-                        --   a privileged job added later is covered
-  ReleaseDriftTests.lean --  the two guards over statements kept beside the
+                        --   tag — stated over what makes a job privileged
+                        --   (a write permission, a secret, or a protected
+                        --   environment), so a privileged job added later is
+                        --   covered; and ADR-0028's failure propagation: no
+                        --   `continue-on-error` and no status function in an
+                        --   `if:`, on every privileged job *and* on every job
+                        --   producing an output a privileged job or some
+                        --   condition acts on — computed transitively through
+                        --   `needs.*.outputs.*`, so moving a policy branch one
+                        --   job upstream does not move it out of the guard.
+                        --   Stricter than ADR-0028's minimum in one stated
+                        --   place: step-level `continue-on-error` is refused on
+                        --   every step of a bound job rather than only on
+                        --   handoff/authentication/policy/publication steps,
+                        --   because classifying those lexically would be a list
+                        --   of command spellings. The build matrix's
+                        --   Best-effort leg stays allowed: unprivileged, and no
+                        --   outputs at all
+  ReleaseDriftTests.lean --  the guards over statements kept beside the
                         --   release layer: every backticked invocation of
                         --   `tlrelease` in a tracked .md/.sh/.yml must be one
                         --   the command's own `accepts` takes (name a command
@@ -591,7 +607,17 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   must decide a missing tool through `rc_tool_gate`
                         --   alone. Both read the real tree, and the second uses
                         --   Boundary.lean's own lexer, so a comment explaining
-                        --   the rule is not a violation of it
+                        --   the rule is not a violation of it. Two more that
+                        --   are permanent: no release source may recover a
+                        --   native error class by matching formatted text
+                        --   (`:E…:`), since that makes a message a contract;
+                        --   and the release FFI registry — every extern in the
+                        --   loaded release environment pinned by declaring
+                        --   module, native symbol and full Lean signature, no
+                        --   product-prefixed binding, plus the executable's
+                        --   linker inputs and the recipe compiling the shim
+                        --   from exactly ffi/tlsys.c, which the trust
+                        --   verifier's import audit cannot observe
   ReleaseToolTests.lean --   tlrelease: dispatch, the generated usage, and the
                         --   refusals. Driven in-process against release.Cli;
                         --   a refusal must never share an exit status with

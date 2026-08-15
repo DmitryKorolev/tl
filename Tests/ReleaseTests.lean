@@ -310,6 +310,12 @@ private def grantsPrivilege (line : String) : Bool :=
       -- grant whatever it contains, because this scan reads block style and a
       -- form it cannot read must not pass for an absent one.
       || (key == "permissions" && has value "{")
+      -- A protected environment. ADR-0028 puts every job that can mint a
+      -- certificate this release's pin accepts, or that receives a publication
+      -- secret, behind the same environment as the signing job — so naming one
+      -- is itself the capability, whether or not the secret is spelled in this
+      -- job's own YAML.
+      || key == "environment"
 
 /-- A top-level job block: the job's name and the lines belonging to it. -/
 private structure JobBlock where
@@ -455,6 +461,198 @@ private def narrowsToPushedTag (condition : String) : Bool :=
   (condition == guardExpression || condition.startsWith (guardExpression ++ " &&"))
     && !has condition "||"
 
+/-! ## Failure propagation, and who it binds
+
+GitHub sequences jobs and steps on success by default, and there are exactly two
+ways to override that: `continue-on-error`, which reports a failed unit as
+successful, and a status function in an `if:`, which runs a unit *because*
+something before it failed. Either one, on the wrong unit, turns a failed
+handoff, authentication or publication into a job the next one reads as green.
+
+ADR-0028 binds the rule to two classes of job, and the second is the one a
+reader would not guess. **Privileged**: a write permission, a secret, or the
+protected environment. **Authority-output producer**: a job at least one of
+whose outputs decides whether a privileged job runs, which already-produced
+artifact it takes, or where it publishes. Moving a policy branch into an
+apparently unprivileged producer does not move it out of the guard, and the
+rule is transitive through `needs.*.outputs.*` — an output assembled from
+another job's output carries the same weight.
+
+What stays allowed is what the release actually needs: the build matrix's
+best-effort leg is unprivileged and declares no outputs, so its job-level
+`continue-on-error` is exactly the case the ADR preserves. -/
+
+/-- A key at a job's own indentation: four spaces, and not more. -/
+private def jobLevelKey? (line : String) : Option (String × String) :=
+  if !(line.startsWith "    ") || line.startsWith "     " then none
+  else
+    let body := withoutComment (dropIndent line)
+    if body.isEmpty then none else
+      let (key, value) := keyValue body
+      if isBareKey key then some (key, value) else none
+
+/-- A key belonging to a step: either the first key on the `- ` line that opens
+    one, or a key of the step's own mapping.
+
+    Both forms are read because `- continue-on-error: true` and a
+    `continue-on-error:` line under a `- name:` are the same declaration, and a
+    scan that knew only the second would be walked around by writing the
+    first. -/
+private def stepLevelKey? (line : String) : Option (String × String) :=
+  let body := withoutComment line
+  if body.isEmpty then none
+  else
+    let inner :=
+      if line.startsWith "      - " then some (dropIndent (String.ofList (body.toList.drop 2)))
+      else if line.startsWith "        " then some body
+      else none
+    match inner with
+    | none => none
+    | some text =>
+        let (key, value) := keyValue text
+        if isBareKey key then some (key, value) else none
+
+/-- The `name: value` rows of a job's `outputs:` mapping.
+
+    Read by tracking which job-level key is open, so a `needs.*.outputs.*`
+    reference in an `env:` block is not mistaken for an output definition. -/
+private def outputEntries (block : JobBlock) : List (String × String) := Id.run do
+  let mut inside := false
+  let mut rows : List (String × String) := []
+  for line in block.lines do
+    if (withoutComment line).isEmpty then continue
+    match jobLevelKey? line with
+    | some (key, _) => inside := key == "outputs"
+    | none =>
+        if inside && line.startsWith "      " then
+          let (key, value) := keyValue (withoutComment (dropIndent line))
+          if isBareKey key then rows := rows ++ [(key, value)]
+  return rows
+
+/-- The leading run of characters a YAML key or a GitHub identifier is made
+    of, which is how a reference is ended without knowing what follows it. -/
+private def identifierHead (text : String) : String :=
+  String.ofList (text.toList.takeWhile fun c =>
+    ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9')
+      || c == '-' || c == '_')
+
+/-- Every `needs.<job>.outputs.<name>` in some text, as pairs. -/
+private def needsOutputRefs (text : String) : List (String × String) :=
+  ((text.splitOn "needs.").drop 1).filterMap fun tail =>
+    let job := identifierHead tail
+    let rest := String.ofList (tail.toList.drop job.length)
+    if job.isEmpty || !rest.startsWith ".outputs." then none
+    else
+      let name := identifierHead (String.ofList (rest.toList.drop ".outputs.".length))
+      if name.isEmpty then none else some (job, name)
+
+/-- The lines of a block that belong to some `if:` expression — the key line
+    and every more-indented line continuing it, so a folded condition is read
+    whole rather than at its first line. -/
+private def conditionLines (lines : List String) : List String := Id.run do
+  let mut collected : List String := []
+  let mut indent := 0
+  let mut taking := false
+  for line in lines do
+    let body := withoutComment line
+    let width := line.toList.takeWhile (· == ' ') |>.length
+    if taking && width > indent && !body.isEmpty then
+      collected := collected ++ [body]
+    else if body.startsWith "if:" then
+      collected := collected ++ [body]
+      taking := true
+      indent := width
+    else if !body.isEmpty then
+      taking := false
+  return collected
+
+/-- The status functions that override GitHub's success-only sequencing.
+    `success()` is here too: written as the whole condition it is redundant, and
+    written beside one of the others it is what makes the expression look like
+    an ordinary predicate. -/
+private def statusFunctions : List String :=
+  ["always()", "failure()", "cancelled()", "success()"]
+
+private def withoutSpaces (text : String) : String :=
+  String.ofList (text.toList.filter fun c => c != ' ' && c != '\t')
+
+private def namesStatusFunction (text : String) : Option String :=
+  statusFunctions.find? (has (withoutSpaces text) ·)
+
+/-- Which jobs produce an output some privileged job or some condition acts on.
+
+    Two seeds and one closure. A reference inside any `if:` is authority-bearing
+    because that expression decides whether a unit runs at all; a reference
+    anywhere inside a privileged job is authority-bearing because that job holds
+    the credential and the value is choosing what it acts on. The closure is the
+    ADR's transitivity: an authority-bearing output assembled from another job's
+    output makes that one authority-bearing too, so a policy branch cannot be
+    moved one job upstream to get out of the guard.
+
+    Iterated a bounded number of times rather than recursively: the edge
+    relation is over a finite job list, so `jobs.length` rounds reach the
+    fixpoint, and a bound the reader can see beats a termination argument. -/
+private def authorityProducers (scan : JobScan) : List String := Id.run do
+  let privilegedNames := (scan.jobs.filter (·.lines.any grantsPrivilege)).map (·.name)
+  let mut authority : List (String × String) := []
+  for block in scan.jobs do
+    let conditions := conditionLines block.lines
+    for line in conditions do
+      authority := authority ++ needsOutputRefs line
+    if privilegedNames.contains block.name then
+      for line in block.lines do
+        authority := authority ++ needsOutputRefs (withoutComment line)
+  for _ in scan.jobs do
+    let mut grown := authority
+    for block in scan.jobs do
+      for (name, definition) in outputEntries block do
+        if authority.contains (block.name, name) then
+          for reference in needsOutputRefs definition do
+            if !grown.contains reference then grown := grown ++ [reference]
+    authority := grown
+  return (scan.jobs.filterMap fun block =>
+    if (outputEntries block).any fun (name, _) => authority.contains (block.name, name) then
+      some block.name
+    else none)
+
+/-- The two overrides, over the jobs the rule binds.
+
+    Stricter than ADR-0028's minimum in one stated place: the ADR forbids
+    step-level `continue-on-error` on the handoff and on every authentication,
+    policy or publication step, and this forbids it on every step of a bound
+    job. Deciding lexically which step is a "policy step" would be a list of
+    command spellings — the shape this repository keeps deleting — so the
+    narrower rule is the one that would rot. Relaxing this means classifying
+    steps, not adding an exception. -/
+private def failurePropagationViolations (scan : JobScan) : List String := Id.run do
+  let privilegedNames := (scan.jobs.filter (·.lines.any grantsPrivilege)).map (·.name)
+  let producers := authorityProducers scan
+  let mut violations : List String := []
+  for block in scan.jobs do
+    let privileged := privilegedNames.contains block.name
+    let producer := producers.contains block.name
+    if !privileged && !producer then continue
+    let because :=
+      if privileged then "holds a credential" else "produces an output a privileged job acts on"
+    for line in block.lines do
+      match jobLevelKey? line with
+      | some ("continue-on-error", value) =>
+          violations := violations ++
+            [s!"job '{block.name}' {because} and sets continue-on-error: {value} — a failed handoff, authentication or publication would then be reported as a successful job before anything downstream could see it. Job-level best-effort is for an unprivileged builder none of whose outputs is authority-bearing."]
+      | _ => pure ()
+      match stepLevelKey? line with
+      | some ("continue-on-error", value) =>
+          violations := violations ++
+            [s!"job '{block.name}' {because} and has a step with continue-on-error: {value} — the step reports success it did not have, and every step after it runs on that. Remove it; a step that may legitimately fail belongs in a separate unprivileged job."]
+      | _ => pure ()
+    for line in conditionLines block.lines do
+      match namesStatusFunction line with
+      | some named =>
+          violations := violations ++
+            [s!"job '{block.name}' {because} and its condition uses {named} — a status function overrides the implicit success-only sequencing, so the unit runs after something before it has already failed. A conditional business predicate relies on that implicit guard instead of rebuilding it."]
+      | none => pure ()
+  return violations
+
 /-- Every way a workflow fails the pushed-tag rule; the empty list is the
     passing state.
 
@@ -463,6 +661,7 @@ private def narrowsToPushedTag (condition : String) : Bool :=
     the part of this guard most able to fail silently — a shape it cannot read
     produces no job, no privilege and no violation — so it is exercised against
     workflows written to break it rather than only against the one in the tree. -/
+
 private def privilegeViolations (content : String) : List String := Id.run do
   let scan := jobScan content
   let mut violations : List String := []
@@ -476,7 +675,7 @@ private def privilegeViolations (content : String) : List String := Id.run do
     if block.lines.any grantsPrivilege && !narrowsToPushedTag (conditionOf block) then
       violations := violations ++
         [s!"privileged job '{block.name}' has if: {conditionOf block} — it must be exactly `{guardExpression}`, optionally narrowed with `&&` and never widened with `||`. Anything else (a negation, a disjunction, a quoted form, another clause first) is refused rather than interpreted."]
-  return violations
+  return violations ++ failurePropagationViolations scan
 
 /-! ## The guard's own parser, against workflows written to defeat it
 
@@ -513,6 +712,18 @@ private def properGuard : String :=
 private def ungatedJob (body : String) : String :=
   "  publish:\n    runs-on: ubuntu-latest\n" ++ body ++ "    steps:\n      - run: echo publish\n"
 
+/-- An unprivileged producer whose output a privileged job's condition reads,
+    with whatever extra body is given attached to the producer. -/
+private def producerWorkflow (producerBody : String) (producer : String) (output : String) :
+    String :=
+  s!"  {producer}:\n    runs-on: ubuntu-latest\n" ++ producerBody ++
+  s!"    outputs:\n      {output}: " ++ "${{ steps.plan.outputs." ++ output ++ " }}\n" ++
+  "    steps:\n      - id: plan\n        run: echo plan\n" ++
+  s!"  publish:\n    needs: [{producer}]\n" ++
+  "    if: github.event_name == 'push' && github.ref_type == 'tag' && needs." ++ producer ++
+  ".outputs." ++ output ++ " == 'true'\n" ++
+  "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"
+
 private def workflowGuardTests : List Outcome :=
   -- (label, workflow, the phrase a refusal must carry — none means it must pass)
   let cases : List (String × String × Option String) := [
@@ -520,7 +731,7 @@ private def workflowGuardTests : List Outcome :=
       fabricated (guardedJob properGuard), none),
     ("a guard narrowed with && passes",
       fabricated (guardedJob
-        "    if: github.event_name == 'push' && github.ref_type == 'tag' && !cancelled()\n"),
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && github.repository == 'o/r'\n"),
       none),
     ("a folded condition is read across its continuation lines",
       fabricated (guardedJob
@@ -608,7 +819,68 @@ private def workflowGuardTests : List Outcome :=
       workflowWith "permissions: read-all\n" (guardedJob properGuard),
       some "permission default"),
     ("no default at all is refused",
-      workflowWith "" (guardedJob properGuard), some "permission default")]
+      workflowWith "" (guardedJob properGuard), some "permission default"),
+    -- Naming a protected environment is itself the capability: it is what puts
+    -- a job behind the same gate as signing, and the secret it receives need
+    -- not be spelled in this job's own YAML.
+    ("a protected environment is a grant",
+      fabricated (ungatedJob "    environment: release\n"),
+      some "privileged job 'publish'"),
+    -- Failure propagation. Both overrides, on both classes of job the rule
+    -- binds, and each of them a shape that reports a failure as a success.
+    ("a privileged guard narrowed with a status function is refused",
+      fabricated (guardedJob
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && !cancelled()\n"),
+      some "status function"),
+    ("a privileged job with job-level continue-on-error is refused",
+      fabricated (guardedJob properGuard ++
+        "  publishTwo:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    continue-on-error: true\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"),
+      some "job 'publishTwo' holds a credential and sets continue-on-error"),
+    ("a privileged step with continue-on-error is refused",
+      fabricated ("  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: publish\n        continue-on-error: true\n        run: echo publish\n"),
+      some "has a step with continue-on-error"),
+    -- The same declaration written as the first key of the step, which a scan
+    -- that only knew the mapping form would walk straight past.
+    ("a privileged step's continue-on-error on the dash line is refused",
+      fabricated ("  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - continue-on-error: true\n        run: echo publish\n"),
+      some "has a step with continue-on-error"),
+    ("a privileged step conditioned on a status function is refused",
+      fabricated ("  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: upload the diagnostics\n        if: always()\n        run: echo upload\n"),
+      some "status function"),
+    -- The class a reader would not guess. This job takes nothing, but a
+    -- privileged job's condition reads its output, so a failure it reported as
+    -- success would decide whether that job runs.
+    ("an authority-output producer with continue-on-error is refused",
+      fabricated (producerWorkflow "    continue-on-error: true\n" "gates" "npm"),
+      some "job 'gates' produces an output a privileged job acts on and sets continue-on-error"),
+    -- And moving the branch one job upstream does not move it out of the
+    -- guard: `plan`'s output is what `gates`'s authority-bearing output is
+    -- assembled from.
+    ("a producer feeding a producer is refused transitively",
+      fabricated (
+        "  plan:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    outputs:\n      npm: ${{ steps.read.outputs.npm }}\n    steps:\n      - id: read\n        run: echo npm\n" ++
+        "  gates:\n    needs: [plan]\n    runs-on: ubuntu-latest\n    outputs:\n      npm: ${{ needs.plan.outputs.npm }}\n    steps:\n      - run: echo gates\n" ++
+        "  publish:\n    needs: [gates]\n" ++
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.gates.outputs.npm == 'true'\n" ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"),
+      some "job 'plan' produces an output a privileged job acts on"),
+    -- What must stay allowed, and is the reason the rule is not "no job may
+    -- ever be best-effort": the build matrix's Best-effort leg takes nothing
+    -- and declares no outputs.
+    ("an unprivileged builder may be best-effort",
+      fabricated (
+        "  legs:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    steps:\n      - run: echo build\n"),
+      none),
+    -- An output nothing acts on is not authority-bearing, so declaring one does
+    -- not make an ordinary job into a privileged one.
+    ("a producer whose output nobody acts on may be best-effort",
+      fabricated (
+        "  measure:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    outputs:\n      seconds: ${{ steps.time.outputs.seconds }}\n    steps:\n      - id: time\n        run: echo seconds\n"),
+      none)]
   cases.flatMap fun (label, content, expected) =>
     let violations := privilegeViolations content
     match expected with
