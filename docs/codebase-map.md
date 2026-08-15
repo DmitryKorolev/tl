@@ -685,11 +685,34 @@ Ruby DSL and is not release administration.
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
-  Sys.lean              --   current release-prefixed native binding. ADR-0028
-                        --   migration target: an exact extern/signature and
-                        --   linker/build-recipe registry plus explicit output-
-                        --   directory capabilities, component-list paths, and
-                        --   typed sync/commit observations; imports no `Tl.*`
+  Write.lean            --   what a release-evidence write is, before anything
+                        --   performs one: an operator-named output directory, a
+                        --   sealed non-empty list of validated relative
+                        --   components (no absolute name, no empty component,
+                        --   no `.`, `..`, embedded `/` or NUL), and the typed
+                        --   observation the mechanism reports — commit and
+                        --   durability kept apart, so a directory sync that
+                        --   failed *after* a successful rename is disclosed
+                        --   rather than reported as a write that did not
+                        --   happen. The observation crosses the FFI boundary as
+                        --   a nine-slot row of small integers, never as prose a
+                        --   caller matches: phase and errno are values, and
+                        --   Tests/ReleaseDriftTests refuses the formatted form
+                        --   anywhere under release/. decodeRow_encodeRow and
+                        --   decodeRow_landed_iff are the characterization —
+                        --   nothing but the mechanism's own commit report can
+                        --   make a write read as landed. `Mechanism` is the
+                        --   seam: the write is a parameter, so every phase
+                        --   failure is reachable from a test without a
+                        --   filesystem that can produce it, and the outcome's
+                        --   predicted destination/staging effects are what a
+                        --   real fault test compares the directory against
+  Sys.lean              --   (lands with the native writer) the release-prefixed
+                        --   native binding. ADR-0028 requires an exact
+                        --   extern/signature and linker/build-recipe registry
+                        --   alongside it; the capability, component-list paths
+                        --   and typed observations it reports are Write.lean's
+                        --   above. Imports no `Tl.*`
   Json.lean             --   typed access (every read returns Except with the
                         --   document and path in the message, where the Python
                         --   it replaces raised tracebacks) and deterministic

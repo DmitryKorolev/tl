@@ -7,6 +7,7 @@ modules needs this type to describe what it contributes. Keeping the type here
 and the table there lets a new decision be a new module plus one name in the
 table, with nothing importing backwards.
 -/
+import release.Write
 
 namespace Release
 
@@ -107,7 +108,12 @@ def readTextFile (path : String) : IO (Except String String) := do
     has no access to the native shim. Both callers write into a directory the
     same process has just been given — a release job's workspace, or a checkout
     the operator owns — so the residue is a race an attacker who already has
-    that directory would win more directly. -/
+    that directory would win more directly.
+
+    This is the interim writer. `Release.Write` states what replaces it — an
+    operator-named directory, a validated component list, and a typed
+    observation instead of `IO Unit` — and the native mechanism that performs it
+    lands against that model. -/
 def writeFileAtomically (path : String) (contents : String) : IO (Except String Unit) := do
   let temporary := path ++ ".tmp"
   if ← System.FilePath.pathExists temporary then

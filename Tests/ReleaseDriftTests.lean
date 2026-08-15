@@ -224,6 +224,40 @@ def releaseToolHandoffShape (workflow : String) : Except String Unit := do
   if workflow.contains "path: .lake/build/bin/tlrelease" then
     throw "upload-artifact excludes the hidden .lake path by default"
 
+/-! ## Native errors stay structured
+
+The release writer's phase and errno are values (`release/Write.lean`), and this
+row is why they stay values. The prototype recovered the error class by matching
+the shim's formatted prose — `":EEXIST:"` inside the message the C side builds —
+which quietly makes a sentence part of the contract: reword the message and the
+classification stops matching, with nothing failing to say so.
+
+Deliberately lexical, and deliberately about one shape: an errno *name* between
+colons is what a formatted `tlsys:<op>:<ERRNO>:` line looks like, and matching
+one is the only way to read a class back out of prose. Printing a name is not
+this — `Errno.name` renders `"EACCES"` with no colons and nothing reads it
+back. -/
+
+/-- The characters an errno name is made of, after the leading `E`. -/
+private def isErrnoTail (c : Char) : Bool := 'A' ≤ c && c ≤ 'Z'
+
+/-- Does the text contain a formatted errno token — `:E` followed by two or
+    more capitals and a closing colon?
+
+    Scanned over the whole line rather than only inside string literals: a line
+    that mentions the shape in a comment is describing this rule, and the two
+    places that do live in `Tests/` and `docs/`, outside what this reads. -/
+def classifiesFormattedErrno (line : String) : Bool :=
+  ((line.splitOn ":E").drop 1).any fun tail =>
+    let name := (tail.takeWhile isErrnoTail).toString
+    name.length ≥ 2 && (tail.drop name.length).startsWith ":"
+
+private def formattedErrnoFailures (path : String) (text : String) : List String :=
+  ((text.splitOn "\n").zipIdx 1).filterMap fun (line, number) =>
+    if classifiesFormattedErrno line then
+      some s!"  {path}:{number}: reads a native error class out of formatted text — {line.trimAscii}"
+    else none
+
 /-! ## The rows -/
 
 def releaseDriftTests : IO (List Outcome) := do
@@ -238,6 +272,19 @@ def releaseDriftTests : IO (List Outcome) := do
     [check "release docs: every documented tlrelease invocation is one the tool accepts"
       documentFailures.isEmpty (String.intercalate "\n" documentFailures ++
         "\nInside backticks, name the command or write an invocation that works: a fragment is specific enough to be copied and incomplete enough to stop being true. The command's own parser decides this, so a required option added to it fails here in the same build.")]
+  let releaseSources ← filesUnder "release" ["lean"]
+  let mut formattedErrnoFailureRows : List String := []
+  for path in releaseSources do
+    let text ← IO.FS.readFile path
+    formattedErrnoFailureRows :=
+      formattedErrnoFailureRows ++ formattedErrnoFailures path.toString text
+  let formattedErrnoRows : List Outcome :=
+    [check "release errors: no release source classifies a native error by its formatted text"
+      formattedErrnoFailureRows.isEmpty
+      (String.intercalate "\n" formattedErrnoFailureRows ++
+        "\nThe native side reports a phase and an errno as numbers, decoded by release/Write.lean. Matching the formatted message instead makes a sentence part of the contract, so rewording it silently stops the classification without failing a build."),
+     check "release errors: the scan read release sources to check"
+       (releaseSources.size ≥ 10) s!"found {releaseSources.size} release source(s)"]
   let scripts ← filesUnder "scripts" ["sh"]
   let releaseWorkflow ← IO.FS.readFile ".github/workflows/release.yml"
   let mut library := 0
@@ -253,7 +300,24 @@ def releaseDriftTests : IO (List Outcome) := do
       [check s!"release policy: {path} decides a missing tool through rc_tool_gate alone"
         failures.isEmpty (String.intercalate "\n" failures ++
           "\nrc_tool_gate in scripts/lib/release-common.sh crosses the three inputs — present or absent, strict or not, passed or failed — and its selftest matrix is what proves the crossing. A branch written here is a second answer to the same question, tested by nothing.")]
-  return documentRows ++ hygieneRows ++ [
+  return documentRows ++ formattedErrnoRows ++ hygieneRows ++ [
+    -- The detector, on the shape it exists to catch and on the shapes it must
+    -- leave alone. Without these a detector that matched nothing would report
+    -- the same clean result as a release layer that classifies nothing.
+    check "release errors: the prototype's own classification is recognised"
+      (classifiesFormattedErrno "    if (error.toString.splitOn \":EEXIST:\").length > 1 then"),
+    check "release errors: another errno spelled the same way is recognised"
+      (classifiesFormattedErrno "  let occupied := message.splitOn \":ENOTOWNED:\""),
+    check "release errors: the shim's whole formatted prefix is recognised"
+      (classifiesFormattedErrno "  if message.startsWith \"tlsys:rename:EIO: \" then"),
+    check "release errors: rendering an errno name is not classifying one"
+      (!classifiesFormattedErrno "  | .eacces => \"EACCES\""),
+    check "release errors: a ratio written with a colon is not one"
+      (!classifiesFormattedErrno "-- the 3:1 ratio the perf rows pin"),
+    check "release errors: a single capital after a colon is not an errno name"
+      (!classifiesFormattedErrno "  s!\"{what}:E: something\""),
+    check "release errors: a name with no closing colon is not the formatted shape"
+      (!classifiesFormattedErrno "  -- ENOSPC and EDQUOT both mean the same fix"),
     check "release workflow: the current release-tool upload hashes and uploads one staged path"
       (releaseToolHandoffShape releaseWorkflow).toOption.isSome
       (match releaseToolHandoffShape releaseWorkflow with

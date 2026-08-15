@@ -750,6 +750,12 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.versionProblems_isEmpty_iff
   let _ := @Release.channelDecisions_eq
   let _ := @Release.channelDecisions_lookup
+  let _ := @Release.Write.OutputPath.components_ne_nil
+  let _ := @Release.Write.decodeRow_encodeRow
+  let _ := @Release.Write.decodeRow_landed_iff
+  let _ := @Release.Write.accept_isOk_iff_landed
+  let _ := @Release.Write.WriteOutcome.destination_replaced_iff_landed
+  let _ := @Release.Write.WriteOutcome.staging_occupied_iff_retained
   ()
 
 /-! ## The publication decision, end to end
@@ -3264,6 +3270,417 @@ private def boundaryCommandTests : IO (List Outcome) := do
       (((enabledErr.splitOn "npm-pack.sh").length > 1) &&
         ((enabledErr.splitOn "deferredPaths").length > 1)) enabledErr]
 
+/-! ## The release-evidence write, as a model
+
+Nothing here writes a file. The mechanism is a parameter (`Write.Mechanism`), so
+the phase matrix below reaches failures a filesystem cannot be asked for on
+demand — an `EIO` mid-write, a directory sync that failed *after* a successful
+rename, a cleanup that could not remove what it created. The native writer
+arrives against these same expectations: for every phase, the typed outcome, the
+destination and the staging path this model predicts are what a real fault test
+then compares the directory against. -/
+
+private def writeWhat : String := "--output-dir"
+
+private def componentText : Except String Write.Component → String
+  | .ok component => component.text
+  | .error _ => "<refused>"
+
+private def pathRender : Except String Write.OutputPath → String
+  | .ok path => path.render
+  | .error _ => "<refused>"
+
+private def pathComponents : Except String Write.OutputPath → List String
+  | .ok path => path.components.map (·.text)
+  | .error _ => ["<refused>"]
+
+private def errorOfExcept : Except String α → String
+  | .error message => message
+  | .ok _ => "<no error>"
+
+private def says (result : Except String α) (needle : String) : Bool :=
+  ((errorOfExcept result).splitOn needle).length > 1
+
+private def writePathTests : List Outcome :=
+  [ -- The shapes a writing command actually uses.
+    checkEq "write path: a single-component name parses"
+      (pathComponents (Write.OutputPath.parse writeWhat "release-manifest.json"))
+      ["release-manifest.json"],
+    checkEq "write path: a nested name parses into its components"
+      (pathComponents (Write.OutputPath.parse writeWhat "dist/tl.spdx.json"))
+      ["dist", "tl.spdx.json"],
+    checkEq "write path: rendering is the name it was given back"
+      (pathRender (Write.OutputPath.parse writeWhat "dist/tl.spdx.json")) "dist/tl.spdx.json",
+    checkEq "write path: the leaf is the file, not the first directory"
+      (match Write.OutputPath.parse writeWhat "dist/inner/tl.spdx.json" with
+       | .ok path => path.leaf.text
+       | .error _ => "<refused>") "tl.spdx.json",
+    checkEq "write path: a one-component name is its own leaf"
+      (match Write.OutputPath.parse writeWhat "identity.pin" with
+       | .ok path => path.leaf.text
+       | .error _ => "<refused>") "identity.pin",
+    checkEq "write path: the staging sibling is the leaf plus .tmp"
+      (match Write.OutputPath.parse writeWhat "dist/tl.spdx.json" with
+       | .ok path => path.stagingName
+       | .error _ => "<refused>") "tl.spdx.json.tmp",
+    -- Every refusal the boundary owes, each naming its own rule rather than
+    -- reporting "invalid": which rule was broken is what says how to fix it.
+    check "write path: an absolute name is refused"
+      (says (Write.OutputPath.parse writeWhat "/etc/passwd") "is an absolute path"),
+    check "write path: and the refusal says --output-dir is what decides where"
+      (says (Write.OutputPath.parse writeWhat "/etc/passwd") "--output-dir"),
+    check "write path: a name climbing out of the granted directory is refused"
+      (says (Write.OutputPath.parse writeWhat "../outside.json") "'..' is not an output component"),
+    check "write path: .. in the middle is refused too"
+      (says (Write.OutputPath.parse writeWhat "dist/../../outside.json") "'..' is not an output component"),
+    check "write path: a '.' component is refused rather than skipped"
+      (says (Write.OutputPath.parse writeWhat "./tl.spdx.json") "'.' is not an output component"),
+    check "write path: an empty name is refused"
+      (says (Write.OutputPath.parse writeWhat "") "empty component"),
+    check "write path: a doubled separator is an empty component"
+      (says (Write.OutputPath.parse writeWhat "dist//tl.json") "empty component"),
+    check "write path: a trailing separator names no file"
+      (says (Write.OutputPath.parse writeWhat "dist/") "empty component"),
+    check "write path: an embedded NUL is refused"
+      (says (Write.OutputPath.parse writeWhat "dist\x00/../../etc/passwd") "NUL byte"),
+    check "write path: and the refusal says why a NUL is not cosmetic"
+      (says (Write.OutputPath.parse writeWhat "dist\x00x") "stops reading a path at the first NUL"),
+    -- One component is one component: a separator inside one means a path was
+    -- built as a string somewhere it should have been built as a list.
+    checkEq "write path: an ordinary component parses"
+      (componentText (Write.Component.parse writeWhat "dist")) "dist",
+    check "write path: a component holding a separator is refused"
+      (says (Write.Component.parse writeWhat "dist/tl.json") "contains '/'"),
+    check "write path: an empty component is refused"
+      (says (Write.Component.parse writeWhat "") "empty component"),
+    check "write path: a '.' component is refused"
+      (says (Write.Component.parse writeWhat ".") "not an output component"),
+    check "write path: a '..' component is refused"
+      (says (Write.Component.parse writeWhat "..") "not an output component"),
+    check "write path: a component holding a NUL is refused"
+      (says (Write.Component.parse writeWhat "tl\x00.json") "NUL byte"),
+    -- A name that merely starts with a dot is a file, not a traversal.
+    checkEq "write path: a dotfile is an ordinary component"
+      (componentText (Write.Component.parse writeWhat ".hidden")) ".hidden",
+    checkEq "write path: a name beginning with .. but longer is ordinary"
+      (componentText (Write.Component.parse writeWhat "..hidden")) "..hidden",
+    -- The base is the operator's anchor and is deliberately not held to the
+    -- component rules: it may be absolute, and it may be a symbolic link.
+    checkEq "write base: an absolute directory is accepted"
+      (match Write.OutputDirectory.parse writeWhat "/var/folders/tmp.d" with
+       | .ok base => base.path
+       | .error _ => "<refused>") "/var/folders/tmp.d",
+    checkEq "write base: a relative directory is accepted"
+      (match Write.OutputDirectory.parse writeWhat "dist" with
+       | .ok base => base.path
+       | .error _ => "<refused>") "dist",
+    check "write base: the empty string is refused"
+      (says (Write.OutputDirectory.parse writeWhat "") "names no directory"),
+    check "write base: an embedded NUL is refused"
+      (says (Write.OutputDirectory.parse writeWhat "di\x00st") "NUL byte"),
+    checkEq "write base: the default is the working directory, stated"
+      Write.OutputDirectory.working.path "."]
+
+/-! ### The row the native side reports
+
+The codes are a contract with C, so the matrix runs both ways over both
+enumerations: everything the model can name encodes and decodes back, and every
+code a row could carry either decodes to something this list holds or is
+refused. A phase added to the inductive without a code, or with a code nothing
+knows, fails here rather than at a release. -/
+
+private def sampleErrno : Write.Errno := .eacces
+
+private def failureRow (operation : Write.Operation) (errno : Write.Errno) :
+    Write.WriteOutcome :=
+  .failedBeforeCommit { operation, errno } .notCreated
+
+private def decodedIs (result : Except String Write.WriteOutcome)
+    (outcome : Write.WriteOutcome) : Bool :=
+  match result with
+  | .ok decoded => decoded == outcome
+  | .error _ => false
+
+private def roundTrips (outcome : Write.WriteOutcome) : Bool :=
+  decodedIs (Write.decodeRow (Write.encodeRow outcome)) outcome
+
+private def outcomeOf : Except String Write.WriteOutcome → String
+  | .ok outcome => reprStr outcome
+  | .error message => s!"<refused: {message}>"
+
+private def writeCodecTests : List Outcome :=
+  -- Every phase, as the failure a fault test injects for it.
+  (Write.Operation.all.map fun operation =>
+    check s!"write row: a failure in {operation.describe} survives the row"
+      (roundTrips (failureRow operation sampleErrno))
+      (outcomeOf (Write.decodeRow (Write.encodeRow (failureRow operation sampleErrno))))) ++
+  -- Every named errno, on the phase most likely to report it.
+  (Write.Errno.named.map fun errno =>
+    check s!"write row: {errno.name} survives the row"
+      (roundTrips (failureRow .createStaging errno))
+      (outcomeOf (Write.decodeRow (Write.encodeRow (failureRow .createStaging errno))))) ++
+  [ -- An unrecognised errno keeps its number rather than being folded into a
+    -- name that reads like a diagnosis.
+    check "write row: an unmapped errno survives with its raw number"
+      (roundTrips (failureRow .writeBytes (.other 79))),
+    checkEq "write row: and it is reported as a number, not a guessed name"
+      (Write.Errno.name (.other 79)) "errno 79",
+    -- Both sync strengths, both directory-sync outcomes, all three cleanup
+    -- dispositions: the whole observation space, not a sample of it.
+    check "write row: a full-barrier commit survives"
+      (roundTrips (.committed .fullBarrier .synced)),
+    check "write row: an ordinary-fsync commit survives"
+      (roundTrips (.committed .ordinaryFsync .synced)),
+    check "write row: a commit whose directory sync failed survives"
+      (roundTrips (.committed .fullBarrier
+        (.unsynced { operation := .syncDirectory, errno := .eio }))),
+    check "write row: a failure that created nothing survives"
+      (roundTrips (.failedBeforeCommit { operation := .createStaging, errno := .eexist }
+        .notCreated)),
+    check "write row: a failure whose staging file was removed survives"
+      (roundTrips (.failedBeforeCommit { operation := .rename, errno := .eisdir } .removed)),
+    check "write row: a failure whose staging file could not be removed survives"
+      (roundTrips (.failedBeforeCommit { operation := .writeBytes, errno := .enospc }
+        (.retained { operation := .removeStaging, errno := .eacces }))),
+    -- The codes, both directions. Every code a row could carry decodes to a
+    -- phase this build lists, and every listed phase has a code that decodes.
+    check "write row: every phase code decodes back to its own phase"
+      (Write.Operation.all.all fun operation =>
+        Write.Operation.ofCode operation.code == some operation),
+    check "write row: every code a row could carry is a phase this build lists"
+      ((List.range 40).all fun code =>
+        match Write.Operation.ofCode code with
+        | none => true
+        | some operation => Write.Operation.all.contains operation),
+    check "write row: no phase encodes as zero, which is how a row says no error"
+      (Write.Operation.all.all fun operation => operation.code != 0),
+    check "write row: every named errno decodes back to itself"
+      (Write.Errno.named.all fun errno => Write.Errno.ofCode errno.code errno.raw == some errno),
+    check "write row: every errno code a row could carry is one this build lists"
+      ((List.range 40).all fun code =>
+        match Write.Errno.ofCode code 0 with
+        | none => true
+        | some errno => Write.Errno.named.contains errno),
+    check "write row: no named errno encodes as zero"
+      (Write.Errno.named.all fun errno => errno.code != 0),
+    check "write row: every phase says what it was doing, and what to do about it"
+      (Write.Operation.all.all fun operation =>
+        !operation.describe.isEmpty && !operation.remedy.isEmpty),
+    check "write row: every named errno has a name to print"
+      (Write.Errno.named.all fun errno => !errno.name.isEmpty)]
+
+/-! ### Rows this build refuses
+
+A row the decoder half-understood would be a write reported as successful over
+a file that was never replaced, so every shape that is not exactly one outcome's
+encoding is a refusal. -/
+
+private def refusedRow (why : String) (row : List Nat) : Outcome :=
+  check s!"write row: {why} is refused" (Write.decodeRow row).toOption.isNone
+    (outcomeOf (Write.decodeRow row))
+
+private def writeMalformedTests : List Outcome :=
+  [ refusedRow "an empty row" [],
+    refusedRow "a row of eight fields" [0, 0, 0, 0, 0, 0, 0, 0],
+    refusedRow "a row of ten fields" [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    refusedRow "an outcome tag this build does not know" [2, 0, 0, 0, 0, 0, 0, 0, 0],
+    refusedRow "a sync strength this build does not know" [0, 2, 0, 0, 0, 0, 0, 0, 0],
+    -- A commit that also carries an error is two claims about one write.
+    refusedRow "a synced commit carrying an error" [0, 0, 0, 5, 1, 0, 0, 0, 0],
+    refusedRow "an unsynced commit carrying no error" [0, 0, 1, 0, 0, 0, 0, 0, 0],
+    refusedRow "a commit carrying a second error" [0, 0, 0, 0, 0, 0, 11, 1, 0],
+    -- A write that did not commit never reached a sync, so a strength here
+    -- means the two sides disagree about what happened.
+    refusedRow "a failure reporting a sync strength" [1, 1, 0, 5, 3, 0, 0, 0, 0],
+    refusedRow "a failure carrying no error" [1, 0, 0, 0, 0, 0, 0, 0, 0],
+    refusedRow "a cleanup disposition this build does not know" [1, 0, 3, 5, 3, 0, 0, 0, 0],
+    refusedRow "a retained cleanup carrying no error" [1, 0, 2, 5, 3, 0, 0, 0, 0],
+    refusedRow "a removed cleanup carrying an error" [1, 0, 1, 5, 3, 0, 11, 1, 0],
+    refusedRow "a created-nothing cleanup carrying an error" [1, 0, 0, 5, 3, 0, 11, 1, 0],
+    -- One value, one encoding. A named errno with a raw number beside it is a
+    -- second spelling of the same error, and admitting it would mean two rows
+    -- decode to one outcome.
+    refusedRow "a named errno carrying a raw number" [1, 0, 0, 5, 3, 13, 0, 0, 0],
+    refusedRow "an errno code this build does not know" [1, 0, 0, 5, 44, 0, 0, 0, 0],
+    refusedRow "a phase code this build does not know" [1, 0, 0, 44, 3, 0, 0, 0, 0],
+    -- The refusal has to say it is a defect in the tool rather than something
+    -- the caller did, because there is no invocation that fixes it.
+    check "write row: a refusal says the two sides of the contract were changed apart"
+      (says (Write.decodeRow [7, 0, 0, 0, 0, 0, 0, 0, 0]) "defect in the release tool"),
+    -- The array form the FFI boundary actually hands over.
+    check "write row: the array form decodes the same way"
+      (decodedIs (Write.decode #[0, 0, 0, 0, 0, 0, 0, 0, 0]) (.committed .fullBarrier .synced)),
+    check "write row: a short array is refused like a short row"
+      (Write.decode #[0, 0, 0]).toOption.isNone]
+
+/-! ### What the directory looks like afterwards
+
+The prediction a fault test compares the real directory against. Pinned per
+phase rather than only proved, because the theorems say the prediction is
+consistent and these rows say what it actually is. -/
+
+private def writeEffectTests : List Outcome :=
+  (Write.Operation.all.flatMap fun operation =>
+    let outcome : Write.WriteOutcome := failureRow operation sampleErrno
+    [ checkEq s!"write effect: a failure in {operation.describe} leaves the destination alone"
+        outcome.destination Write.Destination.untouched,
+      checkEq s!"write effect: a failure in {operation.describe} is not a landed write"
+        outcome.landed false]) ++
+  [ checkEq "write effect: a commit replaces the destination"
+      (Write.WriteOutcome.committed .fullBarrier .synced).destination Write.Destination.replaced,
+    checkEq "write effect: a commit whose directory sync failed still replaced it"
+      (Write.WriteOutcome.committed .ordinaryFsync
+        (.unsynced { operation := .syncDirectory, errno := .eio })).destination
+      Write.Destination.replaced,
+    checkEq "write effect: a commit leaves no staging file"
+      (Write.WriteOutcome.committed .fullBarrier .synced).staging Write.Staging.absent,
+    checkEq "write effect: a failure that created nothing leaves no staging file"
+      (Write.WriteOutcome.failedBeforeCommit { operation := .createStaging, errno := .eexist }
+        .notCreated).staging Write.Staging.absent,
+    checkEq "write effect: a failure whose cleanup removed the sibling leaves none"
+      (Write.WriteOutcome.failedBeforeCommit { operation := .rename, errno := .eisdir }
+        .removed).staging Write.Staging.absent,
+    -- The one a rerun has to know about: the next attempt creates that sibling
+    -- exclusively, so a leftover fails the next write too.
+    checkEq "write effect: a failure whose cleanup could not remove it leaves one"
+      (Write.WriteOutcome.failedBeforeCommit { operation := .writeBytes, errno := .enospc }
+        (.retained { operation := .removeStaging, errno := .eacces })).staging
+      Write.Staging.occupied]
+
+/-! ### What a command tells the operator -/
+
+private def acceptOf (outcome : Write.WriteOutcome) : Except String (Option String) :=
+  Write.accept "dist/tl.spdx.json" "tl.spdx.json.tmp" outcome
+
+private def acceptedSilently (result : Except String (Option String)) : Bool :=
+  match result with
+  | .ok none => true
+  | _ => false
+
+private def disclosureOf (outcome : Write.WriteOutcome) : String :=
+  match acceptOf outcome with
+  | .ok (some disclosure) => disclosure
+  | .ok none => "<nothing disclosed>"
+  | .error message => s!"<refused: {message}>"
+
+private def writeAcceptTests : List Outcome :=
+  [ check "write accept: a clean commit is accepted and discloses nothing"
+      (acceptedSilently (acceptOf (.committed .fullBarrier .synced))),
+    -- The ADR's decision, and the one this model exists to make expressible:
+    -- the rename happened, so every later open in this run reads the new bytes.
+    -- Refusing here would send an operator to repair a correct file.
+    check "write accept: an unflushed directory entry is a disclosure, not a refusal"
+      (acceptOf (.committed .fullBarrier
+        (.unsynced { operation := .syncDirectory, errno := .eio }))).toOption.isSome,
+    check "write accept: and the disclosure says the file was replaced"
+      ((((disclosureOf (.committed .fullBarrier
+        (.unsynced { operation := .syncDirectory, errno := .eio }))).splitOn "was replaced").length > 1)),
+    check "write accept: and it names the phase that did not complete"
+      ((((disclosureOf (.committed .fullBarrier
+        (.unsynced { operation := .syncDirectory, errno := .eio }))).splitOn "EIO").length > 1)),
+    check "write accept: an ordinary fsync is accepted, not downgraded to a refusal"
+      (acceptedSilently (acceptOf (.committed .ordinaryFsync .synced))),
+    checkEq "write accept: the two strengths are distinguishable in a report"
+      (Write.SyncStrength.describe .fullBarrier != Write.SyncStrength.describe .ordinaryFsync) true,
+    -- A write that did not commit refuses, and the refusal has to carry the
+    -- three things an operator acts on: what failed, that the destination is
+    -- unchanged, and what is left at the staging path.
+    check "write accept: a failure before the commit refuses"
+      (acceptOf (failureRow .rename .eisdir)).toOption.isNone,
+    check "write accept: the refusal names the phase"
+      (says (acceptOf (failureRow .rename .eisdir)) "renaming the staging file"),
+    check "write accept: the refusal names the errno"
+      (says (acceptOf (failureRow .rename .eisdir)) "EISDIR"),
+    check "write accept: the refusal says the destination is unchanged"
+      (says (acceptOf (failureRow .rename .eisdir)) "still holds what it held"),
+    check "write accept: the refusal names the destination"
+      (says (acceptOf (failureRow .rename .eisdir)) "dist/tl.spdx.json"),
+    check "write accept: a failure that created nothing says nothing was left behind"
+      (says (acceptOf (failureRow .openBase .enoent)) "Nothing was left behind"),
+    check "write accept: a removed staging file is reported as removed"
+      (says (acceptOf (.failedBeforeCommit { operation := .rename, errno := .eisdir } .removed))
+        "was removed"),
+    -- The one an operator must act on before rerunning.
+    check "write accept: a retained staging file is named"
+      (says (acceptOf (.failedBeforeCommit { operation := .writeBytes, errno := .enospc }
+        (.retained { operation := .removeStaging, errno := .eacces }))) "tl.spdx.json.tmp"),
+    check "write accept: and the refusal says why it matters"
+      (says (acceptOf (.failedBeforeCommit { operation := .writeBytes, errno := .enospc }
+        (.retained { operation := .removeStaging, errno := .eacces }))) "is still there"),
+    -- Every phase's refusal teaches: it says what to do next, not only what
+    -- broke. A message that only restates its own name is a defect.
+    check "write accept: every phase's refusal carries a remedy"
+      (Write.Operation.all.all fun operation =>
+        says (acceptOf (failureRow operation sampleErrno)) operation.remedy),
+    -- The errno narrows the phase's remedy where it determines one.
+    check "write accept: a permission refusal says the permissions refuse this user"
+      (says (acceptOf (failureRow .walkDirectory .eacces)) "refuse this user"),
+    check "write accept: an out-of-space refusal says so"
+      (says (acceptOf (failureRow .writeBytes .enospc)) "out of space or over quota"),
+    check "write accept: a symlinked component says links are refused, not followed"
+      (says (acceptOf (failureRow .walkDirectory .eloop)) "refused rather than followed"),
+    check "write accept: an ownership refusal says the directory belongs to another user"
+      (says (acceptOf (failureRow .ownBase .notOwned)) "belongs to another user")]
+
+/-! ### The seam
+
+`through` is what a writing command will call, with the native mechanism in
+place of these. Each row hands it a phase's row directly, which is how the
+matrix reaches faults a filesystem cannot be asked for. -/
+
+private def fixedMechanism (row : Array UInt32) : Write.Mechanism :=
+  fun _ _ _ => pure row
+
+private def throwingMechanism : Write.Mechanism :=
+  fun _ _ _ => throw (IO.userError "the mechanism itself failed")
+
+private def rowOf (outcome : Write.WriteOutcome) : Array UInt32 :=
+  ((Write.encodeRow outcome).map (fun code => UInt32.ofNat code)).toArray
+
+private def writeSeamTests : IO (List Outcome) := do
+  match Write.OutputPath.parse writeWhat "dist/tl.spdx.json" with
+  | .error message =>
+      -- Not a skip: the seam rows below all write through this name, so a
+      -- checkout where it stopped parsing must fail rather than fall silent.
+      return [check "write seam: the sample output name parses" false message]
+  | .ok samplePath =>
+  let runThrough (mechanism : Write.Mechanism) : IO (Except String (Option String)) :=
+    Write.through mechanism Write.OutputDirectory.working samplePath (String.toUTF8 "bytes")
+  let clean ← runThrough (fixedMechanism (rowOf (.committed .fullBarrier .synced)))
+  let unsynced ← runThrough (fixedMechanism (rowOf (.committed .ordinaryFsync
+    (.unsynced { operation := .syncDirectory, errno := .eio }))))
+  let malformed ← runThrough (fixedMechanism #[9, 9, 9])
+  let thrown ← runThrough throwingMechanism
+  let mut phaseRows : List Outcome := []
+  for operation in Write.Operation.all do
+    let outcome := failureRow operation sampleErrno
+    let refused ← runThrough (fixedMechanism (rowOf outcome))
+    phaseRows := phaseRows ++ [
+      check s!"write seam: an injected failure in {operation.describe} refuses"
+        refused.toOption.isNone (toString refused.toOption.isSome),
+      check s!"write seam: and it names the phase it was injected at"
+        (says refused operation.describe) (errorOfExcept refused)]
+  return phaseRows ++ [
+    check "write seam: a clean commit passes through with nothing to disclose"
+      (acceptedSilently clean) (errorOfExcept clean),
+    check "write seam: a commit with an unflushed directory entry passes through"
+      clean.toOption.isSome (errorOfExcept unsynced),
+    check "write seam: and it carries the disclosure"
+      (match unsynced with | .ok (some _) => true | _ => false) (errorOfExcept unsynced),
+    -- A row this build cannot read is a defect in the tool, and it must refuse
+    -- rather than fall back to reporting a write that may not have happened.
+    check "write seam: a row this build cannot read refuses"
+      malformed.toOption.isNone (errorOfExcept malformed),
+    check "write seam: and says it is a defect rather than a bad invocation"
+      (says malformed "defect in the release tool"),
+    -- The mechanism itself failing is not the same thing, and says so.
+    check "write seam: a mechanism that fails outright refuses"
+      thrown.toOption.isNone (errorOfExcept thrown),
+    check "write seam: and the refusal names the file it was writing"
+      (says thrown "dist/tl.spdx.json"),
+    check "write seam: and the directory it was writing into"
+      (says thrown "in .")]
+
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -3322,6 +3739,8 @@ def releaseToolTests : IO (List Outcome) := do
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
+    ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
+    ++ writeAcceptTests ++ (← writeSeamTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests
