@@ -729,12 +729,25 @@ private def documentTests : IO (List Outcome) := do
         (errorOf (BuildMetadata.parse "b" without) != errorOf (BuildMetadata.parse "b" blanked))]
   return outs
 
-/-- Deletion guard for the release tool's verdict-logic theorems, on the same
+/-- Deletion guard for every non-private release contract theorem, on the same
     reasoning as `pinnedVerdictLogicTheorems` in Tests/VerifyTests.lean: they
     carry no landmark by design, because landmarks guard the *product's* proved
-    claims and this is release administration. Naming them here makes retiring
-    one a compile error rather than a silent deletion. -/
+    claims and this is release administration. Private proof helpers are not
+    separate contracts: the public theorem statements contain the properties
+    they help prove, and may retain or replace that scaffolding freely. Naming
+    every public contract here makes retiring one a compile error rather than a
+    silent deletion. -/
 private def pinnedReleaseVerdictTheorems : Unit :=
+  let _ := @Release.Check.allHeld_iff_noFailures
+  let _ := @Release.metadataAccepts_iff
+  let _ := @Release.metadataFailures_isEmpty_iff
+  let _ := @Release.manifestAccepts_iff
+  let _ := @Release.manifestFailures_isEmpty_iff
+  let _ := @Release.identityAccepts_iff
+  let _ := @Release.auditPermits_iff
+  let _ := @Release.auditBlockers_isEmpty_iff
+  let _ := @Release.auditBlockers_partition
+  let _ := @Release.versionProblems_isEmpty_iff
   let _ := @Release.channelDecisions_eq
   let _ := @Release.channelDecisions_lookup
   ()
