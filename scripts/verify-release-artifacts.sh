@@ -111,7 +111,7 @@ verify_dir() {
   [ -d "$dir" ] || fail "'$dir' is not a directory. Pass the directory the release assets were downloaded into, then the asset names within it — for example 'scripts/verify-release-artifacts.sh ~/Downloads tl-linux-x64'."
   [ "$#" -gt 0 ] || usage
 
-  [ -f "$pin_file" ] || fail "release/identity.pin not found next to this script (looked at $pin_file) — without the pinned issuer and certificate identity a signature check would accept any valid Sigstore certificate, which is no check at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  [ -f "$pin_file" ] || fail "release/identity.pin not found next to this script (looked at $pin_file) — without the pinned issuer and certificate identity a signature check would accept any valid Sigstore certificate, which is no check at all. Regenerate it with 'tlrelease write-pin --identity release/identity.json --output identity.pin --output-dir release'."
   [ -r "$pin_file" ] || fail "release/identity.pin is not readable (looked at $pin_file). A pin that cannot be read is not a weaker check, it is no check; fix the permissions rather than verifying without it."
 
   # One opened descriptor for the whole file, so both lines come from a single
@@ -150,7 +150,7 @@ verify_dir() {
     || fail "could not read release/identity.pin to check its bytes (looked at $pin_file). A pin that cannot be read is not a weaker check, it is no check."
   pin_stray_count=$(printf '%s' "$pin_stray_count" | tr -d ' ')
   if [ "$pin_stray_count" -ne 0 ]; then
-    fail "release/identity.pin contains $pin_stray_count byte(s) outside printable ASCII — a carriage return from Windows line endings, or a NUL, are the usual causes. A NUL in particular vanishes on its way into a shell variable, so this check reads the file's bytes directly: it would otherwise be accepted here and refused by 'tlrelease check-pin', one pin with two answers. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+    fail "release/identity.pin contains $pin_stray_count byte(s) outside printable ASCII — a carriage return from Windows line endings, or a NUL, are the usual causes. A NUL in particular vanishes on its way into a shell variable, so this check reads the file's bytes directly: it would otherwise be accepted here and refused by 'tlrelease check-pin', one pin with two answers. Regenerate it with 'tlrelease write-pin --identity release/identity.json --output identity.pin --output-dir release'."
   fi
   pin_issuer=''
   pin_identity=''
@@ -166,8 +166,8 @@ verify_dir() {
   issuer=$pin_issuer
   identity=$pin_identity
 
-  [ -n "$issuer" ] || fail "release/identity.pin has no issuer on its first line — an empty issuer would not constrain the certificate at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
-  [ -n "$identity" ] || fail "release/identity.pin has no certificate identity expression on its second line — an empty expression matches every certificate, which is no check at all. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin'."
+  [ -n "$issuer" ] || fail "release/identity.pin has no issuer on its first line — an empty issuer would not constrain the certificate at all. Regenerate it with 'tlrelease write-pin --identity release/identity.json --output identity.pin --output-dir release'."
+  [ -n "$identity" ] || fail "release/identity.pin has no certificate identity expression on its second line — an empty expression matches every certificate, which is no check at all. Regenerate it with 'tlrelease write-pin --identity release/identity.json --output identity.pin --output-dir release'."
   # A third line is refused rather than ignored: a reader that skipped it could
   # be handed a second, different pin below the one it used. Both an empty
   # third line and trailing data without a newline are caught, because the two
@@ -195,7 +195,7 @@ verify_dir() {
     fail "release/identity.pin contains a byte outside printable ASCII — a carriage return from Windows line endings is the usual cause. The pin is passed to cosign verbatim, so it would silently match nothing; rewrite it with Unix line endings and ASCII only."
   fi
   if [ "$pin_terminated" -ne 1 ]; then
-    fail "release/identity.pin does not end with a newline, so its second line is truncated. Regenerate it with 'tlrelease write-pin release/identity.json release/identity.pin' rather than repairing it by hand: a partially written pin is not a weaker check, it is a check against an unknown expression."
+    fail "release/identity.pin does not end with a newline, so its second line is truncated. Regenerate it with 'tlrelease write-pin --identity release/identity.json --output identity.pin --output-dir release' rather than repairing it by hand: a partially written pin is not a weaker check, it is a check against an unknown expression."
   fi
   # Both anchors, not just the head. cosign matches unanchored, so a missing
   # `^` accepts a certificate whose identity merely *contains* the pinned one —

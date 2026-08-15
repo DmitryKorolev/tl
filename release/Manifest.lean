@@ -747,7 +747,7 @@ private def manifestOptions : List OptionSpec :=
    { name := "lake-manifest", takesValue := true },
    { name := "targets", takesValue := true },
    { name := "identity", takesValue := true },
-   { name := "output", takesValue := true }] ++ runContextOptions
+   outputOption, outputDirectoryOption] ++ runContextOptions
 
 /-- The basename of a path, for the one thing the manifest cannot describe:
     itself.
@@ -769,10 +769,12 @@ private structure ManifestArgs where
   lakeManifestPath : String
   targetsPath : String
   identityPath : String
-  output : String
+  base : Write.OutputDirectory
+  output : Write.OutputPath
   run : RunContext
 
 private def manifestArgs (options : Options) : Except String ManifestArgs := do
+  let (base, output) ← resolveOutput options
   return {
     dist := ← options.required "dist"
     tag := ← options.required "tag"
@@ -781,7 +783,7 @@ private def manifestArgs (options : Options) : Except String ManifestArgs := do
     lakeManifestPath := ← options.required "lake-manifest"
     targetsPath := ← options.required "targets"
     identityPath := ← options.required "identity"
-    output := ← options.required "output"
+    base, output
     run := ← runContextOf options }
 
 private def manifestDecision (args : ManifestArgs) : Decision String := do
@@ -797,7 +799,7 @@ private def manifestDecision (args : ManifestArgs) : Decision String := do
   -- Every describable file, hashed exactly once and carried. The Python hashed
   -- each binary three times: once against its leg's record, once for its target
   -- row, once for its asset row.
-  let describable := describableNames (baseName args.output) names
+  let describable := describableNames args.output.leaf.text names
   let digests ← ofIO (do
     let mut collected : Array (String × Sha256) := #[]
     for name in describable do
@@ -815,9 +817,11 @@ private def manifestDecision (args : ManifestArgs) : Decision String := do
   let manifest ← ofExcept (Manifest.of {
     version, facts, identity, targets, evidence, directory := digests })
   let document ← ofExcept (renderManifest manifest)
-  ofIO (writeFileAtomically args.output document)
+  let disclosure ← ofIO (writeEvidence args.base args.output document)
   let published := manifest.publishedTargets.length
-  return s!"wrote {args.output} — {manifest.assets.length} assets, {published} of {manifest.outcomes.length} targets published"
+  return disclosing
+    s!"wrote {args.output.render} in {args.base.path} — {manifest.assets.length} assets, {published} of {manifest.outcomes.length} targets published"
+    disclosure
 
 private def manifestCommand : Command :=
   optionCommand "manifest" "--dist <dir> --tag <vX.Y.Z> --commit <sha> …"
@@ -825,10 +829,10 @@ private def manifestCommand : Command :=
     ["--dist", "dist", "--tag", "v0.1.0", "--commit", "0123456789abcdef0123456789abcdef01234567",
      "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
      "--targets", "release/targets.json", "--identity", "release/identity.json",
-     "--output", "dist/release-manifest.json", "--outside-workflow"]
+     "--output", "release-manifest.json", "--output-dir", "dist", "--outside-workflow"]
     manifestOptions manifestArgs manifestDecision
     (usageArguments :=
-      "--dist <dir> --tag <vX.Y.Z> --commit <sha> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --targets <targets.json> --identity <identity.json> --output <path> (--workflow-ref <ref> --run-id <id> | --outside-workflow)")
+      "--dist <dir> --tag <vX.Y.Z> --commit <sha> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --targets <targets.json> --identity <identity.json> --output <name> [--output-dir <dir>] (--workflow-ref <ref> --run-id <id> | --outside-workflow)")
 
 private def verifyOptions : List OptionSpec :=
   [{ name := "dist", takesValue := true },

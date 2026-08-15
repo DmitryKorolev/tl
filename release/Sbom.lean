@@ -392,38 +392,58 @@ def renderSbomOfInputs (inputs : SbomInputs) : Except String String :=
 private def missingInputRemedy : String :=
   "The SBOM is derived from the files that fix the build, so without this one the document would understate what ships. Run it from the checkout being released, with paths relative to it."
 
+private structure SbomArgs where
+  version : String
+  toolchainPath : String
+  manifestPath : String
+  base : Write.OutputDirectory
+  output : Write.OutputPath
+
+private def sbomArgs (options : Options) : Except String SbomArgs := do
+  let version ← options.required "version"
+  let toolchainPath ← options.required "toolchain"
+  let manifestPath ← options.required "lake-manifest"
+  let (base, output) ← resolveOutput options
+  return { version, toolchainPath, manifestPath, base, output }
+
+/-- Read a file, adding what an absent input means to the refusal. -/
+private def readInput (path : String) : Decision String :=
+  ofIO do
+    match ← readTextFile path with
+    | .error message => return .error s!"{message}. {missingInputRemedy}"
+    | .ok text => return .ok text
+
+private def sbomDecision (args : SbomArgs) : Decision String := do
+  -- The version first: it is the argument an operator types, so a mistake in
+  -- it should not be reported as whichever file happened to be unreadable as
+  -- well.
+  let version ← ofExcept (parseReleaseVersion args.version)
+  let toolchainText ← readInput args.toolchainPath
+  let manifestText ← readInput args.manifestPath
+  let sbom ← ofExcept do
+    let toolchain ← parseToolchain args.toolchainPath toolchainText
+    let dependencies ← parseLakeManifest args.manifestPath manifestText
+    Sbom.of version toolchain dependencies
+  let document ← ofExcept (renderSbom sbom)
+  let disclosure ← ofIO (writeEvidence args.base args.output document)
+  return disclosing
+    s!"wrote {args.output.render} in {args.base.path} — {sbom.packages.length} packages for tl {sbom.version.render}"
+    disclosure
+
 private def sbomCommand : Command :=
-  positionalCommand "sbom" "<version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>"
+  optionCommand "sbom"
+    "--version <X.Y.Z> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> …"
     "Write the release's SPDX 2.3 SBOM, from the files that fix the build."
-    ["0.1.0", "lean-toolchain", "lake-manifest.json", "dist/tl.spdx.json"] 4 fun args => do
-    match args with
-    | [versionText, toolchainPath, manifestPath, outputPath] =>
-        -- The version first: it is the argument an operator types, so a
-        -- mistake in it should not be reported as whichever file happened to
-        -- be unreadable as well.
-        match parseReleaseVersion versionText with
-        | .error message => refuse s!"tlrelease sbom: {message}"
-        | .ok version =>
-            match ← readTextFile toolchainPath, ← readTextFile manifestPath with
-            | .error message, _ => refuse s!"tlrelease sbom: {message}. {missingInputRemedy}"
-            | _, .error message => refuse s!"tlrelease sbom: {message}. {missingInputRemedy}"
-            | .ok toolchainText, .ok manifestText =>
-                let assembled := do
-                  let toolchain ← parseToolchain toolchainPath toolchainText
-                  let dependencies ← parseLakeManifest manifestPath manifestText
-                  Sbom.of version toolchain dependencies
-                match assembled with
-                | .error message => refuse s!"tlrelease sbom: {message}"
-                | .ok sbom =>
-                    match renderSbom sbom with
-                    | .error message => refuse s!"tlrelease sbom: {message}"
-                    | .ok document =>
-                        match ← writeFileAtomically outputPath document with
-                        | .error message => refuse s!"tlrelease sbom: {message}"
-                        | .ok () =>
-                            IO.println s!"tlrelease sbom: wrote {outputPath} — {sbom.packages.length} packages for tl {sbom.version.render}"
-                            return 0
-    | _ => wrongArity
+    ["--version", "0.1.0", "--toolchain", "lean-toolchain",
+     "--lake-manifest", "lake-manifest.json", "--output", "tl.spdx.json",
+     "--output-dir", "dist"]
+    [{ name := "version", takesValue := true },
+     { name := "toolchain", takesValue := true },
+     { name := "lake-manifest", takesValue := true },
+     outputOption, outputDirectoryOption]
+    sbomArgs sbomDecision
+    (usageArguments :=
+      "--version <X.Y.Z> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --output <name> [--output-dir <dir>]")
 
 def sbomCommands : List Command := [sbomCommand]
 

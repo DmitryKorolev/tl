@@ -82,7 +82,7 @@ lean_lib Tooling where
     escape hatch. -/
 lean_lib ReleaseCore where
   roots := #[`release.Check, `release.Command, `release.Json, `release.Model,
-    `release.Boundary, `release.Write,
+    `release.Boundary, `release.Write, `release.Sys,
     `release.Certificate, `release.Consistency, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
     `release.Cli]
@@ -93,6 +93,7 @@ lean_lib ReleaseCore where
 @[default_target] lean_exe tlrelease where
   root := `release.Main
   needs := #[ReleaseCore]
+  moreLinkObjs := #[`@/tlsys.o]
 
 /-- Minimal test supervisor: status zero is insufficient unless the worker
     reaches the assertion harness's final completion marker. -/

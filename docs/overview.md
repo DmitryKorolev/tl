@@ -523,6 +523,23 @@ can make this workflow sign, with an identity every verifier accepts, whatever
 commit that tag points at; the ancestry check in the `sign` job is a backstop
 that sees what the tag points at and never who pushed it.
 
+**The release-evidence writer trusts the directory it was handed.** Release
+evidence is written through a directory capability (ADR-0028): a writing command
+takes `--output-dir`, the native primitive opens that base, checks it belongs to
+the effective uid, and walks every component beneath it no-follow and
+ownership-checked, so a name cannot climb out of it and a planted link cannot
+redirect the bytes. What that does not establish, and cannot, is that the base
+stays what it was: opening it *follows* the symlink by which an operator
+selected it, deliberately — a macOS `/var` temporary directory, a symlinked
+home and most container mounts all are one — and every later step then runs
+against descriptors rather than paths, so an ancestor renamed mid-run cannot
+move the write. A process that can already mutate the accepted directories
+concurrently can still interfere after their descriptors were accepted; that is
+a process with the operator's own access, and the boundary here is against a
+misconfigured or hostile *path*, not against a peer with the same authority.
+Distinct from ADR-0015 §6's product discipline, which anchors on `.tl` rather
+than on an operator-named directory.
+
 **The release workflow has never run.** `.github/workflows/release.yml` is
 gated, linted and drift-guarded, but no tagged push has ever executed it, so
 every claim about what it *does* — as opposed to what it says — is carried

@@ -726,7 +726,8 @@ jobs:
             --runner-arch "${RUNNER_ARCH}" \
             --container-image "${CONTAINER_IMAGE}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --output "dist/build-metadata-${{ matrix.target }}.json"
+            --output-dir dist \
+            --output "build-metadata-${{ matrix.target }}.json"
           cat "dist/build-metadata-${{ matrix.target }}.json"
         env:
           CONTAINER_IMAGE: ${{ matrix.container && env.GLIBC_FLOOR_IMAGE || '' }}
@@ -952,9 +953,12 @@ jobs:
           # The two files that fix the build, named at the call site: the SBOM
           # is a function of them, so which ones it read is not a detail to
           # discover by reading the generator.
-          ./tool/tlrelease sbom "${GITHUB_REF_NAME#v}" \
-            lean-toolchain lake-manifest.json \
-            "dist/tl-${GITHUB_REF_NAME#v}.spdx.json"
+          ./tool/tlrelease sbom \
+            --version "${GITHUB_REF_NAME#v}" \
+            --toolchain lean-toolchain \
+            --lake-manifest lake-manifest.json \
+            --output-dir dist \
+            --output "tl-${GITHUB_REF_NAME#v}.spdx.json"
           ls -l dist
 
       # The canonical description of this release, written once and signed with
@@ -982,7 +986,8 @@ jobs:
             --identity release/identity.json \
             --workflow-ref "${GITHUB_WORKFLOW_REF}" \
             --run-id "${GITHUB_RUN_ID}" \
-            --output dist/release-manifest.json
+            --output-dir dist \
+            --output release-manifest.json
           cat dist/release-manifest.json
 
       - name: build SHA256SUMS

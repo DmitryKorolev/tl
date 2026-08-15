@@ -7,7 +7,7 @@ modules needs this type to describe what it contributes. Keeping the type here
 and the table there lets a new decision be a new module plus one name in the
 table, with nothing importing backwards.
 -/
-import release.Write
+import release.Sys
 
 namespace Release
 
@@ -85,46 +85,6 @@ def readTextFile (path : String) : IO (Except String String) := do
     return .ok (← IO.FS.readFile path)
   catch error =>
     return .error s!"could not read {path}: {error}"
-
-/-- Write a file, with a failed write as a refusal rather than an exception and
-    without leaving a partial file where a complete one had been.
-
-    Written beside the target and renamed over it: `rename` within a directory
-    is atomic, so a reader sees either the old contents or the new. Every caller
-    here writes something another tool then trusts — the signing pin the shell
-    verifier reads, and an SBOM that is hashed into `SHA256SUMS` and signed — and
-    a truncated write leaves behind something that still parses as a file, which
-    the next reader has no way to tell from a complete one.
-
-    An unreadable directory or a full disk is a refusal carrying the path, never
-    an escaping backtrace.
-
-    The staging path is derived from the target rather than randomised, so it is
-    predictable, and a write through it would follow whatever is already there —
-    a symbolic link pointing somewhere else, or another run's half-written file.
-    An existing one is therefore refused rather than written through. What
-    remains is the window between that check and the write, which this cannot
-    close: Lean's `IO.FS` offers no exclusive, no-follow create, and `release/`
-    has no access to the native shim. Both callers write into a directory the
-    same process has just been given — a release job's workspace, or a checkout
-    the operator owns — so the residue is a race an attacker who already has
-    that directory would win more directly.
-
-    This is the interim writer. `Release.Write` states what replaces it — an
-    operator-named directory, a validated component list, and a typed
-    observation instead of `IO Unit` — and the native mechanism that performs it
-    lands against that model. -/
-def writeFileAtomically (path : String) (contents : String) : IO (Except String Unit) := do
-  let temporary := path ++ ".tmp"
-  if ← System.FilePath.pathExists temporary then
-    return .error s!"could not write {path}: {temporary} already exists. The new contents are staged there and renamed over the target, so writing through it would follow whatever it is — a link to somewhere else, or a half-written file another run left behind. Remove it once you know which, rather than letting this write decide."
-  try
-    IO.FS.writeFile temporary contents
-    IO.FS.rename temporary path
-    return .ok ()
-  catch error =>
-    try IO.FS.removeFile temporary catch _ => pure ()
-    return .error s!"could not write {path}: {error}"
 
 /-- Report a refusal and produce the refusal status. Every decision in this
     tool ends here or at `0`; there is no path that reports a problem and then
@@ -338,6 +298,58 @@ def Options.describing (options : Options) (name : String) : String :=
 /-- Whether a declared valueless option was given. -/
 def Options.given (options : Options) (name : String) : Bool :=
   options.present.contains name
+
+/-! ## Writing release evidence
+
+Every file this tool writes is one another tool then trusts: the signing pin the
+standalone verifier reads, an SBOM and a manifest that are hashed into
+`SHA256SUMS` and signed, a build leg's record the sign job holds the artifact to.
+A partial one still parses, so the next reader has no way to tell it from a
+complete one — which is why there is one writer, and why it stages beside the
+target and renames.
+
+Where it may write is a value rather than a string a caller assembled. Every
+writing command takes the same `--output-dir`, defaulting to the working
+directory, and its output *name* is a validated relative component list: nothing
+here discovers a repository root, and no name can climb out of the directory the
+operator granted. -/
+
+/-- The option every writing command declares, so the answer to "where does this
+    land" is the same question everywhere and is asked explicitly. -/
+def outputDirectoryOption : OptionSpec := { name := "output-dir", takesValue := true }
+
+/-- The option naming the file, relative to that directory. -/
+def outputOption : OptionSpec := { name := "output", takesValue := true }
+
+/-- Where a writing command writes, and what it calls the file.
+
+    One implementation, so the four writing commands cannot drift into four
+    readings of the same two options — and so "no `--output-dir`" means the
+    working directory in all of them rather than in three of them. -/
+def resolveOutput (options : Options) :
+    Except String (Write.OutputDirectory × Write.OutputPath) := do
+  let base ← match options.value? "output-dir" with
+    | none => .ok Write.OutputDirectory.working
+    | some text => Write.OutputDirectory.parse "--output-dir" text
+  let path ← Write.OutputPath.parse "--output" (← options.required "output")
+  return (base, path)
+
+/-- Write release evidence and read what the mechanism observed.
+
+    A refusal carries what failed, that the destination still holds what it held,
+    and what is at the staging path — the three things an operator can act on.
+    Success may carry a disclosure: the replacement happened but the directory
+    entry's flush did not, which every later open in this run is unaffected by
+    and which is therefore reported rather than raised. -/
+def writeEvidence (base : Write.OutputDirectory) (path : Write.OutputPath)
+    (contents : String) : IO (Except String (Option String)) :=
+  Write.through Sys.mechanism base path contents.toUTF8
+
+/-- What a writing command adds to what it established, when there is anything
+    to add. Rendered here so one disclosure reads the same from every command. -/
+def disclosing (established : String) : Option String → String
+  | none => established
+  | some disclosure => s!"{established} — {disclosure}"
 
 /-- Everything a command settles before it decides anything: the option
     declaration applied to an argv, the refusal of stray positional words, and

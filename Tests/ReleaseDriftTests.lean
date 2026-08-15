@@ -21,12 +21,15 @@ neither is part of the product. What they protect is the thing a reader of the
 documentation, or of one policy script, cannot check for themselves.
 -/
 import Tests.Harness
+import Verify.Environment
 import release.Cli
 
 namespace Tl.Tests
 
+open Lean
 open System (FilePath)
 open Release
+open Tl.Verify
 
 /-! ## Reading the tree -/
 
@@ -258,9 +261,156 @@ private def formattedErrnoFailures (path : String) (text : String) : List String
       some s!"  {path}:{number}: reads a native error class out of formatted text — {line.trimAscii}"
     else none
 
+
+/-! ## The release scope's native boundary
+
+`release/` may reach exactly one native primitive, and ADR-0028 makes that a
+registry rather than a habit: a second FFI declaration, an extra linker input,
+or a build recipe reading a different source is a widening of the release
+surface, and each of those is invisible to the trust verifier's import audit —
+it reads Lean imports and cannot observe a linked object.
+
+Three separate facts, because checking one leaves a substitution gap in the
+others. What the release environment *declares*; what the executable *links*;
+and what the recipe *compiles* from. -/
+
+/-- One extern declaration: where it is, what it is called, which native symbol
+    it binds, and its complete Lean type. -/
+private structure ExternRow where
+  «module» : Name
+  name : Name
+  symbols : List String
+  signature : String
+  deriving DecidableEq, Repr
+
+private def externSymbols (data : Lean.ExternAttrData) : List String :=
+  data.entries.filterMap fun entry =>
+    match entry with
+    | .standard _ symbol => some symbol
+    | .inline _ pattern => some pattern
+    | .adhoc backend => some s!"adhoc:{backend}"
+    | .opaque => some "opaque"
+
+/-- Every extern declaration defined by one of `modules`, read out of the loaded
+    environment rather than out of the sources: what the executable binds is
+    what was compiled, and a declaration reached through an import this file did
+    not think to read would be invisible to a source scan. -/
+private def externRowsOf (env : Environment) (modules : Array Name) : Array ExternRow :=
+  let imported := env.allImportedModuleNames
+  let selected := modules.foldl (·.insert ·) (∅ : Std.HashSet Name)
+  let rows := env.constants.fold (init := #[]) fun rows name info =>
+    match env.getModuleIdxFor? name with
+    | none => rows
+    | some idx =>
+      if h : idx.toNat < imported.size then
+        let definingModule := imported[idx.toNat]
+        if selected.contains definingModule then
+          match Lean.getExternAttrData? env name with
+          | none => rows
+          | some data =>
+              rows.push {
+                «module» := definingModule
+                name := name
+                symbols := externSymbols data
+                signature := toString info.type }
+        else rows
+      else rows
+  rows.qsort fun left right => Name.lt left.name right.name
+
+/-- The complete release FFI registry. One row, and widening it is a deliberate
+    change to this list, ADR-0019 and ADR-0028 together — not a new
+    `@[extern]` somebody added to a release module. -/
+private def pinnedReleaseExterns : List ExternRow :=
+  [{ «module» := `release.Sys, name := `Release.Sys.releaseWriteAtomic,
+     symbols := ["tl_release_write_atomic"],
+     signature :=
+       "([mdata borrowed:1 String]) -> ([mdata borrowed:1 Array.{0} String]) -> " ++
+       "([mdata borrowed:1 ByteArray]) -> (IO (Array.{0} UInt32))" }]
+
+/-- A symbol belonging to the product's own primitives. Release administration
+    is not part of the product TCB, so a release binding to one of these is that
+    boundary crossed in the one direction nothing else observes. -/
+private def isProductSymbol (symbol : String) : Bool := symbol.startsWith "tl_sys_"
+
+private unsafe def releaseExternRows : IO (List Outcome) := do
+  let release ← loadScope auditLayout .release
+  let modules ← release.projectModules
+  let rows := externRowsOf release.env modules
+  let offRegistry := rows.toList.filter fun row => !pinnedReleaseExterns.contains row
+  let productBound := rows.toList.filter fun row => row.symbols.any isProductSymbol
+  let elsewhere := rows.toList.filter fun row => row.«module» != `release.Sys
+  return [
+    check "release natives: the scan read the release scope's modules"
+      (modules.size ≥ 10) s!"the loaded release scope had {modules.size} project module(s)",
+    checkEq "release natives: the release scope declares exactly the pinned externs"
+      rows.toList pinnedReleaseExterns,
+    check "release natives: no extern outside the registry"
+      offRegistry.isEmpty
+      (s!"{repr offRegistry}\nAn FFI declaration is a widening of the release surface the trust verifier cannot see: it audits Lean imports and cannot observe a linked symbol. Add it to pinnedReleaseExterns, state its release contract, and amend ADR-0019 in the same change."),
+    check "release natives: no release binding to a product primitive"
+      productBound.isEmpty
+      (s!"{repr productBound}\nrelease/ is not part of the product TCB. Bind a tl_release_* symbol, or move the code that needs the product under Tl/."),
+    check "release natives: every extern lives in the one module that is the wire"
+      elsewhere.isEmpty
+      (s!"{repr elsewhere}\nrelease/Sys.lean is release administration's whole native boundary; a binding anywhere else is a second one nothing reads together with the first.")]
+
+/-! ### What the executable links, and what the recipe compiles
+
+Read from `lakefile.lean` lexically, because that is where both facts are
+written. Pinning only the source bindings would leave the object free to be
+swapped; pinning only the object would leave the recipe free to compile it from
+somewhere else. -/
+
+private def linesOf (text : String) : List String := text.splitOn "\n"
+
+/-- The lines that actually attach a native object, which is the assignment and
+    not the sentence in the header explaining why it is the one Lake still
+    supports. -/
+private def linkObjectLines (lakefile : String) : List String :=
+  (linesOf lakefile).filterMap fun line =>
+    let line := line.trimAscii.toString
+    if line.startsWith "moreLinkObjs" then some line else none
+
+private def occurrences (text needle : String) : Nat := (text.splitOn needle).length - 1
+
+private def nativeBuildRows (lakefile : String) : List Outcome :=
+  let objects := linkObjectLines lakefile
+  [ -- Every executable that links a native object links the same one, and it is
+    -- the in-repository shim ADR-0019 records.
+    check "release natives: every linked native object is the in-repository shim"
+      (objects.all fun line => line == "moreLinkObjs := #[`@/tlsys.o]")
+      s!"{objects}",
+    check "release natives: the three executables that need the shim link it"
+      (objects.length == 3) s!"{objects.length} target(s) declare moreLinkObjs: {objects}",
+    -- The recipe. One custom target, compiling exactly one source.
+    check "release natives: the shim is compiled from exactly ffi/tlsys.c"
+      (occurrences lakefile "inputTextFile <| pkg.dir / \"ffi\" / \"tlsys.c\"" == 1)
+      "the tlsys.o recipe must read exactly one source, and it is ffi/tlsys.c",
+    check "release natives: there is one custom native target"
+      (occurrences lakefile "\ntarget " == 1)
+      "a second custom target is a second native input; pin it here and amend ADR-0019",
+    check "release natives: and it is tlsys.o"
+      (occurrences lakefile "\ntarget tlsys.o pkg : System.FilePath := do" == 1)
+      "the custom target's name and shape are part of what the release links",
+    -- `extern_lib` is the other way to attach native code, and it is the one
+    -- that would not show up as a `moreLinkObjs` line at all.
+    check "release natives: no external library is attached another way"
+      (occurrences lakefile "extern_lib " == 0)
+      "extern_lib attaches native code without a moreLinkObjs line, so it would pass every row above"]
+
 /-! ## The rows -/
 
-def releaseDriftTests : IO (List Outcome) := do
+unsafe def releaseDriftTests : IO (List Outcome) := do
+  let nativeRows ←
+    match ← (findSysroot : IO FilePath).toBaseIO with
+    | .error _ =>
+        pure [check "release natives: extern registry skipped — no Lean toolchain on this host" true]
+    | .ok sysroot => do
+        initSearchPath sysroot
+        try releaseExternRows
+        catch error =>
+          pure [check "release natives: the release scope can be loaded" false
+            s!"{error}; run `lake exe tltest` from the repository root after `lake build`"]
   let documents ← filesUnder "." ["md", "sh", "yml"]
   let mut documentFailures : List String := []
   let mut documented := 0
@@ -300,7 +450,9 @@ def releaseDriftTests : IO (List Outcome) := do
       [check s!"release policy: {path} decides a missing tool through rc_tool_gate alone"
         failures.isEmpty (String.intercalate "\n" failures ++
           "\nrc_tool_gate in scripts/lib/release-common.sh crosses the three inputs — present or absent, strict or not, passed or failed — and its selftest matrix is what proves the crossing. A branch written here is a second answer to the same question, tested by nothing.")]
-  return documentRows ++ formattedErrnoRows ++ hygieneRows ++ [
+  let lakefile ← IO.FS.readFile "lakefile.lean"
+  return documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
+    ++ hygieneRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
     -- leave alone. Without these a detector that matched nothing would report
     -- the same clean result as a release layer that classifies nothing.

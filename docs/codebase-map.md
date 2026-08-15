@@ -707,12 +707,19 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   filesystem that can produce it, and the outcome's
                         --   predicted destination/staging effects are what a
                         --   real fault test compares the directory against
-  Sys.lean              --   (lands with the native writer) the release-prefixed
-                        --   native binding. ADR-0028 requires an exact
-                        --   extern/signature and linker/build-recipe registry
-                        --   alongside it; the capability, component-list paths
-                        --   and typed observations it reports are Write.lean's
-                        --   above. Imports no `Tl.*`
+  Sys.lean              --   release administration's whole native boundary: one
+                        --   `@[extern]`, binding `tl_release_write_atomic` in
+                        --   ffi/tlsys.c. Deliberately not a `tl_sys_*` symbol —
+                        --   release/ is outside the product TCB, and the trust
+                        --   verifier audits Lean imports and cannot observe a
+                        --   linked symbol, so Tests/ReleaseDriftTests pins the
+                        --   declaring module, symbol and full Lean signature
+                        --   from the loaded release environment, plus the
+                        --   executable's linker inputs and the recipe that
+                        --   compiles the shim from exactly ffi/tlsys.c. The
+                        --   capability, component-list path and typed
+                        --   observations it reports are Write.lean's above.
+                        --   Imports no `Tl.*`
   Json.lean             --   typed access (every read returns Except with the
                         --   document and path in the message, where the Python
                         --   it replaces raised tracebacks) and deterministic

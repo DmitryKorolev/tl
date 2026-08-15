@@ -810,14 +810,16 @@ private def pinCommandTests : IO (List Outcome) := do
   let realIdentity ← IO.FS.readFile "release/identity.json"
   IO.FS.writeFile identityPath realIdentity
   let run := runCommand
-  let (writeStatus, writeOut, _) ← run "write-pin" [identityPath, pinPath]
+  let writePin (identity : String) (name : String) (dir : String) :=
+    run "write-pin" ["--identity", identity, "--output", name, "--output-dir", dir]
+  let (writeStatus, writeOut, _) ← writePin identityPath "identity.pin" base.toString
   let written ← IO.FS.readFile pinPath
   let (checkStatus, checkOut, _) ← run "check-pin" [identityPath, pinPath]
   -- Drift, which is the whole reason check-pin exists.
   IO.FS.writeFile pinPath "https://example.invalid\n^x$\n"
   let (driftStatus, _, driftErr) ← run "check-pin" [identityPath, pinPath]
   let (missingIdentity, _, missingIdentityErr) ←
-    run "write-pin" [(base / "absent.json").toString, pinPath]
+    writePin (base / "absent.json").toString "identity.pin" base.toString
   let (missingPin, _, missingPinErr) ← run "check-pin" [identityPath, (base / "absent.pin").toString]
   -- An identity anchored at the head but not the tail: the generator must
   -- refuse rather than write a pin the verifier would reject. The tail is the
@@ -827,7 +829,7 @@ private def pinCommandTests : IO (List Outcome) := do
   IO.FS.writeFile badIdentityPath
     "{\"repository\":\"a/b\",\"npmPackage\":\"@a/b\",\"releaseWorkflow\":\"w\",\"certificateOidcIssuer\":\"https://i\",\"certificateIdentityRegexp\":\"^https://github.com/x\"}"
   let unwrittenPath := (base / "never.pin").toString
-  let (badStatus, _, badErr) ← run "write-pin" [badIdentityPath, unwrittenPath]
+  let (badStatus, _, badErr) ← writePin badIdentityPath "never.pin" base.toString
   let neverWritten := !(← System.FilePath.pathExists unwrittenPath)
   -- The same malformed identity through check-pin. Without its own refusal
   -- there, an unusable release/identity.json is reported as a drifted pin —
@@ -836,11 +838,18 @@ private def pinCommandTests : IO (List Outcome) := do
   let (badCheckStatus, _, badCheckErr) ← run "check-pin" [badIdentityPath, pinPath]
   -- Writing into a directory that does not exist: a refusal, not a backtrace.
   let (unwritableStatus, _, unwritableErr) ←
-    run "write-pin" [identityPath, (base / "no-such-dir" / "p.pin").toString]
+    writePin identityPath "p.pin" (base / "no-such-dir").toString
+  -- The two boundary refusals, at the usage layer rather than the filesystem:
+  -- a name that would leave the granted directory never reaches the mechanism.
+  let (escapingStatus, _, escapingErr) ← writePin identityPath "../escaped.pin" base.toString
+  let (absoluteStatus, _, absoluteErr) ←
+    writePin identityPath (base / "absolute.pin").toString base.toString
+  let escapedAbsent := !(← System.FilePath.pathExists (base.parent.getD base / "escaped.pin"))
   IO.FS.removeDirAll base
   return [
     checkEq "pin command: write-pin succeeds against the committed identity" writeStatus 0,
-    check "pin command: write-pin says where it wrote" (contains writeOut pinPath) writeOut,
+    check "pin command: write-pin says where it wrote"
+      (contains writeOut "identity.pin" && contains writeOut base.toString) writeOut,
     checkEq "pin command: what it wrote is what renderPin produces"
       written (okOr "<refused>" (Identity.parse "i" realIdentity >>= renderPin)),
     checkEq "pin command: check-pin accepts the pin write-pin just wrote" checkStatus 0,
@@ -866,10 +875,187 @@ private def pinCommandTests : IO (List Outcome) := do
     check "pin command: an unusable identity is reported as such, not as drift"
       (contains badCheckErr "not anchored at $" && !contains badCheckErr "wrong identity")
       badCheckErr,
-    checkEq "pin command: an unwritable destination is a refusal, not an exception"
+    checkEq "pin command: an output directory that does not exist is a refusal, not an exception"
       unwritableStatus 1,
-    check "pin command: an unwritable destination names the path"
-      (contains unwritableErr "could not write") unwritableErr]
+    check "pin command: and it names the phase that could not open it"
+      (contains unwritableErr "opening the output directory" && contains unwritableErr "ENOENT")
+      unwritableErr,
+    -- The granted directory is the whole of where this may write, so a name
+    -- that climbs out of it is refused before anything is opened.
+    checkEq "pin command: an output name climbing out of the directory is a usage error"
+      escapingStatus 2,
+    check "pin command: and the refusal says why '..' is not a component"
+      (contains escapingErr "'..' is not an output component") escapingErr,
+    check "pin command: nothing was written outside the granted directory" escapedAbsent
+      "write-pin created a file above the directory it was given",
+    checkEq "pin command: an absolute output name is a usage error" absoluteStatus 2,
+    check "pin command: and the refusal says --output-dir is what decides where"
+      (contains absoluteErr "absolute path") absoluteErr]
+
+/-! ## The native writer, through a public command
+
+`Release.Write`'s fault matrix is the mechanism's oracle: it enumerates every
+phase against injected rows. These rows are the other half — the real primitive
+against a real directory, for the phases a filesystem can actually be arranged
+to produce. What each one pins is what ADR-0028 says the write leaves behind:
+the destination's bytes, and whether the staging sibling is still there.
+
+`write-pin` is the vehicle because its input is one small committed file, so a
+row here is about the write rather than about assembling a document. -/
+
+private def writeCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let identityPath := (base / "identity.json").toString
+  IO.FS.writeFile identityPath (← IO.FS.readFile "release/identity.json")
+  let expected := okOr "<refused>"
+    (Identity.parse "i" (← IO.FS.readFile identityPath) >>= renderPin)
+  let writeInto (dir : String) (name : String) :=
+    runCommand "write-pin" ["--identity", identityPath, "--output", name, "--output-dir", dir]
+  let present (path : System.FilePath) : IO Bool := do
+    -- `pathExists` follows links, so a dangling one reads as absent. These rows
+    -- are about what is *at* the path, which is what the exclusive create meets.
+    match ← (IO.FS.Handle.mk path IO.FS.Mode.read).toBaseIO with
+    | .ok _ => return true
+    | .error _ => return (← path.isDir) || (← (IO.Process.output
+        { cmd := "test", args := #["-L", path.toString] }).map (·.exitCode == 0))
+  -- The ordinary case, and the one thing every other row is a deviation from.
+  let plain := base / "plain"
+  IO.FS.createDir plain
+  let (plainStatus, plainOut, plainErr) ← writeInto plain.toString "identity.pin"
+  let plainWritten ← IO.FS.readFile (plain / "identity.pin")
+  let plainNoStaging := !(← present (plain / "identity.pin.tmp"))
+  -- A nested name: every component but the last is descended into, no-follow.
+  let nested := base / "nested"
+  IO.FS.createDirAll (nested / "inner")
+  let (nestedStatus, _, nestedErr) ← writeInto nested.toString "inner/identity.pin"
+  let nestedWritten ← IO.FS.readFile (nested / "inner" / "identity.pin")
+  -- Replacement: the destination already holds something, and ends up holding
+  -- the new bytes rather than a concatenation or a truncation.
+  let replaced := base / "replaced"
+  IO.FS.createDir replaced
+  IO.FS.writeFile (replaced / "identity.pin") "an older pin that is longer than the new one\n"
+  let (replacedStatus, _, replacedErr) ← writeInto replaced.toString "identity.pin"
+  let replacedWritten ← IO.FS.readFile (replaced / "identity.pin")
+  -- A directory in the name that does not exist. Nothing here creates
+  -- directories: a name whose parent is missing is a refusal, not a mkdir.
+  let (missingDirStatus, _, missingDirErr) ← writeInto plain.toString "absent/identity.pin"
+  -- A regular file where a directory component was expected.
+  let notDir := base / "notdir"
+  IO.FS.createDir notDir
+  IO.FS.writeFile (notDir / "inner") "a file, not a directory\n"
+  let (notDirStatus, _, notDirErr) ← writeInto notDir.toString "inner/identity.pin"
+  -- A symbolic link as a directory component. Refused rather than followed:
+  -- following it would put release evidence outside the granted directory,
+  -- which is the one thing the anchored write exists to prevent.
+  let linked := base / "linked"
+  IO.FS.createDirAll (linked / "real")
+  let elsewhere := base / "elsewhere"
+  IO.FS.createDir elsewhere
+  let _ ← IO.Process.output
+    { cmd := "ln", args := #["-s", elsewhere.toString, (linked / "inner").toString] }
+  let (linkedStatus, _, linkedErr) ← writeInto linked.toString "inner/identity.pin"
+  let linkTargetEmpty := !(← present (elsewhere / "identity.pin"))
+  -- Something already at the staging path. It is created exclusively, so the
+  -- write refuses before a byte is written and leaves what was there for
+  -- whoever has to explain it.
+  let occupied := base / "occupied"
+  IO.FS.createDir occupied
+  IO.FS.writeFile (occupied / "identity.pin.tmp") "an earlier run left this behind\n"
+  let (occupiedStatus, _, occupiedErr) ← writeInto occupied.toString "identity.pin"
+  let occupiedUntouched :=
+    (← IO.FS.readFile (occupied / "identity.pin.tmp")) == "an earlier run left this behind\n"
+  let occupiedNotWritten := !(← present (occupied / "identity.pin"))
+  -- A *dangling* symbolic link at the staging path. This is the one an
+  -- existence check cannot see, and the reason the create is exclusive rather
+  -- than preceded by a look.
+  let dangling := base / "dangling"
+  IO.FS.createDir dangling
+  let _ ← IO.Process.output
+    { cmd := "ln", args := #["-s", (dangling / "nothing").toString,
+      (dangling / "identity.pin.tmp").toString] }
+  let (danglingStatus, _, danglingErr) ← writeInto dangling.toString "identity.pin"
+  let danglingTargetAbsent := !(← present (dangling / "nothing"))
+  -- And a staging link that points at something real, which a write through
+  -- would have overwritten.
+  let aimed := base / "aimed"
+  IO.FS.createDir aimed
+  IO.FS.writeFile (aimed / "target") "the file a followed link would have eaten\n"
+  let _ ← IO.Process.output
+    { cmd := "ln", args := #["-s", (aimed / "target").toString,
+      (aimed / "identity.pin.tmp").toString] }
+  let (aimedStatus, _, aimedErr) ← writeInto aimed.toString "identity.pin"
+  let aimedTargetIntact :=
+    (← IO.FS.readFile (aimed / "target")) == "the file a followed link would have eaten\n"
+  -- A destination that is a directory: the staging file is written in full and
+  -- the rename fails. This is the arm that has to clean up after itself — a
+  -- stray `<name>.tmp` beside a signed asset set is a file nothing describes.
+  let blocked := base / "blocked"
+  IO.FS.createDir blocked
+  IO.FS.createDir (blocked / "identity.pin")
+  let (blockedStatus, _, blockedErr) ← writeInto blocked.toString "identity.pin"
+  let blockedCleanedUp := !(← present (blocked / "identity.pin.tmp"))
+  IO.FS.removeDirAll base
+  return [
+    check "write command: an ordinary write succeeds" (plainStatus == 0) plainErr,
+    checkEq "write command: the destination holds exactly the bytes" plainWritten expected,
+    check "write command: and no staging file survives it" plainNoStaging
+      "a staging sibling was left beside a completed write",
+    check "write command: it says the name and the directory it wrote into"
+      (contains plainOut "identity.pin" && contains plainOut plain.toString) plainOut,
+    check "write command: a nested output name is written beneath the directory"
+      (nestedStatus == 0) nestedErr,
+    checkEq "write command: and holds the bytes" nestedWritten expected,
+    check "write command: an existing destination is replaced" (replacedStatus == 0) replacedErr,
+    checkEq "write command: and holds only the new bytes" replacedWritten expected,
+    -- Every refusal below names its phase, because the phase is what says which
+    -- thing to look at.
+    checkEq "write command: a missing directory in the name is a refusal" missingDirStatus 1,
+    check "write command: and names the walk phase and ENOENT"
+      (contains missingDirErr "opening a directory beneath" && contains missingDirErr "ENOENT")
+      missingDirErr,
+    checkEq "write command: a regular file where a directory belongs is a refusal" notDirStatus 1,
+    check "write command: and names it as not a directory"
+      (contains notDirErr "ENOTDIR") notDirErr,
+    checkEq "write command: a symlinked directory component is a refusal" linkedStatus 1,
+    check "write command: and says links are refused rather than followed"
+      (contains linkedErr "refused rather than followed") linkedErr,
+    check "write command: nothing was written through the link" linkTargetEmpty
+      "the write followed a symbolic link out of the granted directory",
+    checkEq "write command: an occupied staging path is a refusal" occupiedStatus 1,
+    check "write command: and names the create phase and EEXIST"
+      (contains occupiedErr "creating the staging file" && contains occupiedErr "EEXIST")
+      occupiedErr,
+    check "write command: it writes through nothing it did not create" occupiedUntouched
+      "the command wrote through a file that was already at the staging path",
+    check "write command: and produces no destination when it refuses to stage"
+      occupiedNotWritten "a file appeared despite the refusal",
+    -- The refusal must not remove what it did not create: an occupied staging
+    -- path is evidence of an earlier run, and this call is not the one that
+    -- gets to decide it is rubbish.
+    check "write command: a refused create leaves the occupant for someone to explain"
+      (contains occupiedErr "Nothing was left behind") occupiedErr,
+    checkEq "write command: a dangling link at the staging path is a refusal" danglingStatus 1,
+    check "write command: and it is EEXIST rather than a followed create"
+      (contains danglingErr "EEXIST") danglingErr,
+    check "write command: nothing was created at the dangling link's target"
+      danglingTargetAbsent "the exclusive create followed a dangling symbolic link",
+    checkEq "write command: a staging link aimed at a real file is a refusal" aimedStatus 1,
+    check "write command: and its target is untouched" aimedTargetIntact
+      "the write followed a symbolic link at the staging path",
+    check "write command: an aimed staging link names EEXIST too"
+      (contains aimedErr "EEXIST") aimedErr,
+    checkEq "write command: a destination that is a directory is a refusal" blockedStatus 1,
+    check "write command: and names the rename phase"
+      (contains blockedErr "renaming the staging file") blockedErr,
+    -- The cleanup half: this invocation created the sibling, so this invocation
+    -- removes it.
+    check "write command: a failed rename removes the sibling it created" blockedCleanedUp
+      "a staging sibling survived a write that refused after creating it",
+    check "write command: and the refusal says so" (contains blockedErr "was removed") blockedErr,
+    check "write command: every refusal says the destination is unchanged"
+      ([missingDirErr, notDirErr, linkedErr, occupiedErr, danglingErr, aimedErr,
+        blockedErr].all fun message => contains message "still holds what it held")
+      "a refusal did not say what happened to the destination"]
 
 /-! ## The plan commands, end to end
 
@@ -1324,73 +1510,70 @@ generation leaves a file behind, and the exit status each produces. -/
 
 private def sbomCommandTests : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
-  let first := (base / "first.spdx.json").toString
-  let second := (base / "second.spdx.json").toString
-  let other := (base / "other.spdx.json").toString
-  let never := (base / "never.spdx.json").toString
-  let (status, out, _) ← runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", first]
-  let (againStatus, _, _) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", second]
-  let (otherStatus, _, _) ←
-    runCommand "sbom" ["1.2.4", "lean-toolchain", "lake-manifest.json", other]
-  let written ← IO.FS.readFile first
-  let writtenAgain ← IO.FS.readFile second
-  let writtenOther ← IO.FS.readFile other
+  let sbom (version toolchain manifest name : String) :=
+    runCommand "sbom" ["--version", version, "--toolchain", toolchain,
+      "--lake-manifest", manifest, "--output", name, "--output-dir", base.toString]
+  let never := "never.spdx.json"
+  let (status, out, _) ← sbom "1.2.3" "lean-toolchain" "lake-manifest.json" "first.spdx.json"
+  let (againStatus, _, _) ← sbom "1.2.3" "lean-toolchain" "lake-manifest.json" "second.spdx.json"
+  let (otherStatus, _, _) ← sbom "1.2.4" "lean-toolchain" "lake-manifest.json" "other.spdx.json"
+  let written ← IO.FS.readFile (base / "first.spdx.json")
+  let writtenAgain ← IO.FS.readFile (base / "second.spdx.json")
+  let writtenOther ← IO.FS.readFile (base / "other.spdx.json")
   -- Against the committed fixtures, through the command rather than the pure
   -- core: this is the path the release workflow runs.
-  let goldenOut := (base / "golden.spdx.json").toString
-  let (goldenStatus, _, _) ← runCommand "sbom"
-    ["9.9.9", "Tests/fixtures/sbom-lean-toolchain", "Tests/fixtures/sbom-lake-manifest.json",
-     goldenOut]
-  let goldenWritten ← IO.FS.readFile goldenOut
+  let (goldenStatus, _, _) ← sbom "9.9.9" "Tests/fixtures/sbom-lean-toolchain"
+    "Tests/fixtures/sbom-lake-manifest.json" "golden.spdx.json"
+  let goldenWritten ← IO.FS.readFile (base / "golden.spdx.json")
   let golden ← IO.FS.readFile "Tests/fixtures/sbom-golden.spdx.json"
   let (missingToolchain, _, missingToolchainErr) ←
-    runCommand "sbom" ["1.2.3", (base / "absent").toString, "lake-manifest.json", never]
+    sbom "1.2.3" (base / "absent").toString "lake-manifest.json" never
   let (missingManifest, _, missingManifestErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", (base / "absent.json").toString, never]
+    sbom "1.2.3" "lean-toolchain" (base / "absent.json").toString never
   -- A refusal must not leave a document behind: a partial SBOM would be hashed
   -- into SHA256SUMS and signed like a complete one.
   let brokenManifest := (base / "broken.json").toString
   IO.FS.writeFile brokenManifest (manifestOf [])
-  let (emptyInventory, _, emptyInventoryErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", brokenManifest, never]
-  let (badVersion, _, badVersionErr) ←
-    runCommand "sbom" ["v1.2.3", "lean-toolchain", "lake-manifest.json", never]
+  let (emptyInventory, _, emptyInventoryErr) ← sbom "1.2.3" "lean-toolchain" brokenManifest never
+  let (badVersion, _, badVersionErr) ← sbom "v1.2.3" "lean-toolchain" "lake-manifest.json" never
   -- A name the renderer cannot encode: the refusal comes from rendering rather
   -- than from parsing, which is the one command branch the pure rows above
   -- cannot reach.
   let astralManifest := (base / "astral.json").toString
   IO.FS.writeFile astralManifest
     (manifestOf [manifestRow (String.singleton (Char.ofNat 0x1f600)) (rev40 '1')])
-  let (unrenderable, _, unrenderableErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", astralManifest, never]
+  let (unrenderable, _, unrenderableErr) ← sbom "1.2.3" "lean-toolchain" astralManifest never
   -- Checked after every refusal above, not after the first: each of them was
   -- given the same destination, so this says none of them wrote anything.
-  let nothingWritten := !(← System.FilePath.pathExists never)
-  -- A destination that is an existing directory. The temporary file is written
-  -- and the rename over it fails, which is the arm that has to clean up after
-  -- itself — a stray `<output>.tmp` beside a signed asset set is a file nothing
-  -- describes.
-  let occupied := (base / "occupied").toString
-  IO.FS.createDir occupied
-  let (occupiedStatus, _, occupiedErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", occupied]
-  let noTemporary := !(← System.FilePath.pathExists (occupied ++ ".tmp"))
-  -- Something already at the staging path. Writing through it would follow
-  -- whatever it is — a link elsewhere, or another run's half-written file — so
-  -- it is refused, and what was there is left for whoever has to explain it.
-  let staged := (base / "staged.spdx.json").toString
-  IO.FS.writeFile (staged ++ ".tmp") "an earlier run left this behind\n"
-  let (stagedStatus, _, stagedErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json", staged]
-  let stagedUntouched := (← IO.FS.readFile (staged ++ ".tmp")) == "an earlier run left this behind\n"
-  let stagedNotWritten := !(← System.FilePath.pathExists staged)
+  let nothingWritten := !(← System.FilePath.pathExists (base / never))
+  -- One write refusal through this command too. The mechanism's phases are
+  -- enumerated against `write-pin` and against injected rows; what this row
+  -- says is that this command reports them rather than exiting zero.
   let (unwritable, _, unwritableErr) ← runCommand "sbom"
-    ["1.2.3", "lean-toolchain", "lake-manifest.json", (base / "no-such-dir" / "s.json").toString]
-  let (fewArguments, _, fewArgumentsErr) ←
-    runCommand "sbom" ["1.2.3", "lean-toolchain", "lake-manifest.json"]
-  let (manyArguments, _, _) ← runCommand "sbom"
-    ["1.2.3", "lean-toolchain", "lake-manifest.json", never, "extra"]
+    ["--version", "1.2.3", "--toolchain", "lean-toolchain",
+     "--lake-manifest", "lake-manifest.json", "--output", "s.json",
+     "--output-dir", (base / "no-such-dir").toString]
+  -- The default: no --output-dir means the working directory, stated rather
+  -- than discovered. Driven through the built binary in a scratch directory,
+  -- because "where this process was started" is not observable in-process.
+  let cwd ← IO.currentDir
+  let scratch := base / "scratch"
+  IO.FS.createDir scratch
+  let executable := cwd / ".lake" / "build" / "bin" / "tlrelease"
+  let defaulted ← (IO.Process.output {
+    cmd := executable.toString, cwd := some scratch
+    args := #["sbom", "--version", "1.2.3",
+      "--toolchain", (cwd / "lean-toolchain").toString,
+      "--lake-manifest", (cwd / "lake-manifest.json").toString,
+      "--output", "defaulted.spdx.json"] }).toBaseIO
+  let landed ← System.FilePath.pathExists (scratch / "defaulted.spdx.json")
+  let (missingOutput, _, missingOutputErr) ← runCommand "sbom"
+    ["--version", "1.2.3", "--toolchain", "lean-toolchain",
+     "--lake-manifest", "lake-manifest.json"]
+  let (emptyDirectory, _, emptyDirectoryErr) ← runCommand "sbom"
+    ["--version", "1.2.3", "--toolchain", "lean-toolchain",
+     "--lake-manifest", "lake-manifest.json",
+     "--output", "x.spdx.json", "--output-dir", ""]
   IO.FS.removeDirAll base
   return [
     checkEq "sbom command: the repository's inputs produce an SBOM" status 0,
@@ -1419,32 +1602,33 @@ private def sbomCommandTests : IO (List Outcome) := do
     checkEq "sbom command: a name the renderer cannot encode is a refusal" unrenderable 1,
     check "sbom command: an unencodable name is refused for the reason it is"
       (contains unrenderableErr "Basic Multilingual Plane") unrenderableErr,
-    checkEq "sbom command: a destination that is a directory is a refusal" occupiedStatus 1,
-    check "sbom command: a destination that is a directory names the path"
-      (contains occupiedErr "could not write") occupiedErr,
-    check "sbom command: a failed rename leaves no temporary file behind" noTemporary
-      "an <output>.tmp survived a write the command refused to complete",
-    checkEq "sbom command: an occupied staging path is a refusal" stagedStatus 1,
-    check "sbom command: an occupied staging path says what to look at"
-      (contains stagedErr "already exists") stagedErr,
-    check "sbom command: it writes through nothing it did not create" stagedUntouched
-      "the command wrote through a file that was already at the staging path",
-    check "sbom command: and produces no document when it refuses to stage"
-      stagedNotWritten "a document appeared despite the refusal",
     -- A malformed version is a refusal, not a usage error: the invocation was
     -- well formed and a decision was made.
     checkEq "sbom command: a tag where the version belongs is a refusal" badVersion 1,
     check "sbom command: the tag refusal says to pass the bare version"
       (contains badVersionErr "bare version") badVersionErr,
-    checkEq "sbom command: an unwritable destination is a refusal, not an exception"
+    checkEq "sbom command: an output directory that is not there is a refusal, not an exception"
       unwritable 1,
-    check "sbom command: an unwritable destination names the path"
-      (contains unwritableErr "could not write") unwritableErr,
-    checkEq "sbom command: three arguments is a usage error" fewArguments 2,
-    check "sbom command: the usage error names every argument"
-      (contains fewArgumentsErr "<version> <lean-toolchain> <lake-manifest.json> <output.spdx.json>")
-      fewArgumentsErr,
-    checkEq "sbom command: a spare argument is a usage error" manyArguments 2]
+    check "sbom command: and the refusal names the phase"
+      (contains unwritableErr "opening the output directory") unwritableErr,
+    -- Through the real process, so a failure to run it is a failure here rather
+    -- than a row that quietly stops meaning anything.
+    check "sbom command: without --output-dir the built binary writes where it was started"
+      (match defaulted with
+       | .ok result => result.exitCode == 0 && landed
+       | .error _ => false)
+      (match defaulted with
+       | .ok result => s!"status {result.exitCode}: {result.stderr}"
+       | .error error => s!"could not run {executable}: {error}"),
+    checkEq "sbom command: no --output at all is a usage error" missingOutput 2,
+    check "sbom command: and it names the option that was not given"
+      (contains missingOutputErr "--output is required") missingOutputErr,
+    -- The empty string is what a workflow expression that resolved to nothing
+    -- looks like on the command line. It is refused as a directory rather
+    -- than silently meaning the working one.
+    checkEq "sbom command: an empty --output-dir is a usage error" emptyDirectory 2,
+    check "sbom command: and it says the empty string is not a value"
+      (contains emptyDirectoryErr "--output-dir") emptyDirectoryErr]
 
 /-! ## Checks: the verdict and the report are one list
 
@@ -2147,13 +2331,14 @@ private def lifecycleTests : IO (List Outcome) := do
        "--commit", commit, "--tier", tier, "--runner", "ubuntu-latest",
        "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
        "--workflow-ref", workflowRef, "--run-id", "42",
-       "--output", (dist / ("build-metadata-" ++ name ++ ".json")).toString]
+       "--output-dir", dist.toString, "--output", ("build-metadata-" ++ name ++ ".json")]
     legStatuses := legStatuses ++ [status]
   let (describeStatus, _, describeErr) ← runCommand "manifest"
     ["--dist", dist.toString, "--tag", "v1.2.3", "--commit", commit,
      "--toolchain", "lean-toolchain", "--lake-manifest", "lake-manifest.json",
      "--targets", "release/targets.json", "--identity", "release/identity.json",
-     "--workflow-ref", workflowRef, "--run-id", "42", "--output", manifestPath]
+     "--workflow-ref", workflowRef, "--run-id", "42",
+     "--output-dir", dist.toString, "--output", manifestName]
   -- What the workflow's `find` collects: every regular file except the sums
   -- file and the bundles. The manifest is in this list, which is why its own
   -- bundle exists.
@@ -3738,7 +3923,7 @@ def releaseToolTests : IO (List Outcome) := do
       s!"duplicate command names: {commands.map (·.name)}"]
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
-    ++ (← documentTests) ++ (← pinCommandTests) ++ (← planCommandTests)
+    ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)

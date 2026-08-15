@@ -90,37 +90,39 @@ def parsePin (document : String) (text : String) : Except String Identity := do
   | _ =>
       .error s!"{document}: has {rows.length} lines; the pin is exactly two. Extra lines are refused rather than ignored: a reader that skipped them could be handed a second, different pin below the one it used."
 
+private structure WritePinArgs where
+  identityPath : String
+  base : Write.OutputDirectory
+  output : Write.OutputPath
+
+private def writePinArgs (options : Options) : Except String WritePinArgs := do
+  let identityPath ← options.required "identity"
+  let (base, output) ← resolveOutput options
+  return { identityPath, base, output }
+
+private def writePinDecision (args : WritePinArgs) : Decision String := do
+  let identity ← readParsed args.identityPath Identity.parse
+  let pin ← ofExcept (renderPin identity)
+  -- Read back through the same rules the shell applies, before the file
+  -- exists. A generator that can emit something its own reader refuses is a
+  -- generator that turns a repair into an outage.
+  match parsePin args.output.render pin with
+  | .error message =>
+      decline s!"refusing to write a pin this reader would reject: {message}"
+  | .ok _ =>
+      -- The pin is a trust anchor: a partial write straight onto the path
+      -- would leave a truncated file where a valid one had been, and the
+      -- verifier would then refuse every genuine signature.
+      let disclosure ← ofIO (writeEvidence args.base args.output pin)
+      return disclosing s!"wrote {args.output.render} in {args.base.path}" disclosure
+
 private def writePinCommand : Command :=
-  positionalCommand "write-pin" "<identity.json> <output.pin>"
+  optionCommand "write-pin" "--identity <identity.json> --output <name> [--output-dir <dir>]"
     "Write the two-line signing pin the shell verifier reads, from the machine-readable identity."
-    ["release/identity.json", "release/identity.pin"] 2 fun args => do
-    match args with
-    | [identityPath, outputPath] =>
-        match ← readTextFile identityPath with
-        | .error message => refuse s!"tlrelease write-pin: {message}"
-        | .ok text =>
-            match Identity.parse identityPath text >>= renderPin with
-            | .error message => refuse s!"tlrelease write-pin: {message}"
-            | .ok pin =>
-                -- Read back through the same rules the shell applies, before
-                -- the file exists. A generator that can emit something its own
-                -- reader refuses is a generator that turns a repair into an
-                -- outage.
-                match parsePin outputPath pin with
-                | .error message =>
-                    refuse s!"tlrelease write-pin: refusing to write a pin this reader would reject: {message}"
-                | .ok _ =>
-                    -- The pin is a trust anchor: a partial write straight onto
-                    -- the path would leave a truncated file where a valid one
-                    -- had been, and the verifier would then refuse every
-                    -- genuine signature. `writeFileAtomically` is where that
-                    -- reasoning lives, shared with the SBOM.
-                    match ← writeFileAtomically outputPath pin with
-                    | .error message => refuse s!"tlrelease write-pin: {message}"
-                    | .ok () =>
-                        IO.println s!"tlrelease write-pin: wrote {outputPath}"
-                        return 0
-    | _ => wrongArity
+    ["--identity", "release/identity.json", "--output", "identity.pin",
+     "--output-dir", "release"]
+    [{ name := "identity", takesValue := true }, outputOption, outputDirectoryOption]
+    writePinArgs writePinDecision
 
 private def checkPinCommand : Command :=
   positionalCommand "check-pin" "<identity.json> <pin>"

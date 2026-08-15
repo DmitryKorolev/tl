@@ -5,9 +5,15 @@
  * does not contractually guarantee — no-follow opens (walked component by
  * component, so a symlink at ANY path component is refused, ADR-0015 §6),
  * fsync (F_FULLFSYNC on Darwin, where plain fsync stops at the drive cache),
- * fd locks, OS CSPRNG entropy, and the ownership check. Policy — what to
- * refuse, error codes, retry loops — lives in tested Lean above this
- * (Tl/Store/Sys.lean and its callers).
+ * fd locks, OS CSPRNG entropy, the ownership check, and the release tool's
+ * capability-anchored atomic replacement. Policy — what to refuse, error
+ * codes, retry loops — lives in tested Lean above this (Tl/Store/Sys.lean and
+ * its callers; release/Sys.lean and release/Write.lean for the release side).
+ *
+ * The two sides are separate surfaces on purpose. `tl_sys_*` is the product's;
+ * `tl_release_*` is release administration's, which ADR-0028 keeps out of the
+ * product TCB. A release-side binding to a `tl_sys_*` symbol would put one
+ * inside the other, and the drift gate refuses it.
  *
  * The shim owns its file descriptors end to end and touches no Lean runtime
  * internals beyond the documented FFI surface (lean.h), so toolchain bumps
@@ -64,6 +70,11 @@ LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {
 }
 LEAN_EXPORT lean_obj_res tl_sys_mkdir(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
     (void)base; (void)rel; (void)w; return tl_sys_unsupported("mkdir");
+}
+LEAN_EXPORT lean_obj_res tl_release_write_atomic(b_lean_obj_arg base, b_lean_obj_arg components,
+                                          b_lean_obj_arg contents, lean_obj_arg w) {
+    (void)base; (void)components; (void)contents; (void)w;
+    return tl_sys_unsupported("release_write_atomic");
 }
 
 #else /* POSIX */
@@ -340,6 +351,313 @@ LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {
     (void)w;
     if (close((int)fd) != 0 && errno != EINTR) return tl_sys_err("close", errno);
     return lean_io_result_mk_ok(lean_box(0));
+}
+
+/*
+ * ============================================================================
+ * Release administration's atomic evidence write (ADR-0028).
+ *
+ * Separate from everything above, and deliberately shaped differently. The
+ * product's primitives hand a formatted userError back to Lean and let the
+ * caller recover a class from the token in it. This one reports a row of
+ * numbers, because release policy branches on which phase failed and on
+ * whether the write committed, and a classification that reads a message
+ * string makes rewording that string a silent behaviour change.
+ *
+ * The row is nine slots, and release/Write.lean is the other half of the
+ * contract:
+ *
+ *   0 tag          0 committed, 1 failed before the commit
+ *   1 strength     committed: 0 full barrier, 1 ordinary fsync; failed: 0
+ *   2 disposition  committed: 0 synced, 1 unsynced
+ *                  failed:    0 nothing created, 1 removed, 2 retained
+ *   3..5           committed: the directory sync's error, iff unsynced
+ *                  failed:    the failing phase's error, always
+ *   6..8           committed: nothing; failed: the cleanup error, iff retained
+ *
+ * A triple is (phase, errno code, raw errno), and (0, 0, 0) means "no error
+ * here". Only an errno this file cannot name carries a raw number; a named one
+ * carries zero, so one outcome has exactly one row.
+ *
+ * The base is opened with ordinary symlink semantics, on purpose: it is the
+ * directory the operator named, and applying no-follow to it would refuse a
+ * macOS /var temporary directory, a symlinked home, and most container mounts.
+ * The no-follow and ownership walk starts at the first component BENEATH the
+ * held base descriptor. Everything after that is done through descriptors, so
+ * renaming an ancestor mid-run cannot move where the bytes land.
+ * ============================================================================
+ */
+
+/* Phase codes — keep in sync with `Operation.code` in release/Write.lean. */
+#define TL_W_OPEN_BASE 1
+#define TL_W_OWN_BASE 2
+#define TL_W_WALK_DIRECTORY 3
+#define TL_W_OWN_DIRECTORY 4
+#define TL_W_CREATE_STAGING 5
+#define TL_W_WRITE_BYTES 6
+#define TL_W_SYNC_FILE 7
+#define TL_W_CLOSE_FILE 8
+#define TL_W_RENAME 9
+#define TL_W_SYNC_DIRECTORY 10
+#define TL_W_REMOVE_STAGING 11
+
+/* Errno codes — keep in sync with `Errno.code` in release/Write.lean. */
+#define TL_W_ENOTOWNED 21
+#define TL_W_EOTHER 99
+
+/* The suffix the staging sibling gets. release/Write.lean renders the same
+   name for the message an operator has to act on, so the two must agree. */
+#define TL_W_STAGING_SUFFIX ".tmp"
+
+/* An errno as the closed code release/Write.lean knows, or 0 if it has no
+   name there — in which case the raw number travels in the next slot rather
+   than being folded into a name that would read like a diagnosis. */
+static uint32_t tl_release_errno_code(int e) {
+    switch (e) {
+    case EACCES: return 1;
+    case EPERM: return 2;
+    case EEXIST: return 3;
+    case ENOENT: return 4;
+    case ENOTDIR: return 5;
+    case EISDIR: return 6;
+    case ELOOP: return 7;
+    case EINVAL: return 8;
+    case EIO: return 9;
+    case ENOSPC: return 10;
+    case EROFS: return 11;
+#ifdef EDQUOT
+    case EDQUOT: return 12;
+#endif
+    case EMFILE: return 13;
+    case ENFILE: return 14;
+    case ENOMEM: return 15;
+    case EBADF: return 16;
+    case ENAMETOOLONG: return 17;
+    case EBUSY: return 18;
+    case EINTR: return 19;
+    case ENOTSUP: return 20;
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+    case EOPNOTSUPP: return 20;
+#endif
+    default: return 0;
+    }
+}
+
+/* One error triple, written into `row` at `at`. `e` is a real errno, or the
+   synthetic ownership refusal, which has no errno because it is this
+   pipeline's rule rather than the kernel's. */
+static void tl_release_put_error(uint32_t *row, size_t at, uint32_t phase, int e) {
+    row[at] = phase;
+    if (e == TL_E_NOTOWNED) {
+        row[at + 1] = TL_W_ENOTOWNED;
+        row[at + 2] = 0;
+        return;
+    }
+    uint32_t code = tl_release_errno_code(e);
+    if (code == 0) {
+        row[at + 1] = TL_W_EOTHER;
+        row[at + 2] = (e > 0) ? (uint32_t)e : 0;
+    } else {
+        row[at + 1] = code;
+        row[at + 2] = 0;
+    }
+}
+
+static lean_obj_res tl_release_row(const uint32_t *row) {
+    lean_object *array = lean_alloc_array(9, 9);
+    for (size_t i = 0; i < 9; i++)
+        lean_array_set_core(array, i, lean_box_uint32(row[i]));
+    return lean_io_result_mk_ok(array);
+}
+
+/* A write that never reached the rename. `created` says whether this
+   invocation is the one that made the staging sibling, which is the only thing
+   that entitles it to remove one: an occupied staging path is evidence, and
+   removing another run's file would destroy it. */
+static lean_obj_res tl_release_failed(uint32_t phase, int e, int dirfd,
+                                      const char *staging, int created) {
+    uint32_t row[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0};
+    tl_release_put_error(row, 3, phase, e);
+    if (created) {
+        if (unlinkat(dirfd, staging, 0) == 0) {
+            row[2] = 1;
+        } else {
+            row[2] = 2;
+            tl_release_put_error(row, 6, TL_W_REMOVE_STAGING, errno);
+        }
+    }
+    return tl_release_row(row);
+}
+
+/*
+ * Flush the staging file's bytes. Returns 0 on success with *strength set, or
+ * the errno to refuse with.
+ *
+ * On Darwin an interrupted F_FULLFSYNC is retried, and only a documented
+ * "this filesystem does not do that" result falls back to ordinary fsync — an
+ * EIO or ENOSPC surfacing here is the write failing, and answering it with a
+ * weaker flush would report a barrier that did not happen. Elsewhere fsync is
+ * the platform's barrier, so there is nothing to fall back from.
+ */
+static int tl_release_sync_file(int fd, uint32_t *strength) {
+#if defined(__APPLE__)
+    for (;;) {
+        if (fcntl(fd, F_FULLFSYNC) == 0) { *strength = 0; return 0; }
+        if (errno == EINTR) continue;
+        if (errno == ENOTSUP || errno == EINVAL || errno == ENOTTY
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+            || errno == EOPNOTSUPP
+#endif
+        ) break;
+        return errno;
+    }
+    *strength = 1;
+#else
+    *strength = 0;
+#endif
+    for (;;) {
+        if (fsync(fd) == 0) return 0;
+        if (errno != EINTR) return errno;
+    }
+}
+
+LEAN_EXPORT lean_obj_res tl_release_write_atomic(b_lean_obj_arg base, b_lean_obj_arg components,
+                                          b_lean_obj_arg contents, lean_obj_arg w) {
+    (void)w;
+    uint32_t row[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0};
+    size_t count = lean_array_size((lean_object *)components);
+    if (count == 0) {
+        /* release/Write.lean's output name cannot be empty by construction, so
+           this is unreachable from the Lean side and is answered rather than
+           assumed away. */
+        tl_release_put_error(row, 3, TL_W_OPEN_BASE, EINVAL);
+        return tl_release_row(row);
+    }
+
+    int dirfd = open(lean_string_cstr(base), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dirfd < 0) {
+        tl_release_put_error(row, 3, TL_W_OPEN_BASE, errno);
+        return tl_release_row(row);
+    }
+    int owned = tl_owned_by_caller(dirfd);
+    if (owned != 1) {
+        int e = (owned == 0) ? TL_E_NOTOWNED : errno;
+        close(dirfd);
+        tl_release_put_error(row, 3, TL_W_OWN_BASE, e);
+        return tl_release_row(row);
+    }
+
+    /* Everything before the last component is a directory to descend into,
+       no-follow and ownership-checked. The components arrive as an array and
+       are used one at a time: nothing here re-splits a path string, so there
+       is no second parser to disagree with the one that validated them. */
+    for (size_t i = 0; i + 1 < count; i++) {
+        const char *component = lean_string_cstr(lean_array_get_core((lean_object *)components, i));
+        int next = openat(dirfd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int e = errno;
+        close(dirfd);
+        if (next < 0) {
+            tl_release_put_error(row, 3, TL_W_WALK_DIRECTORY, e);
+            return tl_release_row(row);
+        }
+        dirfd = next;
+        owned = tl_owned_by_caller(dirfd);
+        if (owned != 1) {
+            int oe = (owned == 0) ? TL_E_NOTOWNED : errno;
+            close(dirfd);
+            tl_release_put_error(row, 3, TL_W_OWN_DIRECTORY, oe);
+            return tl_release_row(row);
+        }
+    }
+
+    const char *leaf = lean_string_cstr(lean_array_get_core((lean_object *)components, count - 1));
+    size_t staging_len = strlen(leaf) + sizeof TL_W_STAGING_SUFFIX;
+    char *staging = malloc(staging_len);
+    if (!staging) {
+        close(dirfd);
+        tl_release_put_error(row, 3, TL_W_CREATE_STAGING, ENOMEM);
+        return tl_release_row(row);
+    }
+    snprintf(staging, staging_len, "%s%s", leaf, TL_W_STAGING_SUFFIX);
+
+    /* Exclusive and no-follow: every pre-existing object at the staging name
+       refuses the write before a byte is written, including a dangling symlink
+       an existence check cannot see. */
+    int fd = openat(dirfd, staging, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        int e = errno;
+        lean_obj_res result = tl_release_failed(TL_W_CREATE_STAGING, e, dirfd, staging, 0);
+        close(dirfd);
+        free(staging);
+        return result;
+    }
+
+    const uint8_t *bytes = lean_sarray_cptr((lean_object *)contents);
+    size_t length = lean_sarray_size((lean_object *)contents);
+    size_t written = 0;
+    int failure = 0;
+    uint32_t phase = TL_W_WRITE_BYTES;
+    while (written < length) {
+        ssize_t n = write(fd, bytes + written, length - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            failure = errno;
+            break;
+        }
+        if (n == 0) {
+            /* A regular file write returning zero is not a short write to
+               retry; nothing is making progress and looping would hang. */
+            failure = EIO;
+            break;
+        }
+        written += (size_t)n;
+    }
+
+    uint32_t strength = 0;
+    if (failure == 0) {
+        failure = tl_release_sync_file(fd, &strength);
+        if (failure != 0) phase = TL_W_SYNC_FILE;
+    }
+
+    /* Closed either way: the descriptor is this function's to release. A close
+       error is only the write's error when nothing has failed yet, since it can
+       be the first report of a deferred write failure. */
+    if (close(fd) != 0 && failure == 0 && errno != EINTR) {
+        failure = errno;
+        phase = TL_W_CLOSE_FILE;
+    }
+
+    if (failure != 0) {
+        lean_obj_res result = tl_release_failed(phase, failure, dirfd, staging, 1);
+        close(dirfd);
+        free(staging);
+        return result;
+    }
+
+    if (renameat(dirfd, staging, dirfd, leaf) != 0) {
+        lean_obj_res result = tl_release_failed(TL_W_RENAME, errno, dirfd, staging, 1);
+        close(dirfd);
+        free(staging);
+        return result;
+    }
+    free(staging);
+
+    /* Past here the replacement has happened and every later open in this run
+       reads the new bytes, so a directory-sync failure is reported as an
+       unsynced commit rather than as a write that did not occur. */
+    row[0] = 0;
+    row[1] = strength;
+    row[2] = 0;
+    for (size_t i = 3; i < 9; i++) row[i] = 0;
+    for (;;) {
+        if (fsync(dirfd) == 0) break;
+        if (errno == EINTR) continue;
+        row[2] = 1;
+        tl_release_put_error(row, 3, TL_W_SYNC_DIRECTORY, errno);
+        break;
+    }
+    close(dirfd);
+    return tl_release_row(row);
 }
 
 #endif /* POSIX */

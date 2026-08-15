@@ -128,7 +128,7 @@ private def buildMetadataOptions : List OptionSpec :=
    { name := "lake-manifest", takesValue := true },
    { name := "workflow-ref", takesValue := true },
    { name := "run-id", takesValue := true },
-   { name := "output", takesValue := true },
+   outputOption, outputDirectoryOption,
    { name := "runner-os", takesValue := true },
    { name := "runner-arch", takesValue := true },
    { name := "container-image", takesValue := true },
@@ -151,14 +151,17 @@ private structure BuildMetadataArgs where
   lakeManifestPath : String
   workflowRef : String
   runId : String
-  output : String
+  base : Write.OutputDirectory
+  output : Write.OutputPath
   runnerOs : String
   runnerArch : String
   containerImage : String
   runAttempt : String
 
 private def buildMetadataArgs (options : Options) : Except String BuildMetadataArgs := do
+  let (base, output) ← resolveOutput options
   return {
+    base, output
     target := ← options.required "target"
     binary := ← options.required "binary"
     commit := ← options.required "commit"
@@ -168,7 +171,6 @@ private def buildMetadataArgs (options : Options) : Except String BuildMetadataA
     lakeManifestPath := ← options.required "lake-manifest"
     workflowRef := ← options.required "workflow-ref"
     runId := ← options.required "run-id"
-    output := ← options.required "output"
     -- The four the release page shows a human and no verdict reads. Absent is
     -- the empty string here and only here; `describing` is named so that using
     -- it where a decision is made reads wrong.
@@ -203,8 +205,10 @@ private def buildMetadataDecision (args : BuildMetadataArgs) : Decision String :
     runnerOs := args.runnerOs, runnerArch := args.runnerArch,
     containerImage := args.containerImage, runAttempt := args.runAttempt }
   let document ← ofExcept (renderBuildMetadata record)
-  ofIO (writeFileAtomically args.output document)
-  return s!"wrote {args.output} — {args.target} ({tier.wire}) is {digest.hex}"
+  let disclosure ← ofIO (writeEvidence args.base args.output document)
+  return disclosing
+    s!"wrote {args.output.render} in {args.base.path} — {args.target} ({tier.wire}) is {digest.hex}"
+    disclosure
 
 private def buildMetadataCommand : Command :=
   optionCommand "build-metadata"
@@ -215,10 +219,10 @@ private def buildMetadataCommand : Command :=
      "--runner", "macos-15", "--toolchain", "lean-toolchain",
      "--lake-manifest", "lake-manifest.json", "--workflow-ref",
      "owner/repo/.github/workflows/release.yml@refs/tags/v0.1.0", "--run-id", "1",
-     "--output", "dist/build-metadata.json"]
+     "--output", "build-metadata.json", "--output-dir", "dist"]
     buildMetadataOptions buildMetadataArgs buildMetadataDecision
     (usageArguments :=
-      "--target <name> --binary <path> --commit <sha> --tier <supported|best-effort> --runner <label> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --workflow-ref <ref> --run-id <id> --output <path> [--runner-os <s>] [--runner-arch <s>] [--container-image <s>] [--run-attempt <s>]")
+      "--target <name> --binary <path> --commit <sha> --tier <supported|best-effort> --runner <label> --toolchain <lean-toolchain> --lake-manifest <lake-manifest.json> --workflow-ref <ref> --run-id <id> --output <name> [--output-dir <dir>] [--runner-os <s>] [--runner-arch <s>] [--container-image <s>] [--run-attempt <s>]")
 
 def metadataCommands : List Command := [buildMetadataCommand]
 
