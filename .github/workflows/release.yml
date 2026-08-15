@@ -235,17 +235,20 @@ jobs:
         id: tool
         run: |
           set -euo pipefail
+          # upload-artifact excludes paths under dot-directories unless opted
+          # in. Stage one ordinary path and hash exactly the bytes uploaded.
+          install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease
           # Not `sha256sum … | cut`: a pipeline reports its last stage, and
           # `cut` succeeds over empty input, so a digest tool that could not run
           # would publish the empty string as the digest.
-          line=$(sha256sum .lake/build/bin/tlrelease)
+          line=$(sha256sum release-tool/tlrelease)
           echo "digest=${line%% *}" >> "$GITHUB_OUTPUT"
 
       - name: upload the release tool for the signing job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-tool
-          path: .lake/build/bin/tlrelease
+          path: release-tool/tlrelease
           if-no-files-found: error
           retention-days: 7
 

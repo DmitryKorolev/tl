@@ -196,6 +196,30 @@ private def hygieneFailures (path : String) (text : String) : List String :=
       some s!"  {path}:{number}: calls rc_skip_gate directly — {line.trimAscii}"
     else none
 
+/-! ## The current release-tool artifact handoff
+
+`upload-artifact` excludes files below a dot-directory by default. The release
+tool used to be uploaded directly from `.lake/`, so the action found no file
+even though the preceding build and digest succeeded. Until ADR-0028 replaces
+this raw-digest handoff with its typed file-set-hash form, pin the three paths
+that must denote the same staged bytes. -/
+
+private def occursExactlyOnce (text needle : String) : Bool :=
+  (text.splitOn needle).length == 2
+
+def releaseToolHandoffShape (workflow : String) : Except String Unit := do
+  let stage := "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease"
+  let digest := "line=$(sha256sum release-tool/tlrelease)"
+  let upload := "path: release-tool/tlrelease"
+  if !occursExactlyOnce workflow stage then
+    throw "the release tool must be staged once from the gated binary into a non-hidden artifact path"
+  if !occursExactlyOnce workflow digest then
+    throw "the raw transition digest must hash exactly the staged artifact bytes"
+  if !occursExactlyOnce workflow upload then
+    throw "upload-artifact must upload exactly the staged non-hidden release-tool path"
+  if workflow.contains "path: .lake/build/bin/tlrelease" then
+    throw "upload-artifact excludes the hidden .lake path by default"
+
 /-! ## The rows -/
 
 def releaseDriftTests : IO (List Outcome) := do
@@ -211,6 +235,7 @@ def releaseDriftTests : IO (List Outcome) := do
       documentFailures.isEmpty (String.intercalate "\n" documentFailures ++
         "\nInside backticks, name the command or write an invocation that works: a fragment is specific enough to be copied and incomplete enough to stop being true. The command's own parser decides this, so a required option added to it fails here in the same build.")]
   let scripts ← filesUnder "scripts" ["sh"]
+  let releaseWorkflow ← IO.FS.readFile ".github/workflows/release.yml"
   let mut library := 0
   let mut policies : List (FilePath × String) := []
   for path in scripts do
@@ -225,6 +250,11 @@ def releaseDriftTests : IO (List Outcome) := do
         failures.isEmpty (String.intercalate "\n" failures ++
           "\nrc_tool_gate in scripts/lib/release-common.sh crosses the three inputs — present or absent, strict or not, passed or failed — and its selftest matrix is what proves the crossing. A branch written here is a second answer to the same question, tested by nothing.")]
   return documentRows ++ hygieneRows ++ [
+    check "release workflow: the current release-tool upload hashes and uploads one staged path"
+      (releaseToolHandoffShape releaseWorkflow).toOption.isSome
+      (match releaseToolHandoffShape releaseWorkflow with
+       | .ok () => ""
+       | .error message => message),
     -- Non-vacuity, both halves. A walk that found no documents, or no script
     -- under the rule, reports the same clean result as a repository that
     -- satisfies it.
@@ -282,6 +312,18 @@ def releaseDriftTests : IO (List Outcome) := do
       (callsDirectly "  rc_skip_gate \"workflow lint\" \"actionlint is not on PATH\"" "rc_skip_gate"),
     check "release policy: going through the helper is not one"
       (!callsDirectly "rc_tool_gate \"workflow lint\" --tool actionlint -- actionlint" "rc_skip_gate"),
+    check "release workflow: a hidden upload source is refused"
+      (releaseToolHandoffShape
+        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: .lake/build/bin/tlrelease").toOption.isNone,
+    check "release workflow: hashing the build path instead of the upload source is refused"
+      (releaseToolHandoffShape
+        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum .lake/build/bin/tlrelease)\npath: release-tool/tlrelease").toOption.isNone,
+    check "release workflow: an unstaged upload is refused"
+      (releaseToolHandoffShape
+        "line=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease").toOption.isNone,
+    check "release workflow: the canonical staged handoff is accepted"
+      (releaseToolHandoffShape
+        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease").toOption.isSome,
     -- The commands' own examples. `arguments` is the shape and `invocation` is
     -- an instance of it, and the second is what makes the first checkable.
     check "tlrelease: every command's canonical invocation is one it accepts"
