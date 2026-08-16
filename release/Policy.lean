@@ -440,6 +440,95 @@ theorem runFailures_isEmpty_iff (strict : Bool) (rows : List (Gate × GateOutcom
   Iff.trans (Check.allHeld_iff_noFailures (runChecks strict rows)).symm
     (runAccepts_iff strict rows)
 
+/-! ## Running them
+
+The world this needs is two questions — is a tool on `PATH`, and did a command
+succeed — so it is a value with two fields rather than a set of calls buried in
+a loop. Every crossing the shell wrote out by hand four times is then reachable
+from a test without installing or uninstalling anything, which is what makes
+"tool absent, not strict, would have failed" a row rather than a thought
+experiment. -/
+
+/-- What running the policy needs from the world. -/
+structure Runner where
+  /-- Whether a command could be executed by that name. -/
+  present : String → IO Bool
+  /-- Run one gate's invocation; a refusal carries what to report. -/
+  invoke : Invocation → IO (Except String Unit)
+
+/-- Whether `PATH` offers a command by that name.
+
+    A name containing `/` is a path and is checked as one — `sh install.sh` is
+    invoked as `sh`, but a gate could name `./scripts/x` and searching `PATH`
+    for that would always answer no. Existence rather than executability,
+    because Lean's metadata does not carry a mode: a file that is there and not
+    executable makes the gate *run* and fail with the process layer's own
+    "could not be run", which is a refusal rather than a skip — the safe
+    direction. -/
+def onPath (command : String) : IO Bool := do
+  if command.contains '/' then
+    return ← System.FilePath.pathExists command
+  let some pathValue ← IO.getEnv "PATH" | return false
+  for directory in pathValue.splitOn ":" do
+    if directory.isEmpty then continue
+    if ← System.FilePath.pathExists (directory ++ "/" ++ command) then
+      return true
+  return false
+
+/-- Run a gate's invocation, reporting what it said when it refused. -/
+def spawnInvocation (invocation : Invocation) : IO (Except String Unit) := do
+  match ← succeeded invocation.command invocation.arguments.toArray with
+  | .error message => return .error message
+  | .ok output =>
+      if !output.stdout.isEmpty then IO.print output.stdout
+      if !output.stderr.isEmpty then IO.eprint output.stderr
+      return .ok ()
+
+def defaultRunner : Runner := { present := onPath, invoke := spawnInvocation }
+
+/-- Ask about each distinct tool once.
+
+    Once, and that is the point rather than an optimisation: two gates declaring
+    `shellcheck` must not be able to disagree about whether it is there, and a
+    run that answered the question twice could — a `PATH` that changed under it,
+    or a lookup that is not a function. One answer per tool per run. -/
+def resolveTools (runner : Runner) (selected : List Gate) : IO (String → Bool) := do
+  let tools := ((selected.flatMap (·.requires)).map (·.tool)).eraseDups
+  let mut answers : Array (String × Bool) := #[]
+  for tool in tools do
+    answers := answers.push (tool, ← runner.present tool)
+  return fun tool => (answers.toList.lookup tool).getD false
+
+/-- Run one profile's gates, in order, reporting each as it goes.
+
+    Deliberately not stopping at the first failure. The gates are independent,
+    and a run that stopped would make an operator fix and re-run once per
+    problem; the exit status at the end is what decides. -/
+def runGates (runner : Runner) (profile : Profile) (tagRun : Bool) :
+    IO (List (Gate × GateOutcome)) := do
+  let selected := gatesIn profile tagRun
+  let present ← resolveTools runner selected
+  let mut rows : Array (Gate × GateOutcome) := #[]
+  for gate in selected do
+    IO.println s!"── {gate.name}"
+    match firstMissing present gate with
+    | some requirement =>
+        IO.println s!"   skipped: {requirement.lost}"
+        rows := rows.push (gate, .skipped requirement)
+    | none =>
+        match ← runner.invoke gate.invocation with
+        | .ok _ => rows := rows.push (gate, .passed)
+        | .error message => rows := rows.push (gate, .failed message)
+  return rows.toList
+
+/-- How many gates did what, for the line an operator reads first. -/
+def tally (rows : List (Gate × GateOutcome)) : Nat × Nat × Nat :=
+  rows.foldl (init := (0, 0, 0)) fun (passed, failed, skipped) (_, outcome) =>
+    match outcome with
+    | .passed => (passed + 1, failed, skipped)
+    | .failed _ => (passed, failed + 1, skipped)
+    | .skipped _ => (passed, failed, skipped + 1)
+
 /-! ## The parity oracle
 
 Temporary, and deleted with the shell policy. Until then the shell is
@@ -584,6 +673,44 @@ private def parityCommand : Command :=
     ["--profile", "ci", "--observed", "ci-gates.txt", "--channel", "channel-gates.txt"]
     parityOptions parityArgs parityDecision
 
-def policyCommands : List Command := [listCommand, parityCommand]
+open Policy in
+private def runOptions : List OptionSpec :=
+  [{ name := "profile", takesValue := true },
+   { name := "strict", takesValue := false },
+   { name := "tag", takesValue := false }]
+
+open Policy in
+private structure RunArgs where
+  profile : Profile
+  strict : Bool
+  tagRun : Bool
+
+open Policy in
+private def runArgs (options : Options) : Except String RunArgs := do
+  return {
+    profile := ← Profile.parse "--profile" (← options.required "profile")
+    strict := options.given "strict"
+    tagRun := options.given "tag" }
+
+open Policy in
+private def runDecision (args : RunArgs) : Decision String := do
+  let rows ← attempt "running the release policy" (runGates defaultRunner args.profile args.tagRun)
+  let (passed, failed, skipped) := tally rows
+  match runFailures args.strict rows with
+  | [] =>
+      return s!"{passed} gate(s) passed in the {args.profile.wire} profile"
+        ++ (if skipped == 0 then "" else s!", {skipped} skipped for a tool this machine does not have")
+  | problems =>
+      decline (s!"the {args.profile.wire} profile did not pass: {failed} failed, {skipped} skipped, {passed} passed.\n"
+        ++ String.join (problems.map fun problem => s!"  {problem}\n")
+        ++ "Every gate ran; the ones above are the ones to fix.")
+
+open Policy in
+private def runCommand : Command :=
+  optionCommand "policy" "--profile <ci|release> [--strict] [--tag]"
+    "Run one profile's gates, in order, and refuse unless every one of them passed."
+    ["--profile", "release", "--strict"] runOptions runArgs runDecision
+
+def policyCommands : List Command := [listCommand, parityCommand, runCommand]
 
 end Release

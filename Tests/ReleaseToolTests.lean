@@ -3397,6 +3397,97 @@ private def policyTests : List Outcome :=
       (Policy.flattenShellNames ["a", Policy.shellChannelGroupGate, "z"] ["x", "y"])
       ["a", "x", "y", "z"]]
 
+/-- The runner, over a world that answers whatever a row needs it to.
+
+    Every crossing the shell wrote out four times by hand — tool present or
+    absent, strict or not, the command passing or refusing — driven without
+    installing or uninstalling anything, which is the point of the seam. -/
+private def policyRunnerTests : IO (List Outcome) := do
+  let asked ← IO.mkRef (0 : Nat)
+  let runnerWith (tools : List String) (failing : List String) : Policy.Runner :=
+    { present := fun tool => do
+        asked.modify (· + 1)
+        return tools.contains tool
+      invoke := fun invocation => do
+        if failing.contains invocation.command then
+          return .error s!"'{invocation.command}' refused"
+        return .ok () }
+  -- The runner reports each gate as it goes, which is what an operator reads
+  -- and what a test must not print a hundred lines of.
+  let outcomesOf (tools failing : List String) (profile : Policy.Profile) (tagRun : Bool) :
+      IO (List (Policy.Gate × Policy.GateOutcome)) := do
+    let sink ← IO.mkRef { : IO.FS.Stream.Buffer }
+    IO.withStdout (IO.FS.Stream.ofBuffer sink) <|
+      IO.withStderr (IO.FS.Stream.ofBuffer sink) <|
+        Policy.runGates (runnerWith tools failing) profile tagRun
+  let everyTool := ((Policy.gates.flatMap (·.requires)).map (·.tool)).eraseDups
+  asked.set 0
+  let allPresent ← outcomesOf everyTool [] .ci false
+  let asksPerRun ← asked.get
+  let noTools ← outcomesOf [] [] .ci false
+  let oneFailing ← outcomesOf everyTool ["./scripts/check-task-ids.sh"] .release false
+  -- The real runner, over a gate whose command is not there. The process layer
+  -- calls that `unavailable`; a gate that reached execution must report it as a
+  -- failure rather than as a skip, because a skip is a claim about this machine
+  -- and this one is a claim about the gate.
+  let absentCommand : Policy.Gate :=
+    { name := "a command that is not there", profiles := [.ci], onTag := .always
+      requires := [], invocation := .tool "tl-no-such-program-exists" [], summary := "" }
+  let absentOutcome ← Policy.defaultRunner.invoke absentCommand.invocation
+  let shellPresent ← Policy.onPath "sh"
+  let nonsensePresent ← Policy.onPath "tl-no-such-program-exists"
+  let relativePresent ← Policy.onPath "./scripts/check-task-ids.sh"
+  let relativeAbsent ← Policy.onPath "./scripts/there-is-no-such-script.sh"
+  let outcomeNames (rows : List (Policy.Gate × Policy.GateOutcome)) (which : String) :=
+    (rows.filter fun (_, outcome) =>
+      match outcome, which with
+      | .passed, "passed" => true
+      | .failed _, "failed" => true
+      | .skipped _, "skipped" => true
+      | _, _ => false).map (·.1.name)
+  return [
+    -- Every gate runs when every tool is there, and none of them is skipped.
+    checkEq "policy runner: with every tool present, every gate runs"
+      (outcomeNames allPresent "passed") (Policy.gateNames .ci false),
+    checkEq "policy runner: and none is skipped" (outcomeNames allPresent "skipped") [],
+    -- Each distinct tool is asked about once, however many gates declare it.
+    checkEq "policy runner: each distinct tool is asked about exactly once"
+      asksPerRun everyTool.length,
+    check "policy runner: more than one gate declares a shared tool, so that means something"
+      ((Policy.gates.filter fun gate =>
+        gate.requires.any (·.tool == "shellcheck")).length > 1) "",
+    -- With no tools at all, exactly the gates that declare one are skipped.
+    checkEq "policy runner: with no tools, every gate that needs one is skipped"
+      (outcomeNames noTools "skipped")
+      ((Policy.gatesIn .ci false).filter (!·.requires.isEmpty) |>.map (·.name)),
+    checkEq "policy runner: and the rest still run"
+      (outcomeNames noTools "passed")
+      ((Policy.gatesIn .ci false).filter (·.requires.isEmpty) |>.map (·.name)),
+    -- A skipped run passes without --strict and fails with it. Same rows.
+    check "policy runner: a run with skips passes without --strict"
+      (Policy.runAccepts false noTools) "",
+    check "policy runner: the same run fails under --strict"
+      (!Policy.runAccepts true noTools) "",
+    -- A refusing gate fails the run, and the report carries what it said.
+    checkEq "policy runner: a gate whose command refuses is a failure"
+      (outcomeNames oneFailing "failed") ["task-id lint selftest", "task-id leakage"],
+    check "policy runner: the report carries what the gate said"
+      ((Policy.runFailures false oneFailing).any fun failure => contains failure "refused") "",
+    check "policy runner: one failing gate does not stop the rest running"
+      ((outcomeNames oneFailing "passed").length + 2 == (Policy.gateNames .release false).length)
+      s!"{outcomeNames oneFailing "passed"}",
+    -- The real world half: what `onPath` answers, and what a command that is
+    -- not there does when a gate reaches it anyway.
+    check "policy runner: a command on PATH is found" shellPresent "sh was not found on PATH",
+    check "policy runner: a command that does not exist is not found" (!nonsensePresent) "",
+    check "policy runner: a relative path is checked as a path, not searched for on PATH"
+      relativePresent "./scripts/check-task-ids.sh was not found",
+    check "policy runner: a relative path that is not there is not found" (!relativeAbsent) "",
+    check "policy runner: a gate whose command cannot be run fails rather than skipping"
+      (absentOutcome.toOption.isNone) "an absent command was reported as success",
+    check "policy runner: and the refusal says the tool is not there"
+      (mentions absentOutcome "could not be run") (errorOf absentOutcome)]
+
 /-- The oracle against the shell scripts themselves.
 
     Run here rather than only in CI, because the property is that the registry
@@ -5040,6 +5131,6 @@ def releaseToolTests : IO (List Outcome) := do
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests
