@@ -150,7 +150,14 @@ structure Gate where
 Every gate the release policy runs, in the order it runs them. The order is part
 of the contract: a policy run is read top to bottom, and two runs of the same
 profile that reported their gates in different orders would be two documents to
-compare by hand. -/
+compare by hand.
+
+Three gates still invoke a shell script's single-gate flag — the ShellCheck
+sweep, the build-stamp comparison and the formula parse — because their bodies
+have not been ported yet. Naming a real invocation rather than a placeholder is
+what lets this run before it is authoritative; each becomes a `tlrelease`
+command as its own port lands, and the shell allowlist is what will say when
+none is left. -/
 
 private def shellcheckTool : ToolRequirement :=
   { tool := "shellcheck", lost := "shellcheck is not on PATH" }
@@ -475,7 +482,14 @@ def onPath (command : String) : IO Bool := do
       return true
   return false
 
-/-- Run a gate's invocation, reporting what it said when it refused. -/
+/-- Run a gate's invocation, reporting what it said when it refused.
+
+    The output arrives after the gate finishes rather than as it is produced,
+    because the process layer captures both streams so that a tool's diagnosis
+    can become a refusal message rather than being lost. That is the right trade
+    for a refusal and the wrong one for a five-minute gate's progress, and it is
+    the one thing about this runner a reader of a CI log would notice at
+    cutover. -/
 def spawnInvocation (invocation : Invocation) : IO (Except String Unit) := do
   match ← succeeded invocation.command invocation.arguments.toArray with
   | .error message => return .error message
