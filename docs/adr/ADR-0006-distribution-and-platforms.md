@@ -119,11 +119,11 @@ bootstrap that is unrelated to publishing a GitHub Release:
   packages by hand and then registering the publisher. That is a decision about
   the npm namespace, not about whether the binaries are ready.
 - Homebrew needs the tap repository to exist and a credential that can write to
-  it. During the ADR-0028 migration, `Formula/tl.rb` is the checked-in template
-  and stays inside the identity drift guard. In the accepted end state the
-  authenticated typed release manifest is the data authority and
-  `Formula/tl.rb` is a render-and-compare channel artifact; enabling the channel
-  later remains a tap plus a secret rather than new decision code.
+  it. The authenticated typed release manifest is the data authority: a
+  release's formula is rendered from it, and `Formula/tl.rb` is the same
+  rendering at a placeholder release, compared byte-for-byte and still inside
+  the identity drift guard. Enabling the channel is a tap plus a secret rather
+  than new decision code.
 
 Deferring them is what makes the first release reachable at all. It is recorded
 here rather than left implicit because three separate mechanisms were treating

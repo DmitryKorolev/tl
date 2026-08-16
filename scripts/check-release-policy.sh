@@ -6,6 +6,18 @@
 #   scripts/check-release-policy.sh --tag v0.1.0        …and this is a tag run
 #   scripts/check-release-policy.sh --profile release   the v0.1 release path only
 #   scripts/check-release-policy.sh --list              name the gates and exit
+#   scripts/check-release-policy.sh --list-names        one gate name per line
+#   scripts/check-release-policy.sh --shellcheck-only   just that gate's body
+#   scripts/check-release-policy.sh --stamp-only        just that gate's body
+#
+# `--list-names` is the machine-readable listing `tlrelease policy-parity` reads
+# while the typed registry and this file both exist. It is a projection of the
+# same sequence the run performs — the run counts what it executed and refuses
+# if the two disagree — so it cannot become a third description that drifts from
+# both. The two `--*-only` flags exist for the same coexistence: they let the
+# typed registry name a real invocation for the two gates whose bodies live in
+# this file, so the registry's runner can be exercised before it is
+# authoritative. All three go with this script.
 #
 # `--tag` states that this is a release run rather than a working-tree check.
 # It no longer gates tag agreement: that moved to `tlrelease version-consistency
@@ -49,11 +61,16 @@ cd "$repo_root"
 RC_POLICY_STRICT=0
 tag=''
 list=0
+list_names=0
+only=''
 profile=ci
 while [ "$#" -gt 0 ]; do
   case $1 in
     --strict) RC_POLICY_STRICT=1; shift ;;
     --list) list=1; shift ;;
+    --list-names) list_names=1; shift ;;
+    --shellcheck-only) only=shellcheck; shift ;;
+    --stamp-only) only=stamp; shift ;;
     --profile)
       [ "$#" -ge 2 ] || {
         echo "check-release-policy: --profile takes ci or release" >&2
@@ -77,7 +94,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "check-release-policy: unknown argument '$1' — pass --strict, --tag <tag>, --profile <ci|release>, --list, or nothing" >&2
+      echo "check-release-policy: unknown argument '$1' — pass --strict, --tag <tag>, --profile <ci|release>, --list, --list-names, --shellcheck-only, --stamp-only, or nothing" >&2
       exit 2
       ;;
   esac
@@ -118,6 +135,39 @@ shellcheck_all() {
   # shellcheck disable=SC2086
   shellcheck -S warning $files
 }
+
+# The gate names, in the order the run below performs them. Every name here is
+# one `rc_gate`/`rc_tool_gate` call there and the run compares the two counts, so
+# a gate added to one and not the other is a failing run rather than a listing
+# nobody reads.
+gate_names() {
+  cat <<'NAMES'
+task-id lint selftest
+task-id leakage
+shell static analysis
+build-provenance generator selftest
+artifact verifier selftest
+release runtime boundary selftest
+installer selftest
+workflow lint
+NAMES
+  [ -n "$tag" ] || echo "the checked-in build stamp is the development stamp"
+  [ "$profile" = ci ] && echo "deferred-channel gates"
+  return 0
+}
+
+if [ -n "$only" ]; then
+  case $only in
+    shellcheck) shellcheck_all ;;
+    stamp) development_stamp_is_checked_in ;;
+  esac
+  exit $?
+fi
+
+if [ "$list_names" -eq 1 ]; then
+  gate_names
+  exit 0
+fi
 
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
@@ -258,6 +308,17 @@ if [ "$profile" = ci ]; then
   else
     rc_gate "deferred-channel gates" ./scripts/check-channel-policy.sh
   fi
+fi
+
+# The listing and the run are one sequence or they are two documents. Counted
+# rather than compared name-by-name, because the run's own names are already
+# what `rc_gate` printed: what can drift is a gate added to one and not the
+# other, and that changes the count.
+listed=$(gate_names | wc -l | tr -d ' ')
+ran=$((RC_POLICY_PASSED + RC_POLICY_FAILED + RC_POLICY_SKIPPED))
+if [ "$listed" -ne "$ran" ]; then
+  echo "::error::this run performed $ran gate(s) and --list-names names $listed. One of them was edited without the other, and the machine-readable listing is what the typed registry is compared against." >&2
+  exit 1
 fi
 
 rc_policy_end "release policy"

@@ -757,6 +757,12 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.Homebrew.coverageBlockers_isEmpty_iff
   let _ := @Release.Homebrew.tapDisposition_identical_iff
   let _ := @Release.Homebrew.tapDisposition_absent_iff
+  let _ := @Release.Policy.gateRuns_iff
+  let _ := @Release.Policy.runAccepts_iff
+  let _ := @Release.Policy.runFailures_isEmpty_iff
+  let _ := @Release.Policy.publicationCommand_iff
+  let _ := @Release.Policy.contributedEffects_eq
+  let _ := @Release.Policy.effectsOf_ne_nil
   let _ := @Release.identityAccepts_iff
   let _ := @Release.auditPermits_iff
   let _ := @Release.auditBlockers_isEmpty_iff
@@ -2860,12 +2866,24 @@ private def tapPublishTests : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
   let manifestText := okOr "<the fixture stopped assembling>" (do render (← describedManifest))
   let prereleaseText := okOr "<the fixture stopped assembling>" (do render (← describedPrerelease))
-  let manifestPath := (base / "release-manifest.json").toString
+  let dist := base / "dist"
+  IO.FS.createDirAll dist
+  let manifestPath := (dist / "release-manifest.json").toString
   IO.FS.writeFile manifestPath manifestText
-  let prereleasePath := (base / "prerelease.json").toString
+  let prereleasePath := (dist / "prerelease.json").toString
   IO.FS.writeFile prereleasePath prereleaseText
-  let formulaPath := (base / "tl.rb").toString
-  IO.FS.writeFile formulaPath "class Tl < Formula\nend\n"
+  IO.FS.writeFile (dist / "SHA256SUMS").toString "sums\n"
+  -- What this release renders, computed the way the command does, so the rows
+  -- below compare the tap against the release rather than against a file the
+  -- test happened to write.
+  let sumsDigest ← (do
+    match ← Digester.resolve with
+    | .error message => pure (.error message)
+    | .ok digester => pure (← digester.digest (dist / "SHA256SUMS").toString))
+  let expected := okOr "<the fixture stopped rendering>" (do
+    let description ← ManifestDescription.parse "m" manifestText
+    Homebrew.renderCovering description.distributedTargets
+      (Homebrew.specOf description (← sumsDigest)))
   -- The tap, as a bare repository the release job pushes to. Named for the tap
   -- the fixture manifest describes, because that is what the origin check reads.
   let owner := base / "Owner"
@@ -2883,13 +2901,13 @@ private def tapPublishTests : IO (List Outcome) := do
   let before ← commitCount checkout
   -- A prerelease first: the tap must be left exactly as it is.
   let (preStatus, preOut, preErr) ← runCommand "homebrew-publish"
-    ["--manifest", prereleasePath, "--formula", formulaPath, "--tap", checkout]
+    ["--dist", dist.toString, "--manifest", prereleasePath, "--tap", checkout]
   let afterPrerelease ← commitCount checkout
   let (dryStatus, dryOut, dryErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout, "--dry-run"]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout, "--dry-run"]
   let afterDry ← commitCount checkout
   let (firstStatus, firstOut, firstErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
   let afterFirst ← commitCount checkout
   let published ← if ← System.FilePath.pathExists (checkout ++ "/Formula/tl.rb") then
       IO.FS.readFile (checkout ++ "/Formula/tl.rb") else pure ""
@@ -2898,13 +2916,17 @@ private def tapPublishTests : IO (List Outcome) := do
   -- Twice. A job that failed after pushing and is retried must reach the
   -- comparison and stop, not add a second commit saying the same thing.
   let (againStatus, againOut, _) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
   let afterAgain ← commitCount checkout
-  -- A changed formula replaces it.
-  IO.FS.writeFile formulaPath "class Tl < Formula\n  # v2\nend\n"
+  -- A tap holding some other formula is replaced by this release's.
+  IO.FS.writeFile (checkout ++ "/Formula/tl.rb") "class Tl < Formula\n  # someone else\nend\n"
+  let _ ← gitRun checkout ["add", "-A"]
+  let _ ← gitRun checkout
+    ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "drift"]
   let (changedStatus, changedOut, _) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
   let afterChanged ← commitCount checkout
+  let restored ← IO.FS.readFile (checkout ++ "/Formula/tl.rb")
   -- A checkout of the wrong repository.
   let wrongRemote := (base / "elsewhere.git").toString
   let _ ← gitRun base.toString ["init", "--bare", "--initial-branch=main", "--", wrongRemote]
@@ -2912,20 +2934,20 @@ private def tapPublishTests : IO (List Outcome) := do
   let _ ← gitRun base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
   IO.FS.createDirAll (wrongCheckout ++ "/Formula")
   let (wrongStatus, _, wrongErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", wrongCheckout]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", wrongCheckout]
   -- A tap with no Formula directory: a shape this command updates rather than
   -- decides.
   let bareCheckout := (base / "noformula").toString
   let _ ← gitRun base.toString ["clone", "--quiet", "--", remotePath, bareCheckout]
   IO.FS.removeDirAll (bareCheckout ++ "/Formula")
   let (noDirStatus, _, noDirErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", bareCheckout]
-  let (absentFormula, _, absentFormulaErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", (base / "nothing.rb").toString, "--tap", checkout]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", bareCheckout]
+  let (absentSums, _, absentSumsErr) ← runCommand "homebrew-publish"
+    ["--dist", (base / "nowhere").toString, "--manifest", manifestPath, "--tap", checkout]
   let (notARepo, _, notARepoErr) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", base.toString]
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", base.toString]
   let (publishUsage, _, _) ← runCommand "homebrew-publish"
-    ["--manifest", manifestPath, "--formula", formulaPath]
+    ["--dist", dist.toString, "--manifest", manifestPath]
   IO.FS.removeDirAll base
   return [
     check "homebrew-publish: a prerelease is an outcome, not a failure" (preStatus == 0) preErr,
@@ -2939,10 +2961,13 @@ private def tapPublishTests : IO (List Outcome) := do
     check "homebrew-publish: a stable release updates the tap" (firstStatus == 0) firstErr,
     check "homebrew-publish: it says what it pushed and where"
       (contains firstOut "v1.2.3" && contains firstOut "Owner/homebrew-tap") firstOut,
-    checkEq "homebrew-publish: the tap's working tree carries the formula"
-      published "class Tl < Formula\nend\n",
+    -- The bytes pushed are what this release renders, not a file the caller
+    -- named: passing the tracked placeholder used to publish `version 0.0.0`
+    -- and five all-zero digests while reporting the release's own tag.
+    checkEq "homebrew-publish: the tap carries the formula this release renders"
+      published expected,
     check "homebrew-publish: the remote received it, which is what pushing means"
-      (remoteHas.toOption.map (·.stdout) == some "class Tl < Formula\nend\n")
+      (remoteHas.toOption.map (·.stdout) == some expected)
       s!"the bare repository does not hold the formula: {errorOf remoteHas}",
     checkEq "homebrew-publish: publishing added exactly one commit"
       (before, afterFirst) ("1", "2"),
@@ -2954,7 +2979,10 @@ private def tapPublishTests : IO (List Outcome) := do
     check "homebrew-publish: a changed formula is pushed" (changedStatus == 0) changedOut,
     check "homebrew-publish: it says the tap carried a different formula"
       (contains changedOut "different formula") changedOut,
-    checkEq "homebrew-publish: the change is one further commit" afterChanged "3",
+    checkEq "homebrew-publish: the replacement is this release's formula" restored expected,
+    -- One more than the drift commit the fixture made, not one more than the
+    -- publication: the tap moved, and this replaced it.
+    checkEq "homebrew-publish: the change is one further commit" afterChanged "4",
     -- The destination check, and the refusal that must not quote the remote.
     checkEq "homebrew-publish: a checkout of another repository is refused" wrongStatus 1,
     check "homebrew-publish: the refusal names the tap the manifest describes"
@@ -2964,9 +2992,9 @@ private def tapPublishTests : IO (List Outcome) := do
     checkEq "homebrew-publish: a tap with no Formula directory is refused" noDirStatus 1,
     check "homebrew-publish: that refusal says a tap keeps its formulae under Formula/"
       (contains noDirErr "under Formula/") noDirErr,
-    checkEq "homebrew-publish: a formula that is not there is refused" absentFormula 1,
-    check "homebrew-publish: that refusal names the path" (contains absentFormulaErr "nothing.rb")
-      absentFormulaErr,
+    checkEq "homebrew-publish: a directory with no SHA256SUMS is refused" absentSums 1,
+    check "homebrew-publish: that refusal names the file the fallback url needs"
+      (contains absentSumsErr "SHA256SUMS") absentSumsErr,
     checkEq "homebrew-publish: a directory that is not a git checkout is refused" notARepo 1,
     check "homebrew-publish: that refusal carries git's own diagnosis"
       (contains notARepoErr "git") notARepoErr,
@@ -3041,6 +3069,7 @@ private def formulaFixtures : List (String × String × List String) :=
 
 /-- The tracked copies, and what this renderer says they should be. -/
 private def formulaDriftTests : IO (List Outcome) := do
+  let scratch ← IO.FS.createTempDir
   let tracked ← IO.FS.readFile "Formula/tl.rb"
   let identityText ← IO.FS.readFile "release/identity.json"
   let targetsText ← IO.FS.readFile "release/targets.json"
@@ -3063,7 +3092,14 @@ private def formulaDriftTests : IO (List Outcome) := do
         (match expected with
          | .error message => s!"the {name} fixture did not render: {message}"
          | .ok text =>
-             s!"{path} is stale — real Homebrew audits it in CI, so it has to be this renderer's own output; rendered {text.length} bytes against {committed.length} committed")]
+             s!"{path} is stale — real Homebrew audits it in CI, so it has to be this renderer's own output. What it should contain has been written to {(scratch / s!"{name}.rb").toString}; copy that over it. Rendered {text.length} bytes against {committed.length} committed")]
+    -- Written whether or not the row holds, because a failing row whose remedy
+    -- is "reproduce 190 lines by hand" is a row people edit the fixture to
+    -- satisfy. These are the only formulae in the repository with no command
+    -- that regenerates them: they describe a release, and no release exists.
+    match expected with
+    | .ok text => IO.FS.writeFile (scratch / s!"{name}.rb").toString text
+    | .error _ => pure ()
   return fixtureRows ++ [
     -- The whole point of rendering rather than substituting: the tracked file
     -- is an output, so editing it by hand fails here instead of quietly
@@ -3213,6 +3249,235 @@ private def homebrewTests : List Outcome :=
       "a formula with no url, no block and an empty pin list was rendered",
     check "formula: that refusal says the tap update would publish nothing"
       (mentions nothingPinned "publishes nothing") (errorOf nothingPinned)]
+
+/-! ## The typed release policy registry
+
+The registry is data, so what these establish is that the projections of it are
+the ones the shell performs — and that the three decisions over it (may a gate
+be skipped, did the run pass, what does a surface contribute) are the ones the
+theorems characterise, driven to every crossing. -/
+
+private def sampleGate (name : String) (requires : List Policy.ToolRequirement) : Policy.Gate :=
+  { name, requires, profiles := [.ci], onTag := .always
+    invocation := .tool "true" [], summary := "" }
+
+private def presentOnly (tools : List String) : String → Bool := fun tool => tools.contains tool
+
+private def policyTests : List Outcome :=
+  let ciNames := Policy.gateNames .ci false
+  let releaseNames := Policy.gateNames .release false
+  let releaseTagNames := Policy.gateNames .release true
+  let needsBoth := sampleGate "two tools"
+    [{ tool := "actionlint", lost := "actionlint is not on PATH" },
+     { tool := "shellcheck", lost := "actionlint is present but shellcheck is not" }]
+  let needsNone := sampleGate "no tools" []
+  let missingOf (present : List String) (gate : Policy.Gate) : Option String :=
+    (Policy.firstMissing (presentOnly present) gate).map (·.lost)
+  let rows (outcomes : List Policy.GateOutcome) : List (Policy.Gate × Policy.GateOutcome) :=
+    outcomes.map fun outcome => (needsNone, outcome)
+  let accepts (strict : Bool) (outcomes : List Policy.GateOutcome) : Bool :=
+    Policy.runAccepts strict (rows outcomes)
+  let reportSays (strict : Bool) (outcome : Policy.GateOutcome) (needle : String) : Bool :=
+    (Policy.runFailures strict (rows [outcome])).any fun failure => contains failure needle
+  let saysAny (problems : List String) (needle : String) : Bool :=
+    problems.any fun problem => contains problem needle
+  let planWithChannels (npm brew : Bool) : Option ReleasePlan :=
+    (ReleasePlan.parse "p" (planTextOf npm brew)).toOption
+  [ -- Profiles, and the one difference between them.
+    checkEq "policy: the release profile is the ci profile without the deferred channels"
+      (ciNames.filter fun name => !name.startsWith "npm " && name != "the rendered formulae parse")
+      releaseNames,
+    check "policy: the deferred-channel gates are in ci and not in release"
+      (["npm package selftest", "npm publisher selftest", "npm bootstrap selftest",
+        "the rendered formulae parse"].all fun name =>
+          ciNames.contains name && !releaseNames.contains name)
+      s!"{ciNames}",
+    -- The tag run omits the working-tree gate rather than skipping it.
+    checkEq "policy: a tag run omits the build-stamp gate"
+      (releaseNames.filter (· != "the checked-in build stamp is the development stamp"))
+      releaseTagNames,
+    check "policy: nothing else changes on a tag run"
+      (releaseTagNames.length + 1 == releaseNames.length)
+      s!"{releaseNames.length} against {releaseTagNames.length}",
+    check "policy: every gate is in at least one profile"
+      (Policy.gates.all fun gate => !gate.profiles.isEmpty) "a gate no profile runs",
+    check "policy: every gate name is distinct"
+      ((Policy.gates.map (·.name)).eraseDups.length == Policy.gates.length)
+      s!"{Policy.gates.map (·.name)}",
+    checkEq "policy: a profile name parses" (Policy.Profile.parse "p" "release").toOption
+      (some .release),
+    check "policy: an unknown profile is refused with both spellings"
+      (mentions (Policy.Profile.parse "--profile" "everything") "'ci'"
+        && mentions (Policy.Profile.parse "--profile" "everything") "'release'")
+      (errorOf (Policy.Profile.parse "--profile" "everything")),
+    -- Whether a gate runs, across every crossing of its requirements.
+    check "policy: a gate with no requirements always runs"
+      (Policy.gateRuns (presentOnly []) needsNone) "",
+    check "policy: a gate whose tools are all present runs"
+      (Policy.gateRuns (presentOnly ["actionlint", "shellcheck"]) needsBoth) "",
+    check "policy: a gate missing its first tool does not run"
+      (!Policy.gateRuns (presentOnly ["shellcheck"]) needsBoth) "",
+    check "policy: a gate missing its second tool does not run"
+      (!Policy.gateRuns (presentOnly ["actionlint"]) needsBoth) "",
+    -- …and the first missing requirement decides, so a two-tool gate reports
+    -- each absence in its own terms rather than in one.
+    checkEq "policy: the first missing requirement is what the report names"
+      (missingOf ["shellcheck"] needsBoth) (some "actionlint is not on PATH"),
+    checkEq "policy: a later missing requirement gets its own wording"
+      (missingOf ["actionlint"] needsBoth)
+      (some "actionlint is present but shellcheck is not"),
+    checkEq "policy: nothing is missing when everything is present"
+      (missingOf ["actionlint", "shellcheck"] needsBoth) none,
+    -- Whether the run passed, across outcome × strict.
+    check "policy: a run of passing gates passes" (accepts false [.passed, .passed]) "",
+    check "policy: a failed gate fails the run, whatever follows it"
+      (!accepts false [.failed "why", .passed]) "",
+    check "policy: a failed gate fails a strict run too"
+      (!accepts true [.failed "why"]) "",
+    check "policy: a skipped gate is tolerated without --strict"
+      (accepts false [.passed, .skipped { tool := "ruby", lost := "ruby is not on PATH" }]) "",
+    check "policy: a skipped gate fails under --strict"
+      (!accepts true [.skipped { tool := "ruby", lost := "ruby is not on PATH" }]) "",
+    check "policy: the strict refusal says a missing tool is a broken job, not a smaller release"
+      (reportSays true (.skipped { tool := "ruby", lost := "ruby is not on PATH" }) "broken job") "",
+    check "policy: the strict refusal also names what the absence costs"
+      (reportSays true (.skipped { tool := "ruby", lost := "ruby is not on PATH" })
+        "ruby is not on PATH") "",
+    check "policy: a failed gate's report carries what the gate said"
+      (reportSays false (.failed "it refused") "it refused") "",
+    check "policy: a failed gate's report names the gate"
+      (reportSays false (.failed "it refused") "no tools") "",
+    checkEq "policy: a passing run reports nothing" (Policy.runFailures true (rows [.passed])) [],
+    -- Surface effects. The installer is the row worth reading twice.
+    check "policy: the three publication channels publish"
+      (Policy.publicationChannels.all fun channel =>
+        (Policy.effectsOf channel).contains .publicationCommand) "",
+    check "policy: the installer contributes no publication effect"
+      (!(Policy.effectsOf .installer).contains .publicationCommand
+        && !(Policy.effectsOf .installer).contains .workflowJob) "",
+    check "policy: the installer contributes presence and documentation instead"
+      ((Policy.effectsOf .installer).contains .presence
+        && (Policy.effectsOf .installer).contains .documentation) "",
+    check "policy: an enabled surface contributes exactly its own effects"
+      (match planWithChannels true false with
+       | some plan => Policy.contributedEffects plan .npm == Policy.effectsOf .npm
+       | none => false) "",
+    check "policy: a deferred surface contributes none of them"
+      (match planWithChannels false false with
+       | some plan => (Policy.contributedEffects plan .npm).isEmpty
+           && (Policy.contributedEffects plan .homebrew).isEmpty
+       | none => false) "",
+    check "policy: the surfaces this release does publish still contribute"
+      (match planWithChannels false false with
+       | some plan => !(Policy.contributedEffects plan .githubRelease).isEmpty
+           && !(Policy.contributedEffects plan .installer).isEmpty
+       | none => false) "",
+    -- The parity oracle's own arithmetic.
+    checkEq "policy parity: identical lists agree" (Policy.parityProblems .ci ["a", "b"] ["a", "b"])
+      [],
+    check "policy parity: a gate the shell runs and the registry lacks is reported"
+      (saysAny (Policy.parityProblems .ci ["a"] ["a", "b"]) "the ci profile runs 'b'") "",
+    check "policy parity: a gate the registry invents is reported"
+      (saysAny (Policy.parityProblems .release ["a", "b"] ["a"]) "the typed registry puts 'b'") "",
+    check "policy parity: the same gates in a different order are reported"
+      (saysAny (Policy.parityProblems .ci ["b", "a"] ["a", "b"]) "different order") "",
+    -- The one result an oracle must never accept.
+    check "policy parity: an empty observed list is refused rather than satisfied"
+      (saysAny (Policy.parityProblems .ci [] []) "nothing to compare") "",
+    -- The grouping, whose two mistakes both make the comparison pass.
+    checkEq "policy parity: a grouped listing with its channel listing is well formed"
+      (Policy.groupingProblems ["a", Policy.shellChannelGroupGate] true) [],
+    checkEq "policy parity: an ungrouped listing with no channel listing is well formed"
+      (Policy.groupingProblems ["a", "b"] false) [],
+    check "policy parity: a grouped listing with no channel listing is refused"
+      (saysAny (Policy.groupingProblems ["a", Policy.shellChannelGroupGate] false) "would pass") "",
+    check "policy parity: a channel listing for an ungrouped profile is refused"
+      (saysAny (Policy.groupingProblems ["a", "b"] true) "nothing would expand into it") "",
+    checkEq "policy parity: the grouping gate expands into the channel gates"
+      (Policy.flattenShellNames ["a", Policy.shellChannelGroupGate, "z"] ["x", "y"])
+      ["a", "x", "y", "z"]]
+
+/-- The oracle against the shell scripts themselves.
+
+    Run here rather than only in CI, because the property is that the registry
+    tracks the shell *on this commit*: a gate added to one of them is a failing
+    test on the change that added it, not a failing job afterwards. -/
+private def policyParityTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let listing (name : String) (args : List String) : IO (Except String String) := do
+    match ← Release.succeeded "sh" ((["-c", "\"$@\"", "sh"] ++ args).toArray) with
+    | .error message => return .error s!"{name}: {message}"
+    | .ok output =>
+        let path := (base / name).toString
+        IO.FS.writeFile path output.stdout
+        return .ok path
+  let ci ← listing "ci.txt" ["./scripts/check-release-policy.sh", "--profile", "ci", "--list-names"]
+  let rel ← listing "release.txt"
+    ["./scripts/check-release-policy.sh", "--profile", "release", "--list-names"]
+  let relTag ← listing "release-tag.txt"
+    ["./scripts/check-release-policy.sh", "--profile", "release", "--tag", "v9.9.9", "--list-names"]
+  let chan ← listing "channel.txt" ["./scripts/check-channel-policy.sh", "--list-names"]
+  let run (args : List String) : IO (UInt32 × String × String) := runCommand "policy-parity" args
+  let mut outs : List Outcome := []
+  match ci, rel, relTag, chan with
+  | .ok ciPath, .ok relPath, .ok relTagPath, .ok chanPath =>
+      let (ciStatus, ciOut, ciErr) ← run ["--profile", "ci", "--observed", ciPath,
+        "--channel", chanPath]
+      let (relStatus, _, relErr) ← run ["--profile", "release", "--observed", relPath]
+      let (tagStatus, _, tagErr) ← run ["--profile", "release", "--observed", relTagPath, "--tag"]
+      -- The mutation that used to pass: the ci listing carries the grouping
+      -- gate, which flattens to nothing without a channel listing and leaves
+      -- exactly the release profile's gates behind.
+      let (crossed, _, crossedErr) ← run ["--profile", "release", "--observed", ciPath]
+      let (tagDrift, _, tagDriftErr) ← run ["--profile", "release", "--observed", relPath, "--tag"]
+      let emptyPath := (base / "empty.txt").toString
+      IO.FS.writeFile emptyPath "\n\n"
+      let (emptyStatus, _, emptyErr) ← run ["--profile", "ci", "--observed", emptyPath]
+      let (absent, _, absentErr) ← run ["--profile", "ci", "--observed", (base / "no.txt").toString]
+      let (usage, _, _) ← run ["--profile", "ci"]
+      let (badProfile, _, badProfileErr) ← run ["--profile", "everything", "--observed", ciPath]
+      outs := [
+        check "policy parity: the ci profile matches the shell policy on this commit"
+          (ciStatus == 0) ciErr,
+        check "policy parity: it says how many gates it compared"
+          (contains ciOut "13 gate(s)") ciOut,
+        check "policy parity: the release profile matches" (relStatus == 0) relErr,
+        check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
+        checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
+        check "policy parity: that refusal names the grouping gate"
+          (contains crossedErr "deferred-channel gates") crossedErr,
+        checkEq "policy parity: a non-tag listing does not satisfy a tag run" tagDrift 1,
+        check "policy parity: that refusal names the gate a tag run omits"
+          (contains tagDriftErr "build stamp") tagDriftErr,
+        checkEq "policy parity: an empty listing is refused" emptyStatus 1,
+        check "policy parity: that refusal says the comparison would have nothing to compare"
+          (contains emptyErr "nothing to compare") emptyErr,
+        checkEq "policy parity: a listing that is not there is refused" absent 1,
+        check "policy parity: that refusal names the path" (contains absentErr "no.txt") absentErr,
+        checkEq "policy parity: a missing --observed is a usage error" usage 2,
+        checkEq "policy parity: an unknown profile is a usage error" badProfile 2,
+        check "policy parity: that usage error names the profiles"
+          (contains badProfileErr "'release'") badProfileErr]
+  | _, _, _, _ =>
+      outs := [check "policy parity: the shell policy scripts list their gates" false
+        s!"{ci} {rel} {relTag} {chan}"]
+  -- `policy-list` is the same projection the oracle compares, driven through
+  -- the command a workflow would run.
+  let (listStatus, listOut, listErr) ← runCommand "policy-list" ["--profile", "release"]
+  let (listUsage, _, _) ← runCommand "policy-list" []
+  IO.FS.removeDirAll base
+  return outs ++ [
+    check "policy-list: it names the gates of a profile" (listStatus == 0) listErr,
+    -- The names, then the one summary line every command ends with. Compared
+    -- as "the names come first, in order" rather than as the whole stream, so
+    -- this stays a report a human reads and `policy-parity` keeps reading the
+    -- shell's machine-readable listing instead.
+    checkEq "policy-list: one name per line, in registry order"
+      (((listOut.splitOn "\n").filter (!·.isEmpty)).dropLast) (Policy.gateNames .release false),
+    check "policy-list: the last line is the command's own summary"
+      ((((listOut.splitOn "\n").filter (!·.isEmpty)).getLastD "").startsWith "tlrelease policy-list:")
+      listOut,
+    checkEq "policy-list: no profile is a usage error" listUsage 2]
 
 /-! ## The canonical signing identity
 
@@ -4770,11 +5035,11 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ policyTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests

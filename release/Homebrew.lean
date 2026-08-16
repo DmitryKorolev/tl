@@ -284,6 +284,18 @@ private def placeable (spec : Spec) : Except String Unit := do
       .error s!"'{pin.target.name}' has os '{pin.target.os}', and this renderer knows no Homebrew block for it. Adding an operating system means teaching it which of `on_macos` / `on_linux` the target belongs in; a target it cannot place would be dropped from the formula, which looks exactly like a target the release did not build."
     if (cpuBlock pin.target.cpu).isNone then
       .error s!"'{pin.target.name}' has cpu '{pin.target.cpu}', and this renderer knows no Homebrew block for it. Adding a processor means teaching it which of `on_arm` / `on_intel` the target belongs in."
+    -- Homebrew selects a spec by platform, so two targets on one platform have
+    -- one block between them and the block-writer below would take whichever it
+    -- found first. The other would keep its name in the pin list and have no
+    -- url — a Supported target that `install` admits and cannot fetch, which is
+    -- exactly the shape the coverage rule exists to prevent and which the
+    -- coverage rule cannot see, because its `pinned` means "named" rather than
+    -- "served". `release/targets.json` already carries `libc` to describe such
+    -- variants, so this is one row away from being reachable.
+    let sharing := spec.pins.filter fun other =>
+      other.target.os == pin.target.os && other.target.cpu == pin.target.cpu
+    if sharing.length > 1 then
+      .error s!"'{pin.target.name}' and {sharing.length - 1} other pinned target(s) are all {pin.target.os}/{pin.target.cpu}. A Homebrew formula selects one spec per platform, so they would share one block and only the first would get a url — the rest would be listed as pinned and install nothing. Homebrew has no libc selector; distributing two builds for one platform needs a different formula shape, decided deliberately."
 
 /-- The header, down to the licence line.
 
@@ -749,14 +761,14 @@ private def tapFormulaComponents : List String := ["Formula", "tl.rb"]
 private def tapFormulaRelative : String := String.intercalate "/" tapFormulaComponents
 
 private def publishOptions : List OptionSpec :=
-  [{ name := "manifest", takesValue := true },
-   { name := "formula", takesValue := true },
+  [{ name := "dist", takesValue := true },
+   { name := "manifest", takesValue := true },
    { name := "tap", takesValue := true },
    { name := "dry-run", takesValue := false }]
 
 private structure PublishArgs where
+  dist : String
   manifestPath : String
-  formulaPath : String
   tap : Write.OutputDirectory
   tapPath : String
   dryRun : Bool
@@ -764,8 +776,8 @@ private structure PublishArgs where
 private def publishArgs (options : Options) : Except String PublishArgs := do
   let tapPath ← options.required "tap"
   return {
+    dist := ← options.required "dist"
     manifestPath := ← options.required "manifest"
-    formulaPath := ← options.required "formula"
     tap := ← Write.OutputDirectory.parse "--tap" tapPath
     tapPath
     dryRun := options.given "dry-run" }
@@ -785,7 +797,16 @@ private def gitIn (tap : String) (args : List String) : Decision String := do
 
 private def publishDecision (args : PublishArgs) : Decision String := do
   let description ← readParsed args.manifestPath ManifestDescription.parse
-  let formula ← ofIO (readTextFile args.formulaPath)
+  -- Rendered here rather than taken as a path. A `--formula` argument makes the
+  -- bytes this pushes independent of the manifest it reports them as: passing
+  -- the tracked placeholder would publish `version 0.0.0` and five all-zero
+  -- digests to the tap while the command said it had pushed the formula for
+  -- this release. There is one formula for a release and it is a function of
+  -- the release, so this renders it.
+  let digester ← ofIO Digester.resolve
+  let sumsDigest ← ofIO (digester.digest (args.dist ++ "/SHA256SUMS"))
+  let spec := specOf description sumsDigest
+  let formula ← ofExcept (renderCovering description.distributedTargets spec)
   -- A tap carries one formula, so pushing a prerelease would make
   -- `brew install tl` resolve to it (ADR-0006). Read off the manifest rather
   -- than off the shape of the tag, and reported as an outcome rather than a
@@ -811,7 +832,13 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   -- own empty-diff behaviour: a release job that failed after pushing and is
   -- retried has to reach this and stop, and it has to say that it did.
   if state == .identical then
-    return s!"{description.homebrew.tap} already carries the formula for {description.tag}; nothing to push"
+    -- Pushed anyway, and this is not belt and braces: the file being right is a
+    -- fact about the *checkout*, and a previous run that committed and then
+    -- failed to push leaves exactly this state. `git push` with nothing to send
+    -- is a no-op, so the repair costs one command and its absence costs a tap
+    -- that never received the release.
+    let _ ← gitIn args.tapPath ["push"]
+    return s!"{description.homebrew.tap} already carries the formula for {description.tag}; nothing new to commit, and the branch is pushed"
   if args.dryRun then
     return s!"{state.describe}, and this release would replace it with the formula for {description.tag} — not written, --dry-run"
   let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
@@ -827,10 +854,9 @@ private def publishDecision (args : PublishArgs) : Decision String := do
 
 private def publishCommand : Command :=
   optionCommand "homebrew-publish"
-    "--manifest <path> --formula <path> --tap <dir> [--dry-run]"
-    "Update the tap with a rendered formula, once: an identical one is a no-op and a prerelease is not pushed."
-    ["--manifest", "dist/release-manifest.json", "--formula", "out/tl.rb", "--tap", "tap",
-     "--dry-run"]
+    "--dist <dir> --manifest <path> --tap <dir> [--dry-run]"
+    "Update the tap with this release's formula, once: an identical one is a no-op and a prerelease is not pushed."
+    ["--dist", "dist", "--manifest", "dist/release-manifest.json", "--tap", "tap", "--dry-run"]
     publishOptions publishArgs publishDecision
 
 def homebrewCommands : List Command := [renderCommand, placeholderCommand, publishCommand]

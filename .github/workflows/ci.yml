@@ -145,20 +145,28 @@ jobs:
             fi
             brew style tlci/formula/tl || { echo "::error::brew style rejected $candidate"; failures=$((failures + 1)); }
             brew audit --formula --skip-style tlci/formula/tl || { echo "::error::brew audit rejected $candidate"; failures=$((failures + 1)); }
-            # The resolved url must name the tag the formula was rendered for,
-            # read with the
-            # jq every runner has rather than an interpreter this repository
-            # would then owe a dependency row for.
-            resolved=$(brew info --json=v2 --formula tlci/formula/tl | jq -r '.formulae[0].urls.stable.url')
+            # The *version Homebrew arrived at*, not the url it echoed back.
+            # Every url in a rendered formula names its tag literally, so
+            # comparing the resolved url against that tag can only restate the
+            # file. The scanned version is the thing that can differ: Homebrew
+            # drops a SemVer prerelease suffix when it reads one out of a url,
+            # and `install` composes the signature bundle and notice urls from
+            # `#{version}` — so a prerelease that lost its explicit `version`
+            # line resolves to the stable number and every install 404s, with
+            # every url in the file still naming the right tag.
+            #
+            # Read with the jq every runner has rather than an interpreter this
+            # repository would then owe a dependency row for.
+            resolved=$(brew info --json=v2 --formula tlci/formula/tl | jq -r '.formulae[0].versions.stable')
             case "$candidate" in
-              *prerelease*) want=v1.2.3-rc.1 ;;
-              Formula/tl.rb) want=v0.0.0 ;;
-              *) want=v1.2.3 ;;
+              *prerelease*) want=1.2.3-rc.1 ;;
+              Formula/tl.rb) want=0.0.0 ;;
+              *) want=1.2.3 ;;
             esac
-            case "$resolved" in
-              *"/download/$want/"*) ;;
-              *) echo "::error::$candidate resolves to $resolved, which does not name $want — Homebrew scanned a different version than the formula was rendered for."; failures=$((failures + 1)) ;;
-            esac
+            if [ "$resolved" != "$want" ]; then
+              echo "::error::$candidate resolves to version $resolved, not $want — Homebrew scanned a different version than the formula was rendered for, and \`install\` composes its bundle and notice urls from that value."
+              failures=$((failures + 1))
+            fi
           done
           brew untap tlci/formula
           if [ "$failures" -ne 0 ]; then

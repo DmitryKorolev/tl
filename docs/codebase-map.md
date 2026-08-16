@@ -275,7 +275,12 @@ release/                -- what a release is, machine-readable; ADR-0028 owns
 
 install.sh              -- the curl-pipe installer; embeds its own copy of the
                         -- signing pin because it has no checkout to read
-Formula/tl.rb           -- the Homebrew formula, source of truth for the tap
+Formula/tl.rb           -- (GENERATED) the Homebrew formula at the placeholder
+                        -- release, rendered by `tlrelease
+                        -- homebrew-placeholder`. Real brew loads, styles and
+                        -- audits it in CI, so what brew judges is what a
+                        -- release publishes; the release's own formula comes
+                        -- from the signed manifest and is never this file
 npm/                    -- the npm packages: tl/ is the launcher (POSIX sh, no
                         -- lifecycle script), platform/<target>/ are the four
                         -- binary packages; the binaries are added at release

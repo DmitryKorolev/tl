@@ -722,10 +722,16 @@ def ManifestDescription.distributedTargets (description : ManifestDescription) :
     is published under. -/
 def npmScopeOf (package : String) : String := (package.splitOn "/").headD package
 
-/-- The platform package for one target, under a scope. The one site that knows
-    how a platform package is spelled on the reading side; `Manifest.npmPackages`
-    is the one that knows it on the writing side, and the coherence check below
-    is what holds them together. -/
+/-- The platform package for one target, under a scope.
+
+    The one site that knows how a platform package is spelled on the reading
+    side; `Manifest.npmPackages` is the one that knows it on the writing side.
+    What the coherence check below holds together is the *shape*: the launcher's
+    own name is taken out of the document, so a manifest whose package list is
+    consistently under some other scope is coherent. Nothing in a manifest could
+    say otherwise — the scope comes from `release/identity.json` at generation,
+    and the signature is what says the document is ours. Holding the launcher to
+    that file is the npm publisher's job, at the point where it has the file. -/
 def npmPlatformPackage (scope target : String) : String := s!"{scope}/tl-bin-{target}"
 
 /-- What `npm install` would resolve to for a release at this version. A
@@ -866,7 +872,7 @@ def descriptionChecks (description : ManifestDescription) : List Check :=
      failure := s!"records the npm dist-tag '{description.npm.distTag}' for version {description.version.render}, whose tag is '{npmDistTagFor description.version}'. A prerelease published as 'latest' is what `npm install tl` resolves to for everyone, and npm versions cannot be withdrawn." },
    { held := description.npm.packages == npmPackagesFor (description.npm.packages.headD "")
        description.publishedTargets,
-     failure := s!"records an npm package list that does not follow from the targets it published. It must be the launcher package followed by one platform package per published target, in target order: {String.intercalate ", " (npmPackagesFor (description.npm.packages.headD "<none>") description.publishedTargets)}. A package published from a list that disagrees with the target rows either points at a binary this release does not have, or omits a platform it does." },
+     failure := s!"records an npm package list whose shape does not follow from the targets it published. It must be the launcher package followed by one platform package per published target, under the launcher's own scope, in target order: {String.intercalate ", " (npmPackagesFor (description.npm.packages.headD "<none>") description.publishedTargets)}. A package published from a list that disagrees with the target rows either points at a binary this release does not have, or omits a platform it does." },
    { held := description.homebrew.push == !description.version.isPrerelease,
      failure := s!"records homebrew push {description.homebrew.push} for version {description.version.render}. A tap carries one formula, so pushing a prerelease makes `brew install tl` resolve to it (ADR-0006); the decision follows from the version and this document states a different one." },
    { held := description.homebrew.pinnedTargets == description.publishedTargets,

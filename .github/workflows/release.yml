@@ -1316,8 +1316,11 @@ jobs:
       # decision about it: whether this release pushes at all (a tap carries one
       # formula, so a prerelease does not), whether the checkout is the tap the
       # signed manifest names, and whether the formula it already holds is this
-      # one. Running it twice is a no-op, so a job retried after a successful
-      # push does not add a second commit saying the same thing.
+      # one. It renders the formula itself rather than taking the file above, so
+      # the bytes it pushes are a function of the manifest it reports them as
+      # and not of which path this step happened to name. Running it twice is a
+      # no-op, so a job retried after a successful push does not add a second
+      # commit saying the same thing.
       - name: clone the tap
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -1326,7 +1329,7 @@ jobs:
 
       - name: publish the formula to the tap
         if: ${{ !contains(github.ref_name, '-') }}
-        run: ./tool/tlrelease homebrew-publish --manifest dist/release-manifest.json --formula out/tl.rb --tap tap
+        run: ./tool/tlrelease homebrew-publish --dist dist --manifest dist/release-manifest.json --tap tap
 
   # ---------------------------------------------------------------------------
   # 5. npm.

@@ -303,8 +303,24 @@ def Target.buildMetadataAsset (target : Target) : String :=
 def Target.linkAuditAsset (target : Target) : String :=
   "link-audit-" ++ target.name ++ ".txt"
 
+/-- What a target may be called.
+
+    Restricted rather than free text, because the name is not only a label: it
+    is spliced into an asset name, into url paths, into npm package names, and —
+    through the rendered Homebrew formula — into Ruby source that every `brew
+    install` from the tap executes. A name carrying a quote closes that string
+    literal and everything after it is code; one carrying a space silently
+    splits the formula's `%w[]` pin list. Closing that at the parser is the one
+    place it does not have to be remembered again per consumer. -/
+private def validTargetName (text : String) : Bool :=
+  !text.isEmpty
+    && !text.startsWith "-" && !text.endsWith "-"
+    && text.all fun c => ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '-'
+
 def parseTarget (cursor : Cursor) (value : Json) : Except String Target := do
   let name ← nonEmptyStringField cursor value "target"
+  if !validTargetName name then
+    (cursor.at "target").fail s!"'{name}' is not a target name. A target name is lowercase letters, digits and interior hyphens — it is spliced into asset names, release urls, npm package names and the Ruby source of the Homebrew formula, where a quote ends a string literal and a space splits a word list. Rename the target rather than teaching each consumer to escape it."
   let tier ← Tier.parse (cursor.at "tier").render (← stringField cursor value "tier")
   let os ← nonEmptyStringField cursor value "os"
   let cpu ← nonEmptyStringField cursor value "cpu"

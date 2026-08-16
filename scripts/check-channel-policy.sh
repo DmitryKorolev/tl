@@ -4,6 +4,8 @@
 #   scripts/check-channel-policy.sh            everything runnable here
 #   scripts/check-channel-policy.sh --strict   …and no gate may be skipped
 #   scripts/check-channel-policy.sh --list     name the gates and exit
+#   scripts/check-channel-policy.sh --list-names  one gate name per line
+#   scripts/check-channel-policy.sh --ruby-only   just that gate's body
 #
 # These run on every commit — `scripts/check-release-policy.sh` calls this file
 # under its default profile — whether or not release/plan.json publishes through
@@ -34,16 +36,36 @@ RC_LIB_SELF="$script_dir/lib/release-common.sh"
 
 RC_POLICY_STRICT=0
 list=0
+list_names=0
+only=''
 while [ "$#" -gt 0 ]; do
   case $1 in
     --strict) RC_POLICY_STRICT=1; shift ;;
     --list) list=1; shift ;;
+    --list-names) list_names=1; shift ;;
+    --ruby-only) only=ruby; shift ;;
     *)
-      echo "check-channel-policy: unknown argument '$1' — pass --strict, --list, or nothing" >&2
+      echo "check-channel-policy: unknown argument '$1' — pass --strict, --list, --list-names, --ruby-only, or nothing" >&2
       exit 2
       ;;
   esac
 done
+
+# The gate names, in the order the run below performs them; the run compares its
+# own count against this, so the two cannot drift apart silently.
+gate_names() {
+  cat <<'NAMES'
+npm package selftest
+npm publisher selftest
+npm bootstrap selftest
+the rendered formulae parse
+NAMES
+}
+
+if [ "$list_names" -eq 1 ]; then
+  gate_names
+  exit 0
+fi
 
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
@@ -56,20 +78,6 @@ deferred-channel gates, in order:
 GATES
   exit 0
 fi
-
-rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]; then echo ", strict"; fi)"
-
-# Each gate states the tool it needs and `rc_tool_gate` decides the rest —
-# present or absent, strict or not, passed or failed. Stating it per gate rather
-# than wrapping three in one `command -v` also stops a fourth npm gate from
-# landing inside a branch written for the three above it.
-rc_tool_gate "npm package selftest" --tool npm -- ./scripts/npm-pack.sh --selftest
-# The publisher's refusals are the ones that matter most: an npm version
-# cannot be reissued, so a mistake here is not correctable after the fact.
-rc_tool_gate "npm publisher selftest" --tool npm -- ./scripts/npm-publish.sh --selftest
-# The one-time bootstrap is the only manual step before the first release,
-# and the only one that publishes an immutable version by hand.
-rc_tool_gate "npm bootstrap selftest" --tool npm -- ./scripts/npm-bootstrap.sh --selftest
 
 # Nothing else on a non-macOS machine evaluates the formulae. Real Homebrew is
 # the acceptance authority and the `homebrew-formula` job is where it runs, so
@@ -97,6 +105,34 @@ formulae_parse() {
   echo "Formula/tl.rb and $(printf '%s\n' "$fixtures" | wc -l | tr -d ' ') rendered fixtures parse as Ruby"
 }
 
+if [ -n "$only" ]; then
+  case $only in
+    ruby) formulae_parse ;;
+  esac
+  exit $?
+fi
+
+rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]; then echo ", strict"; fi)"
+
+# Each gate states the tool it needs and `rc_tool_gate` decides the rest —
+# present or absent, strict or not, passed or failed. Stating it per gate rather
+# than wrapping three in one `command -v` also stops a fourth npm gate from
+# landing inside a branch written for the three above it.
+rc_tool_gate "npm package selftest" --tool npm -- ./scripts/npm-pack.sh --selftest
+# The publisher's refusals are the ones that matter most: an npm version
+# cannot be reissued, so a mistake here is not correctable after the fact.
+rc_tool_gate "npm publisher selftest" --tool npm -- ./scripts/npm-publish.sh --selftest
+# The one-time bootstrap is the only manual step before the first release,
+# and the only one that publishes an immutable version by hand.
+rc_tool_gate "npm bootstrap selftest" --tool npm -- ./scripts/npm-bootstrap.sh --selftest
+
 rc_tool_gate "the rendered formulae parse" --tool ruby -- formulae_parse
+
+listed=$(gate_names | wc -l | tr -d ' ')
+ran=$((RC_POLICY_PASSED + RC_POLICY_FAILED + RC_POLICY_SKIPPED))
+if [ "$listed" -ne "$ran" ]; then
+  echo "::error::this run performed $ran gate(s) and --list-names names $listed. One of them was edited without the other." >&2
+  exit 1
+fi
 
 rc_policy_end "channel policy"
