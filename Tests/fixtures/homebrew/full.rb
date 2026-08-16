@@ -43,8 +43,8 @@ class Tl < Formula
   # not, the spec still resolves, Homebrew downloads a few hundred bytes, and
   # `install` refuses with an explanation naming the tier — a message instead of
   # a crash report.
-  url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/SHA256SUMS"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3/SHA256SUMS"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000009"
   license "Apache-2.0"
 
   depends_on "cosign"
@@ -76,23 +76,23 @@ class Tl < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}darwin-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3/#{ASSET_PREFIX}darwin-arm64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000003"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}darwin-x64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3/#{ASSET_PREFIX}darwin-x64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000004"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}linux-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3/#{ASSET_PREFIX}linux-arm64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000002"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}linux-x64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3/#{ASSET_PREFIX}linux-x64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000001"
     end
   end
 

@@ -51,6 +51,7 @@ inventory.
 import release.Boundary
 import release.Certificate
 import release.Consistency
+import release.Homebrew
 import release.Identity
 import release.Manifest
 import release.Metadata
@@ -67,7 +68,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  boundaryCommands ++ certificateCommands ++ consistencyCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
+  boundaryCommands ++ certificateCommands ++ consistencyCommands ++ homebrewCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ planCommands ++ prerequisiteCommands ++ sbomCommands
 
 def usage : String :=
   let header :=

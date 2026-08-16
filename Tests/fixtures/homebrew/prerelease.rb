@@ -43,8 +43,13 @@ class Tl < Formula
   # not, the spec still resolves, Homebrew downloads a few hundred bytes, and
   # `install` refuses with an explanation naming the tier — a message instead of
   # a crash report.
-  url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/SHA256SUMS"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3-rc.1/SHA256SUMS"
+  # Homebrew scans the version out of the url above and `brew audit` calls an
+  # explicit one redundant with it — but its scanner drops a SemVer prerelease
+  # suffix, so without this line every url below would name a tag that does
+  # not exist and this formula would claim the stable version number.
+  version "1.2.3-rc.1"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000009"
   license "Apache-2.0"
 
   depends_on "cosign"
@@ -76,23 +81,23 @@ class Tl < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}darwin-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3-rc.1/#{ASSET_PREFIX}darwin-arm64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000003"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}darwin-x64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3-rc.1/#{ASSET_PREFIX}darwin-x64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000004"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}linux-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3-rc.1/#{ASSET_PREFIX}linux-arm64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000002"
     end
     on_intel do
-      url "https://github.com/DmitryKorolev/tl/releases/download/v0.0.0/#{ASSET_PREFIX}linux-x64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      url "https://github.com/DmitryKorolev/tl/releases/download/v1.2.3-rc.1/#{ASSET_PREFIX}linux-x64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000001"
     end
   end
 

@@ -308,12 +308,14 @@ def parseTarget (cursor : Cursor) (value : Json) : Except String Target := do
   let tier ← Tier.parse (cursor.at "tier").render (← stringField cursor value "tier")
   let os ← nonEmptyStringField cursor value "os"
   let cpu ← nonEmptyStringField cursor value "cpu"
-  -- Optional, but not optional-or-whatever: absent is a target with no libc
-  -- floor, and present-but-not-a-string is a malformed file. Reading the
-  -- second as the first is the absent/malformed conflation this whole module
-  -- exists to remove, and it was the one field here still doing it.
+  -- Optional, but not optional-or-whatever: a target with no libc floor may
+  -- say so by omitting the key, as `release/targets.json` does, or by writing
+  -- `null`, as a manifest row does to keep every row the same shape. Anything
+  -- else present is a malformed file — reading *that* as absent is the
+  -- absent/malformed conflation this module exists to remove.
   let libc ← match field? value "libc" with
     | none => pure none
+    | some .null => pure none
     | some found => do
         let text ← asString (cursor.at "libc") found
         pure (some text)
@@ -518,6 +520,12 @@ structure Identity where
 /-- The owner half of `owner/name`, which is the Homebrew tap's namespace. -/
 def Identity.owner (identity : Identity) : String :=
   (identity.repository.splitOn "/").headD identity.repository
+
+/-- The tap a release publishes its formula to. Derived from the repository
+    owner rather than configured, so the tap and the signing identity cannot
+    name two different people. -/
+def Identity.homebrewTap (identity : Identity) : String :=
+  identity.owner ++ "/homebrew-tap"
 
 def Identity.parse (document : String) (text : String) : Except String Identity := do
   let cursor : Cursor := { document }

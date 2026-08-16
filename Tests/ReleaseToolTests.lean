@@ -347,8 +347,16 @@ private def completeBuildMetadata : String := objectOf buildMetadataFields
 private def optionalBuildFields : List String :=
   ["runnerOs", "runnerArch", "containerImage", "runAttempt"]
 
+/-- One `release/targets.json` row. The platform is derived from the target's
+    own name rather than fixed, because the manifest carries `os` and `cpu` for
+    every row and both downstream channels project from them — a fixture where
+    every target claimed one platform would make a formula with two identical
+    blocks look correct. -/
 private def targetRow (name : String) (tier : String) : String :=
-  "{\"target\": \"" ++ name ++ "\", \"tier\": \"" ++ tier ++ "\", \"os\": \"linux\", \"cpu\": \"x64\"}"
+  let os := if name.startsWith "darwin" then "darwin" else "linux"
+  let cpu := if name.endsWith "arm64" then "arm64" else "x64"
+  "{\"target\": \"" ++ name ++ "\", \"tier\": \"" ++ tier ++ "\", \"os\": \"" ++ os
+    ++ "\", \"cpu\": \"" ++ cpu ++ "\"}"
 
 private def targetsOf (rows : List String) : String :=
   "{\"targets\": [" ++ String.intercalate "," rows ++ "]}"
@@ -745,6 +753,8 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.manifestFailures_isEmpty_iff
   let _ := @Release.descriptionCoherent_iff
   let _ := @Release.descriptionProblems_isEmpty_iff
+  let _ := @Release.Homebrew.formulaCovers_iff
+  let _ := @Release.Homebrew.coverageBlockers_isEmpty_iff
   let _ := @Release.identityAccepts_iff
   let _ := @Release.auditPermits_iff
   let _ := @Release.auditBlockers_isEmpty_iff
@@ -2452,9 +2462,14 @@ private def describedPrerelease : Except String Json := do
     [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
   return manifest.toJson
 
+/-- A mutated fixture, as the document itself. -/
+private def parseEditedJson (base : Except String Json) (edit : Json → Json) :
+    Except String Json := do
+  return edit (← base)
+
 private def parseEdited (base : Except String Json) (edit : Json → Json) :
     Except String ManifestDescription := do
-  ManifestDescription.parse "release-manifest.json" (← render (edit (← base)))
+  ManifestDescription.parse "release-manifest.json" (← render (← parseEditedJson base edit))
 
 private def parseMutated (edit : Json → Json) : Except String ManifestDescription :=
   parseEdited describedManifest edit
@@ -2672,6 +2687,352 @@ private def descriptionTests : List Outcome :=
     check "description: the fixture's second target is the Best-effort one"
       (readBack (fun d => d.assets.any (·.name == armRow)) == some true)
       "the arm asset is missing from the fixture"]
+
+/-! ## The Homebrew formula
+
+The formula is rendered, not filled in, so what these establish is that the
+rendering is a function of the release: the tracked copy is this renderer's own
+output at the placeholder release, a Best-effort target that did not build loses
+its block and its pin while the spec stays resolvable, a Supported target that
+did not build is refused, and every value that reaches Ruby source is one Ruby
+reads as data. -/
+
+private def zeroDigest : String := Homebrew.placeholderDigestHex
+
+private def brewTarget (name tier os cpu : String) : Except String Target :=
+  parseTarget { document := "t" } (Json.mkObj
+    [("target", Json.str name), ("tier", Json.str tier),
+     ("os", Json.str os), ("cpu", Json.str cpu)])
+
+private def brewSpec (versionText : String) (pinned : List (String × String × String × String)) :
+    Except String Homebrew.Spec := do
+  let version ← Version.parse "v" versionText
+  let digest ← Sha256.parse "d" digest64
+  let sums ← Sha256.parse "s" digest64c
+  let pins ← pinned.mapM fun (name, tier, os, cpu) => do
+    let target ← brewTarget name tier os cpu
+    return ({ target, digest } : Homebrew.Pin)
+  return {
+    version, sumsDigest := sums, pins
+    repository := "Owner/tl"
+    tap := "Owner/homebrew-tap"
+    issuer := "https://token.actions.githubusercontent.com"
+    certificateIdentity := "^https://github\\.com/Owner/tl/x$" }
+
+private def allFour : List (String × String × String × String) :=
+  [("linux-x64", "supported", "linux", "x64"),
+   ("linux-arm64", "supported", "linux", "arm64"),
+   ("darwin-arm64", "supported", "darwin", "arm64"),
+   ("darwin-x64", "best-effort", "darwin", "x64")]
+
+private def renderedFormula (versionText : String)
+    (pinned : List (String × String × String × String)) : Except String String := do
+  Homebrew.render (← brewSpec versionText pinned)
+
+private def formulaText (versionText : String)
+    (pinned : List (String × String × String × String)) : String :=
+  okOr "<the formula did not render>" (renderedFormula versionText pinned)
+
+/-- Both formula commands, driven the way a release job drives them. -/
+private def homebrewCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let dist := base / "dist"
+  IO.FS.createDirAll dist
+  let manifestText := okOr "<the fixture stopped assembling>" (do
+    render (← describedManifest))
+  let manifestPath := (dist / "release-manifest.json").toString
+  IO.FS.writeFile manifestPath manifestText
+  IO.FS.writeFile (dist / "SHA256SUMS").toString "sums\n"
+  let sumsDigest := okOr "<no digester>" (← do
+    match ← Digester.resolve with
+    | .error message => pure (.error message)
+    | .ok digester =>
+        pure ((← digester.digest (dist / "SHA256SUMS").toString).map (·.hex)))
+  let (renderStatus, renderOut, renderErr) ← runCommand "homebrew-render"
+    ["--dist", dist.toString, "--manifest", manifestPath,
+     "--output", "tl.rb", "--output-dir", base.toString]
+  let renderedPath := (base / "tl.rb")
+  let rendered ← if ← renderedPath.pathExists then IO.FS.readFile renderedPath else pure ""
+  -- A manifest that publishes nothing for a Supported target, and is otherwise
+  -- coherent: the three sections that follow from the published set are edited
+  -- with it. This is what proves the coverage refusal is reachable — the
+  -- assembler refuses to *build* such a release, so without this the rule would
+  -- only ever be exercised through a value no command can receive.
+  let missingSupported := okOr "<the fixture stopped assembling>" (do
+    render (← parseEditedJson describedManifest fun root =>
+      withIn (withIn (withIn root "targets" (withFirstRow · fun row =>
+          withField (withField (withField (withField row "published" (Json.bool false))
+            "asset" Json.null) "sha256" Json.null) "build" Json.null))
+        "homebrew" (fun brew => withIn brew "pinnedTargets" (withRows · fun rows => rows.drop 1)))
+        "npm" (fun npm => withIn npm "packages" (withRows · fun rows =>
+          rows.take 1 ++ rows.drop 2))))
+  let partialPath := (dist / "partial.json").toString
+  IO.FS.writeFile partialPath missingSupported
+  let (partialStatus, _, partialErr) ← runCommand "homebrew-render"
+    ["--dist", dist.toString, "--manifest", partialPath,
+     "--output", "partial.rb", "--output-dir", base.toString]
+  let partialWritten ← (base / "partial.rb").pathExists
+  let (absentManifest, _, absentErr) ← runCommand "homebrew-render"
+    ["--dist", dist.toString, "--manifest", (dist / "nothing.json").toString,
+     "--output", "tl.rb", "--output-dir", base.toString]
+  let bareDist := base / "bare"
+  IO.FS.createDirAll bareDist
+  IO.FS.writeFile (bareDist / "release-manifest.json").toString manifestText
+  let (noSums, _, noSumsErr) ← runCommand "homebrew-render"
+    ["--dist", bareDist.toString, "--manifest", (bareDist / "release-manifest.json").toString,
+     "--output", "tl.rb", "--output-dir", base.toString]
+  let (renderUsage, _, _) ← runCommand "homebrew-render"
+    ["--dist", dist.toString, "--manifest", manifestPath]
+  let (placeholderStatus, _, placeholderErr) ← runCommand "homebrew-placeholder"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--output", "placeholder.rb", "--output-dir", base.toString]
+  let placeholder ← if ← (base / "placeholder.rb").pathExists then
+      IO.FS.readFile (base / "placeholder.rb") else pure ""
+  let (noIdentity, _, noIdentityErr) ← runCommand "homebrew-placeholder"
+    ["--identity", (dist / "nothing.json").toString, "--targets", "release/targets.json",
+     "--output", "x.rb", "--output-dir", base.toString]
+  let brokenTargets := (dist / "targets.json").toString
+  IO.FS.writeFile brokenTargets "{\"targets\": []}"
+  let (emptyTargets, _, emptyTargetsErr) ← runCommand "homebrew-placeholder"
+    ["--identity", "release/identity.json", "--targets", brokenTargets,
+     "--output", "y.rb", "--output-dir", base.toString]
+  let (placeholderUsage, _, _) ← runCommand "homebrew-placeholder"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json"]
+  let tracked ← IO.FS.readFile "Formula/tl.rb"
+  IO.FS.removeDirAll base
+  return [
+    check "homebrew-render: a verified release renders a formula" (renderStatus == 0) renderErr,
+    check "homebrew-render: it says where it wrote and what it pinned"
+      (contains renderOut "v1.2.3" && contains renderOut "pinning 2") renderOut,
+    check "homebrew-render: the formula pins the release's own tag"
+      (contains rendered "/download/v1.2.3/SHA256SUMS") rendered,
+    -- The fallback digest comes from the directory, because the sums file is
+    -- the one asset the manifest structurally cannot describe.
+    check "homebrew-render: the fallback url pins the digest of the directory's SHA256SUMS"
+      (contains rendered s!"  sha256 \"{sumsDigest}\"") s!"expected {sumsDigest} in the formula",
+    check "homebrew-render: the published targets are the ones pinned"
+      (contains rendered "PINNED_TARGETS = %w[linux-arm64 linux-x64]") rendered,
+    -- The coverage rule, reached through the command rather than the function.
+    checkEq "homebrew-render: a release missing a Supported target is refused" partialStatus 1,
+    check "homebrew-render: the refusal names the target and says why it matters"
+      (contains partialErr "linux-x64" && contains partialErr "raises on *load*") partialErr,
+    check "homebrew-render: a refused release writes no formula at all"
+      (!partialWritten) "a partial formula was left behind for someone to publish",
+    checkEq "homebrew-render: a manifest that is not there is refused" absentManifest 1,
+    check "homebrew-render: that refusal names the path it could not read"
+      (contains absentErr "nothing.json") absentErr,
+    checkEq "homebrew-render: a directory with no SHA256SUMS is refused" noSums 1,
+    check "homebrew-render: that refusal names the file the fallback url needs"
+      (contains noSumsErr "SHA256SUMS") noSumsErr,
+    checkEq "homebrew-render: a missing --output is a usage error, not a refusal" renderUsage 2,
+    check "homebrew-placeholder: the tracked formula renders" (placeholderStatus == 0)
+      placeholderErr,
+    check "homebrew-placeholder: what it writes is what is tracked" (placeholder == tracked)
+      "the placeholder command and the tracked formula disagree",
+    checkEq "homebrew-placeholder: an identity file that is not there is refused" noIdentity 1,
+    check "homebrew-placeholder: that refusal names the path" (contains noIdentityErr "nothing.json")
+      noIdentityErr,
+    checkEq "homebrew-placeholder: an empty target list is refused" emptyTargets 1,
+    check "homebrew-placeholder: that refusal says a release with no targets is not smaller"
+      (contains emptyTargetsErr "lists no targets") emptyTargetsErr,
+    checkEq "homebrew-placeholder: a missing --output is a usage error" placeholderUsage 2]
+
+/-- The digest a fixture pins for the `index`-th target: sixty-three zeroes and
+    a distinct final digit, so a url pinned under the wrong block is visible in
+    the file rather than only in a comparison. -/
+private def fixtureDigestHex (index : Nat) : String :=
+  String.ofList (List.replicate 63 '0') ++ toString (index % 10)
+
+private def fixtureSumsHex : String := String.ofList (List.replicate 63 '0') ++ "9"
+
+/-- A fixture release at this version, publishing every target but the dropped
+    ones. Built from this repository's real identity and target list, so the
+    formulae real Homebrew audits have this project's platforms in them. -/
+private def fixtureSpec (identity : Identity) (targets : Targets) (versionText : String)
+    (drop : List String) : Except String Homebrew.Spec := do
+  let version ← Version.parse "v" versionText
+  let sums ← Sha256.parse "s" fixtureSumsHex
+  let pins ← (targets.targets.zipIdx.filter fun (target, _) =>
+      !drop.contains target.name).mapM fun (target, index) => do
+    let digest ← Sha256.parse "d" (fixtureDigestHex (index + 1))
+    return ({ target, digest } : Homebrew.Pin)
+  return {
+    version, sumsDigest := sums, pins
+    repository := identity.repository
+    tap := identity.homebrewTap
+    issuer := identity.certificateOidcIssuer
+    certificateIdentity := identity.certificateIdentityRegexp }
+
+/-- The three shapes CI hands to real Homebrew, beside the tracked placeholder.
+
+    They are committed rather than generated in the macOS job because that job
+    has no Lean toolchain: the drift rows below are what make the committed
+    bytes this renderer's own output, and `brew` is then judging the thing a
+    release publishes rather than a file someone wrote. -/
+private def formulaFixtures : List (String × String × List String) :=
+  [("full", "1.2.3", []),
+   ("dropped", "1.2.3", ["darwin-x64"]),
+   ("prerelease", "1.2.3-rc.1", [])]
+
+/-- The tracked copies, and what this renderer says they should be. -/
+private def formulaDriftTests : IO (List Outcome) := do
+  let tracked ← IO.FS.readFile "Formula/tl.rb"
+  let identityText ← IO.FS.readFile "release/identity.json"
+  let targetsText ← IO.FS.readFile "release/targets.json"
+  let rendered : Except String String := do
+    let identity ← Identity.parse "release/identity.json" identityText
+    let targets ← Targets.parse "release/targets.json" targetsText
+    let spec ← Homebrew.placeholderSpec identity targets
+    Homebrew.renderCovering targets.targets spec
+  let mut fixtureRows : List Outcome := []
+  for (name, versionText, drop) in formulaFixtures do
+    let path := s!"Tests/fixtures/homebrew/{name}.rb"
+    let committed ← if ← System.FilePath.pathExists path then IO.FS.readFile path else pure ""
+    let expected : Except String String := do
+      let identity ← Identity.parse "release/identity.json" identityText
+      let targets ← Targets.parse "release/targets.json" targetsText
+      Homebrew.renderCovering targets.targets (← fixtureSpec identity targets versionText drop)
+    fixtureRows := fixtureRows ++ [
+      check s!"formula: the committed {name} fixture is exactly what this renderer produces"
+        (expected.toOption == some committed)
+        (match expected with
+         | .error message => s!"the {name} fixture did not render: {message}"
+         | .ok text =>
+             s!"{path} is stale — real Homebrew audits it in CI, so it has to be this renderer's own output; rendered {text.length} bytes against {committed.length} committed")]
+  return fixtureRows ++ [
+    -- The whole point of rendering rather than substituting: the tracked file
+    -- is an output, so editing it by hand fails here instead of quietly
+    -- publishing a formula nothing generated.
+    check "formula: the tracked Formula/tl.rb is exactly what this renderer produces"
+      (rendered.toOption == some tracked)
+      (match rendered with
+       | .error message => s!"the placeholder did not render: {message}"
+       | .ok text =>
+           s!"regenerate it with `tlrelease homebrew-placeholder --identity release/identity.json --targets release/targets.json --output tl.rb --output-dir Formula`; rendered {text.length} bytes against {tracked.length} tracked"),
+    -- And it is still a placeholder. A filled-in copy committed by accident
+    -- would pin a stale release, and this is the property that says so
+    -- independently of the byte comparison above.
+    check "formula: the tracked copy pins nothing installable"
+      ((tracked.splitOn zeroDigest).length == 6)
+      s!"expected five placeholder digests (four targets and the fallback), found {(tracked.splitOn zeroDigest).length - 1}"]
+
+private def homebrewTests : List Outcome :=
+  let full := formulaText "1.2.3" allFour
+  let dropped := formulaText "1.2.3" (allFour.filter fun (name, _, _, _) => name != "darwin-x64")
+  let pre := formulaText "1.2.3-rc.1" allFour
+  let noMac := formulaText "1.2.3" (allFour.filter fun (_, _, os, _) => os != "darwin")
+  let missingSupported : Except String String := do
+    let spec ← brewSpec "1.2.3" (allFour.filter fun (name, _, _, _) => name != "linux-arm64")
+    let targets ← allFour.mapM fun (name, tier, os, cpu) => brewTarget name tier os cpu
+    Homebrew.renderCovering targets spec
+  let droppedBestEffort : Except String String := do
+    let spec ← brewSpec "1.2.3" (allFour.filter fun (name, _, _, _) => name != "darwin-x64")
+    let targets ← allFour.mapM fun (name, tier, os, cpu) => brewTarget name tier os cpu
+    Homebrew.renderCovering targets spec
+  let withField (edit : Homebrew.Spec → Homebrew.Spec) : Except String String := do
+    Homebrew.render (edit (← brewSpec "1.2.3" allFour))
+  let unknownOs : Except String String := do
+    Homebrew.render (← brewSpec "1.2.3" [("plan9-x64", "supported", "plan9", "x64")])
+  let unknownCpu : Except String String := do
+    Homebrew.render (← brewSpec "1.2.3" [("linux-riscv", "supported", "linux", "riscv")])
+  [ -- Every pinned target gets its own block, under its own digest.
+    check "formula: a complete release renders" (renderedFormula "1.2.3" allFour).toOption.isSome
+      (errorOf (renderedFormula "1.2.3" allFour)),
+    check "formula: every pinned target has a url"
+      (allFour.all fun (name, _, _, _) => contains full s!"ASSET_PREFIX}{name}\"")
+      full,
+    checkEq "formula: every url and the fallback carries a digest"
+      ((full.splitOn "    sha256 \"").length - 1) 4,
+    check "formula: the fallback url pins the sums file's own digest"
+      (contains full s!"  sha256 \"{digest64c}\"") full,
+    check "formula: each platform digest lands under its own url"
+      (contains full ("ASSET_PREFIX}linux-x64\"\n      sha256 \"" ++ digest64 ++ "\"")) full,
+    check "formula: the pinned targets are listed for install to consult"
+      (contains full "PINNED_TARGETS = %w[darwin-arm64 darwin-x64 linux-arm64 linux-x64]") full,
+    -- Sorted, and sorted independently of the order the release listed them:
+    -- the tap compares formula text, so a reordering would read as a change.
+    checkEq "formula: the pinned-target list does not depend on manifest order"
+      (okOr "<a>" (renderedFormula "1.2.3" allFour))
+      (okOr "<b>" (renderedFormula "1.2.3" allFour.reverse)),
+    check "formula: the identity pins are rendered into the formula"
+      (contains full "OIDC_ISSUER = \"https://token.actions.githubusercontent.com\""
+        && contains full "CERTIFICATE_IDENTITY = '^https://github\\.com/Owner/tl/x$'") full,
+    check "formula: the signature check survives rendering"
+      (contains full "verify-blob" && contains full "--certificate-identity-regexp") full,
+    -- The stable/prerelease split. Homebrew scans a version out of the fallback
+    -- url and `brew audit` calls an explicit one redundant — except on a
+    -- prerelease, where the scanner drops the suffix and the scanned value is
+    -- the wrong release.
+    check "formula: a stable release carries no explicit version line"
+      (!contains full "\n  version \"") full,
+    check "formula: a prerelease carries an explicit version line"
+      (contains pre "\n  version \"1.2.3-rc.1\"") pre,
+    check "formula: every prerelease url names the prerelease tag"
+      (contains pre "/download/v1.2.3-rc.1/" && !contains pre "/download/v1.2.3/") pre,
+    -- A Best-effort target that did not build: block dropped, pin dropped, and
+    -- the fallback url still there — without it Homebrew raises on *load* for
+    -- every brew command touching the tap.
+    check "formula: a dropped Best-effort target renders" droppedBestEffort.toOption.isSome
+      (errorOf droppedBestEffort),
+    check "formula: the dropped target has no url"
+      (!contains dropped "ASSET_PREFIX}darwin-x64\"") dropped,
+    check "formula: the dropped target is absent from the pin list, so install refuses there"
+      (contains dropped "PINNED_TARGETS = %w[darwin-arm64 linux-arm64 linux-x64]") dropped,
+    check "formula: the dropped-block formula keeps its fallback url, so the spec resolves"
+      (contains dropped "/download/v1.2.3/SHA256SUMS") dropped,
+    checkEq "formula: the dropped-block formula pins three targets plus the fallback"
+      ((dropped.splitOn "sha256 \"").length - 1) 4,
+    -- A whole platform with nothing pinned writes no block at all. An empty
+    -- `on_macos do end` is legal Ruby that tells a reader macOS was considered
+    -- and found empty, which is the wrong impression.
+    check "formula: an operating system with no pinned target gets no empty block"
+      (!contains noMac "on_macos" && contains noMac "on_linux") noMac,
+    -- The one decision with a theorem: a Supported target with no url would
+    -- make Homebrew raise on load for that whole platform.
+    check "formula: a release missing a Supported target renders nothing"
+      (missingSupported.toOption.isNone) "a partial formula was rendered",
+    check "formula: the refusal names the target and its tier"
+      (mentions missingSupported "linux-arm64" && mentions missingSupported "Supported")
+      (errorOf missingSupported),
+    -- Every value that reaches Ruby source. The old generator needed a SemVer
+    -- guard because its version was a string; the version is a parsed `Version`
+    -- here, and these are the values that still arrive from a JSON document.
+    check "formula: a repository that would close the Ruby string is refused"
+      (mentions (withField fun spec => { spec with repository := "o\"; system \"id\"; x=\"" })
+        "end the string literal")
+      (errorOf (withField fun spec => { spec with repository := "o\"" })),
+    check "formula: a repository carrying a Ruby interpolation is refused"
+      (mentions (withField fun spec => { spec with repository := "o/#{`id`}" })
+        "begin an interpolation")
+      (errorOf (withField fun spec => { spec with repository := "o/#{`id`}" })),
+    check "formula: an issuer with a backslash is refused"
+      (mentions (withField fun spec => { spec with issuer := "https://x\\ny" }) "backslash")
+      (errorOf (withField fun spec => { spec with issuer := "https://x\\ny" })),
+    check "formula: an identity expression with a single quote is refused"
+      (mentions (withField fun spec => { spec with certificateIdentity := "^a'; system('id'); b$" })
+        "single quote")
+      (errorOf (withField fun spec => { spec with certificateIdentity := "^a'$" })),
+    check "formula: an identity expression ending in a backslash is refused"
+      (mentions (withField fun spec => { spec with certificateIdentity := "^a\\" })
+        "escaping the closing quote")
+      (errorOf (withField fun spec => { spec with certificateIdentity := "^a\\" })),
+    check "formula: a non-ASCII pin is refused rather than written into executable source"
+      (mentions (withField fun spec => { spec with issuer := "https://café.example" })
+        "outside printable ASCII")
+      (errorOf (withField fun spec => { spec with issuer := "https://café.example" })),
+    -- A platform this renderer cannot place would be dropped by the per-block
+    -- lookup, which looks exactly like a target the release did not build.
+    check "formula: a target whose operating system has no Homebrew block is refused"
+      (mentions unknownOs "on_macos") (errorOf unknownOs),
+    check "formula: a target whose processor has no Homebrew block is refused"
+      (mentions unknownCpu "on_arm") (errorOf unknownCpu),
+    -- The renderer is a function of the spec, which is what makes the tap
+    -- comparison "is this the formula this release renders".
+    checkEq "formula: rendering the same spec twice produces the same bytes"
+      (okOr "<a>" (renderedFormula "1.2.3" allFour))
+      (okOr "<b>" (renderedFormula "1.2.3" allFour)),
+    check "formula: the rendered formula is pure ASCII apart from its prose"
+      (full.endsWith "\n") "a Ruby file that does not end in a newline"]
 
 /-! ## The canonical signing identity
 
@@ -4229,11 +4590,11 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests

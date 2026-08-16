@@ -377,7 +377,7 @@ def Manifest.npmPackages (manifest : Manifest) : List String :=
     :: manifest.publishedTargets.map fun name => s!"{manifest.npmScope}/tl-bin-{name}"
 
 def Manifest.homebrewTap (manifest : Manifest) : String :=
-  s!"{manifest.identity.owner}/homebrew-tap"
+  manifest.identity.homebrewTap
 
 /-- A tap carries one formula, so a prerelease is generated and attached but
     never pushed (ADR-0006). -/
@@ -539,26 +539,41 @@ private def buildJson (build : BuildMetadata) : Json :=
     ("runId", Json.str build.runId),
     ("runAttempt", Json.str build.runAttempt)]
 
+/-- What a target *is*, as opposed to what became of it.
+
+    The platform fields travel in the manifest so a channel projecting this
+    release does not have to read `release/targets.json` from a checkout to
+    learn where a binary runs. Both downstream channels need them — Homebrew to
+    choose the `on_macos`/`on_arm` block a url is written in, npm to fill each
+    platform package's `os`, `cpu` and `libc` — and a checkout's target list is
+    a fact about the working tree rather than about the release being published,
+    so reading it there would put back a second derivation of the thing this
+    document exists to state once. -/
+private def platformJson (target : Target) : List (String × Json) :=
+  [("target", Json.str target.name),
+   ("tier", Json.str target.tier.wire),
+   ("os", Json.str target.os),
+   ("cpu", Json.str target.cpu),
+   ("libc", match target.libc with
+     | some libc => Json.str libc
+     | none => Json.null)]
+
 /-- A target row. An absent target keeps every key with a `null` value rather
     than dropping the keys: a consumer reading `asset` gets "there is none"
     instead of a missing-key error, and the two rows have the same shape. -/
 private def outcomeJson : TargetOutcome → Json
   | .published published =>
-      Json.mkObj [
-        ("target", Json.str published.target.name),
-        ("tier", Json.str published.target.tier.wire),
+      Json.mkObj (platformJson published.target ++ [
         ("published", Json.bool true),
         ("asset", Json.str published.asset),
         ("sha256", Json.str published.digest.hex),
-        ("build", buildJson published.build)]
+        ("build", buildJson published.build)])
   | .absent target =>
-      Json.mkObj [
-        ("target", Json.str target.name),
-        ("tier", Json.str target.tier.wire),
+      Json.mkObj (platformJson target ++ [
         ("published", Json.bool false),
         ("asset", Json.null),
         ("sha256", Json.null),
-        ("build", Json.null)]
+        ("build", Json.null)])
 
 private def assetJson (asset : Asset) : Json :=
   Json.mkObj [
@@ -637,10 +652,9 @@ inductive ManifestOutcome where
   | absent
   deriving Repr
 
-/-- One target row of a manifest. -/
+/-- One target row of a manifest: what the target is, and what became of it. -/
 structure ManifestTarget where
-  name : String
-  tier : Tier
+  target : Target
   outcome : ManifestOutcome
   deriving Repr
 
@@ -684,7 +698,19 @@ structure ManifestDescription where
     Best-effort ones, and a consumer that re-sorted would produce a different
     formula or package set for the same release. -/
 def ManifestDescription.publishedTargets (description : ManifestDescription) : List String :=
-  description.targets.filterMap fun row => row.published?.map fun _ => row.name
+  description.targets.filterMap fun row => row.published?.map fun _ => row.target.name
+
+/-- Every target this release published, with the digest to pin for it. What a
+    channel projection is built from. -/
+def ManifestDescription.pinned (description : ManifestDescription) : List (Target × Sha256) :=
+  description.targets.filterMap fun row =>
+    row.published?.map fun (_, digest) => (row.target, digest)
+
+/-- What the release says about each distributed target, published or not. The
+    tier lives here, so a channel decides what an absence means without reading
+    a checkout's own target list. -/
+def ManifestDescription.distributedTargets (description : ManifestDescription) : List Target :=
+  description.targets.map (·.target)
 
 /-- The scope half of a package name, which is the owner every platform package
     is published under. -/
@@ -738,24 +764,27 @@ private def parseSigning (cursor : Cursor) (root : Json) : Except String Manifes
     name is not a row with a harmless leftover field: whichever half a consumer
     read would decide whether that platform is served. -/
 private def parseTargetRow (cursor : Cursor) (value : Json) : Except String ManifestTarget := do
-  let name ← nonEmptyStringField cursor value "target"
-  let tier ← Tier.parse (cursor.at "tier").render (← stringField cursor value "tier")
+  -- The same reader `release/targets.json` goes through. The row states the
+  -- platform so a channel projecting this release needs no checkout to learn
+  -- where the binary runs, and one reader is what keeps the two statements of a
+  -- target from being two definitions of one.
+  let target ← parseTarget cursor value
   if ← boolField cursor value "published" then
     let asset ← nonEmptyStringField cursor value "asset"
     let sha256 ← Sha256.parse (cursor.at "sha256").render
       (← nonEmptyStringField cursor value "sha256")
     let (buildCursor, buildValue) ← field cursor value "build"
     let build ← BuildMetadata.ofJson buildCursor buildValue
-    return { name, tier, outcome := .published asset sha256 build }
+    return { target, outcome := .published asset sha256 build }
   else
     for key in ["asset", "sha256", "build"] do
       match field? value key with
       | some .null => pure ()
       | some _ =>
-          (cursor.at key).fail s!"is set on a row that says it published nothing. The two halves of this row disagree about whether this release serves '{name}', and a consumer would act on whichever half it happened to read."
+          (cursor.at key).fail s!"is set on a row that says it published nothing. The two halves of this row disagree about whether this release serves '{target.name}', and a consumer would act on whichever half it happened to read."
       | none =>
-          (cursor.at key).fail s!"is missing from the row for '{name}'. An unpublished target keeps every key with a null value, so that a reader gets \"there is none\" rather than a missing-key error and the two row shapes stay one shape."
-    return { name, tier, outcome := .absent }
+          (cursor.at key).fail s!"is missing from the row for '{target.name}'. An unpublished target keeps every key with a null value, so that a reader gets \"there is none\" rather than a missing-key error and the two row shapes stay one shape."
+    return { target, outcome := .absent }
 
 private def parseNpmPlan (cursor : Cursor) (root : Json) : Except String ManifestNpmPlan := do
   let (inner, found) ← field cursor root "npm"
@@ -794,22 +823,22 @@ def targetRowChecks (description : ManifestDescription) (row : ManifestTarget) :
   match row.outcome with
   | .absent => []
   | .published asset digest build =>
-      [{ held := asset == assetNameFor row.name,
-         failure := s!"the '{row.name}' row names the asset '{asset}', but a target's asset is composed from its name and would be '{assetNameFor row.name}'. A consumer downloading what this row names would fetch a file this release does not describe." },
+      [{ held := asset == assetNameFor row.target.name,
+         failure := s!"the '{row.target.name}' row names the asset '{asset}', but a target's asset is composed from its name and would be '{assetNameFor row.target.name}'. A consumer downloading what this row names would fetch a file this release does not describe." },
        { held := (description.assets.find? (·.name == asset)).map (·.sha256) == some digest,
-         failure := s!"the '{row.name}' row gives {asset} the digest {digest.hex}, and the asset table does not agree — either it does not list that file at all, or it lists a different digest for it. The manifest is the one description of this release and it contradicts itself here; a channel pinning the digest from one section would serve bytes the other section refuses." },
-       { held := build.target == row.name,
-         failure := s!"the '{row.name}' row embeds a build record for '{build.target}'. The records were crossed between rows, so this one does not describe its own binary." },
-       { held := build.tier == row.tier,
-         failure := s!"the '{row.name}' row records tier '{row.tier.wire}' and embeds a build record saying '{build.tier.wire}'. The tier decides whether an absent artifact blocks a release, so a document that states it twice must state it once." },
+         failure := s!"the '{row.target.name}' row gives {asset} the digest {digest.hex}, and the asset table does not agree — either it does not list that file at all, or it lists a different digest for it. The manifest is the one description of this release and it contradicts itself here; a channel pinning the digest from one section would serve bytes the other section refuses." },
+       { held := build.target == row.target.name,
+         failure := s!"the '{row.target.name}' row embeds a build record for '{build.target}'. The records were crossed between rows, so this one does not describe its own binary." },
+       { held := build.tier == row.target.tier,
+         failure := s!"the '{row.target.name}' row records tier '{row.target.tier.wire}' and embeds a build record saying '{build.tier.wire}'. The tier decides whether an absent artifact blocks a release, so a document that states it twice must state it once." },
        { held := build.sha256 == digest,
-         failure := s!"the '{row.name}' row gives its asset the digest {digest.hex} and embeds a build record for {build.sha256.hex}. These are not the bytes that leg built and smoke-tested." },
+         failure := s!"the '{row.target.name}' row gives its asset the digest {digest.hex} and embeds a build record for {build.sha256.hex}. These are not the bytes that leg built and smoke-tested." },
        { held := build.commit == description.commit,
-         failure := s!"the '{row.name}' leg records commit {build.commit.hex}, and this release is {description.commit.hex}. The legs this manifest describes did not all build the same source." },
+         failure := s!"the '{row.target.name}' leg records commit {build.commit.hex}, and this release is {description.commit.hex}. The legs this manifest describes did not all build the same source." },
        { held := build.toolchain == description.toolchain,
-         failure := s!"the '{row.name}' leg built with toolchain '{build.toolchain}', and this release records '{description.toolchain}'. The artifacts this manifest describes do not all come from the pinned toolchain." },
+         failure := s!"the '{row.target.name}' leg built with toolchain '{build.toolchain}', and this release records '{description.toolchain}'. The artifacts this manifest describes do not all come from the pinned toolchain." },
        { held := build.lakeManifestSha256 == description.lakeManifestSha256,
-         failure := s!"the '{row.name}' leg recorded a lake-manifest digest of {build.lakeManifestSha256.hex}, and this release records {description.lakeManifestSha256.hex}. The legs did not all build against the same dependency set." }]
+         failure := s!"the '{row.target.name}' leg recorded a lake-manifest digest of {build.lakeManifestSha256.hex}, and this release records {description.lakeManifestSha256.hex}. The legs did not all build against the same dependency set." }]
 
 /-- Every way the document can contradict itself, each with what to say. -/
 def descriptionChecks (description : ManifestDescription) : List Check :=
@@ -821,7 +850,7 @@ def descriptionChecks (description : ManifestDescription) : List Check :=
      failure := s!"records the tag '{description.tag}' and the version '{description.version.render}', whose tag is '{description.version.tag}'. Every url a channel composes takes the tag and every version a channel claims takes the version, so a document that disagrees with itself here publishes a package pointing at a release that does not exist." },
    { held := !description.targets.isEmpty,
      failure := "lists no targets. Every per-target comparison below would then hold by having nothing to compare, and a channel would project a release that builds nothing." },
-   uniqueNamesCheck (description.targets.map (·.name)) fun name =>
+   uniqueNamesCheck (description.targets.map (·.target.name)) fun name =>
      s!"lists the target '{name}' twice. Every lookup takes the first match, so which row applies would depend on document order — and if the two disagree about the tier they disagree about whether this release is complete.",
    { held := !description.assets.isEmpty,
      failure := "describes no assets. A manifest with an empty asset table would accept any directory at all, including an empty one, so it is refused rather than satisfied." },
@@ -851,10 +880,10 @@ def ManifestTarget.coherentWith (description : ManifestDescription) (row : Manif
   match row.outcome with
   | .absent => True
   | .published asset digest build =>
-      asset = assetNameFor row.name
+      asset = assetNameFor row.target.name
         ∧ (description.assets.find? (·.name == asset)).map (·.sha256) = some digest
-        ∧ build.target = row.name
-        ∧ build.tier = row.tier
+        ∧ build.target = row.target.name
+        ∧ build.tier = row.target.tier
         ∧ build.sha256 = digest
         ∧ build.commit = description.commit
         ∧ build.toolchain = description.toolchain
@@ -866,7 +895,7 @@ def ManifestDescription.selfConsistent (description : ManifestDescription) : Pro
     ∧ description.product = "tl"
     ∧ description.tag = description.version.tag
     ∧ description.targets ≠ []
-    ∧ (repeatedName (description.targets.map (·.name))).isNone = true
+    ∧ (repeatedName (description.targets.map (·.target.name))).isNone = true
     ∧ description.assets ≠ []
     ∧ (repeatedName (description.assets.map (·.name))).isNone = true
     ∧ description.npm.distTag = npmDistTagFor description.version
