@@ -60,9 +60,10 @@ or a defense against another process holding the same authority.
 
 Everything in this section describes the accepted **end state**. The current
 repository remains in the migration state described under “Migration is
-explicit”: it still has the separate channel exclusion list, thirteen `.sh`
-files plus the extensionless npm launcher, and the lexer/PATH-shim pair. Present
-tense below is normative, not a claim that the cutover has already landed.
+explicit”: it still has the separate channel exclusion list, the pre-migration
+shell inventory rather than the three files above, and the lexer/PATH-shim pair.
+Present tense below is normative, not a claim that the cutover has already
+landed.
 
 ### One repository-policy executable owns release decisions
 
@@ -626,17 +627,21 @@ They live in the separately audited release scope and are pinned against silent
 deletion by `pinnedReleaseVerdictTheorems` in
 `Tests/ReleaseToolTests.lean`, following the same distinction ADR-0026 makes
 for the trust verifier's internal verdict theorems. That compile-time registry
-names every **non-private release contract theorem**—eighteen at this decision.
-`Check.allHeld_iff_noFailures` is included because it is a public reusable
-report/verdict contract. The private `all_mapped_held_iff`,
-`describedCheck_held_iff`, `undescribedCheck_held_iff`, and `blocking_cases` are
-proof scaffolding, not four additional command contracts: the public
-`manifestAccepts_iff` and `auditBlockers_partition` statements already expose
-the properties they establish. Their current proof terms depend on those
-helpers, while a future proof refactor may replace them without retiring a
-public guarantee. Adding a new public release contract theorem therefore
-includes its pin in the same change. Protected review owns the registry's
-completeness; compilation owns the survival of every registered theorem.
+names every **non-private release contract theorem**, exhaustively: the question
+to ask of it is whether any public theorem in the release scope is missing, not
+how many it holds.
+
+Two boundary cases fix what counts. `Check.allHeld_iff_noFailures` is in it,
+because a public reusable report/verdict contract is one whether or not a single
+command owns it. Private proof scaffolding is not, even where a command's proof
+term currently depends on it: the helpers behind `manifestAccepts_iff` and
+`auditBlockers_partition` establish nothing those two public statements do not
+already expose, so a proof refactor may replace a helper without retiring a
+public guarantee.
+
+Adding a new public release contract theorem therefore includes its pin in the
+same change. Protected review owns the registry's completeness; compilation owns
+the survival of every registered theorem.
 
 ### Migration is explicit
 
