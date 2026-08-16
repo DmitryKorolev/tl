@@ -100,6 +100,48 @@ def stringField (cursor : Cursor) (value : Json) (name : String) : Except String
   let (inner, found) ← field cursor value name
   asString inner found
 
+/-- A required boolean field. -/
+def boolField (cursor : Cursor) (value : Json) (name : String) : Except String Bool := do
+  let (inner, found) ← field cursor value name
+  asBool inner found
+
+/-- A required whole-number field.
+
+    Decided on the value rather than on how it was spelled, for the same reason
+    the renderer is: `1` can arrive as `10e-1`, and a reader that tested the
+    exponent would refuse a perfectly good integer. A fractional or negative
+    value is refused rather than truncated — every number these documents carry
+    is a `schemaVersion`, and one that is not a count is a document this build
+    does not understand. -/
+def natField (cursor : Cursor) (value : Json) (name : String) : Except String Nat := do
+  let (inner, found) ← field cursor value name
+  match found with
+  | .num n =>
+      let scale : Int := (10 : Int) ^ n.exponent
+      let whole := n.mantissa / scale
+      if n.mantissa % scale != 0 then
+        inner.fail s!"is {n.mantissa}e-{n.exponent}, which is not a whole number. This field counts something; a fractional value is a document this build does not understand rather than one to round."
+      else if whole < 0 then
+        inner.fail s!"is {whole}, which is negative. This field counts something, so there is no reading of a negative value that is smaller rather than wrong."
+      else .ok whole.toNat
+  | _ => inner.fail "is not a number."
+
+/-- A required array of strings, each non-empty.
+
+    One reader for the several lists a manifest carries, so a blank entry is
+    refused in all of them rather than in whichever one remembered to look. A
+    list is a set of names something is done with — packages to publish, targets
+    to pin — and an empty name is not a smaller name. -/
+def stringArrayField (cursor : Cursor) (value : Json) (name : String) :
+    Except String (List String) := do
+  let (inner, found) ← field cursor value name
+  let rows ← asArray inner found
+  rows.mapM fun (rowCursor, row) => do
+    let text ← asString rowCursor row
+    if text.isEmpty then
+      rowCursor.fail "is empty. A blank name is not a shorter name: whatever this list decides would be done to nothing, and reported as done."
+    else return text
+
 /-- A required string field that must not be empty. The shell's nine
     build-metadata checks were `not build.get(field)`, which conflated absence
     with `""`, `0` and `false`; separating them is the point of doing this in a

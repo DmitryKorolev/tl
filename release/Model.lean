@@ -287,9 +287,15 @@ structure Target where
   libc : Option String
   deriving Repr, Inhabited
 
-/-- The published asset name for a target. The one site that knows how an
-    asset name is spelled. -/
-def Target.asset (target : Target) : String := "tl-" ++ target.name
+/-- The published asset name for a target, by target name.
+
+    The one site that knows how an asset name is spelled. Taking the name rather
+    than the `Target` because the reading side has a manifest row and not a
+    `release/targets.json` entry, and two spellings of this is exactly the drift
+    a manifest exists to remove. -/
+def assetNameFor (target : String) : String := "tl-" ++ target
+
+def Target.asset (target : Target) : String := assetNameFor target.name
 
 def Target.buildMetadataAsset (target : Target) : String :=
   "build-metadata-" ++ target.name ++ ".json"
@@ -595,9 +601,15 @@ def buildMetadataFieldNames : List String :=
   ["target", "sha256", "commit", "tier", "runner", "toolchain", "lakeManifestSha256",
    "workflowRef", "runId", "runnerOs", "runnerArch", "containerImage", "runAttempt"]
 
-def BuildMetadata.parse (document : String) (text : String) : Except String BuildMetadata := do
-  let cursor : Cursor := { document }
-  let root ← parseDocument cursor text
+/-- One record, from a value already parsed.
+
+    Separated from `parse` because a record occurs twice in a release: as the
+    `build-metadata-<target>.json` asset its own leg wrote, and embedded in the
+    manifest's target row. Two readers would be two chances to accept a record
+    the other refuses, which is precisely the disagreement the embedding exists
+    to remove — the manifest copies through what it parsed, so the copy must
+    have been read by the same parser that read the original. -/
+def BuildMetadata.ofJson (cursor : Cursor) (root : Json) : Except String BuildMetadata := do
   let fields ← getObj cursor root
   -- A field this build does not know is refused rather than ignored. The
   -- manifest embeds this record by re-rendering the parsed value, so an
@@ -631,6 +643,11 @@ def BuildMetadata.parse (document : String) (text : String) : Except String Buil
     runnerArch := ← optional "runnerArch"
     containerImage := ← optional "containerImage"
     runAttempt := ← optional "runAttempt" }
+
+def BuildMetadata.parse (document : String) (text : String) : Except String BuildMetadata := do
+  let cursor : Cursor := { document }
+  let root ← parseDocument cursor text
+  BuildMetadata.ofJson cursor root
 
 /-! ## The run every leg has to belong to -/
 

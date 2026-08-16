@@ -743,6 +743,8 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.metadataFailures_isEmpty_iff
   let _ := @Release.manifestAccepts_iff
   let _ := @Release.manifestFailures_isEmpty_iff
+  let _ := @Release.descriptionCoherent_iff
+  let _ := @Release.descriptionProblems_isEmpty_iff
   let _ := @Release.identityAccepts_iff
   let _ := @Release.auditPermits_iff
   let _ := @Release.auditBlockers_isEmpty_iff
@@ -2381,6 +2383,296 @@ private def goldenManifestTests : IO (List Outcome) := do
       (rendered.endsWith "\n" && rendered.toList.all (fun c => c.toNat < 0x80))
       "the signed document carries bytes whose length depends on an encoding choice"]
 
+/-! ## Reading a manifest back, whole
+
+The manifest is the one description three channels publish from, so the reader
+takes all of it and holds it to agreeing with itself before any of them acts.
+Every row below takes a manifest this pipeline really assembles, changes one
+statement the document makes twice, and requires the reader to refuse.
+
+Driven through `ManifestDescription.parse` — the function `manifest-verify` and
+every channel command calls — rather than through the check list directly. The
+check list is characterised by `descriptionCoherent_iff`; what these establish
+is that the parser consults it, and that each structural refusal reaches the
+right message. -/
+
+private def jsonEntries (value : Json) : List (String × Json) :=
+  match value with
+  | .obj fields => fields.toArray.toList.map fun entry => (entry.1, entry.2)
+  | _ => []
+
+private def fieldOf (value : Json) (name : String) : Json :=
+  (((jsonEntries value).find? (·.1 == name)).map (·.2)).getD .null
+
+private def withField (value : Json) (name : String) (replacement : Json) : Json :=
+  Json.mkObj ((jsonEntries value).map fun (key, held) =>
+    if key == name then (key, replacement) else (key, held))
+
+private def withoutField (value : Json) (name : String) : Json :=
+  Json.mkObj ((jsonEntries value).filter fun (key, _) => key != name)
+
+/-- Edit one field of a nested object in place. -/
+private def withIn (value : Json) (name : String) (edit : Json → Json) : Json :=
+  withField value name (edit (fieldOf value name))
+
+/-- Edit the rows of an array field. -/
+private def withRows (value : Json) (edit : List Json → List Json) : Json :=
+  match value with
+  | .arr items => .arr (edit items.toList).toArray
+  | other => other
+
+/-- Edit the first row of an array field, which is the published `linux-x64`
+    target in every fixture below. -/
+private def withFirstRow (value : Json) (edit : Json → Json) : Json :=
+  withRows value fun rows =>
+    match rows with
+    | head :: rest => edit head :: rest
+    | [] => []
+
+/-- A manifest this pipeline really assembles, as a value to mutate. -/
+private def describedManifest : Except String Json := do
+  let shaA ← Sha256.parse "a" digest64
+  let shaC ← Sha256.parse "c" digest64c
+  let linuxAsset := (sampleTarget "linux-x64" .supported).asset
+  let armAsset := (sampleTarget "linux-arm64" .bestEffort).asset
+  let manifest ← assembledFrom "1.2.3"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+    [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
+  return manifest.toJson
+
+private def describedPrerelease : Except String Json := do
+  let shaA ← Sha256.parse "a" digest64
+  let shaC ← Sha256.parse "c" digest64c
+  let linuxAsset := (sampleTarget "linux-x64" .supported).asset
+  let armAsset := (sampleTarget "linux-arm64" .bestEffort).asset
+  let manifest ← assembledFrom "1.2.3-rc.1"
+    [evidenceFor "linux-x64" "supported" digest64 [] true,
+     evidenceFor "linux-arm64" "best-effort" digest64 [] true]
+    [(linuxAsset, shaA), (armAsset, shaA), ("LICENSE", shaC)]
+  return manifest.toJson
+
+private def parseEdited (base : Except String Json) (edit : Json → Json) :
+    Except String ManifestDescription := do
+  ManifestDescription.parse "release-manifest.json" (← render (edit (← base)))
+
+private def parseMutated (edit : Json → Json) : Except String ManifestDescription :=
+  parseEdited describedManifest edit
+
+/-- A mutation is refused, and the refusal says which disagreement it is. -/
+private def refuses (what : String) (needle : String) (edit : Json → Json) : Outcome :=
+  let result := parseMutated edit
+  check s!"description: {what}"
+    (result.toOption.isNone && mentions result needle)
+    (match result with
+     | .ok _ => "the mutated manifest was accepted"
+     | .error message => s!"refused, but not for '{needle}': {message}")
+
+private def describedOk : Except String ManifestDescription := parseMutated id
+
+/-- A manifest whose schema version is not a whole number.
+
+    Reached by editing the rendered text: this project's renderer refuses to
+    emit a fractional number at all, and the reader still has to refuse one —
+    the document it is given was not necessarily written by this build. -/
+private def fractionalSchema : Except String ManifestDescription := do
+  let text ← render (← describedManifest)
+  ManifestDescription.parse "release-manifest.json"
+    (String.intercalate "\"schemaVersion\": 1.5"
+      (text.splitOn "\"schemaVersion\": 1"))
+
+private def readBack (project : ManifestDescription → α) : Option α :=
+  describedOk.toOption.map project
+
+private def descriptionTests : List Outcome :=
+  let armRow := (sampleTarget "linux-arm64" .bestEffort).asset
+  [ -- The document a real assembly produces reads back, in every section.
+    check "description: an assembled manifest reads back whole"
+      describedOk.toOption.isSome (errorOf describedOk),
+    checkEq "description: the version is parsed, not carried as text"
+      (readBack fun d => d.version.render) (some "1.2.3"),
+    checkEq "description: the tag reads back" (readBack (·.tag)) (some "v1.2.3"),
+    checkEq "description: every target row is read, published or not"
+      (readBack fun d => d.targets.length) (some 2),
+    checkEq "description: the published targets are read in document order"
+      (readBack (·.publishedTargets)) (some ["linux-x64", "linux-arm64"]),
+    checkEq "description: each published row carries its own embedded build record"
+      (readBack fun d => d.targets.filterMap fun row =>
+        match row.outcome with
+        | .published _ _ build => some build.target
+        | .absent => none)
+      (some ["linux-x64", "linux-arm64"]),
+    checkEq "description: the signing pins are read back rather than trusted elsewhere"
+      (readBack fun d =>
+        (d.signing.certificateOidcIssuer, d.signing.certificateIdentityRegexp, d.signing.workflow))
+      (some (sampleIdentity.certificateOidcIssuer, sampleIdentity.certificateIdentityRegexp,
+        sampleIdentity.releaseWorkflow)),
+    checkEq "description: the npm dist-tag is read back" (readBack fun d => d.npm.distTag)
+      (some "latest"),
+    checkEq "description: the npm package list is read back" (readBack fun d => d.npm.packages)
+      (some ["@scope/tl", "@scope/tl-bin-linux-x64", "@scope/tl-bin-linux-arm64"]),
+    checkEq "description: the Homebrew section is read back"
+      (readBack fun d => (d.homebrew.tap, d.homebrew.push, d.homebrew.pinnedTargets))
+      (some ("Owner/homebrew-tap", true, ["linux-x64", "linux-arm64"])),
+    -- A prerelease reads back with both of its channel decisions inverted, and
+    -- is accepted: the coherence rows compare the document against the version
+    -- it states, so they must not accept only stable releases.
+    check "description: a prerelease manifest is accepted, with its own channel decisions"
+      (match parseEdited describedPrerelease id with
+       | .ok d => d.npm.distTag == "next" && d.homebrew.push == false
+           && d.version.isPrerelease
+       | .error _ => false)
+      (errorOf (parseEdited describedPrerelease id)),
+    -- A target that did not build is a row, not an omission, and it publishes
+    -- nothing anywhere: this is the shape a Best-effort leg failure produces.
+    check "description: an unpublished target row reads back as publishing nothing"
+      (match parseMutated (fun root =>
+          withIn (withIn (withIn root "targets" (withRows · fun rows => rows.take 1))
+            "homebrew" (fun brew => withIn brew "pinnedTargets" (withRows · fun rows => rows.take 1)))
+            "npm" (fun npm => withIn npm "packages" (withRows · fun rows => rows.take 2))) with
+       | .ok d => d.publishedTargets == ["linux-x64"]
+       | .error _ => false)
+      "dropping the second target row should leave a coherent one-target release",
+    -- The whole-document statements.
+    refuses "a schema version this build does not read is refused" "schema version"
+      (withField · "schemaVersion" (Json.num 2)),
+    refuses "a manifest for another product is refused" "describes the product"
+      (withField · "product" (Json.str "not-tl")),
+    refuses "a tag that is not the version's tag is refused" "records the tag"
+      (withField · "tag" (Json.str "v9.9.9")),
+    refuses "a manifest with no target rows is refused" "lists no targets"
+      (withIn · "targets" (withRows · fun _ => [])),
+    refuses "a target listed twice is refused" "lists the target"
+      (withIn · "targets" (withRows · fun rows =>
+        match rows with
+        | head :: rest => head :: head :: rest
+        | [] => [])),
+    refuses "a manifest with no assets is refused" "describes no assets"
+      (withIn · "assets" (withRows · fun _ => [])),
+    refuses "an asset described twice is refused" "describes"
+      (withIn · "assets" (withRows · fun rows =>
+        match rows with
+        | head :: rest => head :: head :: rest
+        | [] => [])),
+    -- The two channel decisions. Both are read off the version, and a document
+    -- that states a different one is refused rather than obeyed: an npm version
+    -- cannot be withdrawn and a tap carries one formula.
+    refuses "a stable release tagged 'next' on npm is refused" "npm dist-tag"
+      (withIn · "npm" (withField · "distTag" (Json.str "next"))),
+    refuses "an npm package list that omits a published target is refused"
+      "does not follow from the targets"
+      (withIn · "npm" (withIn · "packages" (withRows · fun rows => rows.take 2))),
+    refuses "an npm package list with an extra package is refused"
+      "does not follow from the targets"
+      (withIn · "npm" (withIn · "packages" (withRows · fun rows =>
+        rows ++ [Json.str "@scope/tl-bin-solaris-sparc"]))),
+    refuses "a stable release that would not push the tap is refused" "records homebrew push"
+      (withIn · "homebrew" (withField · "push" (Json.bool false))),
+    refuses "a Homebrew pin list that disagrees with the published targets is refused"
+      "pins the Homebrew targets"
+      (withIn · "homebrew" (withIn · "pinnedTargets" (withRows · fun rows => rows.take 1))),
+    -- The per-row statements, one wrong thing at a time.
+    refuses "a target row naming an asset it does not compose is refused" "names the asset"
+      (withIn · "targets" (withFirstRow · (withField · "asset" (Json.str "tl-something-else")))),
+    -- The asset table's digest for the published binary, moved away from the
+    -- target row's. The two sections describe the same file, and a channel
+    -- pinning the digest from one of them would serve bytes the other refuses.
+    refuses "a target row whose digest the asset table does not carry is refused"
+      "the asset table does not agree"
+      (withIn · "assets" (withRows · fun rows => rows.map fun row =>
+        if fieldOf row "name" == Json.str (sampleTarget "linux-x64" .supported).asset then
+          withField row "sha256" (Json.str digest64c)
+        else row)),
+    refuses "a build record embedded under the wrong target is refused"
+      "embeds a build record for" (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "target" (Json.str "linux-arm64"))))),
+    refuses "a build record disagreeing about the tier is refused" "records tier"
+      (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "tier" (Json.str "best-effort"))))),
+    refuses "a build record disagreeing about the bytes is refused"
+      "not the bytes that leg built" (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "sha256" (Json.str digest64c))))),
+    refuses "a leg that built another commit is refused" "did not all build the same source"
+      (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "commit" (Json.str (String.ofList (List.replicate 40 '9'))))))),
+    refuses "a leg that built with another toolchain is refused" "the pinned toolchain"
+      (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "toolchain" (Json.str "leanprover/lean4:v4.0.0"))))),
+    refuses "a leg that built against another dependency set is refused" "dependency set"
+      (withIn · "targets" (withFirstRow ·
+        (withIn · "build" (withField · "lakeManifestSha256" (Json.str digest64c))))),
+    -- The unpublished row's shape. Both halves matter: a row that says it
+    -- published nothing while naming an asset is a contradiction a consumer
+    -- would resolve by whichever half it read, and a row missing the keys makes
+    -- the two shapes different shapes.
+    refuses "a row saying it published nothing while naming an asset is refused"
+      "disagree about whether this release serves"
+      (withIn · "targets" (withRows · fun rows =>
+        match rows with
+        | head :: rest => withField head "published" (Json.bool false) :: rest
+        | [] => [])),
+    refuses "an unpublished row missing its null keys is refused"
+      "keeps every key with a null value"
+      (withIn · "targets" (withRows · fun rows =>
+        match rows with
+        | head :: rest =>
+            withoutField (withoutField (withoutField
+              (withField head "published" (Json.bool false)) "asset") "sha256") "build" :: rest
+        | [] => [])),
+    -- Structure, before agreement. Each of these is a document someone can fix,
+    -- reported where it is.
+    refuses "a schema version that is not a number is refused" "is not a number"
+      (withField · "schemaVersion" (Json.str "1")),
+    -- Written as text rather than as a mutation, because this project's own
+    -- renderer refuses to emit a fractional number: the reader still has to
+    -- refuse one, since the document it reads was not necessarily written by
+    -- this build.
+    check "description: a fractional schema version is refused"
+      (mentions fractionalSchema "not a whole number") (errorOf fractionalSchema),
+    refuses "a negative schema version is refused" "is negative"
+      (withField · "schemaVersion" (Json.num ⟨-1, 0⟩)),
+    refuses "a manifest with no signing section is refused" "has no 'signing' field"
+      (withoutField · "signing"),
+    refuses "a manifest with no npm section is refused" "has no 'npm' field"
+      (withoutField · "npm"),
+    refuses "a manifest with no homebrew section is refused" "has no 'homebrew' field"
+      (withoutField · "homebrew"),
+    refuses "a signing section missing a pin is refused" "has no 'workflow' field"
+      (withIn · "signing" (withoutField · "workflow")),
+    refuses "a version that is not a version is refused" "is not a number"
+      (withField · "version" (Json.str "one.two.three")),
+    refuses "an abbreviated commit is refused" "full git object id"
+      (withField · "commit" (Json.str "0123456")),
+    refuses "a lake-manifest digest of the wrong length is refused" "is not a SHA-256 digest"
+      (withField · "lakeManifestSha256" (Json.str "abc")),
+    refuses "an empty package name is refused" "is empty"
+      (withIn · "npm" (withIn · "packages" (withRows · fun rows => rows ++ [Json.str ""]))),
+    refuses "a published flag that is not a boolean is refused" "is not a boolean"
+      (withIn · "targets" (withFirstRow · (withField · "published" (Json.str "true")))),
+    refuses "a pinned-target list that is not an array is refused" "is not an array"
+      (withIn · "homebrew" (withField · "pinnedTargets" (Json.str "linux-x64"))),
+    refuses "an asset row with no digest is refused" "has no 'sha256' field"
+      (withIn · "assets" (withFirstRow · (withoutField · "sha256"))),
+    -- The report is every disagreement at once. Fixing a signed artifact set
+    -- one refusal per run is not a thing anyone should be asked to do, and it
+    -- is also how the second problem gets discovered after the first is
+    -- "fixed" by regenerating.
+    check "description: every disagreement is reported, not just the first"
+      (let result := parseMutated fun root =>
+        withField (withField root "product" (Json.str "not-tl")) "tag" (Json.str "v9.9.9")
+       mentions result "describes the product" && mentions result "records the tag")
+      (errorOf (parseMutated fun root =>
+        withField (withField root "product" (Json.str "not-tl")) "tag" (Json.str "v9.9.9"))),
+    -- The arm's own fixture is real: if `assembledFrom` stopped producing a
+    -- second target the rows above would be checking a one-target release and
+    -- the per-row mutations would still pass.
+    check "description: the fixture really describes two targets and three assets"
+      (readBack (fun d => (d.targets.length, d.assets.length)) == some (2, 3))
+      s!"the fixture changed shape: {readBack fun d => (d.targets.length, d.assets.length)}",
+    check "description: the fixture's second target is the Best-effort one"
+      (readBack (fun d => d.assets.any (·.name == armRow)) == some true)
+      "the arm asset is missing from the fixture"]
+
 /-! ## The canonical signing identity
 
 The policy is `parseSan`, and the expression is its projection into the one
@@ -3937,7 +4229,7 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests

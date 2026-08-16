@@ -598,17 +598,115 @@ def renderManifest (manifest : Manifest) : Except String String := render manife
 
 /-! ## Reading a manifest back
 
-Deliberately narrow. `manifest-verify` asks one question — does this directory
-hold what this document describes — and the answer needs the tag, for the
-message, and the asset table. The target rows are not re-parsed here because
-nothing in this check reads them; what establishes that the document is *ours*
-is the signature, checked before this runs, and re-parsing a section no verdict
-consumes would be surface without a decision behind it. -/
+The signed manifest is the authoritative description of a release, so this reads
+all of it. It used to read the tag and the asset table, which is the whole of
+what `manifest-verify` consumes, and every other consumer re-derived what it
+needed from a directory listing or from `SHA256SUMS` — the four-derivations
+problem this module's header is about, still present on the read side.
 
-/-- The part of a manifest this check reads. -/
+Reading it whole also means the document is checked for *internal agreement*
+once, here, before any channel acts on any part of it. A target row whose
+embedded build record describes a different target, an asset digest that
+disagrees with the target row naming the same file, an npm package list that
+does not follow from the targets that were published, a Homebrew section pinning
+a target this release did not publish: each is a signed document contradicting
+itself, and each would otherwise be found — or not — by whichever channel
+happened to read that section.
+
+The signature is what establishes the document is ours; this is what establishes
+it says one thing. Neither substitutes for the other. -/
+
+/-- The signing pins a manifest records, read back.
+
+    Carried rather than skipped because they are what a consumer would have to
+    trust some *other* copy of if the manifest did not state them, and the
+    project already has five copies of that pin. -/
+structure ManifestSigning where
+  certificateOidcIssuer : String
+  certificateIdentityRegexp : String
+  workflow : String
+  deriving Repr
+
+/-- What a manifest says became of one target.
+
+    The published case carries the leg's own record, parsed by the same parser
+    that read the `build-metadata-*.json` asset — so a record the standalone
+    document would be refused for cannot enter through the manifest instead. -/
+inductive ManifestOutcome where
+  | published (asset : String) (sha256 : Sha256) (build : BuildMetadata)
+  | absent
+  deriving Repr
+
+/-- One target row of a manifest. -/
+structure ManifestTarget where
+  name : String
+  tier : Tier
+  outcome : ManifestOutcome
+  deriving Repr
+
+/-- The asset and digest a row publishes, when it publishes one. -/
+def ManifestTarget.published? (row : ManifestTarget) : Option (String × Sha256) :=
+  match row.outcome with
+  | .published asset digest _ => some (asset, digest)
+  | .absent => none
+
+/-- The npm projection of a release, as the manifest states it. -/
+structure ManifestNpmPlan where
+  distTag : String
+  packages : List String
+  deriving Repr
+
+/-- The Homebrew projection of a release, as the manifest states it. -/
+structure ManifestHomebrewPlan where
+  tap : String
+  push : Bool
+  pinnedTargets : List String
+  deriving Repr
+
+/-- A manifest, read back whole. -/
 structure ManifestDescription where
+  schemaVersion : Nat
+  product : String
+  version : Version
   tag : String
+  commit : Commit
+  repository : String
+  toolchain : String
+  lakeManifestSha256 : Sha256
+  signing : ManifestSigning
+  targets : List ManifestTarget
   assets : List Asset
+  npm : ManifestNpmPlan
+  homebrew : ManifestHomebrewPlan
+
+/-- The targets this release published, in manifest order. The order is part of
+    the document: `release/targets.json` lists Supported targets before
+    Best-effort ones, and a consumer that re-sorted would produce a different
+    formula or package set for the same release. -/
+def ManifestDescription.publishedTargets (description : ManifestDescription) : List String :=
+  description.targets.filterMap fun row => row.published?.map fun _ => row.name
+
+/-- The scope half of a package name, which is the owner every platform package
+    is published under. -/
+def npmScopeOf (package : String) : String := (package.splitOn "/").headD package
+
+/-- The platform package for one target, under a scope. The one site that knows
+    how a platform package is spelled on the reading side; `Manifest.npmPackages`
+    is the one that knows it on the writing side, and the coherence check below
+    is what holds them together. -/
+def npmPlatformPackage (scope target : String) : String := s!"{scope}/tl-bin-{target}"
+
+/-- What `npm install` would resolve to for a release at this version. A
+    prerelease must not become `latest`, and the decision is read off the parsed
+    version rather than by looking for a `-` in a string. -/
+def npmDistTagFor (version : Version) : String :=
+  if version.isPrerelease then "next" else "latest"
+
+/-- The package list a release at this version, publishing these targets, must
+    carry: the launcher first, then one platform package per published target,
+    in target order. -/
+def npmPackagesFor (launcher : String) (published : List String) : List String :=
+  launcher :: published.map (npmPlatformPackage (npmScopeOf launcher))
 
 private def parseAsset (cursor : Cursor) (value : Json) : Except String Asset := do
   let name ← nonEmptyStringField cursor value "name"
@@ -625,23 +723,285 @@ private def parseAsset (cursor : Cursor) (value : Json) : Except String Asset :=
           (·.wire == text)).getD .other
   return { name, sha256, kind }
 
+private def parseSigning (cursor : Cursor) (root : Json) : Except String ManifestSigning := do
+  let (inner, found) ← field cursor root "signing"
+  return {
+    certificateOidcIssuer := ← nonEmptyStringField inner found "certificateOidcIssuer"
+    certificateIdentityRegexp := ← nonEmptyStringField inner found "certificateIdentityRegexp"
+    workflow := ← nonEmptyStringField inner found "workflow" }
+
+/-- One target row.
+
+    An unpublished target keeps every key with a `null` value rather than
+    dropping them, so the two shapes are the same shape — and this reads them
+    back that way. A row saying it published nothing while carrying an asset
+    name is not a row with a harmless leftover field: whichever half a consumer
+    read would decide whether that platform is served. -/
+private def parseTargetRow (cursor : Cursor) (value : Json) : Except String ManifestTarget := do
+  let name ← nonEmptyStringField cursor value "target"
+  let tier ← Tier.parse (cursor.at "tier").render (← stringField cursor value "tier")
+  if ← boolField cursor value "published" then
+    let asset ← nonEmptyStringField cursor value "asset"
+    let sha256 ← Sha256.parse (cursor.at "sha256").render
+      (← nonEmptyStringField cursor value "sha256")
+    let (buildCursor, buildValue) ← field cursor value "build"
+    let build ← BuildMetadata.ofJson buildCursor buildValue
+    return { name, tier, outcome := .published asset sha256 build }
+  else
+    for key in ["asset", "sha256", "build"] do
+      match field? value key with
+      | some .null => pure ()
+      | some _ =>
+          (cursor.at key).fail s!"is set on a row that says it published nothing. The two halves of this row disagree about whether this release serves '{name}', and a consumer would act on whichever half it happened to read."
+      | none =>
+          (cursor.at key).fail s!"is missing from the row for '{name}'. An unpublished target keeps every key with a null value, so that a reader gets \"there is none\" rather than a missing-key error and the two row shapes stay one shape."
+    return { name, tier, outcome := .absent }
+
+private def parseNpmPlan (cursor : Cursor) (root : Json) : Except String ManifestNpmPlan := do
+  let (inner, found) ← field cursor root "npm"
+  return {
+    distTag := ← nonEmptyStringField inner found "distTag"
+    packages := ← stringArrayField inner found "packages" }
+
+private def parseHomebrewPlan (cursor : Cursor) (root : Json) :
+    Except String ManifestHomebrewPlan := do
+  let (inner, found) ← field cursor root "homebrew"
+  return {
+    tap := ← nonEmptyStringField inner found "tap"
+    push := ← boolField inner found "push"
+    pinnedTargets := ← stringArrayField inner found "pinnedTargets" }
+
+/-! ### Does the document say one thing?
+
+Every row below compares two statements the manifest makes about the same fact.
+Nothing here reads a file or a directory: this is the document against itself,
+which is why it is a `Check` list with a theorem rather than a sequence of `if`s
+in the parser. A row silently dropped from it makes the verdict strictly more
+accepting, and the shape of that failure — a channel publishing on the strength
+of a section nothing compared — is the one this port exists to remove. -/
+
+/-- A list of names carries no repeat. The failure names the offender, which is
+    why the condition and the message are two readings of one lookup. -/
+private def uniqueNamesCheck (names : List String) (explain : String → String) : Check :=
+  { held := (repeatedName names).isNone,
+    failure := match repeatedName names with
+      | some name => explain name
+      | none => "" }
+
+/-- What one published target row has to agree with the rest of the document
+    about. An unpublished row states nothing that could disagree. -/
+def targetRowChecks (description : ManifestDescription) (row : ManifestTarget) : List Check :=
+  match row.outcome with
+  | .absent => []
+  | .published asset digest build =>
+      [{ held := asset == assetNameFor row.name,
+         failure := s!"the '{row.name}' row names the asset '{asset}', but a target's asset is composed from its name and would be '{assetNameFor row.name}'. A consumer downloading what this row names would fetch a file this release does not describe." },
+       { held := (description.assets.find? (·.name == asset)).map (·.sha256) == some digest,
+         failure := s!"the '{row.name}' row gives {asset} the digest {digest.hex}, and the asset table does not agree — either it does not list that file at all, or it lists a different digest for it. The manifest is the one description of this release and it contradicts itself here; a channel pinning the digest from one section would serve bytes the other section refuses." },
+       { held := build.target == row.name,
+         failure := s!"the '{row.name}' row embeds a build record for '{build.target}'. The records were crossed between rows, so this one does not describe its own binary." },
+       { held := build.tier == row.tier,
+         failure := s!"the '{row.name}' row records tier '{row.tier.wire}' and embeds a build record saying '{build.tier.wire}'. The tier decides whether an absent artifact blocks a release, so a document that states it twice must state it once." },
+       { held := build.sha256 == digest,
+         failure := s!"the '{row.name}' row gives its asset the digest {digest.hex} and embeds a build record for {build.sha256.hex}. These are not the bytes that leg built and smoke-tested." },
+       { held := build.commit == description.commit,
+         failure := s!"the '{row.name}' leg records commit {build.commit.hex}, and this release is {description.commit.hex}. The legs this manifest describes did not all build the same source." },
+       { held := build.toolchain == description.toolchain,
+         failure := s!"the '{row.name}' leg built with toolchain '{build.toolchain}', and this release records '{description.toolchain}'. The artifacts this manifest describes do not all come from the pinned toolchain." },
+       { held := build.lakeManifestSha256 == description.lakeManifestSha256,
+         failure := s!"the '{row.name}' leg recorded a lake-manifest digest of {build.lakeManifestSha256.hex}, and this release records {description.lakeManifestSha256.hex}. The legs did not all build against the same dependency set." }]
+
+/-- Every way the document can contradict itself, each with what to say. -/
+def descriptionChecks (description : ManifestDescription) : List Check :=
+  [{ held := description.schemaVersion == manifestSchemaVersion,
+     failure := s!"declares schema version {description.schemaVersion}, and this build reads version {manifestSchemaVersion}. A schema is bumped exactly when a consumer would have to change, so reading this one anyway would be acting on a document whose meaning is not the one this code implements." },
+   { held := description.product == "tl",
+     failure := s!"describes the product '{description.product}'. This is tl's release machinery and it has no way to publish anything else; a manifest for another product reaching here is a wrong file rather than a wider capability." },
+   { held := description.tag == description.version.tag,
+     failure := s!"records the tag '{description.tag}' and the version '{description.version.render}', whose tag is '{description.version.tag}'. Every url a channel composes takes the tag and every version a channel claims takes the version, so a document that disagrees with itself here publishes a package pointing at a release that does not exist." },
+   { held := !description.targets.isEmpty,
+     failure := "lists no targets. Every per-target comparison below would then hold by having nothing to compare, and a channel would project a release that builds nothing." },
+   uniqueNamesCheck (description.targets.map (·.name)) fun name =>
+     s!"lists the target '{name}' twice. Every lookup takes the first match, so which row applies would depend on document order — and if the two disagree about the tier they disagree about whether this release is complete.",
+   { held := !description.assets.isEmpty,
+     failure := "describes no assets. A manifest with an empty asset table would accept any directory at all, including an empty one, so it is refused rather than satisfied." },
+   uniqueNamesCheck (description.assets.map (·.name)) fun name =>
+     s!"describes '{name}' twice. Verification looks each name up once, so which digest applies would depend on row order — and two rows naming one file disagree about it, or one of them is redundant.",
+   { held := description.npm.distTag == npmDistTagFor description.version,
+     failure := s!"records the npm dist-tag '{description.npm.distTag}' for version {description.version.render}, whose tag is '{npmDistTagFor description.version}'. A prerelease published as 'latest' is what `npm install tl` resolves to for everyone, and npm versions cannot be withdrawn." },
+   { held := description.npm.packages == npmPackagesFor (description.npm.packages.headD "")
+       description.publishedTargets,
+     failure := s!"records an npm package list that does not follow from the targets it published. It must be the launcher package followed by one platform package per published target, in target order: {String.intercalate ", " (npmPackagesFor (description.npm.packages.headD "<none>") description.publishedTargets)}. A package published from a list that disagrees with the target rows either points at a binary this release does not have, or omits a platform it does." },
+   { held := description.homebrew.push == !description.version.isPrerelease,
+     failure := s!"records homebrew push {description.homebrew.push} for version {description.version.render}. A tap carries one formula, so pushing a prerelease makes `brew install tl` resolve to it (ADR-0006); the decision follows from the version and this document states a different one." },
+   { held := description.homebrew.pinnedTargets == description.publishedTargets,
+     failure := s!"pins the Homebrew targets [{String.intercalate ", " description.homebrew.pinnedTargets}] while publishing [{String.intercalate ", " description.publishedTargets}]. The formula refuses to install on a platform outside that list, so a document that disagrees with itself here either refuses a platform this release serves or promises one it does not." }]
+  ++ description.targets.flatMap (targetRowChecks description)
+
+/-- Whether the document agrees with itself. -/
+def descriptionCoherent (description : ManifestDescription) : Bool :=
+  Check.allHeld (descriptionChecks description)
+
+/-- Why it does not, or nothing at all. -/
+def descriptionProblems (description : ManifestDescription) : List String :=
+  Check.failures (descriptionChecks description)
+
+/-- What a published target row asserts about the rest of the document. -/
+def ManifestTarget.coherentWith (description : ManifestDescription) (row : ManifestTarget) : Prop :=
+  match row.outcome with
+  | .absent => True
+  | .published asset digest build =>
+      asset = assetNameFor row.name
+        ∧ (description.assets.find? (·.name == asset)).map (·.sha256) = some digest
+        ∧ build.target = row.name
+        ∧ build.tier = row.tier
+        ∧ build.sha256 = digest
+        ∧ build.commit = description.commit
+        ∧ build.toolchain = description.toolchain
+        ∧ build.lakeManifestSha256 = description.lakeManifestSha256
+
+/-- Everything the document asserts about itself, other than per target. -/
+def ManifestDescription.selfConsistent (description : ManifestDescription) : Prop :=
+  description.schemaVersion = manifestSchemaVersion
+    ∧ description.product = "tl"
+    ∧ description.tag = description.version.tag
+    ∧ description.targets ≠ []
+    ∧ (repeatedName (description.targets.map (·.name))).isNone = true
+    ∧ description.assets ≠ []
+    ∧ (repeatedName (description.assets.map (·.name))).isNone = true
+    ∧ description.npm.distTag = npmDistTagFor description.version
+    ∧ description.npm.packages
+        = npmPackagesFor (description.npm.packages.headD "") description.publishedTargets
+    ∧ description.homebrew.push = !description.version.isPrerelease
+    ∧ description.homebrew.pinnedTargets = description.publishedTargets
+
+/-- A list with something in it is not the empty list. Stated once because four
+    rows above are "this section is populated" and the `Bool`/`Prop` step is the
+    same each time. -/
+private theorem not_isEmpty_iff {α : Type} (items : List α) :
+    (!items.isEmpty) = true ↔ items ≠ [] := by
+  match items with
+  | [] =>
+      constructor
+      · intro absurdity; exact Bool.noConfusion absurdity
+      · intro empty; exact absurd rfl empty
+  | head :: rest =>
+      constructor
+      · intro _; exact List.cons_ne_nil head rest
+      · intro _; rfl
+
+/-- Every check produced by expanding each element into a list holds exactly
+    when the property each list encodes holds of every element.
+
+    The companion of `all_mapped_held_iff` for the rows that contribute more
+    than one comparison. Proved by induction rather than by a `simp` set so the
+    step it takes is visible: one element's checks and the rest's are an
+    append, and `List.all_append` splits it. -/
+private theorem all_flatMapped_held_iff {α : Type} (build : α → List Check) (items : List α)
+    (property : α → Prop)
+    (encodes : ∀ item, (build item).all (·.held) = true ↔ property item) :
+    (items.flatMap build).all (·.held) = true ↔ ∀ item ∈ items, property item := by
+  induction items with
+  | nil =>
+      constructor
+      · intro _ item member; exact absurd member (List.not_mem_nil)
+      · intro _; rfl
+  | cons head rest step =>
+      rw [List.flatMap_cons, List.all_append, Bool.and_eq_true, encodes head, step]
+      constructor
+      · rintro ⟨headHolds, restHolds⟩ item member
+        match List.mem_cons.mp member with
+        | .inl isHead => rw [isHead]; exact headHolds
+        | .inr inRest => exact restHolds item inRest
+      · intro every
+        exact ⟨every head List.mem_cons_self,
+          fun item member => every item (List.mem_cons_of_mem head member)⟩
+
+private theorem targetRowChecks_held_iff (description : ManifestDescription)
+    (row : ManifestTarget) :
+    (targetRowChecks description row).all (·.held) = true ↔ row.coherentWith description := by
+  rw [targetRowChecks, ManifestTarget.coherentWith]
+  match row.outcome with
+  | .absent =>
+      constructor
+      · intro _; trivial
+      · intro _; rfl
+  | .published _ _ _ =>
+      simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, beq_iff_eq]
+
+/-- **A manifest is accepted exactly when every statement it makes twice it
+    makes the same way both times.**
+
+    Left to right is what keeps the row list from silently shrinking: dropping
+    any row makes the verdict strictly more accepting, so a document violating
+    the dropped row would satisfy the left side and fail the right, and this
+    implication would stop compiling. That is the failure worth guarding here,
+    because a manifest that passes is one three channels then publish from
+    without looking again.
+
+    Right to left is what a verdict that accepts nothing cannot satisfy, and it
+    is not hypothetical: the checks are quantified over the target rows, so a
+    reader that refused every document — or one that mistakenly required an
+    unpublished row to carry a build record — would prove soundness trivially
+    and fail here. -/
+theorem descriptionCoherent_iff (description : ManifestDescription) :
+    descriptionCoherent description = true ↔
+      description.selfConsistent ∧ ∀ row ∈ description.targets, row.coherentWith description := by
+  rw [descriptionCoherent, Check.allHeld, descriptionChecks, List.all_append, Bool.and_eq_true,
+    all_flatMapped_held_iff _ _ _ (targetRowChecks_held_iff description),
+    ManifestDescription.selfConsistent]
+  simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, beq_iff_eq,
+    not_isEmpty_iff, uniqueNamesCheck]
+
+/-- **The report is empty exactly when the document agrees with itself.**
+
+    `descriptionCoherent_iff` characterises the verdict; the parser branches on
+    the report, so without this the theorem would be about a function nothing
+    reaches. -/
+theorem descriptionProblems_isEmpty_iff (description : ManifestDescription) :
+    descriptionProblems description = [] ↔
+      description.selfConsistent ∧ ∀ row ∈ description.targets, row.coherentWith description :=
+  Iff.trans (Check.allHeld_iff_noFailures (descriptionChecks description)).symm
+    (descriptionCoherent_iff description)
+
+/-- Read a manifest whole, and refuse one that contradicts itself.
+
+    Structure first, then agreement. A field of the wrong type is reported where
+    it is, naming the path, because that is a document someone can fix; a
+    document that parses and disagrees with itself is reported as every
+    disagreement at once, because fixing one of them a release at a time is not
+    a thing anyone should do to a signed artifact set. -/
 def ManifestDescription.parse (document : String) (text : String) :
     Except String ManifestDescription := do
   let cursor : Cursor := { document }
   let root ← parseDocument cursor text
-  let tag ← nonEmptyStringField cursor root "tag"
-  let (inner, found) ← field cursor root "assets"
-  let rows ← asArray inner found
-  let assets ← rows.mapM fun (rowCursor, row) => parseAsset rowCursor row
-  if assets.isEmpty then
-    inner.fail "describes no assets. A manifest with an empty asset table would accept any directory at all, including an empty one, so it is refused rather than satisfied."
-  -- A repeated name makes the answer depend on lookup order, and the two rows
-  -- carry different digests or there would be no reason to have both.
-  match repeatedName (assets.map (·.name)) with
-  | some name =>
-      inner.fail s!"describes '{name}' twice. Verification looks each name up once, so which digest applies would depend on row order — and two rows naming one file disagree about it, or one of them is redundant."
-  | none => pure ()
-  return { tag, assets }
+  let (targetsCursor, targetsFound) ← field cursor root "targets"
+  let targetRows ← asArray targetsCursor targetsFound
+  let (assetsCursor, assetsFound) ← field cursor root "assets"
+  let assetRows ← asArray assetsCursor assetsFound
+  let description : ManifestDescription := {
+    schemaVersion := ← natField cursor root "schemaVersion"
+    product := ← nonEmptyStringField cursor root "product"
+    version := ← Version.parse (cursor.at "version").render
+      (← nonEmptyStringField cursor root "version")
+    tag := ← nonEmptyStringField cursor root "tag"
+    commit := ← Commit.parse (cursor.at "commit").render
+      (← nonEmptyStringField cursor root "commit")
+    repository := ← nonEmptyStringField cursor root "repository"
+    toolchain := ← nonEmptyStringField cursor root "toolchain"
+    lakeManifestSha256 := ← Sha256.parse (cursor.at "lakeManifestSha256").render
+      (← nonEmptyStringField cursor root "lakeManifestSha256")
+    signing := ← parseSigning cursor root
+    targets := ← targetRows.mapM fun (rowCursor, row) => parseTargetRow rowCursor row
+    assets := ← assetRows.mapM fun (rowCursor, row) => parseAsset rowCursor row
+    npm := ← parseNpmPlan cursor root
+    homebrew := ← parseHomebrewPlan cursor root }
+  match descriptionProblems description with
+  | [] => return description
+  | problems =>
+      .error (s!"{document}: this manifest contradicts itself, so nothing may be published from it.\n"
+        ++ String.join (problems.map fun problem => s!"  it {problem}\n")
+        ++ "The manifest is signed alongside SHA256SUMS. A document that disagrees with itself was either assembled by a build this one cannot read, or edited after signing; regenerate it from the release rather than reconciling it by hand.")
 
 /-! ## Collecting the evidence
 
