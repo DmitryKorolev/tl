@@ -86,7 +86,9 @@ existing because a specific ADR-pinned behavior requires it:
   Release policy requires atomic visibility, so a post-rename directory-sync
   error is a reportable durability observation rather than a false claim that
   the write did not land. Operation and errno are data, not a formatted string
-  contract. The product's stronger durable-write policy remains separate.
+  contract. Its raw array-taking Lean extern is private to `release.Sys`; the
+  public release mechanism accepts only ADR-0028's sealed directory and output
+  path values. The product's stronger durable-write policy remains separate.
 - `close fd`.
 
 The §6 *policy* — the `.tl` path discipline, what to refuse, the error codes

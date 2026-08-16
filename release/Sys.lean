@@ -41,7 +41,8 @@ namespace Release.Sys
     on. An exception from here is therefore the primitive itself failing, not
     the write failing — and `Release.Write.through` reports the two apart. -/
 @[extern "tl_release_write_atomic"]
-opaque releaseWriteAtomic (base : @&String) (components : @&Array String) (contents : @&ByteArray) :
+private opaque releaseWriteAtomic (base : @&String) (components : @&Array String)
+    (contents : @&ByteArray) :
     IO (Array UInt32)
 
 /-- The mechanism `Release.Write.through` is parameterised over, with the

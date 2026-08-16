@@ -6,9 +6,11 @@
  * component, so a symlink at ANY path component is refused, ADR-0015 §6),
  * fsync (F_FULLFSYNC on Darwin, where plain fsync stops at the drive cache),
  * fd locks, OS CSPRNG entropy, the ownership check, and the release tool's
- * capability-anchored atomic replacement. Policy — what to refuse, error
- * codes, retry loops — lives in tested Lean above this (Tl/Store/Sys.lean and
- * its callers; release/Sys.lean and release/Write.lean for the release side).
+ * capability-anchored atomic replacement. Product policy lives in tested Lean
+ * above this (`Tl/Store/Sys.lean` and its callers). The release primitive also
+ * owns its syscall sequencing, retry loops and numeric observation row;
+ * `release/Write.lean` validates the input capability and decides what that
+ * observation means to a command.
  *
  * The two sides are separate surfaces on purpose. `tl_sys_*` is the product's;
  * `tl_release_*` is release administration's, which ADR-0028 keeps out of the

@@ -590,6 +590,10 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   condition acts on — computed transitively through
                         --   `needs.*.outputs.*`, so moving a policy branch one
                         --   job upstream does not move it out of the guard.
+                        --   Quoted control keys are normalized; case-varied or
+                        --   bracket-form authority references and YAML aliases
+                        --   standing in for failure controls, whole steps or
+                        --   output mappings fail closed.
                         --   Stricter than ADR-0028's minimum in one stated
                         --   place: step-level `continue-on-error` is refused on
                         --   every step of a bound job rather than only on
@@ -734,7 +738,8 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   predicted destination/staging effects are what a
                         --   real fault test compares the directory against
   Sys.lean              --   release administration's whole native boundary: one
-                        --   `@[extern]`, binding `tl_release_write_atomic` in
+                        --   private `@[extern]`, binding
+                        --   `tl_release_write_atomic` in
                         --   ffi/tlsys.c. Deliberately not a `tl_sys_*` symbol —
                         --   release/ is outside the product TCB, and the trust
                         --   verifier audits Lean imports and cannot observe a
@@ -743,8 +748,10 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   from the loaded release environment, plus the
                         --   executable's linker inputs and the recipe that
                         --   compiles the shim from exactly ffi/tlsys.c. The
-                        --   capability, component-list path and typed
-                        --   observations it reports are Write.lean's above.
+                        --   raw array-taking wire is not callable from another
+                        --   release module; the public mechanism accepts only
+                        --   Write.lean's sealed capability, component-list path
+                        --   and typed observations above.
                         --   Imports no `Tl.*`
   Json.lean             --   typed access (every read returns Except with the
                         --   document and path in the message, where the Python

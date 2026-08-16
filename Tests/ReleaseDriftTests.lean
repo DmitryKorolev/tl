@@ -321,7 +321,14 @@ private def externRowsOf (env : Environment) (modules : Array Name) : Array Exte
     change to this list, ADR-0019 and ADR-0028 together — not a new
     `@[extern]` somebody added to a release module. -/
 private def pinnedReleaseExterns : List ExternRow :=
-  [{ «module» := `release.Sys, name := `Release.Sys.releaseWriteAtomic,
+  [{ «module» := `release.Sys,
+     -- The raw array-taking declaration is private: release code can reach
+     -- the symbol only through `Release.Sys.mechanism`, whose arguments are
+     -- the sealed base and component-list types. Pin the compiled private name
+     -- too, so making that unsafe wire public is itself a registry change.
+     name := Name.mkStr
+       (Name.mkStr (Name.mkStr (Name.mkNum `_private.release.Sys 0) "Release") "Sys")
+       "releaseWriteAtomic",
      symbols := ["tl_release_write_atomic"],
      signature :=
        "([mdata borrowed:1 String]) -> ([mdata borrowed:1 Array.{0} String]) -> " ++

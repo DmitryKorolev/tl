@@ -138,15 +138,20 @@ evidence is published before the failing command or collected by a separate
 unprivileged diagnostics job from artifacts already handed off. Diagnostics do
 not gain an `always()` exception inside an authority-bearing job.
 
-`Tests/ReleaseDriftTests.lean` reads the YAML structure, computes effective
+`Tests/ReleaseTests.lean` reads the YAML structure, computes effective
 permissions and authority-bearing output reachability, and refuses a privileged
 job, authority-output producer, action input, or policy step outside those
-forms. Its planted fixtures include workflow-level permission inheritance, a
-secret-only job, a `needs` output produced by inline shell, direct expression
-interpolation, privileged job- and step-level status-function overrides, a
-handoff pattern matching zero or multiple files, and a pinned action carrying a
-`script:` input. This is a small authority and invocation grammar, not a general
-shell lexer. Unprivileged native-build steps
+forms. YAML quotes around control keys are normalized once. Authority edges
+have one accepted spelling, `needs.<job>.outputs.<name>` in lowercase dot form;
+bracket/case variants and anchors or aliases standing in for failure-control
+values, whole steps, or output mappings are refusals, not edges the reachability
+closure silently omits. Its
+planted fixtures include workflow-level permission inheritance, a secret-only
+job, a `needs` output produced by inline shell, direct expression interpolation,
+quoted keys, aliases, case-varied status functions, privileged job- and
+step-level status-function overrides, a handoff pattern matching zero or
+multiple files, and a pinned action carrying a `script:` input. This is a small
+authority and invocation grammar, not a general shell lexer. Unprivileged native-build steps
 may remain multi-line build orchestration, but may not parse release
 configuration, write an authority-bearing output outside its named producer
 step, or publish.
@@ -236,6 +241,10 @@ product-prefixed `tl_sys_*` symbol. The release drift gate enumerates every
 external declaration in the loaded release environment and pins its declaring
 module, native symbol, and full Lean signature. It refuses an external
 declaration elsewhere in the release scope and any product-prefixed symbol.
+The one raw array-taking declaration is private to `release.Sys`; release code
+can invoke the primitive only through the public mechanism whose arguments are
+the sealed directory and component-list types. The registry pins that compiled
+privacy boundary as well as the native symbol and type.
 Separately, it pins the executable's complete native/custom linker-input set and
 the build recipe that compiles `tlsys.o` from exactly `ffi/tlsys.c`; checking
 only `moreLinkObjs` or only the source bindings would leave a substitution gap.
@@ -255,7 +264,9 @@ never discovers a repository root or derives a base by splitting the output
 path. Its output name is a sealed, non-empty list of validated relative
 components. Absolute paths, empty components, `.`, `..`, and embedded NUL are
 rejected at the Lean boundary, and the native primitive consumes the component
-array without reparsing a path string.
+array without reparsing a path string. The raw array-taking extern is private to
+the binding module, so another release module cannot bypass the sealed
+component type by constructing an unchecked array.
 
 Minting the capability intentionally opens the operator-supplied base with
 `O_DIRECTORY | O_CLOEXEC`, follows any symlink used to select that base, and
@@ -615,7 +626,7 @@ They live in the separately audited release scope and are pinned against silent
 deletion by `pinnedReleaseVerdictTheorems` in
 `Tests/ReleaseToolTests.lean`, following the same distinction ADR-0026 makes
 for the trust verifier's internal verdict theorems. That compile-time registry
-names every **non-private release contract theorem**—twelve at this decision.
+names every **non-private release contract theorem**—eighteen at this decision.
 `Check.allHeld_iff_noFailures` is included because it is a public reusable
 report/verdict contract. The private `all_mapped_held_iff`,
 `describedCheck_held_iff`, `undescribedCheck_held_iff`, and `blocking_cases` are

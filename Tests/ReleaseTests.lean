@@ -263,11 +263,18 @@ private def unquote (text : String) : String :=
     String.ofList ((text.toList.drop 1).dropLast)
   else text
 
-/-- A `key: value` line split at the first colon, with the value unquoted. -/
+/-- A `key: value` line split at the first colon, with YAML's semantically
+    irrelevant quotes removed from both sides.
+
+    Quoted control keys are not exotic to the YAML parser: `"if"` and `if`
+    are the same key. Leaving quotes on the key made the policy parser assign
+    them different authority, which is exactly the kind of syntax drift this
+    guard exists to refuse. -/
 private def keyValue (body : String) : String × String :=
   match body.splitOn ":" with
   | [] => ("", "")
-  | key :: rest => (trimmed key, unquote (trimmed (String.intercalate ":" rest)))
+  | key :: rest =>
+      (unquote (trimmed key), unquote (trimmed (String.intercalate ":" rest)))
 
 /-- A bare YAML key: a job name or a permission name, with nothing quoted,
     nested or flow-style about it.
@@ -310,6 +317,10 @@ private def grantsPrivilege (line : String) : Bool :=
       -- grant whatever it contains, because this scan reads block style and a
       -- form it cannot read must not pass for an absent one.
       || (key == "permissions" && has value "{")
+      -- An alias or anchor may stand for a permission mapping. The guard does
+      -- not interpret YAML indirection; it treats taking one here as a grant,
+      -- so an alias cannot make a privileged job look unprivileged.
+      || (key == "permissions" && (value.startsWith "*" || value.startsWith "&"))
       -- A protected environment. ADR-0028 puts every job that can mint a
       -- certificate this release's pin accepts, or that receives a publication
       -- secret, behind the same environment as the signing job — so naming one
@@ -387,7 +398,12 @@ private def jobScan (content : String) : JobScan := Id.run do
 private def jobIf (block : JobBlock) : String :=
   let step := fun (acc : List String × Bool) (line : String) =>
     let (collected, taking) := acc
-    if line.startsWith "    if:" then (collected ++ [line], true)
+    let ownIf :=
+      if line.startsWith "    " && !line.startsWith "     " then
+        let (key, _) := keyValue (withoutComment (dropIndent line))
+        key == "if"
+      else false
+    if ownIf then (collected ++ [line], true)
     else if taking && line.startsWith "      " then (collected ++ [line], true)
     else (collected, false)
   let (collected, _) := block.lines.foldl step ([], false)
@@ -536,9 +552,13 @@ private def identifierHead (text : String) : String :=
     ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9')
       || c == '-' || c == '_')
 
+private def withoutSpaces (text : String) : String :=
+  String.ofList (text.toList.filter fun c => c != ' ' && c != '\t')
+
 /-- Every `needs.<job>.outputs.<name>` in some text, as pairs. -/
 private def needsOutputRefs (text : String) : List (String × String) :=
-  ((text.splitOn "needs.").drop 1).filterMap fun tail =>
+  let compact := withoutSpaces text
+  ((compact.splitOn "needs.").drop 1).filterMap fun tail =>
     let job := identifierHead tail
     let rest := String.ofList (tail.toList.drop job.length)
     if job.isEmpty || !rest.startsWith ".outputs." then none
@@ -558,7 +578,7 @@ private def conditionLines (lines : List String) : List String := Id.run do
     let width := line.toList.takeWhile (· == ' ') |>.length
     if taking && width > indent && !body.isEmpty then
       collected := collected ++ [body]
-    else if body.startsWith "if:" then
+    else if (keyValue body).1 == "if" then
       collected := collected ++ [body]
       taking := true
       indent := width
@@ -573,11 +593,34 @@ private def conditionLines (lines : List String) : List String := Id.run do
 private def statusFunctions : List String :=
   ["always()", "failure()", "cancelled()", "success()"]
 
-private def withoutSpaces (text : String) : String :=
-  String.ofList (text.toList.filter fun c => c != ' ' && c != '\t')
-
 private def namesStatusFunction (text : String) : Option String :=
-  statusFunctions.find? (has (withoutSpaces text) ·)
+  statusFunctions.find? (has (withoutSpaces text).toLower ·)
+
+/-- A spelling the authority parser deliberately does not interpret.
+
+    GitHub accepts bracket dereferences and case-insensitive context/property
+    names. This guard has one canonical authority grammar instead: dot-form,
+    lowercase `needs` and `outputs`. A bound job using another spelling is a
+    refusal, never an authority edge silently omitted from the closure. -/
+private def nonCanonicalAuthorityReference (text : String) : Bool :=
+  let compact := withoutSpaces text
+  let lower := compact.toLower
+  let dotNeeds := has lower "needs."
+  let bracketAfterNeeds :=
+    ((lower.splitOn "needs.").drop 1).any fun tail => has tail "["
+  has lower "needs["
+    || (dotNeeds && (!has compact "needs." || bracketAfterNeeds
+      || (has lower ".outputs." && !has compact ".outputs.")))
+
+private def yamlControlIndirection (key value : String) : Bool :=
+  (key == "if" || key == "continue-on-error")
+    && (value.startsWith "*" || value.startsWith "&")
+
+private def stepMappingIndirection (line : String) : Bool :=
+  if line.startsWith "      - " then
+    let item := withoutComment (String.ofList (line.toList.drop 8))
+    item.startsWith "*" || item.startsWith "&"
+  else false
 
 /-- Which jobs produce an output some privileged job or some condition acts on.
 
@@ -635,15 +678,26 @@ private def failurePropagationViolations (scan : JobScan) : List String := Id.ru
     let because :=
       if privileged then "holds a credential" else "produces an output a privileged job acts on"
     for line in block.lines do
+      if stepMappingIndirection line then
+        violations := violations ++
+          [s!"job '{block.name}' {because} uses an anchored or aliased whole step — the authority grammar cannot inspect the failure controls hidden in that mapping. Expand the step in this bound job."]
       match jobLevelKey? line with
-      | some ("continue-on-error", value) =>
-          violations := violations ++
-            [s!"job '{block.name}' {because} and sets continue-on-error: {value} — a failed handoff, authentication or publication would then be reported as a successful job before anything downstream could see it. Job-level best-effort is for an unprivileged builder none of whose outputs is authority-bearing."]
+      | some (key, value) =>
+          if yamlControlIndirection key value then
+            violations := violations ++
+              [s!"job '{block.name}' {because} uses YAML indirection for {key} — the authority grammar does not resolve anchors or aliases. Write the condition or failure policy directly on the bound job so review and this guard see the same value."]
+          else if key == "continue-on-error" then
+            violations := violations ++
+              [s!"job '{block.name}' {because} and sets continue-on-error: {value} — a failed handoff, authentication or publication would then be reported as a successful job before anything downstream could see it. Job-level best-effort is for an unprivileged builder none of whose outputs is authority-bearing."]
       | _ => pure ()
       match stepLevelKey? line with
-      | some ("continue-on-error", value) =>
-          violations := violations ++
-            [s!"job '{block.name}' {because} and has a step with continue-on-error: {value} — the step reports success it did not have, and every step after it runs on that. Remove it; a step that may legitimately fail belongs in a separate unprivileged job."]
+      | some (key, value) =>
+          if yamlControlIndirection key value then
+            violations := violations ++
+              [s!"job '{block.name}' {because} uses YAML indirection for a step's {key} — expand the anchor or alias in this bound job so failure propagation is explicit."]
+          else if key == "continue-on-error" then
+            violations := violations ++
+              [s!"job '{block.name}' {because} and has a step with continue-on-error: {value} — the step reports success it did not have, and every step after it runs on that. Remove it; a step that may legitimately fail belongs in a separate unprivileged job."]
       | _ => pure ()
     for line in conditionLines block.lines do
       match namesStatusFunction line with
@@ -672,6 +726,16 @@ private def privilegeViolations (content : String) : List String := Id.run do
     violations := violations ++
       [s!"'{line}' sits where a top-level job header does but is not one this scan can read, so it folds into the job above and inherits that job's `if:`"]
   for block in scan.jobs do
+    for line in block.lines do
+      if nonCanonicalAuthorityReference (withoutComment line) then
+        violations := violations ++
+          [s!"job '{block.name}' uses a non-canonical needs/output reference — write `needs.<job>.outputs.<name>` in lowercase dot form. Bracket or case-variant spellings are refused rather than omitted from the authority graph."]
+      match jobLevelKey? line with
+      | some ("outputs", value) =>
+          if value.startsWith "*" || value.startsWith "&" then
+            violations := violations ++
+              [s!"job '{block.name}' defines outputs through YAML indirection — authority-output reachability requires the output names and definitions to be written directly in each job. Expand the anchor or alias so an edge cannot disappear from the graph."]
+      | _ => pure ()
     if block.lines.any grantsPrivilege && !narrowsToPushedTag (conditionOf block) then
       violations := violations ++
         [s!"privileged job '{block.name}' has if: {conditionOf block} — it must be exactly `{guardExpression}`, optionally narrowed with `&&` and never widened with `||`. Anything else (a negation, a disjunction, a quoted form, another clause first) is refused rather than interpreted."]
@@ -762,6 +826,9 @@ private def workflowGuardTests : List Outcome :=
     ("a single-quoted permission value is still a grant",
       fabricated (ungatedJob "    permissions:\n      id-token: 'write'\n"),
       some "privileged job 'publish'"),
+    ("quoted permission keys are still grants",
+      fabricated (ungatedJob "    \"permissions\":\n      \"contents\": write\n"),
+      some "privileged job 'publish'"),
     ("a permission annotated with a trailing comment is still a grant",
       fabricated (ungatedJob "    permissions:\n      contents: write # create the release\n"),
       some "privileged job 'publish'"),
@@ -826,6 +893,12 @@ private def workflowGuardTests : List Outcome :=
     ("a protected environment is a grant",
       fabricated (ungatedJob "    environment: release\n"),
       some "privileged job 'publish'"),
+    ("a permission mapping reached through an alias is still a grant",
+      fabricated (
+        "  anchor:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions: &write\n      contents: write\n    steps:\n      - run: echo anchor\n" ++
+        "  publish:\n    runs-on: ubuntu-latest\n    permissions: *write\n    steps:\n      - run: echo publish\n"),
+      some "privileged job 'publish'"),
     -- Failure propagation. Both overrides, on both classes of job the rule
     -- binds, and each of them a shape that reports a failure as a success.
     ("a privileged guard narrowed with a status function is refused",
@@ -841,6 +914,10 @@ private def workflowGuardTests : List Outcome :=
       fabricated ("  publish:\n" ++ properGuard ++
         "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: publish\n        continue-on-error: true\n        run: echo publish\n"),
       some "has a step with continue-on-error"),
+    ("a quoted continue-on-error key is the same refusal",
+      fabricated ("  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: publish\n        \"continue-on-error\": true\n        run: echo publish\n"),
+      some "has a step with continue-on-error"),
     -- The same declaration written as the first key of the step, which a scan
     -- that only knew the mapping form would walk straight past.
     ("a privileged step's continue-on-error on the dash line is refused",
@@ -851,12 +928,50 @@ private def workflowGuardTests : List Outcome :=
       fabricated ("  publish:\n" ++ properGuard ++
         "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: upload the diagnostics\n        if: always()\n        run: echo upload\n"),
       some "status function"),
+    ("quoted and case-varied status syntax is still refused",
+      fabricated ("  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - name: upload the diagnostics\n        \"if\": ALWAYS()\n        run: echo upload\n"),
+      some "status function"),
+    ("a status condition reached through a YAML alias is refused",
+      fabricated (
+        "  ordinary:\n    runs-on: ubuntu-latest\n    steps:\n      - if: &after_failure always()\n        run: echo ordinary\n" ++
+        "  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - if: *after_failure\n        run: echo diagnostics\n"),
+      some "YAML indirection"),
+    ("a whole step reached through a YAML alias is refused",
+      fabricated (
+        "  ordinary:\n    runs-on: ubuntu-latest\n    steps:\n      - &after_failure\n        if: always()\n        run: echo ordinary\n" ++
+        "  publish:\n" ++ properGuard ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - *after_failure\n"),
+      some "aliased whole step"),
     -- The class a reader would not guess. This job takes nothing, but a
     -- privileged job's condition reads its output, so a failure it reported as
     -- success would decide whether that job runs.
     ("an authority-output producer with continue-on-error is refused",
       fabricated (producerWorkflow "    continue-on-error: true\n" "gates" "npm"),
       some "job 'gates' produces an output a privileged job acts on and sets continue-on-error"),
+    ("a bracket-form authority reference is refused instead of omitted",
+      fabricated (
+        "  gates:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    outputs:\n      npm: ${{ steps.plan.outputs.npm }}\n    steps:\n      - id: plan\n        run: echo npm\n" ++
+        "  publish:\n    needs: [gates]\n" ++
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && needs['gates']['outputs']['npm'] == 'true'\n" ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"),
+      some "non-canonical needs/output reference"),
+    ("a case-variant authority reference is refused instead of omitted",
+      fabricated (
+        "  gates:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    outputs:\n      npm: ${{ steps.plan.outputs.npm }}\n    steps:\n      - id: plan\n        run: echo npm\n" ++
+        "  publish:\n    needs: [gates]\n" ++
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && NEEDS.gates.OUTPUTS.npm == 'true'\n" ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"),
+      some "non-canonical needs/output reference"),
+    ("an output mapping reached through a YAML alias is refused",
+      fabricated (
+        "  plan:\n    runs-on: ubuntu-latest\n    outputs: &planned_outputs\n      npm: ${{ steps.read.outputs.npm }}\n    steps:\n      - id: read\n        run: echo npm\n" ++
+        "  gates:\n    needs: [plan]\n    runs-on: ubuntu-latest\n    continue-on-error: true\n    outputs: *planned_outputs\n    steps:\n      - run: echo gates\n" ++
+        "  publish:\n    needs: [gates]\n" ++
+        "    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.gates.outputs.npm == 'true'\n" ++
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo publish\n"),
+      some "defines outputs through YAML indirection"),
     -- And moving the branch one job upstream does not move it out of the
     -- guard: `plan`'s output is what `gates`'s authority-bearing output is
     -- assembled from.

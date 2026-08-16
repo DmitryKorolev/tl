@@ -3508,6 +3508,10 @@ private def writePathTests : List Outcome :=
       (match Write.OutputPath.parse writeWhat "dist/tl.spdx.json" with
        | .ok path => path.stagingName
        | .error _ => "<refused>") "tl.spdx.json.tmp",
+    checkEq "write path: the staging location retains every parent component"
+      (match Write.OutputPath.parse writeWhat "dist/tl.spdx.json" with
+       | .ok path => path.stagingRender
+       | .error _ => "<refused>") "dist/tl.spdx.json.tmp",
     -- Every refusal the boundary owes, each naming its own rule rather than
     -- reporting "invalid": which rule was broken is what says how to fix it.
     check "write path: an absolute name is refused"
@@ -3735,7 +3739,7 @@ private def writeEffectTests : List Outcome :=
 /-! ### What a command tells the operator -/
 
 private def acceptOf (outcome : Write.WriteOutcome) : Except String (Option String) :=
-  Write.accept "dist/tl.spdx.json" "tl.spdx.json.tmp" outcome
+  Write.accept "dist/tl.spdx.json" "dist/tl.spdx.json.tmp" outcome
 
 private def acceptedSilently (result : Except String (Option String)) : Bool :=
   match result with
@@ -3836,6 +3840,15 @@ private def writeSeamTests : IO (List Outcome) := do
     (.unsynced { operation := .syncDirectory, errno := .eio }))))
   let malformed ← runThrough (fixedMechanism #[9, 9, 9])
   let thrown ← runThrough throwingMechanism
+  let located ←
+    match Write.OutputDirectory.parse writeWhat "/tmp/release-output" with
+    | .error message => pure (.error message)
+    | .ok base =>
+        Write.through
+          (fixedMechanism (rowOf (.failedBeforeCommit
+            { operation := .writeBytes, errno := .enospc }
+            (.retained { operation := .removeStaging, errno := .eacces }))))
+          base samplePath (String.toUTF8 "bytes")
   let mut phaseRows : List Outcome := []
   for operation in Write.Operation.all do
     let outcome := failureRow operation sampleErrno
@@ -3864,7 +3877,10 @@ private def writeSeamTests : IO (List Outcome) := do
     check "write seam: and the refusal names the file it was writing"
       (says thrown "dist/tl.spdx.json"),
     check "write seam: and the directory it was writing into"
-      (says thrown "in .")]
+      (says thrown "in ."),
+    check "write seam: a retained staging refusal names its exact location under the base"
+      (says located "/tmp/release-output/dist/tl.spdx.json.tmp")
+      (errorOfExcept located)]
 
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]

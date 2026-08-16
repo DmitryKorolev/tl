@@ -117,6 +117,16 @@ def OutputPath.leaf (path : OutputPath) : Component :=
 def OutputPath.stagingName (path : OutputPath) : String :=
   path.leaf.text ++ ".tmp"
 
+/-- The staging sibling as a relative path beneath the output directory.
+
+    The native side needs only `stagingName`, because it already holds the
+    final directory descriptor. A refusal needs the whole relative path: for a
+    nested output, telling an operator only `leaf.tmp` names the wrong place to
+    inspect or remove. -/
+def OutputPath.stagingRender (path : OutputPath) : String :=
+  let parents := path.components.dropLast.map (·.text)
+  String.intercalate "/" (parents ++ [path.stagingName])
+
 /-- Parse a relative output name written as one string.
 
     Splitting on `/` here is not the thing ADR-0028 forbids: what may not happen
@@ -160,6 +170,14 @@ def OutputDirectory.parse (what : String) (text : String) : Except String Output
     A release step that gave no `--output-dir` writes where it was started, and
     nothing here searches upward for a repository root. -/
 def OutputDirectory.working : OutputDirectory := ⟨"."⟩
+
+/-- A relative output name located beneath the operator-selected base, for a
+    message. This never reaches the filesystem: the held base and validated
+    components remain separate all the way to the native call. -/
+def OutputDirectory.locate (base : OutputDirectory) (relative : String) : String :=
+  if base.path == "." then relative
+  else if base.path.endsWith "/" then base.path ++ relative
+  else base.path ++ "/" ++ relative
 
 /-! ## What the mechanism observed
 
@@ -891,6 +909,6 @@ def through (mechanism : Mechanism) (base : OutputDirectory) (path : OutputPath)
       match decode row with
       | .error message => return .error message
       | .ok outcome =>
-          return accept (path.render) (path.stagingName) outcome
+          return accept (base.locate path.render) (base.locate path.stagingRender) outcome
 
 end Release.Write
