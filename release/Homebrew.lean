@@ -606,7 +606,206 @@ private def placeholderCommand : Command :=
      "--output", "tl.rb", "--output-dir", "Formula"]
     placeholderOptions placeholderArgs placeholderDecision
 
-def homebrewCommands : List Command := [renderCommand, placeholderCommand]
+/-! ## Updating the tap
+
+A tap carries one formula, so publication is a replacement rather than an
+addition, and it has to be safe to run twice: a release job that failed after
+`git push` and is retried must not produce a second commit saying the same
+thing. So the tap's current formula is compared with the rendered one, and the
+three answers are the three things that can be true of it.
+
+Comparison is over the *formula text*, not over archive bytes: what a tap serves
+is this file, and two renderings of one release are byte-identical by
+construction. -/
+
+/-- What the tap holds, against what this release renders. -/
+inductive TapState where
+  | absent
+  | identical
+  | differs
+  deriving DecidableEq, Repr
+
+def TapState.describe : TapState → String
+  | .absent => "the tap carries no formula for tl yet"
+  | .identical => "the tap already carries exactly this formula"
+  | .differs => "the tap carries a different formula"
+
+/-- Classify the tap's current formula. -/
+def tapDisposition (rendered : String) (existing : Option String) : TapState :=
+  match existing with
+  | none => .absent
+  | some text =>
+      match text == rendered with
+      | true => .identical
+      | false => .differs
+
+/-- **The tap is left alone exactly when it already holds this formula.**
+
+    The direction that matters is left to right: `identical` is the answer that
+    skips a publication, so a comparison that drifted into saying it when the
+    texts differ would leave the tap pinning an earlier release while the job
+    reported success. Right to left is what a classifier that never said
+    `identical` would fail, and that one is not idle either — it is what makes a
+    retried release job a no-op rather than a second commit saying the same
+    thing. -/
+theorem tapDisposition_identical_iff (rendered : String) (existing : Option String) :
+    tapDisposition rendered existing = .identical ↔ existing = some rendered := by
+  cases existing with
+  | none =>
+      constructor
+      · intro impossible; exact TapState.noConfusion impossible
+      · intro impossible; cases impossible
+  | some text =>
+      rw [tapDisposition]
+      cases matched : text == rendered with
+      | true =>
+          constructor
+          · intro _; exact congrArg some (beq_iff_eq.mp matched)
+          · intro _; rfl
+      | false =>
+          constructor
+          · intro impossible; exact TapState.noConfusion impossible
+          · intro isRendered
+            rw [Option.some.inj isRendered, beq_self_eq_true] at matched
+            exact Bool.noConfusion matched
+
+/-- **A formula is written where there is none exactly when the tap has none.**
+
+    Stated as well, because `absent` and `differs` take the same action and
+    collapsing them would be invisible in the output: the message a maintainer
+    reads is the only place the two are distinguished. -/
+theorem tapDisposition_absent_iff (rendered : String) (existing : Option String) :
+    tapDisposition rendered existing = .absent ↔ existing = none := by
+  cases existing with
+  | none => exact Iff.intro (fun _ => rfl) (fun _ => rfl)
+  | some text =>
+      rw [tapDisposition]
+      cases matched : text == rendered with
+      | true =>
+          constructor
+          · intro impossible; exact TapState.noConfusion impossible
+          · intro impossible; cases impossible
+      | false =>
+          constructor
+          · intro impossible; exact TapState.noConfusion impossible
+          · intro impossible; cases impossible
+
+/-- Whether a checkout's `origin` names the tap this release publishes to.
+
+    What this establishes is narrow and worth stating exactly: the repository
+    the job cloned is named for the tap the signed manifest describes. It is not
+    a claim about the host, the credential, or who controls that repository —
+    the remote is composed by the release workflow from a secret, and a workflow
+    that points somewhere else is a change under protected review rather than
+    something this comparison can see. What it does catch is the failure that
+    has no other guard: a job that cloned the wrong repository and would
+    otherwise commit this release's formula into it.
+
+    `github.com` is deliberately not required. Pinning the host would make the
+    publication path untestable against a local repository, and the coverage
+    that buys is worth more than a host check the threat model does not lean
+    on. -/
+def tapRemoteAccepts (tap : String) (url : String) : Bool :=
+  let trimmed := url.trimAscii.toString
+  let withoutGit := if trimmed.endsWith ".git" then (trimmed.dropEnd 4).toString else trimmed
+  let stripped := if withoutGit.endsWith "/" then (withoutGit.dropEnd 1).toString else withoutGit
+  stripped.endsWith ("/" ++ tap) || stripped.endsWith (":" ++ tap)
+
+/-- The identity the tap commit is authored under. A repository the release
+    workflow writes to on nobody's behalf but its own, so it says so rather than
+    borrowing whichever identity the runner happens to have configured. -/
+private def commitAuthorName : String := "tl release"
+
+private def commitAuthorEmail : String := "tl-release@users.noreply.github.com"
+
+/-- Where a tap keeps its formula. Fixed by Homebrew, not by us. -/
+private def tapFormulaComponents : List String := ["Formula", "tl.rb"]
+
+private def tapFormulaRelative : String := String.intercalate "/" tapFormulaComponents
+
+private def publishOptions : List OptionSpec :=
+  [{ name := "manifest", takesValue := true },
+   { name := "formula", takesValue := true },
+   { name := "tap", takesValue := true },
+   { name := "dry-run", takesValue := false }]
+
+private structure PublishArgs where
+  manifestPath : String
+  formulaPath : String
+  tap : Write.OutputDirectory
+  tapPath : String
+  dryRun : Bool
+
+private def publishArgs (options : Options) : Except String PublishArgs := do
+  let tapPath ← options.required "tap"
+  return {
+    manifestPath := ← options.required "manifest"
+    formulaPath := ← options.required "formula"
+    tap := ← Write.OutputDirectory.parse "--tap" tapPath
+    tapPath
+    dryRun := options.given "dry-run" }
+
+/-- Run `git` inside the tap checkout, with its output as a value.
+
+    Never echoes the command's own arguments on failure and never reads the
+    remote url into a message: the workflow's remote carries the publication
+    credential, and a refusal that quoted it would put a secret in the release
+    log — which is the one place every failure is read from. -/
+private def gitIn (tap : String) (args : List String) : Decision String := do
+  let output ← ofIO (succeeded "git" ((["-C", tap] ++ args).toArray))
+  return output.stdout.trimAscii.toString
+
+private def publishDecision (args : PublishArgs) : Decision String := do
+  let description ← readParsed args.manifestPath ManifestDescription.parse
+  let formula ← ofIO (readTextFile args.formulaPath)
+  -- A tap carries one formula, so pushing a prerelease would make
+  -- `brew install tl` resolve to it (ADR-0006). Read off the manifest rather
+  -- than off the shape of the tag, and reported as an outcome rather than a
+  -- refusal: nothing went wrong, this release does not update the tap.
+  if !description.homebrew.push then
+    return s!"{description.tag} is a prerelease, so {description.homebrew.tap} keeps the formula it has — a tap carries one formula, and `brew install tl` resolves to whatever is in it"
+  let remote ← gitIn args.tapPath ["remote", "get-url", "origin"]
+  if !tapRemoteAccepts description.homebrew.tap remote then
+    decline s!"the checkout at {args.tapPath} has an 'origin' that does not name {description.homebrew.tap}, which is the tap this release's manifest describes. Its url is deliberately not repeated here because a release job's remote carries the publication credential. Clone the tap the manifest names, or find out why this job was pointed somewhere else."
+  let formulaDirectory := args.tapPath ++ "/Formula"
+  let formulaDirectoryExists ← ofIO (do return .ok (← System.FilePath.isDir formulaDirectory))
+  if !formulaDirectoryExists then
+    decline s!"{formulaDirectory} is not a directory. A Homebrew tap keeps its formulae under Formula/, and creating it here would mean this command deciding the shape of a repository it is only supposed to update. Create it in the tap and commit it once."
+  let destination := args.tapPath ++ "/" ++ tapFormulaRelative
+  let existing ← ofIO (do
+    if ← System.FilePath.pathExists destination then
+      match ← readTextFile destination with
+      | .error message => return .error message
+      | .ok text => return .ok (some text)
+    else return .ok none)
+  let state := tapDisposition formula existing
+  -- Idempotence, and the reason it is here rather than left to `git commit`'s
+  -- own empty-diff behaviour: a release job that failed after pushing and is
+  -- retried has to reach this and stop, and it has to say that it did.
+  if state == .identical then
+    return s!"{description.homebrew.tap} already carries the formula for {description.tag}; nothing to push"
+  if args.dryRun then
+    return s!"{state.describe}, and this release would replace it with the formula for {description.tag} — not written, --dry-run"
+  let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
+  let disclosure ← ofIO (writeEvidence args.tap path formula)
+  let _ ← gitIn args.tapPath ["add", "--", tapFormulaRelative]
+  let _ ← gitIn args.tapPath
+    ["-c", s!"user.name={commitAuthorName}", "-c", s!"user.email={commitAuthorEmail}",
+     "commit", "-m", s!"tl {description.tag}: pin the released digests"]
+  let _ ← gitIn args.tapPath ["push"]
+  return disclosing
+    s!"pushed the formula for {description.tag} to {description.homebrew.tap} ({state.describe})"
+    disclosure
+
+private def publishCommand : Command :=
+  optionCommand "homebrew-publish"
+    "--manifest <path> --formula <path> --tap <dir> [--dry-run]"
+    "Update the tap with a rendered formula, once: an identical one is a no-op and a prerelease is not pushed."
+    ["--manifest", "dist/release-manifest.json", "--formula", "out/tl.rb", "--tap", "tap",
+     "--dry-run"]
+    publishOptions publishArgs publishDecision
+
+def homebrewCommands : List Command := [renderCommand, placeholderCommand, publishCommand]
 
 end Homebrew
 

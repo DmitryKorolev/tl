@@ -93,10 +93,11 @@ the publish jobs from this file so a deferred channel has no job to skip.
 
 The per-commit release policy is deliberately *not* derived from the plan, and
 that is the one place where "absent" would be the wrong answer. Its gates run
-every channel's generator on every commit — the npm selftests, the formula
-generator, `ruby -c` on the committed formula — because a channel that is built
-but switched off is exactly the code nothing else exercises, and it must not rot
-while it waits. The cost is that `--strict` demands `npm` and `ruby` on a
+every channel's machinery on every commit — the npm selftests, `ruby -c` over
+the tracked formula and the rendered fixtures beside it, and real Homebrew's own
+load/style/audit over all four — because a channel that is built but switched
+off is exactly the code nothing else exercises, and it must not rot while it
+waits. The cost is that `--strict` demands `npm` and `ruby` on a
 machine running the policy, whichever channels are enabled; ADR-0026 records the
 release-profile split that would separate the two.
 
@@ -218,10 +219,12 @@ twenty-one gates failing under refusing `python3`/`ruby` shims, five of them the
 npm and Homebrew gates and the rest generators that have since moved into
 `tlrelease` — is kept there as the reason, not as a description of the present.
 
-The interpreter-backed administration that remains belongs to the deferred
-channels: the three npm scripts, the Homebrew formula generator, the `python3`
-release-data reads those four share in `scripts/lib/channel-common.sh`, and the
-gates for them in `scripts/check-channel-policy.sh`. The npm launcher itself is
+The interpreter-backed administration that remains belongs to the deferred npm
+channel: the three npm scripts, the `python3` release-data reads they share in
+`scripts/lib/channel-common.sh`, and the gates for them in
+`scripts/check-channel-policy.sh`. Homebrew no longer has any — the formula is
+rendered, compared and published by `tlrelease`, and the only Ruby left is the
+formula itself, which is a Ruby DSL by Homebrew's definition. The npm launcher itself is
 POSIX shell and starts neither Node nor a lifecycle hook. None of the
 interpreter-backed administration is reachable from the four entry points above
 while `release/plan.json` defers both channels; enabling one puts its scripts
@@ -479,12 +482,14 @@ Binary distribution is gated on a verifiable release pipeline:
   description and the point at which a mismatched, missing or undescribed asset
   is caught, and generating it is where each binary is checked against the
   digest its own build leg recorded. The jobs downstream of it still derive
-  their own working lists — the Homebrew generator from `SHA256SUMS`, the npm
-  staging from the files present, the dist-tag from the tag — rather than
-  reading the manifest's `targets` and `npm` blocks. Those derivations now all
-  run against a directory the manifest has vouched for, which is what removes
-  the disagreement; consuming the manifest's own decisions directly is the
-  remaining step, tracked in docs/design-backlog.md.
+  their own working lists where they have not been ported yet — the npm staging
+  from the files present, its dist-tag from the tag — rather than reading the
+  manifest's `npm` block. Those derivations run against a directory the manifest
+  has vouched for, which is what removes the disagreement. The Homebrew channel
+  no longer derives anything: `tlrelease homebrew-render` reads the manifest's
+  `targets` and `homebrew` blocks and its per-target platform fields, and the
+  document is refused before any of them if it disagrees with itself. Porting
+  npm the same way is the remaining step.
   The installer places the notice beside the binary and the formula installs it
   to `doc`; both skip it with a message on a release that publishes none, since
   refusing a good binary over a missing sidecar is the wrong trade.

@@ -147,7 +147,7 @@ CI gates (mirror these locally before declaring done):
 - The profiles differ in one thing, and it is the ADR-0026 v0.1 dependency
   boundary: no path the GitHub-only release reaches may invoke `python`,
   `python3`, `ruby`, `brew`, `node` or `npm`. `--profile ci` (the default, what
-  `ci.yml` runs) additionally runs `scripts/check-channel-policy.sh`, whose five
+  `ci.yml` runs) additionally runs `scripts/check-channel-policy.sh`, whose four
   gates invoke exactly those for the deferred npm and Homebrew channels;
   `--profile release` (what the release workflow runs) does not have them —
   absent rather than skipped, because a skip is a report about this run and

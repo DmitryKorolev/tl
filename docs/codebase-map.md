@@ -215,11 +215,11 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- npm-pack.sh (stages the npm packages around the
                         -- signed binaries; --selftest packs, installs and
                         -- drives the launcher),
-                        -- gen-homebrew-formula.sh (fills Formula/tl.rb in from
-                        -- a verified SHA256SUMS; the committed copy keeps
-                        -- placeholder digests so it cannot be installed; the
-                        -- <version> argument is held to SemVer before it is
-                        -- interpolated into Ruby the tap will execute),
+                        -- tlrelease homebrew-render / homebrew-placeholder /
+                        -- homebrew-publish (the whole formula rendered from the
+                        -- signed manifest, the tracked placeholder rendered
+                        -- from release/identity.json + release/targets.json,
+                        -- and one idempotent tap update),
                         -- npm-publish.sh (idempotent publication: query, then
                         -- publish / accept-if-identical / refuse a differing
                         -- version, since npm versions are immutable and a
@@ -231,8 +231,8 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- lib/release-common.sh that cannot source it),
                         -- check-release-policy.sh (all of the above as one
                         -- command, in two profiles: `ci` adds
-                        -- check-channel-policy.sh, whose five gates invoke npm,
-                        -- python3 and ruby for the deferred channels, and
+                        -- check-channel-policy.sh, whose four gates invoke npm
+                        -- and ruby for the deferred channels, and
                         -- `release` — what the release workflow runs against
                         -- the tagged commit — does not have them),
                         -- check-release-runtimes.sh (the release profile again,

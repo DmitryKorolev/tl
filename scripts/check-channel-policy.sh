@@ -12,10 +12,9 @@
 # moment to discover it (ADR-0006).
 #
 # They are a separate file because they are the gates the v0.1 release path may
-# not run. Each one invokes npm, python3 or ruby — the npm scripts stage and
-# install real packages, the formula generator reads release/targets.json with
-# python3, and nothing but ruby can tell whether Formula/tl.rb parses — and
-# ADR-0026's dependency boundary forbids all three anywhere the GitHub-only
+# not run. Each one invokes npm or ruby — the npm scripts stage and install real
+# packages, and nothing but ruby can tell whether a rendered formula parses —
+# and ADR-0026's dependency boundary forbids both anywhere the GitHub-only
 # release path reaches. `--profile release` therefore does not skip these gates,
 # it does not have them: this file is not among those it names, and
 # `tlrelease dependency-boundary` never traverses into it.
@@ -52,8 +51,8 @@ deferred-channel gates, in order:
   npm package selftest                scripts/npm-pack.sh --selftest    (needs npm)
   npm publisher selftest              scripts/npm-publish.sh --selftest (needs npm)
   npm bootstrap selftest              scripts/npm-bootstrap.sh --selftest (needs npm)
-  Homebrew formula generator selftest scripts/gen-homebrew-formula.sh --selftest
-  the Homebrew formula parses         ruby -c Formula/tl.rb             (needs ruby)
+  the rendered formulae parse         ruby -c over Formula/tl.rb and the
+                                      Tests/fixtures/homebrew rows      (needs ruby)
 GATES
   exit 0
 fi
@@ -72,10 +71,32 @@ rc_tool_gate "npm publisher selftest" --tool npm -- ./scripts/npm-publish.sh --s
 # and the only one that publishes an immutable version by hand.
 rc_tool_gate "npm bootstrap selftest" --tool npm -- ./scripts/npm-bootstrap.sh --selftest
 
-rc_gate "Homebrew formula generator selftest" ./scripts/gen-homebrew-formula.sh --selftest
+# Nothing else on a non-macOS machine evaluates the formulae. Real Homebrew is
+# the acceptance authority and the `homebrew-formula` job is where it runs, so
+# this is an early signal rather than the verdict: a syntax error would
+# otherwise pass every gate a developer can run and surface on the macOS job.
+#
+# All four rendered formulae, not only the tracked one. They come out of one
+# renderer, so a break in the placeholder is a break in the rest — but the three
+# fixtures are the shapes with a dropped block, a prerelease version line and a
+# full pin set, and checking only the file that happens to be tracked would be
+# checking the least varied of them.
+formulae_parse() {
+  # Found rather than listed, and refused when it finds nothing: a glob that
+  # matched no files would leave this gate reporting that it had checked the
+  # fixtures when it had run `ruby -c` on one file.
+  fixtures=$(git ls-files -- 'Tests/fixtures/homebrew/*.rb')
+  if [ -z "$fixtures" ]; then
+    echo "::error::found no rendered formula fixtures under Tests/fixtures/homebrew — this gate would report checking them while checking nothing." >&2
+    return 1
+  fi
+  ruby -c Formula/tl.rb >/dev/null || return 1
+  for fixture in $fixtures; do
+    ruby -c "$fixture" >/dev/null || return 1
+  done
+  echo "Formula/tl.rb and $(printf '%s\n' "$fixtures" | wc -l | tr -d ' ') rendered fixtures parse as Ruby"
+}
 
-# Nothing else evaluates the formula: a syntax error would pass every other
-# gate here and surface only when the tap tried to use it.
-rc_tool_gate "the Homebrew formula parses" --tool ruby -- ruby -c Formula/tl.rb
+rc_tool_gate "the rendered formulae parse" --tool ruby -- formulae_parse
 
 rc_policy_end "channel policy"

@@ -42,8 +42,10 @@ esac
 # Targets and ADR-0006 support tiers, from release/targets.json
 #
 # The tier split decides whether a missing binary is a warning or a refusal, and
-# it decided that independently in npm-pack.sh, gen-homebrew-formula.sh and the
-# release workflow. One source now, so "Supported" cannot mean three things.
+# it was decided independently in npm-pack.sh, the Homebrew generator and the
+# release workflow. One source now, so "Supported" cannot mean three things —
+# and the Homebrew half no longer reads this file at all: `tlrelease` takes the
+# tier from the signed manifest's own target rows.
 # ---------------------------------------------------------------------------
 
 RC_TARGETS_FILE=${RC_TARGETS_FILE:-"$RC_ROOT/release/targets.json"}

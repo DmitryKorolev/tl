@@ -27,10 +27,10 @@
 #
 # `--profile` is the one thing they do not share, and it is not a narrowing of
 # convenience. `ci` (the default) additionally runs scripts/check-channel-policy.sh,
-# whose five gates invoke npm, python3 and ruby to keep the deferred npm and
-# Homebrew machinery from rotting while it waits. `release` is the profile the
-# release workflow runs, and ADR-0026's v0.1 dependency boundary forbids those
-# three interpreters anywhere the GitHub-only release path can reach. So a
+# whose four gates invoke npm and ruby to keep the deferred npm and Homebrew
+# machinery from rotting while it waits. `release` is the profile the release
+# workflow runs, and ADR-0026's v0.1 dependency boundary forbids those
+# interpreters anywhere the GitHub-only release path can reach. So a
 # deferred channel's gates are *absent* from the release profile rather than
 # skipped: a skip is a report about this run, and absence is a statement about
 # the release.
@@ -142,7 +142,7 @@ GATES
 
 not in the release profile, and absent rather than skipped:
   the deferred-channel gates          scripts/check-channel-policy.sh --list
-                                      — each invokes npm, python3 or ruby, and
+                                      — each invokes npm or ruby, and
                                       ADR-0026's v0.1 dependency boundary
                                       forbids those on the release path
 ABSENT
@@ -249,7 +249,7 @@ else
   rc_gate "the checked-in build stamp is the development stamp" development_stamp_is_checked_in
 fi
 
-# Last, and only under the ci profile. One gate rather than five, because the
+# Last, and only under the ci profile. One gate rather than four, because the
 # channel policy counts and reports its own; what this file decides is whether
 # the deferred channels are in scope at all.
 if [ "$profile" = ci ]; then

@@ -100,44 +100,30 @@ jobs:
   # The formula, judged by Homebrew rather than by us.
   #
   # `ruby -c` proves the file parses; it says nothing about whether Homebrew
-  # will accept it. The gap was not theoretical: a generated formula that
-  # dropped its Best-effort block had no url for Intel macOS, and a stable spec
-  # with no url for the running platform makes Homebrew raise
+  # will accept it. The gap was not theoretical: a rendered formula that dropped
+  # its Best-effort block had no url for Intel macOS, and a stable spec with no
+  # url for the running platform makes Homebrew raise
   # `formula requires at least a URL` when the formula is *loaded* — for `brew
   # info`, `brew upgrade`, and any `brew update` that touches the tap, with a
   # Ruby backtrace and "Please report this issue". Every gate in this
   # repository passed that formula.
   #
-  # So this job loads and audits three formulae with real Homebrew: the
-  # committed placeholder template, a fully-pinned generated one, and one with
-  # the Best-effort target dropped. Loading is the check that matters most —
-  # `brew info` fails on exactly the class above.
+  # So this job loads and audits four formulae with real Homebrew: the tracked
+  # placeholder, a fully pinned release, one with the Best-effort target
+  # dropped, and a prerelease — whose urls resolve differently from the others,
+  # because Homebrew's version scanner drops a SemVer suffix. Loading is the
+  # check that matters most: `brew info` fails on exactly the class above.
+  #
+  # All four are files `tlrelease` rendered, kept in step with the renderer by
+  # Tests/ReleaseToolTests.lean, which compares each byte-for-byte against what
+  # `Release.Homebrew.render` produces on the same commit. This job therefore
+  # needs no Lean toolchain and no interpreter: what brew judges is what a
+  # release publishes, and the build-and-test job is what says so.
   homebrew-formula:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: generate the formulae to audit
-        run: |
-          set -euo pipefail
-          mkdir -p fixture
-          # A fixture sums file, digests distinct per target so a substitution
-          # that drifted to a neighbouring block would be visible.
-          i=1
-          : > fixture/SHA256SUMS
-          targets=$(python3 -c 'import json,sys; print(" ".join(t["target"] for t in json.load(open(sys.argv[1]))["targets"]))' release/targets.json)
-          for target in $targets; do
-            printf '%063d%d  tl-%s\n' 0 "$i" "$target" >> fixture/SHA256SUMS
-            i=$((i + 1))
-          done
-          grep -v 'darwin-x64' fixture/SHA256SUMS > fixture/SHA256SUMS.no-best-effort
-          ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS fixture/full.rb
-          ./scripts/gen-homebrew-formula.sh 1.2.3 fixture/SHA256SUMS.no-best-effort fixture/dropped.rb
-          # A prerelease too: Homebrew's version scanner drops the SemVer
-          # suffix, so this shape resolves its urls differently from the
-          # others and nothing generated one until it was found to be broken.
-          ./scripts/gen-homebrew-formula.sh 1.2.3-rc.1 fixture/SHA256SUMS fixture/prerelease.rb
 
       - name: audit them as Homebrew would
         run: |
@@ -145,7 +131,9 @@ jobs:
           brew tap-new tlci/formula --no-git
           tap=$(brew --repository tlci/formula)
           failures=0
-          for candidate in Formula/tl.rb fixture/full.rb fixture/dropped.rb fixture/prerelease.rb; do
+          for candidate in Formula/tl.rb Tests/fixtures/homebrew/full.rb \
+                           Tests/fixtures/homebrew/dropped.rb \
+                           Tests/fixtures/homebrew/prerelease.rb; do
             echo "── $candidate"
             cp "$candidate" "$tap/Formula/tl.rb"
             # Load first: this is the check that catches a spec with no url for
@@ -157,8 +145,11 @@ jobs:
             fi
             brew style tlci/formula/tl || { echo "::error::brew style rejected $candidate"; failures=$((failures + 1)); }
             brew audit --formula --skip-style tlci/formula/tl || { echo "::error::brew audit rejected $candidate"; failures=$((failures + 1)); }
-            # The resolved url must name the tag the formula was generated for.
-            resolved=$(brew info --json=v2 --formula tlci/formula/tl | python3 -c 'import json,sys; print(json.load(sys.stdin)["formulae"][0]["urls"]["stable"]["url"])')
+            # The resolved url must name the tag the formula was rendered for,
+            # read with the
+            # jq every runner has rather than an interpreter this repository
+            # would then owe a dependency row for.
+            resolved=$(brew info --json=v2 --formula tlci/formula/tl | jq -r '.formulae[0].urls.stable.url')
             case "$candidate" in
               *prerelease*) want=v1.2.3-rc.1 ;;
               Formula/tl.rb) want=v0.0.0 ;;
@@ -166,7 +157,7 @@ jobs:
             esac
             case "$resolved" in
               *"/download/$want/"*) ;;
-              *) echo "::error::$candidate resolves to $resolved, which does not name $want — Homebrew scanned a different version than the formula was generated for."; failures=$((failures + 1)) ;;
+              *) echo "::error::$candidate resolves to $resolved, which does not name $want — Homebrew scanned a different version than the formula was rendered for."; failures=$((failures + 1)) ;;
             esac
           done
           brew untap tlci/formula
@@ -174,7 +165,7 @@ jobs:
             echo "::error::$failures formula(e) were rejected by Homebrew's own checks."
             exit 1
           fi
-          echo "all four formulae load, style, audit, and resolve to the tag they name"
+          echo "all four rendered formulae load, style, audit, and resolve to the tag they name"
 
   # Proof verification + the full outside-TCB suite, on both supported dev
   # platforms. `lake build --wfail` turns any warning (including

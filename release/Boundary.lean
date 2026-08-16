@@ -107,10 +107,8 @@ def deferredPaths : List DeferredPath :=
      why := "the one-time manual npm bootstrap before the channel can authenticate" },
    { path := "npm/tl/bin/tl", channels := [.npm],
      why := "the launcher inside the npm package, run by node" },
-   { path := "scripts/gen-homebrew-formula.sh", channels := [.homebrew],
-     why := "generates Formula/tl.rb and parses it with ruby" },
-   { path := "scripts/lib/channel-common.sh", channels := [.npm, .homebrew],
-     why := "the release-data reads those four scripts share, which use python3" }]
+   { path := "scripts/lib/channel-common.sh", channels := [.npm],
+     why := "the release-data reads the npm scripts share, which use python3" }]
 
 /-- A workflow job the scan does not read, and why it does not run.
 

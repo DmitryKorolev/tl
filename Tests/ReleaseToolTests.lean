@@ -755,6 +755,8 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.descriptionProblems_isEmpty_iff
   let _ := @Release.Homebrew.formulaCovers_iff
   let _ := @Release.Homebrew.coverageBlockers_isEmpty_iff
+  let _ := @Release.Homebrew.tapDisposition_identical_iff
+  let _ := @Release.Homebrew.tapDisposition_absent_iff
   let _ := @Release.identityAccepts_iff
   let _ := @Release.auditPermits_iff
   let _ := @Release.auditBlockers_isEmpty_iff
@@ -2837,6 +2839,169 @@ private def homebrewCommandTests : IO (List Outcome) := do
       (contains emptyTargetsErr "lists no targets") emptyTargetsErr,
     checkEq "homebrew-placeholder: a missing --output is a usage error" placeholderUsage 2]
 
+/-! ### Updating the tap
+
+Driven against a real git remote — a bare repository on disk, cloned the way the
+release job clones the tap — because the property is that publication happens
+once. A stub git could be made to say anything about a diff; what has to hold is
+that a second run of a job that already pushed produces no second commit. -/
+
+private def gitRun (cwd : String) (args : List String) : IO UInt32 := do
+  match ← Release.run "git" ((["-C", cwd] ++ args).toArray) with
+  | .completed output => return output.exitCode
+  | _ => return 127
+
+private def commitCount (checkout : String) : IO String := do
+  match ← Release.succeeded "git" #["-C", checkout, "rev-list", "--count", "HEAD"] with
+  | .ok output => return output.stdout.trimAscii.toString
+  | .error message => return message
+
+private def tapPublishTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let manifestText := okOr "<the fixture stopped assembling>" (do render (← describedManifest))
+  let prereleaseText := okOr "<the fixture stopped assembling>" (do render (← describedPrerelease))
+  let manifestPath := (base / "release-manifest.json").toString
+  IO.FS.writeFile manifestPath manifestText
+  let prereleasePath := (base / "prerelease.json").toString
+  IO.FS.writeFile prereleasePath prereleaseText
+  let formulaPath := (base / "tl.rb").toString
+  IO.FS.writeFile formulaPath "class Tl < Formula\nend\n"
+  -- The tap, as a bare repository the release job pushes to. Named for the tap
+  -- the fixture manifest describes, because that is what the origin check reads.
+  let owner := base / "Owner"
+  IO.FS.createDirAll owner
+  let remotePath := (owner / "homebrew-tap.git").toString
+  let _ ← gitRun base.toString ["init", "--bare", "--initial-branch=main", "--", remotePath]
+  let checkout := (base / "tap").toString
+  let _ ← gitRun base.toString ["clone", "--quiet", "--", remotePath, checkout]
+  IO.FS.createDirAll (checkout ++ "/Formula")
+  IO.FS.writeFile (checkout ++ "/README.md") "tap\n"
+  let _ ← gitRun checkout ["add", "-A"]
+  let _ ← gitRun checkout
+    ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init"]
+  let _ ← gitRun checkout ["push", "--quiet", "origin", "HEAD:main"]
+  let before ← commitCount checkout
+  -- A prerelease first: the tap must be left exactly as it is.
+  let (preStatus, preOut, preErr) ← runCommand "homebrew-publish"
+    ["--manifest", prereleasePath, "--formula", formulaPath, "--tap", checkout]
+  let afterPrerelease ← commitCount checkout
+  let (dryStatus, dryOut, dryErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout, "--dry-run"]
+  let afterDry ← commitCount checkout
+  let (firstStatus, firstOut, firstErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+  let afterFirst ← commitCount checkout
+  let published ← if ← System.FilePath.pathExists (checkout ++ "/Formula/tl.rb") then
+      IO.FS.readFile (checkout ++ "/Formula/tl.rb") else pure ""
+  -- The bare repository received it, which is what "pushed" has to mean.
+  let remoteHas ← Release.succeeded "git" #["-C", remotePath, "show", "main:Formula/tl.rb"]
+  -- Twice. A job that failed after pushing and is retried must reach the
+  -- comparison and stop, not add a second commit saying the same thing.
+  let (againStatus, againOut, _) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+  let afterAgain ← commitCount checkout
+  -- A changed formula replaces it.
+  IO.FS.writeFile formulaPath "class Tl < Formula\n  # v2\nend\n"
+  let (changedStatus, changedOut, _) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", checkout]
+  let afterChanged ← commitCount checkout
+  -- A checkout of the wrong repository.
+  let wrongRemote := (base / "elsewhere.git").toString
+  let _ ← gitRun base.toString ["init", "--bare", "--initial-branch=main", "--", wrongRemote]
+  let wrongCheckout := (base / "wrong").toString
+  let _ ← gitRun base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
+  IO.FS.createDirAll (wrongCheckout ++ "/Formula")
+  let (wrongStatus, _, wrongErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", wrongCheckout]
+  -- A tap with no Formula directory: a shape this command updates rather than
+  -- decides.
+  let bareCheckout := (base / "noformula").toString
+  let _ ← gitRun base.toString ["clone", "--quiet", "--", remotePath, bareCheckout]
+  IO.FS.removeDirAll (bareCheckout ++ "/Formula")
+  let (noDirStatus, _, noDirErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", bareCheckout]
+  let (absentFormula, _, absentFormulaErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", (base / "nothing.rb").toString, "--tap", checkout]
+  let (notARepo, _, notARepoErr) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath, "--tap", base.toString]
+  let (publishUsage, _, _) ← runCommand "homebrew-publish"
+    ["--manifest", manifestPath, "--formula", formulaPath]
+  IO.FS.removeDirAll base
+  return [
+    check "homebrew-publish: a prerelease is an outcome, not a failure" (preStatus == 0) preErr,
+    check "homebrew-publish: it says the tap keeps the formula it has"
+      (contains preOut "prerelease" && contains preOut "carries one formula") preOut,
+    checkEq "homebrew-publish: a prerelease adds no commit" afterPrerelease before,
+    check "homebrew-publish: a dry run reports what it would do" (dryStatus == 0) dryErr,
+    check "homebrew-publish: the dry run names the state it found"
+      (contains dryOut "no formula for tl yet" && contains dryOut "--dry-run") dryOut,
+    checkEq "homebrew-publish: a dry run adds no commit" afterDry before,
+    check "homebrew-publish: a stable release updates the tap" (firstStatus == 0) firstErr,
+    check "homebrew-publish: it says what it pushed and where"
+      (contains firstOut "v1.2.3" && contains firstOut "Owner/homebrew-tap") firstOut,
+    checkEq "homebrew-publish: the tap's working tree carries the formula"
+      published "class Tl < Formula\nend\n",
+    check "homebrew-publish: the remote received it, which is what pushing means"
+      (remoteHas.toOption.map (·.stdout) == some "class Tl < Formula\nend\n")
+      s!"the bare repository does not hold the formula: {errorOf remoteHas}",
+    checkEq "homebrew-publish: publishing added exactly one commit"
+      (before, afterFirst) ("1", "2"),
+    -- Idempotence, which is what makes a retried release job safe.
+    check "homebrew-publish: an identical formula is a no-op" (againStatus == 0) againOut,
+    check "homebrew-publish: it says the tap already carries this formula"
+      (contains againOut "already carries") againOut,
+    checkEq "homebrew-publish: the no-op adds no second commit" afterAgain afterFirst,
+    check "homebrew-publish: a changed formula is pushed" (changedStatus == 0) changedOut,
+    check "homebrew-publish: it says the tap carried a different formula"
+      (contains changedOut "different formula") changedOut,
+    checkEq "homebrew-publish: the change is one further commit" afterChanged "3",
+    -- The destination check, and the refusal that must not quote the remote.
+    checkEq "homebrew-publish: a checkout of another repository is refused" wrongStatus 1,
+    check "homebrew-publish: the refusal names the tap the manifest describes"
+      (contains wrongErr "Owner/homebrew-tap") wrongErr,
+    check "homebrew-publish: the refusal does not repeat the remote url, which carries a credential"
+      (!contains wrongErr "elsewhere.git") wrongErr,
+    checkEq "homebrew-publish: a tap with no Formula directory is refused" noDirStatus 1,
+    check "homebrew-publish: that refusal says a tap keeps its formulae under Formula/"
+      (contains noDirErr "under Formula/") noDirErr,
+    checkEq "homebrew-publish: a formula that is not there is refused" absentFormula 1,
+    check "homebrew-publish: that refusal names the path" (contains absentFormulaErr "nothing.rb")
+      absentFormulaErr,
+    checkEq "homebrew-publish: a directory that is not a git checkout is refused" notARepo 1,
+    check "homebrew-publish: that refusal carries git's own diagnosis"
+      (contains notARepoErr "git") notARepoErr,
+    checkEq "homebrew-publish: a missing --tap is a usage error" publishUsage 2]
+
+/-- Every url a remote may be written as, and the ones that are not this tap. -/
+private def tapRemoteTests : List Outcome :=
+  let tap := "Owner/homebrew-tap"
+  let accepts (url : String) := Homebrew.tapRemoteAccepts tap url
+  [ check "tap remote: the https url the release workflow uses is accepted"
+      (accepts "https://github.com/Owner/homebrew-tap.git") "",
+    check "tap remote: the same url with a credential is accepted"
+      (accepts "https://x-access-token:secret@github.com/Owner/homebrew-tap.git") "",
+    check "tap remote: an https url without the .git suffix is accepted"
+      (accepts "https://github.com/Owner/homebrew-tap") "",
+    check "tap remote: a trailing slash is accepted"
+      (accepts "https://github.com/Owner/homebrew-tap/") "",
+    check "tap remote: the ssh spelling is accepted"
+      (accepts "git@github.com:Owner/homebrew-tap.git") "",
+    check "tap remote: a local path is accepted, which is what makes this testable"
+      (accepts "/tmp/fixture/Owner/homebrew-tap.git") "",
+    check "tap remote: surrounding whitespace is trimmed, as git's own output has"
+      (accepts "  https://github.com/Owner/homebrew-tap.git\n") "",
+    check "tap remote: another repository of the same owner is refused"
+      (!accepts "https://github.com/Owner/tl.git") "",
+    check "tap remote: another owner's tap of the same name is refused"
+      (!accepts "https://github.com/Someone/homebrew-tap.git") "",
+    check "tap remote: a repository whose name merely ends with the tap's is refused"
+      (!accepts "https://github.com/Owner/not-homebrew-tap.git") "",
+    check "tap remote: a repository whose owner merely ends with this one is refused"
+      (!accepts "https://github.com/NotOwner/homebrew-tap.git") "",
+    check "tap remote: the empty url is refused" (!accepts "") "",
+    check "tap remote: a url that only contains the tap deeper in its path is refused"
+      (!accepts "https://github.com/Owner/homebrew-tap/subdir") ""]
+
 /-- The digest a fixture pins for the `index`-th target: sixty-three zeroes and
     a distinct final digit, so a url pinned under the wrong block is visible in
     the file rather than only in a comparison. -/
@@ -3778,7 +3943,7 @@ private def boundaryTests : List Outcome :=
          let stale := staleExclusions plan
          stale.any (fun line => (line.splitOn "npm-pack.sh").length > 1)
            && stale.any (fun line => (line.splitOn "publish-npm").length > 1)
-           && !stale.any (fun line => (line.splitOn "gen-homebrew-formula.sh").length > 1)
+           && !stale.any (fun line => (line.splitOn "publish-homebrew").length > 1)
        | .error _ => false) ]
 
 /-! ### The boundary against real trees
@@ -4590,11 +4755,11 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
 
 end Tl.Tests

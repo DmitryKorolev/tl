@@ -33,7 +33,9 @@ RC_LIB_SELF="$script_dir/lib/release-common.sh"
 #
 # Read from release/targets.json rather than written out here. The same split
 # used to be spelled independently in this script, the Homebrew generator and
-# the release workflow, with nothing checking that the three agreed.
+# the release workflow, with nothing checking that the three agreed. The
+# Homebrew channel has since moved to `tlrelease`, which takes the tier from the
+# signed manifest instead of from a checkout.
 REQUIRED_TARGETS=$(rc_targets supported)
 OPTIONAL_TARGETS=$(rc_targets best-effort)
 TARGETS="$REQUIRED_TARGETS $OPTIONAL_TARGETS"

@@ -108,17 +108,17 @@ forever-contract surface that freezes on first implementation.
   claim is "built by that workflow from that commit", and `REBUILDING.md` says
   exactly that rather than letting the signature imply more. Deleting this entry
   without building it would leave the ADR promising something nothing tracks.
-- Consume the release manifest, rather than only verifying it [low] — every
-  job downstream of signing verifies `release-manifest.json` against the
-  directory it received, which is what catches a missing, modified or
-  undescribed asset. They then still derive their own working lists: the
-  Homebrew generator reads `SHA256SUMS`, npm staging reads which files are
-  present, the dist-tag comes from the tag. Those derivations agree because
-  they run against a vouched-for directory, so this is tidiness rather than a
-  defect — but the manifest already records `targets`, `npm.distTag` and
-  `homebrew.pinnedTargets`, and reading them would make one description
-  authoritative instead of merely authoritative-looking. ADR-0006 says exactly
-  this rather than claiming the stronger property.
+- Consume the release manifest from the npm channel [low] — every job
+  downstream of signing verifies `release-manifest.json` against the directory
+  it received, which is what catches a missing, modified or undescribed asset.
+  The Homebrew channel now consumes the document itself: `tlrelease
+  homebrew-render` reads its target rows, per-target platform fields and
+  `homebrew` block, and the reader refuses a manifest that disagrees with
+  itself before any of them. npm still derives its own working lists — staging
+  reads which files are present, the dist-tag comes from the tag — and the
+  manifest already records `npm.distTag` and the package set those would have
+  to agree with. Reading them is the remaining half, and ADR-0028's npm
+  workstream is where it lands.
 - Native-Windows gating test pass [low] — the gating test pass for native
   Windows is open, spec'd only if it is promoted from Deferred (WSL is the
   Supported Windows path). The Win32 FS/git-shell-out *design* is in ADR-0015

@@ -1290,51 +1290,43 @@ jobs:
           fi
           echo "the tap credential is present"
 
-      - name: generate the formula
-        run: |
-          set -euo pipefail
-          ./scripts/gen-homebrew-formula.sh --selftest
-          ./scripts/gen-homebrew-formula.sh "${GITHUB_REF_NAME#v}" dist/SHA256SUMS Formula/tl.rb
-          cat Formula/tl.rb
+      # Rendered from the verified manifest, into its own directory. The
+      # checkout's Formula/tl.rb is the tracked placeholder and stays that way:
+      # the previous shape overwrote it, so an upload that ran on an earlier
+      # failure attached a formula pinning v0.0.0 under the name a good one
+      # uses, with `if-no-files-found: error` satisfied.
+      - name: make somewhere to render into
+        run: mkdir out
 
-      # Deliberately not `if: always()`. The checkout's Formula/tl.rb is the
-      # placeholder template until the step above rewrites it, so on any earlier
-      # failure `always()` attached that template under the same artifact name a
-      # good formula uses — `version "0.0.0"`, four all-zero digests, and
-      # `if-no-files-found: error` satisfied. The comment below tells a
-      # maintainer this artifact exists so the tap can be updated by hand, and
-      # following that instruction with the placeholder publishes a formula
-      # whose urls point at a release that does not exist.
-      - name: upload the generated formula
+      - name: render the formula
+        run: ./tool/tlrelease homebrew-render --dist dist --manifest dist/release-manifest.json --output tl.rb --output-dir out
+
+      - name: show the formula this release renders
+        run: cat out/tl.rb
+
+      - name: upload the rendered formula
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tl-homebrew-formula
-          path: Formula/tl.rb
+          path: out/tl.rb
           if-no-files-found: error
 
-      # A tap carries one formula, so pushing a prerelease would make
-      # `brew install tl` resolve to it. The formula is still generated and
-      # uploaded above; only the push is skipped.
-      - name: push the formula to the tap
+      # The tap is cloned here — transport, with the credential in an env
+      # binding — and updated by `tlrelease homebrew-publish`, which owns every
+      # decision about it: whether this release pushes at all (a tap carries one
+      # formula, so a prerelease does not), whether the checkout is the tap the
+      # signed manifest names, and whether the formula it already holds is this
+      # one. Running it twice is a no-op, so a job retried after a successful
+      # push does not add a second commit saying the same thing.
+      - name: clone the tap
         if: ${{ !contains(github.ref_name, '-') }}
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          tap=$(mktemp -d)
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/DmitryKorolev/homebrew-tap.git" "$tap"
-          mkdir -p "$tap/Formula"
-          cp Formula/tl.rb "$tap/Formula/tl.rb"
-          cd "$tap"
-          git config user.name "tl release"
-          git config user.email "tl-release@users.noreply.github.com"
-          git add Formula/tl.rb
-          if git diff --cached --quiet; then
-            echo "the tap already carries this formula"
-            exit 0
-          fi
-          git commit -m "tl ${GITHUB_REF_NAME}: pin the released digests"
-          git push
+          TAP_REMOTE: https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/DmitryKorolev/homebrew-tap.git
+        run: git clone --depth 1 "$TAP_REMOTE" tap
+
+      - name: publish the formula to the tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: ./tool/tlrelease homebrew-publish --manifest dist/release-manifest.json --formula out/tl.rb --tap tap
 
   # ---------------------------------------------------------------------------
   # 5. npm.

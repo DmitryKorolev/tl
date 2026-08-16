@@ -154,10 +154,10 @@ express:
   first release: the placeholder packages must carry the licence files and a
   version nobody resolves, and the commands it prints must not publish to
   `latest`.
-- `scripts/gen-homebrew-formula.sh --selftest` covers the formula generator's
-  refusals and renderings; the `ruby -c` gate two entries below is the parse
-  check on the committed formula, and both skip visibly rather than fail when
-  ruby is absent.
+- A `ruby -c` gate over the tracked formula and the rendered fixtures beside it.
+  It skips visibly rather than failing when ruby is absent, and it is an early
+  signal rather than a verdict: real Homebrew is the acceptance authority and
+  the `homebrew-formula` job below is where it runs.
 - actionlint over both workflow files. A workflow cannot validate itself: if
   GitHub refuses to load `release.yml`, nothing runs to say so, and the failure
   would surface only when someone pushed a tag. actionlint shells out to
@@ -167,7 +167,7 @@ express:
   survived precisely because the runner has shellcheck and the machines they
   were tried on did not.
 - A separate `homebrew-formula` job loads, styles and audits four formulae
-  with real Homebrew: the committed template, a fully-pinned generated one, one
+  with real Homebrew: the tracked placeholder, a fully pinned release, one
   with the Best-effort target dropped, and a prerelease one — Homebrew's version
   scanner drops the SemVer suffix and resolves that formula's urls differently,
   so the job also asserts each resolved url names the tag it should. `ruby -c` proves a formula parses
@@ -189,9 +189,9 @@ rehearsal runs.
 
 `--profile ci`, the default, is repository hygiene: everything above plus the
 gates for channels that are built but switched off, which live in
-`scripts/check-channel-policy.sh` — the three npm selftests, the Homebrew
-formula generator, and `ruby -c` on the formula. `ci.yml` runs it on every
-commit, so a deferred channel cannot rot while it waits.
+`scripts/check-channel-policy.sh` — the three npm selftests and `ruby -c` over
+the tracked formula and the rendered fixtures beside it. `ci.yml` runs it on
+every commit, so a deferred channel cannot rot while it waits.
 
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
