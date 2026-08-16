@@ -828,6 +828,37 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   forwards is a channel that was forgotten, not one
                         --   that was postponed
   plan.json             --   (data) the channels this release publishes through
+  Manifest.lean         --   the one description of a release, written and read
+                        --   back whole. `manifest` assembles it from each leg's
+                        --   record and the directory's own digests, refusing a
+                        --   release this pipeline must not publish; the reader
+                        --   parses every section — targets with their platform
+                        --   and embedded build record, assets, npm, Homebrew —
+                        --   and refuses a document that contradicts itself
+                        --   before any channel acts on part of it
+                        --   (descriptionCoherent_iff). The platform fields
+                        --   travel in the document so a channel projecting a
+                        --   release reads no checkout: a working tree's target
+                        --   list answers a different question.
+                        --   `manifest-verify` is the directory half, and
+                        --   manifestAccepts_iff is its characterization
+  Homebrew.lean         --   the Homebrew channel, with no template and no
+                        --   substitution: `homebrew-render` renders the whole
+                        --   formula from the signed manifest,
+                        --   `homebrew-placeholder` renders the tracked
+                        --   Formula/tl.rb (and the three fixtures real brew
+                        --   audits) from release/identity.json +
+                        --   release/targets.json, and `homebrew-publish`
+                        --   updates the tap once — a prerelease does not push,
+                        --   an identical formula is a no-op, and a checkout
+                        --   whose origin is not the tap the manifest names is a
+                        --   refusal that does not repeat the url. formulaCovers_iff
+                        --   is the rule that matters: a stable spec missing a
+                        --   url for a Supported target makes Homebrew raise on
+                        --   *load*, for every brew command touching the tap.
+                        --   tapDisposition_identical_iff is what keeps a
+                        --   drifting comparison from reporting a skipped
+                        --   publication as success
   Boundary.lean         --   `dependency-boundary` states the four v0.1 entry
                         --   points, walks the first-party scripts they reach,
                         --   and refuses on an invocation of python, python3,
