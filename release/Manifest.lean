@@ -581,8 +581,14 @@ private def assetJson (asset : Asset) : Json :=
     ("sha256", Json.str asset.sha256.hex),
     ("kind", Json.str asset.kind.wire)]
 
-/-- The schema this document declares. Bumped only when a consumer would have
-    to change; every field added so far has been additive. -/
+/-- The schema this document declares.
+
+    Bumped when a consumer would have to change. The per-target platform fields
+    are required rather than additive, and this stayed at 1 because no manifest
+    at this version has ever been published: the first release cuts the first
+    one. A reader given an older document refuses it for the missing field
+    rather than for the version, which is the right message for a document that
+    does not exist. -/
 def manifestSchemaVersion : Nat := 1
 
 def Manifest.toJson (manifest : Manifest) : Json :=

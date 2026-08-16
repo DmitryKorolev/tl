@@ -110,14 +110,22 @@ def coverageCheck (pinned : List String) (target : Target) : Check :=
   { held := !target.tier.releaseBlocking || pinned.contains target.name,
     failure := s!"the formula would pin no binary for '{target.name}', which release/targets.json calls Supported — release-blocking under ADR-0006. A formula cannot pin a digest for an asset the release did not publish, and dropping the block would leave `brew install tl` with nothing to install on that platform. Build the missing target and re-run; do not publish a partial formula." }
 
-/-- One row per target in the distributed set.
+/-- Every row: the formula pins something, and it pins every target whose
+    absence would block the release.
 
-    The set comes from the manifest's own target rows rather than from a
+    The target set comes from the manifest's own rows rather than from a
     checkout's `release/targets.json`: the question is whether *this release*
     published every target it says is release-blocking, and a checkout read at
-    publication time is a different release's answer. -/
+    publication time is a different release's answer.
+
+    The first row is not implied by the rest. A release whose targets are all
+    Best-effort and all failed satisfies every per-target row by having nothing
+    release-blocking to satisfy, and renders a formula with no url, no block and
+    an empty pin list — one that loads on every platform and installs on none. -/
 def coverageChecks (targets : List Target) (pinned : List String) : List Check :=
-  targets.map (coverageCheck pinned)
+  { held := !pinned.isEmpty,
+    failure := "the formula would pin no binary at all. Every target this release describes is Best-effort and none of them arrived, so there is nothing to serve: the formula would load on every platform and refuse to install on all of them, which is a tap update that reports success and publishes nothing." }
+    :: targets.map (coverageCheck pinned)
 
 /-- Whether a formula pinning these targets may be rendered. -/
 def formulaCovers (targets : List Target) (pinned : List String) : Bool :=
@@ -131,6 +139,19 @@ private theorem notOr_eq_true_iff (b c : Bool) :
   | false, _ => ⟨fun _ absurdity => Bool.noConfusion absurdity, fun _ => rfl⟩
   | true, false => ⟨fun held => Bool.noConfusion held, fun implication => implication rfl⟩
   | true, true => ⟨fun _ _ => rfl, fun _ => rfl⟩
+
+/-- A list with something in it is not the empty list. -/
+private theorem notEmpty_iff {α : Type} (items : List α) :
+    (!items.isEmpty) = true ↔ items ≠ [] := by
+  match items with
+  | [] =>
+      constructor
+      · intro absurdity; exact Bool.noConfusion absurdity
+      · intro empty; exact absurd rfl empty
+  | head :: rest =>
+      constructor
+      · intro _; exact List.cons_ne_nil head rest
+      · intro _; rfl
 
 private theorem coverageCheck_held_iff (pinned : List String) (target : Target) :
     (coverageCheck pinned target).held = true ↔
@@ -150,9 +171,12 @@ private theorem coverageCheck_held_iff (pinned : List String) (target : Target) 
     release. -/
 theorem formulaCovers_iff (targets : List Target) (pinned : List String) :
     formulaCovers targets pinned = true ↔
-      ∀ target ∈ targets,
-        target.tier.releaseBlocking = true → pinned.contains target.name = true := by
-  rw [formulaCovers, Check.allHeld, coverageChecks, List.all_eq_true]
+      pinned ≠ []
+        ∧ ∀ target ∈ targets,
+            target.tier.releaseBlocking = true → pinned.contains target.name = true := by
+  rw [formulaCovers, Check.allHeld, coverageChecks, List.all_cons, Bool.and_eq_true,
+    List.all_eq_true]
+  refine and_congr (notEmpty_iff pinned) ?_
   constructor
   · intro held target member
     exact (coverageCheck_held_iff pinned target).mp
@@ -173,8 +197,9 @@ def coverageBlockers (targets : List Target) (pinned : List String) : List Strin
     that runs. -/
 theorem coverageBlockers_isEmpty_iff (targets : List Target) (pinned : List String) :
     coverageBlockers targets pinned = [] ↔
-      ∀ target ∈ targets,
-        target.tier.releaseBlocking = true → pinned.contains target.name = true :=
+      pinned ≠ []
+        ∧ ∀ target ∈ targets,
+            target.tier.releaseBlocking = true → pinned.contains target.name = true :=
   Iff.trans (Check.allHeld_iff_noFailures (coverageChecks targets pinned)).symm
     (formulaCovers_iff targets pinned)
 
@@ -747,10 +772,13 @@ private def publishArgs (options : Options) : Except String PublishArgs := do
 
 /-- Run `git` inside the tap checkout, with its output as a value.
 
-    Never echoes the command's own arguments on failure and never reads the
-    remote url into a message: the workflow's remote carries the publication
-    credential, and a refusal that quoted it would put a secret in the release
-    log — which is the one place every failure is read from. -/
+    No refusal written here quotes the remote url, and the url is never read
+    into one: the workflow's remote carries the publication credential, and the
+    release log is the one place every failure is read from. What this cannot
+    control is git's own diagnosis, which it passes through — `git push` may
+    name the remote it could not reach. GitHub Actions masks the secret it
+    interpolated into that url, and that masking is what covers the passed-through
+    case; it is a platform property rather than one this command establishes. -/
 private def gitIn (tap : String) (args : List String) : Decision String := do
   let output ← ofIO (succeeded "git" ((["-C", tap] ++ args).toArray))
   return output.stdout.trimAscii.toString

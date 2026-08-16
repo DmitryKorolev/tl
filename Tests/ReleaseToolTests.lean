@@ -3100,14 +3100,21 @@ private def homebrewTests : List Outcome :=
     Homebrew.render (← brewSpec "1.2.3" [("plan9-x64", "supported", "plan9", "x64")])
   let unknownCpu : Except String String := do
     Homebrew.render (← brewSpec "1.2.3" [("linux-riscv", "supported", "linux", "riscv")])
+  let nothingPinned : Except String String := do
+    let spec ← brewSpec "1.2.3" []
+    let targets ← [("darwin-x64", "best-effort", "darwin", "x64")].mapM
+      fun (name, tier, os, cpu) => brewTarget name tier os cpu
+    Homebrew.renderCovering targets spec
   [ -- Every pinned target gets its own block, under its own digest.
     check "formula: a complete release renders" (renderedFormula "1.2.3" allFour).toOption.isSome
       (errorOf (renderedFormula "1.2.3" allFour)),
     check "formula: every pinned target has a url"
       (allFour.all fun (name, _, _, _) => contains full s!"ASSET_PREFIX}{name}\"")
       full,
-    checkEq "formula: every url and the fallback carries a digest"
-      ((full.splitOn "    sha256 \"").length - 1) 4,
+    checkEq "formula: every pinned target's url carries a digest"
+      ((full.splitOn "      sha256 \"").length - 1) 4,
+    checkEq "formula: the fallback url carries one too, so five digests in all"
+      ((full.splitOn "sha256 \"").length - 1) 5,
     check "formula: the fallback url pins the sums file's own digest"
       (contains full s!"  sha256 \"{digest64c}\"") full,
     check "formula: each platform digest lands under its own url"
@@ -3196,8 +3203,16 @@ private def homebrewTests : List Outcome :=
     checkEq "formula: rendering the same spec twice produces the same bytes"
       (okOr "<a>" (renderedFormula "1.2.3" allFour))
       (okOr "<b>" (renderedFormula "1.2.3" allFour)),
-    check "formula: the rendered formula is pure ASCII apart from its prose"
-      (full.endsWith "\n") "a Ruby file that does not end in a newline"]
+    check "formula: the rendered formula ends in a newline"
+      (full.endsWith "\n") "a Ruby file that does not end in a newline",
+    -- A release whose targets are all Best-effort and all failed. Every
+    -- per-target row holds by having nothing release-blocking to satisfy, so
+    -- without its own row this renders a formula that loads everywhere and
+    -- installs nowhere.
+    check "formula: a release that pins nothing at all is refused" nothingPinned.toOption.isNone
+      "a formula with no url, no block and an empty pin list was rendered",
+    check "formula: that refusal says the tap update would publish nothing"
+      (mentions nothingPinned "publishes nothing") (errorOf nothingPinned)]
 
 /-! ## The canonical signing identity
 
