@@ -14,8 +14,8 @@
 # it reads.
 #
 # So the split is the enforcement: this file is named in the boundary gate's
-# deferred set, the four scripts that source it are named there too, and none of
-# them is reachable from install.sh, scripts/verify-release-artifacts.sh, the
+# deferred set, the three npm scripts that source it are named there too, and
+# none of them is reachable from install.sh, scripts/verify-release-artifacts.sh, the
 # release profile of the policy, or the release workflow's enabled jobs. When a
 # channel is enabled its scripts return to the release path — and these helpers
 # with them, which is the point at which `tlrelease` has to own these reads.

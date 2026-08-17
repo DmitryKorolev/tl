@@ -246,10 +246,11 @@ scripts/lib/            -- shared by the release scripts
                         --   and npm/tl/bin/tl carry marked copies of the parts
                         --   they need, because neither can source a file from
                         --   this repository at the moment it runs
-  channel-common.sh     --   the deferred channels' reads of
+  channel-common.sh     --   the deferred npm channel's reads of
                         --   release/targets.json and release/plan.json, which
-                        --   use python3. Sourced only by the four npm and
-                        --   Homebrew scripts: the v0.1 release path sources
+                        --   use python3. Sourced only by the three npm
+                        --   scripts — Homebrew's reads moved into tlrelease
+                        --   with its port: the v0.1 release path sources
                         --   release-common.sh, and ADR-0026's dependency
                         --   boundary keeps an interpreter out of everything it
                         --   can reach

@@ -2634,6 +2634,16 @@ private def descriptionTests : List Outcome :=
         match rows with
         | head :: rest => withField head "published" (Json.bool false) :: rest
         | [] => [])),
+    -- The other half of an unpublished row: it may not leave anything described
+    -- for the target it says this release did not build.
+    refuses "an unpublished row whose binary is still in the asset table is refused"
+      "the asset table describes"
+      (withIn · "targets" (withRows · fun rows =>
+        match rows with
+        | head :: rest =>
+            withField (withField (withField (withField head "published" (Json.bool false))
+              "asset" Json.null) "sha256" Json.null) "build" Json.null :: rest
+        | [] => [])),
     refuses "an unpublished row missing its null keys is refused"
       "keeps every key with a null value"
       (withIn · "targets" (withRows · fun rows =>
@@ -2768,12 +2778,19 @@ private def homebrewCommandTests : IO (List Outcome) := do
   -- only ever be exercised through a value no command can receive.
   let missingSupported := okOr "<the fixture stopped assembling>" (do
     render (← parseEditedJson describedManifest fun root =>
-      withIn (withIn (withIn root "targets" (withFirstRow · fun row =>
+      -- Every section that follows from the published set is edited with it,
+      -- including the asset table: a row that published nothing may not leave
+      -- its binary described, so a fixture that changed only the target and
+      -- channel sections was refused for incoherence and never reached the
+      -- coverage rule it exists to exercise.
+      withIn (withIn (withIn (withIn root "targets" (withFirstRow · fun row =>
           withField (withField (withField (withField row "published" (Json.bool false))
             "asset" Json.null) "sha256" Json.null) "build" Json.null))
         "homebrew" (fun brew => withIn brew "pinnedTargets" (withRows · fun rows => rows.drop 1)))
         "npm" (fun npm => withIn npm "packages" (withRows · fun rows =>
-          rows.take 1 ++ rows.drop 2))))
+          rows.take 1 ++ rows.drop 2)))
+        "assets" (withRows · fun rows => rows.filter fun row =>
+          fieldOf row "name" != Json.str (sampleTarget "linux-x64" .supported).asset)))
   let partialPath := (dist / "partial.json").toString
   IO.FS.writeFile partialPath missingSupported
   let (partialStatus, _, partialErr) ← runCommand "homebrew-render"
@@ -2852,10 +2869,27 @@ release job clones the tap — because the property is that publication happens
 once. A stub git could be made to say anything about a diff; what has to hold is
 that a second run of a job that already pushed produces no second commit. -/
 
-private def gitRun (cwd : String) (args : List String) : IO UInt32 := do
-  match ← Release.run "git" ((["-C", cwd] ++ args).toArray) with
-  | .completed output => return output.exitCode
-  | _ => return 127
+/-- A fixture git call, which throws rather than returning a status nobody
+    reads.
+
+    Both halves matter and both were wrong here. *Throwing*: discarding these
+    statuses let a failed setup cascade into an unrelated crash somewhere
+    later — a seed commit that did not happen becoming a `removeDirAll` on a
+    directory that was never cloned, reported far from its cause. *Hermetic*:
+    a developer's global `commit.gpgsign` with no usable key, or a
+    `core.hooksPath`, fails the seed commit, so the suite would pass or fail on
+    configuration outside the repository. `Tests/CliTests.lean` settled both;
+    this is the same shape. -/
+private def gitFixture (cwd : String) (args : List String) : IO Unit := do
+  let hermetic := ["-c", "commit.gpgsign=false", "-c", "user.email=ci@example.test",
+    "-c", "user.name=ci"]
+  match ← Release.run "git" ((["-C", cwd] ++ hermetic ++ args).toArray) with
+  | .completed output =>
+      unless output.exitCode == 0 do
+        throw (IO.userError
+          s!"fixture `git {String.intercalate " " args}` in {cwd} exited {output.exitCode}: {output.stderr.trimAscii}")
+  | outcome =>
+      throw (IO.userError s!"fixture git could not run: {outcome.failureMessage.getD "unknown"}")
 
 private def commitCount (checkout : String) : IO String := do
   match ← Release.succeeded "git" #["-C", checkout, "rev-list", "--count", "HEAD"] with
@@ -2889,15 +2923,14 @@ private def tapPublishTests : IO (List Outcome) := do
   let owner := base / "Owner"
   IO.FS.createDirAll owner
   let remotePath := (owner / "homebrew-tap.git").toString
-  let _ ← gitRun base.toString ["init", "--bare", "--initial-branch=main", "--", remotePath]
+  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", remotePath]
   let checkout := (base / "tap").toString
-  let _ ← gitRun base.toString ["clone", "--quiet", "--", remotePath, checkout]
+  gitFixture base.toString ["clone", "--quiet", "--", remotePath, checkout]
   IO.FS.createDirAll (checkout ++ "/Formula")
   IO.FS.writeFile (checkout ++ "/README.md") "tap\n"
-  let _ ← gitRun checkout ["add", "-A"]
-  let _ ← gitRun checkout
-    ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init"]
-  let _ ← gitRun checkout ["push", "--quiet", "origin", "HEAD:main"]
+  gitFixture checkout ["add", "-A"]
+  gitFixture checkout ["commit", "-q", "--no-verify", "-m", "init"]
+  gitFixture checkout ["push", "--quiet", "origin", "HEAD:main"]
   let before ← commitCount checkout
   -- A prerelease first: the tap must be left exactly as it is.
   let (preStatus, preOut, preErr) ← runCommand "homebrew-publish"
@@ -2918,28 +2951,75 @@ private def tapPublishTests : IO (List Outcome) := do
   let (againStatus, againOut, _) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
   let afterAgain ← commitCount checkout
-  -- A tap holding some other formula is replaced by this release's.
+  -- A tap whose *published branch* holds some other formula. Pushed, because
+  -- the decision is about the remote: a local commit that never reached it is
+  -- the stranded case below, and it has the opposite outcome.
   IO.FS.writeFile (checkout ++ "/Formula/tl.rb") "class Tl < Formula\n  # someone else\nend\n"
-  let _ ← gitRun checkout ["add", "-A"]
-  let _ ← gitRun checkout
-    ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "drift"]
+  gitFixture checkout ["add", "-A"]
+  gitFixture checkout ["commit", "-q", "--no-verify", "-m", "drift"]
+  gitFixture checkout ["push", "--quiet", "origin", "HEAD:main"]
   let (changedStatus, changedOut, _) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
   let afterChanged ← commitCount checkout
   let restored ← IO.FS.readFile (checkout ++ "/Formula/tl.rb")
+  -- The two failures the working-tree comparison could not see.
+  --
+  -- (a) A run whose commit failed. The formula is written and staged, so a
+  -- comparison against the checkout says "already carries this" — while the tap
+  -- has nothing. Reproduced by making `git commit` fail the way a real one
+  -- does: an index the commit hook refuses. Simpler and exact: commit the
+  -- formula locally, then rewind the remote so the push destination no longer
+  -- has it, which is the state a failed push leaves.
+  let secondOwner := base / "second" / "Owner"
+  IO.FS.createDirAll secondOwner
+  let secondRemote := (secondOwner / "homebrew-tap.git").toString
+  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", secondRemote]
+  let stranded := (base / "stranded").toString
+  gitFixture base.toString ["clone", "--quiet", "--", secondRemote, stranded]
+  IO.FS.createDirAll (stranded ++ "/Formula")
+  IO.FS.writeFile (stranded ++ "/README.md") "tap\n"
+  gitFixture stranded ["add", "-A"]
+  gitFixture stranded ["commit", "-q", "--no-verify", "-m", "init"]
+  gitFixture stranded ["push", "--quiet", "origin", "HEAD:main"]
+  -- Committed here and deliberately not pushed: the state a run whose `git
+  -- push` failed leaves behind, and the one a working-tree comparison reads as
+  -- "already carries this formula".
+  IO.FS.writeFile (stranded ++ "/Formula/tl.rb") expected
+  gitFixture stranded ["add", "-A"]
+  gitFixture stranded ["commit", "-q", "--no-verify", "-m", "committed but never pushed"]
+  let (strandedStatus, strandedOut, strandedErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", stranded]
+  let strandedRemote ← Release.succeeded "git" #["-C", secondRemote, "show", "main:Formula/tl.rb"]
+  -- (b) A push url that is not the url the state was read from. `git push`
+  -- honours `remote.origin.pushurl`, so a checkout can read the tap and publish
+  -- somewhere else entirely.
+  let decoy := (base / "decoy.git").toString
+  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", decoy]
+  let diverted := (base / "diverted").toString
+  gitFixture base.toString ["clone", "--quiet", "--", remotePath, diverted]
+  gitFixture diverted ["config", "remote.origin.pushurl", decoy]
+  let (divertedStatus, _, divertedErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", diverted]
+  let decoyGot ← Release.succeeded "git" #["-C", decoy, "show", "main:Formula/tl.rb"]
   -- A checkout of the wrong repository.
   let wrongRemote := (base / "elsewhere.git").toString
-  let _ ← gitRun base.toString ["init", "--bare", "--initial-branch=main", "--", wrongRemote]
+  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", wrongRemote]
   let wrongCheckout := (base / "wrong").toString
-  let _ ← gitRun base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
+  gitFixture base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
   IO.FS.createDirAll (wrongCheckout ++ "/Formula")
   let (wrongStatus, _, wrongErr) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", wrongCheckout]
   -- A tap with no Formula directory: a shape this command updates rather than
   -- decides.
   let bareCheckout := (base / "noformula").toString
-  let _ ← gitRun base.toString ["clone", "--quiet", "--", remotePath, bareCheckout]
-  IO.FS.removeDirAll (bareCheckout ++ "/Formula")
+  gitFixture base.toString ["clone", "--quiet", "--", remotePath, bareCheckout]
+  -- The clone carries the Formula directory the fixture committed; removing it
+  -- is what makes this the "tap with no Formula/" case. Guarded, because a
+  -- clone that did not happen must fail as the clone rather than here.
+  if ← System.FilePath.isDir (bareCheckout ++ "/Formula") then
+    IO.FS.removeDirAll (bareCheckout ++ "/Formula")
+  else
+    throw (IO.userError s!"the fixture clone at {bareCheckout} has no Formula/ to remove")
   let (noDirStatus, _, noDirErr) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", bareCheckout]
   let (absentSums, _, absentSumsErr) ← runCommand "homebrew-publish"
@@ -2995,6 +3075,21 @@ private def tapPublishTests : IO (List Outcome) := do
     checkEq "homebrew-publish: a directory with no SHA256SUMS is refused" absentSums 1,
     check "homebrew-publish: that refusal names the file the fallback url needs"
       (contains absentSumsErr "SHA256SUMS") absentSumsErr,
+    -- The retry that used to report success over a tap with nothing in it.
+    check "homebrew-publish: a commit that was never pushed is published, not reported as done"
+      (strandedStatus == 0) strandedErr,
+    check "homebrew-publish: it says it pushed rather than that the tap already had it"
+      (contains strandedOut "pushed the formula" && !contains strandedOut "already carries")
+      strandedOut,
+    check "homebrew-publish: and the remote now has it"
+      (strandedRemote.toOption.map (·.stdout) == some expected)
+      s!"the tap still does not carry the formula: {errorOf strandedRemote}",
+    -- The push url that is not the url the state came from.
+    checkEq "homebrew-publish: a diverted push url is refused" divertedStatus 1,
+    check "homebrew-publish: the refusal names what a pushurl does"
+      (contains divertedErr "pushurl") divertedErr,
+    check "homebrew-publish: and nothing reached the other repository"
+      decoyGot.toOption.isNone "the decoy repository received this release's formula",
     checkEq "homebrew-publish: a directory that is not a git checkout is refused" notARepo 1,
     check "homebrew-publish: that refusal carries git's own diagnosis"
       (contains notARepoErr "git") notARepoErr,

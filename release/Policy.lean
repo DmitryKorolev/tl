@@ -24,7 +24,8 @@ Three decisions here can be wrong silently, and each carries a theorem:
   to mean "everything installed here passed" while reading as "everything
   passed".
 - **Whether the run passed.** A failed gate must not be recoverable by a later
-  one, and a run with no gates at all must not read as a clean run.
+  one, and a run with no gates at all must not read as a clean run — a per-row
+  verdict says nothing about the empty list, so that is its own row.
 - **What a distribution surface contributes.** GitHub Release, npm and Homebrew
   are publication channels; the installer is a repository-served adapter with no
   publish job. A surface that silently acquired a publication effect would put a
@@ -386,8 +387,32 @@ def outcomeCheck (strict : Bool) (gate : Gate) : GateOutcome → Check
       { held := !strict,
         failure := s!"{gate.name} could not run and this is a --strict run: {requirement.lost}. Locally a missing tool is a smaller policy and the run says so; here it is a broken job, not a smaller release." }
 
+/-- A list with something in it is not the empty list. -/
+private theorem notEmpty_iff {α : Type} (items : List α) :
+    (!items.isEmpty) = true ↔ items ≠ [] := by
+  match items with
+  | [] =>
+      constructor
+      · intro absurdity; exact Bool.noConfusion absurdity
+      · intro empty; exact absurd rfl empty
+  | head :: rest =>
+      constructor
+      · intro _; exact List.cons_ne_nil head rest
+      · intro _; rfl
+
+/-- The run's rows, and the one thing that is true of the run rather than of any
+    row in it.
+
+    The first check is not implied by the rest and its absence is the whole
+    failure mode of a per-row verdict: `∀ row ∈ [], …` holds, so a run that
+    selected no gates — a profile that lost its rows, a filter that matched
+    nothing — reported that every gate passed. That is precisely the shape this
+    module exists to remove, one level up from a skipped gate counted as a
+    passing one. -/
 def runChecks (strict : Bool) (rows : List (Gate × GateOutcome)) : List Check :=
-  rows.map fun (gate, outcome) => outcomeCheck strict gate outcome
+  { held := !rows.isEmpty,
+    failure := "this run performed no gates at all. Every per-gate condition then holds by having nothing to hold of, so the run would report a clean policy having checked nothing — which is the one result a gate list must never produce." }
+    :: rows.map fun (gate, outcome) => outcomeCheck strict gate outcome
 
 /-- Whether the run may be reported as a pass. -/
 def runAccepts (strict : Bool) (rows : List (Gate × GateOutcome)) : Bool :=
@@ -426,8 +451,9 @@ private theorem outcomeCheck_held_iff (strict : Bool) (gate : Gate) (outcome : G
     local run reportable. -/
 theorem runAccepts_iff (strict : Bool) (rows : List (Gate × GateOutcome)) :
     runAccepts strict rows = true ↔
-      ∀ row ∈ rows, row.2.acceptable strict := by
-  rw [runAccepts, Check.allHeld, runChecks, List.all_eq_true]
+      rows ≠ [] ∧ ∀ row ∈ rows, row.2.acceptable strict := by
+  rw [runAccepts, Check.allHeld, runChecks, List.all_cons, Bool.and_eq_true, List.all_eq_true]
+  refine and_congr (notEmpty_iff rows) ?_
   constructor
   · intro held row member
     exact (outcomeCheck_held_iff strict row.1 row.2).mp
@@ -443,7 +469,8 @@ def runFailures (strict : Bool) (rows : List (Gate × GateOutcome)) : List Strin
 
 /-- **The report is empty exactly when the run passed.** -/
 theorem runFailures_isEmpty_iff (strict : Bool) (rows : List (Gate × GateOutcome)) :
-    runFailures strict rows = [] ↔ ∀ row ∈ rows, row.2.acceptable strict :=
+    runFailures strict rows = [] ↔
+      rows ≠ [] ∧ ∀ row ∈ rows, row.2.acceptable strict :=
   Iff.trans (Check.allHeld_iff_noFailures (runChecks strict rows)).symm
     (runAccepts_iff strict rows)
 

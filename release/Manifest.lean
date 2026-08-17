@@ -446,10 +446,21 @@ private def crossedRuns : List (String × String) → Option (String × String �
       if run == nextRun then crossedRuns rest
       else some (name, nextName, s!"{run} and {nextRun}")
 
-/-- The first name listed twice, if any. -/
-private def repeatedName : List String → Option String
-  | [] => none
-  | name :: rest => if rest.contains name then some name else repeatedName rest
+/-- A name listed twice, if any.
+
+    Sorted once and then read pairwise, rather than asking `contains` of the
+    rest for each name. Both answer the same question and one of them does work
+    proportional to the square of a list this pipeline grows by target and by
+    asset; the repository's rule is proportional work on a command path, and
+    `manifest-verify` is one. Which duplicate is reported is not part of the
+    contract — there is one to fix either way. -/
+private def firstAdjacentRepeat : List String → Option String
+  | first :: second :: rest =>
+      if first == second then some first else firstAdjacentRepeat (second :: rest)
+  | _ => none
+
+private def repeatedName (names : List String) : Option String :=
+  firstAdjacentRepeat (names.mergeSort (· ≤ ·))
 
 /-- Assemble the description of a release, refusing every one this pipeline
     must not publish. -/
@@ -833,10 +844,26 @@ private def uniqueNamesCheck (names : List String) (explain : String → String)
     about. An unpublished row states nothing that could disagree. -/
 def targetRowChecks (description : ManifestDescription) (row : ManifestTarget) : List Check :=
   match row.outcome with
-  | .absent => []
+  | .absent =>
+      -- A row that published nothing must have nothing described for it. The
+      -- generator refuses to *assemble* such a release — a record or an audit
+      -- for a binary that never arrived is a signed document about an artifact
+      -- the release does not contain — and the reader has to refuse it too, or
+      -- a manifest can say "we did not build this" in the target rows while the
+      -- asset table publishes its binary beside them.
+      [{ held := !description.assets.any (·.name == assetNameFor row.target.name),
+         failure := s!"the '{row.target.name}' row says this release published nothing for it, and the asset table describes {assetNameFor row.target.name}. One of them is wrong, and the binary is the half a user downloads." },
+       { held := !description.assets.any (·.name == row.target.buildMetadataAsset),
+         failure := s!"the '{row.target.name}' row says this release published nothing for it, and the asset table describes {row.target.buildMetadataAsset}. That is a signed record of a build whose artifact this release does not contain." },
+       { held := !description.assets.any (·.name == row.target.linkAuditAsset),
+         failure := s!"the '{row.target.name}' row says this release published nothing for it, and the asset table describes {row.target.linkAuditAsset}. That is a signed audit of a binary this release does not contain." }]
   | .published asset digest build =>
       [{ held := asset == assetNameFor row.target.name,
          failure := s!"the '{row.target.name}' row names the asset '{asset}', but a target's asset is composed from its name and would be '{assetNameFor row.target.name}'. A consumer downloading what this row names would fetch a file this release does not describe." },
+       -- A linear search per published row, deliberately left as one: the row
+       -- count is the distributed target set, which `Targets.parse` bounds to
+       -- what this project ships, and an indexed view would move this theorem
+       -- off the expression the command evaluates for no measurable work.
        { held := (description.assets.find? (·.name == asset)).map (·.sha256) == some digest,
          failure := s!"the '{row.target.name}' row gives {asset} the digest {digest.hex}, and the asset table does not agree — either it does not list that file at all, or it lists a different digest for it. The manifest is the one description of this release and it contradicts itself here; a channel pinning the digest from one section would serve bytes the other section refuses." },
        { held := build.target == row.target.name,
@@ -890,7 +917,10 @@ def descriptionProblems (description : ManifestDescription) : List String :=
 /-- What a published target row asserts about the rest of the document. -/
 def ManifestTarget.coherentWith (description : ManifestDescription) (row : ManifestTarget) : Prop :=
   match row.outcome with
-  | .absent => True
+  | .absent =>
+      description.assets.any (·.name == assetNameFor row.target.name) = false
+        ∧ description.assets.any (·.name == row.target.buildMetadataAsset) = false
+        ∧ description.assets.any (·.name == row.target.linkAuditAsset) = false
   | .published asset digest build =>
       asset = assetNameFor row.target.name
         ∧ (description.assets.find? (·.name == asset)).map (·.sha256) = some digest
@@ -958,15 +988,20 @@ private theorem all_flatMapped_held_iff {α : Type} (build : α → List Check) 
         exact ⟨every head List.mem_cons_self,
           fun item member => every item (List.mem_cons_of_mem head member)⟩
 
+/-- `!b` holds exactly when `b` does not. The one `Bool` step the absent rows
+    need, stated so the row list and the property read the same way. -/
+private theorem not_eq_true_iff (b : Bool) : (!b) = true ↔ b = false :=
+  match b with
+  | false => ⟨fun _ => rfl, fun _ => rfl⟩
+  | true => ⟨fun absurdity => Bool.noConfusion absurdity, fun absurdity => Bool.noConfusion absurdity⟩
+
 private theorem targetRowChecks_held_iff (description : ManifestDescription)
     (row : ManifestTarget) :
     (targetRowChecks description row).all (·.held) = true ↔ row.coherentWith description := by
   rw [targetRowChecks, ManifestTarget.coherentWith]
   match row.outcome with
   | .absent =>
-      constructor
-      · intro _; trivial
-      · intro _; rfl
+      simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, not_eq_true_iff]
   | .published _ _ _ =>
       simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, beq_iff_eq]
 

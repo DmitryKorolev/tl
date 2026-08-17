@@ -273,6 +273,12 @@ private def osLines (spec : Spec) (os : String) : Except String (List String) :=
     | .error s!"this renderer knows no Homebrew block for the operating system '{os}'."
   return [s!"  {block} do"] ++ lines ++ ["  end", ""]
 
+/-- The first value repeated in a sorted list. -/
+private def adjacentRepeat : List String → Option String
+  | first :: second :: rest =>
+      if first == second then some first else adjacentRepeat (second :: rest)
+  | _ => none
+
 /-- Every target is one this renderer can place.
 
     Checked over the whole pin list before any block is written, so a target with
@@ -292,10 +298,16 @@ private def placeable (spec : Spec) : Except String Unit := do
     -- coverage rule cannot see, because its `pinned` means "named" rather than
     -- "served". `release/targets.json` already carries `libc` to describe such
     -- variants, so this is one row away from being reachable.
-    let sharing := spec.pins.filter fun other =>
-      other.target.os == pin.target.os && other.target.cpu == pin.target.cpu
-    if sharing.length > 1 then
-      .error s!"'{pin.target.name}' and {sharing.length - 1} other pinned target(s) are all {pin.target.os}/{pin.target.cpu}. A Homebrew formula selects one spec per platform, so they would share one block and only the first would get a url — the rest would be listed as pinned and install nothing. Homebrew has no libc selector; distributing two builds for one platform needs a different formula shape, decided deliberately."
+    pure ()
+  -- The platform collision, read pairwise off a sorted list rather than by
+  -- filtering every pin for every pin. Same answer, and the repository's
+  -- proportional-work rule applies to a command path whether or not today's
+  -- list is short.
+  let platforms := (spec.pins.map fun pin => s!"{pin.target.os}/{pin.target.cpu}").mergeSort (· ≤ ·)
+  match adjacentRepeat platforms with
+  | some platform =>
+      .error s!"more than one pinned target is {platform}. A Homebrew formula selects one spec per platform, so they would share one block and only the first would get a url — the rest would be listed as pinned and install nothing. Homebrew has no libc selector; distributing two builds for one platform needs a different formula shape, decided deliberately."
+  | none => pure ()
 
 /-- The header, down to the licence line.
 
@@ -646,16 +658,27 @@ private def placeholderCommand : Command :=
 /-! ## Updating the tap
 
 A tap carries one formula, so publication is a replacement rather than an
-addition, and it has to be safe to run twice: a release job that failed after
-`git push` and is retried must not produce a second commit saying the same
-thing. So the tap's current formula is compared with the rendered one, and the
-three answers are the three things that can be true of it.
+addition, and it has to be safe to run twice: a release job that failed partway
+and is retried must not produce a second commit saying the same thing, and must
+not report success having left the tap without the formula.
+
+The state that decides is the *remote branch's* copy, not the checkout's. A
+checkout is four states deep — the working tree, the index, the commit, and what
+the remote actually holds — and a comparison against the shallowest of them
+reads every deeper failure as success: a run whose `git commit` failed leaves a
+working tree that already holds the right bytes, so a retry that classified the
+working tree would say "already carries this formula", push nothing, and exit
+zero over a tap that never received it. So the current state is read from the
+remote, the push names its destination explicitly rather than letting
+`branch.<name>.remote` choose one, and the remote is read again afterwards to
+establish that the bytes arrived.
 
 Comparison is over the *formula text*, not over archive bytes: what a tap serves
 is this file, and two renderings of one release are byte-identical by
-construction. -/
+construction.
+-/
 
-/-- What the tap holds, against what this release renders. -/
+/-- What the tap's published branch holds, against what this release renders. -/
 inductive TapState where
   | absent
   | identical
@@ -663,11 +686,15 @@ inductive TapState where
   deriving DecidableEq, Repr
 
 def TapState.describe : TapState → String
-  | .absent => "the tap carries no formula for tl yet"
-  | .identical => "the tap already carries exactly this formula"
-  | .differs => "the tap carries a different formula"
+  | .absent => "the tap's published branch carries no formula for tl yet"
+  | .identical => "the tap's published branch already carries exactly this formula"
+  | .differs => "the tap's published branch carries a different formula"
 
-/-- Classify the tap's current formula. -/
+/-- Classify what the tap's published branch holds.
+
+    The `Option` is the *remote's* copy — absent when the branch does not exist
+    or does not carry the file — because that is the only state a publication
+    decision may be taken on. -/
 def tapDisposition (rendered : String) (existing : Option String) : TapState :=
   match existing with
   | none => .absent
@@ -791,9 +818,70 @@ private def publishArgs (options : Options) : Except String PublishArgs := do
     name the remote it could not reach. GitHub Actions masks the secret it
     interpolated into that url, and that masking is what covers the passed-through
     case; it is a platform property rather than one this command establishes. -/
-private def gitIn (tap : String) (args : List String) : Decision String := do
+private def gitRaw (tap : String) (args : List String) : Decision String := do
   let output ← ofIO (succeeded "git" ((["-C", tap] ++ args).toArray))
-  return output.stdout.trimAscii.toString
+  return output.stdout
+
+private def gitIn (tap : String) (args : List String) : Decision String := do
+  return (← gitRaw tap args).trimAscii.toString
+
+/-- Whether anything is staged for the formula.
+
+    `git diff --cached` answers with its exit status — `1` is "there is a
+    difference", which is not a failure — so this is one of the two places that
+    reads a status rather than requiring zero. It is deliberately not the
+    publication decision: what is staged is a fact about the index, and a retry
+    after a failed push has the commit already made and nothing staged. The
+    decision is the remote comparison above it. -/
+private def somethingStaged (tap : String) : Decision Bool := do
+  let outcome ← ofIO (do return .ok (← Release.run "git"
+    #["-C", tap, "diff", "--cached", "--quiet", "--", tapFormulaRelative]))
+  match outcome with
+  | .completed output =>
+      if output.exitCode == 0 then return false
+      else if output.exitCode == 1 then return true
+      else
+        decline s!"`git diff --cached` exited {output.exitCode} in {tap}. It reports 0 for no staged change and 1 for one; anything else means it could not look, and treating that as either answer would decide a publication on a comparison that did not happen."
+  | outcome =>
+      decline (outcome.failureMessage.getD "git could not be run")
+
+/-- The branch this checkout publishes.
+
+    `symbolic-ref` rather than `rev-parse --abbrev-ref`, because a tap that has
+    just been created has no commits and `rev-parse` cannot name a branch that
+    is not yet born — which is a legitimate first publication, not a broken
+    checkout. A detached HEAD is the one this has to refuse, and it is the case
+    `symbolic-ref` reports by exiting non-zero with nothing to say, so the
+    message is written here. -/
+private def currentBranch (tap : String) : Decision String := do
+  let outcome ← ofIO (do
+    return .ok (← Release.run "git" #["-C", tap, "symbolic-ref", "--quiet", "--short", "HEAD"]))
+  match outcome with
+  | .completed output =>
+      let name := output.stdout.trimAscii.toString
+      if output.exitCode == 0 && !name.isEmpty then return name
+      else
+        decline s!"the checkout at {tap} is not on a branch, so there is no branch for this release to publish to. Clone the tap rather than checking out a commit from it."
+  | outcome => decline (outcome.failureMessage.getD "git could not be run")
+
+/-- What the remote's published branch holds for the formula.
+
+    Read from the remote rather than from the checkout, and read *before*
+    anything is written: this is the only state a publication decision may be
+    taken on, and every other one is a stage on the way to it. -/
+private def remoteFormula (tapPath branch : String) : Decision (Option String) := do
+  -- Does the branch exist there at all? A tap that has just been created has no
+  -- branches, and a first publication creates one; asking the remote is also
+  -- what establishes it can be reached before a byte is written.
+  let heads ← gitIn tapPath ["ls-remote", "--heads", "origin", branch]
+  if heads.isEmpty then return none
+  let _ ← gitIn tapPath ["fetch", "--quiet", "origin", branch]
+  -- `ls-tree` rather than `show`, so "the branch does not carry this file" is
+  -- an empty answer instead of a non-zero status this would have to tell apart
+  -- from a repository it could not read.
+  let entry ← gitIn tapPath ["ls-tree", "FETCH_HEAD", "--", tapFormulaRelative]
+  if entry.isEmpty then return none
+  return some (← gitRaw tapPath ["show", s!"FETCH_HEAD:{tapFormulaRelative}"])
 
 private def publishDecision (args : PublishArgs) : Decision String := do
   let description ← readParsed args.manifestPath ManifestDescription.parse
@@ -813,43 +901,55 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   -- refusal: nothing went wrong, this release does not update the tap.
   if !description.homebrew.push then
     return s!"{description.tag} is a prerelease, so {description.homebrew.tap} keeps the formula it has — a tap carries one formula, and `brew install tl` resolves to whatever is in it"
-  let remote ← gitIn args.tapPath ["remote", "get-url", "origin"]
-  if !tapRemoteAccepts description.homebrew.tap remote then
-    decline s!"the checkout at {args.tapPath} has an 'origin' that does not name {description.homebrew.tap}, which is the tap this release's manifest describes. Its url is deliberately not repeated here because a release job's remote carries the publication credential. Clone the tap the manifest names, or find out why this job was pointed somewhere else."
+  -- Both urls, and before anything else about the checkout: which repository
+  -- this would publish into does not depend on the checkout having commits, and
+  -- an empty tap is a legitimate first publication. They can differ, and only
+  -- one of them is where the bytes go — `remote.origin.pushurl` overrides the
+  -- fetch url for pushes, so checking only `get-url` would read the state of one
+  -- repository and publish into another, reporting the one it had read.
+  let fetchUrl ← gitIn args.tapPath ["remote", "get-url", "origin"]
+  let pushUrl ← gitIn args.tapPath ["remote", "get-url", "--push", "origin"]
+  if !tapRemoteAccepts description.homebrew.tap fetchUrl then
+    decline s!"the checkout at {args.tapPath} fetches 'origin' from something that does not name {description.homebrew.tap}, which is the tap this release's manifest describes. Its url is deliberately not repeated here because a release job's remote carries the publication credential. Clone the tap the manifest names, or find out why this job was pointed somewhere else."
+  if !tapRemoteAccepts description.homebrew.tap pushUrl then
+    decline s!"the checkout at {args.tapPath} pushes 'origin' to something that does not name {description.homebrew.tap}, even though it fetches from the tap. That is what `remote.origin.pushurl` does, and it means this run would read one repository's formula and publish into another. The urls are not repeated here because a release job's remote carries the publication credential."
+  let branch ← currentBranch args.tapPath
   let formulaDirectory := args.tapPath ++ "/Formula"
   let formulaDirectoryExists ← ofIO (do return .ok (← System.FilePath.isDir formulaDirectory))
   if !formulaDirectoryExists then
     decline s!"{formulaDirectory} is not a directory. A Homebrew tap keeps its formulae under Formula/, and creating it here would mean this command deciding the shape of a repository it is only supposed to update. Create it in the tap and commit it once."
-  let destination := args.tapPath ++ "/" ++ tapFormulaRelative
-  let existing ← ofIO (do
-    if ← System.FilePath.pathExists destination then
-      match ← readTextFile destination with
-      | .error message => return .error message
-      | .ok text => return .ok (some text)
-    else return .ok none)
-  let state := tapDisposition formula existing
-  -- Idempotence, and the reason it is here rather than left to `git commit`'s
-  -- own empty-diff behaviour: a release job that failed after pushing and is
-  -- retried has to reach this and stop, and it has to say that it did.
+  let published ← remoteFormula args.tapPath branch
+  let state := tapDisposition formula published
+  -- Idempotence, over the remote. A retried job reaches this and stops because
+  -- the *tap* already has the formula, not because this checkout does.
   if state == .identical then
-    -- Pushed anyway, and this is not belt and braces: the file being right is a
-    -- fact about the *checkout*, and a previous run that committed and then
-    -- failed to push leaves exactly this state. `git push` with nothing to send
-    -- is a no-op, so the repair costs one command and its absence costs a tap
-    -- that never received the release.
-    let _ ← gitIn args.tapPath ["push"]
-    return s!"{description.homebrew.tap} already carries the formula for {description.tag}; nothing new to commit, and the branch is pushed"
+    return s!"{description.homebrew.tap} already carries the formula for {description.tag} on {branch}; nothing to push"
   if args.dryRun then
     return s!"{state.describe}, and this release would replace it with the formula for {description.tag} — not written, --dry-run"
   let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
   let disclosure ← ofIO (writeEvidence args.tap path formula)
   let _ ← gitIn args.tapPath ["add", "--", tapFormulaRelative]
-  let _ ← gitIn args.tapPath
-    ["-c", s!"user.name={commitAuthorName}", "-c", s!"user.email={commitAuthorEmail}",
-     "commit", "-m", s!"tl {description.tag}: pin the released digests"]
-  let _ ← gitIn args.tapPath ["push"]
+  -- Committed only when there is something to commit. A previous run that
+  -- committed and then failed to push leaves the commit in place, and `git
+  -- commit` with an empty index is a non-zero status this must not read as a
+  -- failed publication — the publication decision was taken above, against the
+  -- remote.
+  if ← somethingStaged args.tapPath then
+    let _ ← gitIn args.tapPath
+      ["-c", s!"user.name={commitAuthorName}", "-c", s!"user.email={commitAuthorEmail}",
+       "commit", "--no-verify", "-m", s!"tl {description.tag}: pin the released digests"]
+  -- Named explicitly. A bare `git push` consults `branch.<name>.remote` and
+  -- `push.default`, so the destination would be configuration rather than the
+  -- remote this command just checked.
+  let _ ← gitIn args.tapPath ["push", "origin", s!"HEAD:refs/heads/{branch}"]
+  -- And read back. "Pushed" is a claim about the remote, and the only evidence
+  -- for it is the remote: a push that reported success while the ref did not
+  -- move is exactly the outcome this command exists to make impossible.
+  let landed ← remoteFormula args.tapPath branch
+  if tapDisposition formula landed != .identical then
+    decline s!"the push to {description.homebrew.tap} reported success and {branch} there does not carry this release's formula. Nothing about the tap can be assumed from here; look at the branch before re-running."
   return disclosing
-    s!"pushed the formula for {description.tag} to {description.homebrew.tap} ({state.describe})"
+    s!"pushed the formula for {description.tag} to {description.homebrew.tap} on {branch}, and read it back ({state.describe})"
     disclosure
 
 private def publishCommand : Command :=
