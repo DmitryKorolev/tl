@@ -757,6 +757,8 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.Homebrew.coverageBlockers_isEmpty_iff
   let _ := @Release.Homebrew.tapDisposition_identical_iff
   let _ := @Release.Homebrew.tapDisposition_absent_iff
+  let _ := @Release.Platform.agrees_iff
+  let _ := @Release.Platform.covers_iff
   let _ := @Release.Policy.gateRuns_iff
   let _ := @Release.Policy.runAccepts_iff
   let _ := @Release.Policy.runFailures_isEmpty_iff
@@ -5189,6 +5191,233 @@ private def writeSeamTests : IO (List Outcome) := do
       (says located "/tmp/release-output/dist/tl.spdx.json.tmp")
       (errorOfExcept located)]
 
+
+/-! ## The typed platform authority
+
+The four `uname` mappings `install.sh` and `npm/tl/bin/tl` ship used to be
+compared against a shell function in `scripts/lib/release-common.sh`. They are
+compared against `release/Platform.lean` instead, which is cross-checked against
+`release/targets.json`. These rows are the successor evidence for the four
+classification comparisons the old `embedded-copies` guard owned: each mutation
+below is a copy that would select the wrong asset, and each is refused through
+the public command over a planted checkout. -/
+
+private def osBlock (darwin linux : String) (windowsArm : Bool := true) : String :=
+  let arms :=
+    [s!"  Darwin) os={darwin} ;;", s!"  Linux) os={linux} ;;"]
+    ++ (if windowsArm then
+          ["  MINGW* | MSYS* | CYGWIN* | Windows_NT)",
+           "    echo \"tl: native Windows is not supported\" >&2", "    exit 1", "    ;;"]
+        else [])
+    ++ ["  *)", "    echo \"tl: unsupported operating system\" >&2", "    exit 1", "    ;;"]
+  String.intercalate "\n"
+    (["# EMBEDDED-COPY-BEGIN detect_os", "case $(uname -s) in"] ++ arms
+      ++ ["esac", "# EMBEDDED-COPY-END detect_os", ""])
+
+private def archBlock (arm64 x64 : String) : String :=
+  String.intercalate "\n"
+    ["# EMBEDDED-COPY-BEGIN detect_arch", "case $(uname -m) in",
+     s!"  arm64 | aarch64) arch={arm64} ;;", s!"  x86_64 | amd64) arch={x64} ;;",
+     "  *)", "    echo \"tl: unsupported CPU architecture\" >&2", "    exit 1", "    ;;",
+     "esac", "# EMBEDDED-COPY-END detect_arch", ""]
+
+/-- An adapter carrying both mappings, each of which a row may perturb. -/
+private def adapterText (os arch : String) : String :=
+  "#!/bin/sh\n" ++ os ++ "\n" ++ arch ++ "\npkg=\"tl-$os-$arch\"\n"
+
+private def cleanAdapter : String :=
+  adapterText (osBlock "darwin" "linux") (archBlock "arm64" "x64")
+
+private def platformTargetsOf (rows : List (String × String × String)) : String :=
+  "{\"targets\": [" ++ String.intercalate ","
+    (rows.map fun (name, os, cpu) =>
+      "{\"target\": \"" ++ name ++ "\", \"tier\": \"supported\", \"os\": \"" ++ os
+        ++ "\", \"cpu\": \"" ++ cpu ++ "\"}") ++ "]}"
+
+private def platformRealTargets : String :=
+  platformTargetsOf [("linux-x64", "linux", "x64"), ("linux-arm64", "linux", "arm64"),
+             ("darwin-arm64", "darwin", "arm64"), ("darwin-x64", "darwin", "x64")]
+
+/-- A checkout carrying both adapters and a target list. -/
+private def plantPlatform (base : System.FilePath) (name installer launcher targets : String) :
+    IO (System.FilePath × String) := do
+  let root := base / name
+  writeIn root "install.sh" installer
+  writeIn root "npm/tl/bin/tl" launcher
+  writeIn root "release/targets.json" targets
+  return (root, (root / "release" / "targets.json").toString)
+
+private def platformPureTests : List Outcome :=
+  let osExpected := [("Darwin", ["darwin"]), ("Linux", ["linux"]),
+                     ("MINGW* | MSYS* | CYGWIN* | Windows_NT", ([] : List String)),
+                     ("*", ([] : List String))]
+  [checkEq "platform: the os arms render as the case block they describe"
+     (Platform.expected Platform.osArms) osExpected,
+   checkEq "platform: the arch arms render as the case block they describe"
+     (Platform.expected Platform.archArms)
+     [("arm64 | aarch64", ["arm64"]), ("x86_64 | amd64", ["x64"]), ("*", ([] : List String))],
+   checkEq "platform: a refusing arm selects nothing"
+     (Platform.selections Platform.osArms) ["darwin", "linux"],
+   checkEq "platform: every architecture arm that selects is kept"
+     (Platform.selections Platform.archArms) ["arm64", "x64"],
+   -- `agrees_iff` is the theorem; these are the two ways a caller meets it.
+   check "platform: the rendering of the arms is accepted"
+     (Platform.agrees (Platform.expected Platform.osArms) Platform.osArms) "",
+   check "platform: an arm selecting a different os is refused"
+     (!Platform.agrees [("Darwin", ["linux"]), ("Linux", ["linux"]),
+        ("MINGW* | MSYS* | CYGWIN* | Windows_NT", []), ("*", [])] Platform.osArms) "",
+   check "platform: dropping the refusing Windows arm is refused"
+     (!Platform.agrees [("Darwin", ["darwin"]), ("Linux", ["linux"]), ("*", [])]
+        Platform.osArms) "",
+   check "platform: an arm assigning twice is refused, whichever one the shell would keep"
+     (!Platform.agrees [("Darwin", ["darwin", "linux"]), ("Linux", ["linux"]),
+        ("MINGW* | MSYS* | CYGWIN* | Windows_NT", []), ("*", [])] Platform.osArms) "",
+   -- `covers_iff`, in both directions, because the two failures are different
+   -- releases and a check that dropped either still passes on today's data.
+   check "platform: the arms cover exactly the published operating systems"
+     (Platform.covers Platform.osArms ["darwin", "linux"]) "",
+   check "platform: a published os no arm selects is refused"
+     (!Platform.covers Platform.osArms ["darwin", "linux", "freebsd"]) "",
+   check "platform: an arm selecting an os no target names is refused"
+     (!Platform.covers Platform.osArms ["darwin"]) "",
+   check "platform: the arms cover exactly the published architectures"
+     (Platform.covers Platform.archArms ["x64", "arm64"]) "",
+   check "platform: a published cpu no arm selects is refused"
+     (!Platform.covers Platform.archArms ["x64", "arm64", "riscv64"]) ""]
+
+private def platformCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let run (root : System.FilePath) (targets : String) : IO (UInt32 × String × String) :=
+    dispatchCaptured ["platform-classification", "--root", root.toString, "--targets", targets]
+  -- The real checkout. This row is the gate itself, not a fixture of it.
+  let (realStatus, realOut, realErr) ←
+    dispatchCaptured ["platform-classification", "--root", ".",
+      "--targets", "release/targets.json"]
+  let (cleanRoot, cleanTargets) ←
+    plantPlatform base "clean" cleanAdapter cleanAdapter platformRealTargets
+  let (cleanStatus, cleanOut, _) ← run cleanRoot cleanTargets
+  -- One mutation per shipped block, so a failure names which copy drifted.
+  let (installerOsRoot, installerOsTargets) ← plantPlatform base "installer-os"
+    (adapterText (osBlock "darwin" "darwin") (archBlock "arm64" "x64")) cleanAdapter platformRealTargets
+  let (installerOsStatus, _, installerOsErr) ← run installerOsRoot installerOsTargets
+  let (installerArchRoot, installerArchTargets) ← plantPlatform base "installer-arch"
+    (adapterText (osBlock "darwin" "linux") (archBlock "arm64" "arm64")) cleanAdapter platformRealTargets
+  let (installerArchStatus, _, installerArchErr) ← run installerArchRoot installerArchTargets
+  let (launcherOsRoot, launcherOsTargets) ← plantPlatform base "launcher-os"
+    cleanAdapter (adapterText (osBlock "linux" "linux") (archBlock "arm64" "x64")) platformRealTargets
+  let (launcherOsStatus, _, launcherOsErr) ← run launcherOsRoot launcherOsTargets
+  let (launcherArchRoot, launcherArchTargets) ← plantPlatform base "launcher-arch"
+    cleanAdapter (adapterText (osBlock "darwin" "linux") (archBlock "x64" "x64")) platformRealTargets
+  let (launcherArchStatus, _, launcherArchErr) ← run launcherArchRoot launcherArchTargets
+  -- A dropped refusing arm: every remaining arm agrees, and an unsupported
+  -- system falls through to whatever comes next instead of being told.
+  let (droppedRoot, droppedTargets) ← plantPlatform base "dropped-arm"
+    (adapterText (osBlock "darwin" "linux" (windowsArm := false)) (archBlock "arm64" "x64"))
+    cleanAdapter platformRealTargets
+  let (droppedStatus, _, droppedErr) ← run droppedRoot droppedTargets
+  -- The markers, which bound what the gate reads at all.
+  let (absentRoot, absentTargets) ← plantPlatform base "absent-marker"
+    (adapterText "" (archBlock "arm64" "x64")) cleanAdapter platformRealTargets
+  let (absentStatus, _, absentErr) ← run absentRoot absentTargets
+  let (unclosedRoot, unclosedTargets) ← plantPlatform base "unclosed-marker"
+    (adapterText "# EMBEDDED-COPY-BEGIN detect_os\ncase $(uname -s) in\n  Darwin) os=darwin ;;\nesac\n"
+      (archBlock "arm64" "x64")) cleanAdapter platformRealTargets
+  let (unclosedStatus, _, unclosedErr) ← run unclosedRoot unclosedTargets
+  let (emptyRoot, emptyTargets) ← plantPlatform base "empty-block"
+    (adapterText "# EMBEDDED-COPY-BEGIN detect_os\n# EMBEDDED-COPY-END detect_os\n"
+      (archBlock "arm64" "x64")) cleanAdapter platformRealTargets
+  let (emptyStatus, _, emptyErr) ← run emptyRoot emptyTargets
+  -- An adapter that is not there at all: the gate must fail to look loudly.
+  let missingRoot := base / "missing-adapter"
+  writeIn missingRoot "install.sh" cleanAdapter
+  writeIn missingRoot "release/targets.json" platformRealTargets
+  let (missingStatus, _, missingErr) ←
+    run missingRoot (missingRoot / "release" / "targets.json").toString
+  -- The cross-check against the target list, in both directions.
+  let (extraRoot, extraTargets) ← plantPlatform base "uncovered-target" cleanAdapter cleanAdapter
+    (platformTargetsOf [("linux-x64", "linux", "x64"), ("darwin-arm64", "darwin", "arm64"),
+                ("freebsd-x64", "freebsd", "x64")])
+  let (extraStatus, _, extraErr) ← run extraRoot extraTargets
+  let (narrowRoot, narrowTargets) ← plantPlatform base "unselected-os" cleanAdapter cleanAdapter
+    (platformTargetsOf [("darwin-arm64", "darwin", "arm64")])
+  let (narrowStatus, _, narrowErr) ← run narrowRoot narrowTargets
+  let (cpuRoot, cpuTargets) ← plantPlatform base "uncovered-cpu" cleanAdapter cleanAdapter
+    (platformTargetsOf [("linux-x64", "linux", "x64"), ("darwin-arm64", "darwin", "arm64"),
+                ("linux-riscv64", "linux", "riscv64")])
+  let (cpuStatus, _, cpuErr) ← run cpuRoot cpuTargets
+  -- A target list that cannot be read is a refusal, not a smaller gate.
+  let malformedRoot := base / "malformed-targets"
+  writeIn malformedRoot "install.sh" cleanAdapter
+  writeIn malformedRoot "npm/tl/bin/tl" cleanAdapter
+  writeIn malformedRoot "release/targets.json" "{\"targets\": ["
+  let (malformedStatus, _, malformedErr) ←
+    run malformedRoot (malformedRoot / "release" / "targets.json").toString
+  let (absentTargetsStatus, _, absentTargetsErr) ←
+    run cleanRoot (base / "nothing-here.json").toString
+  IO.FS.removeDirAll base
+  return [
+    check "platform: this checkout's shipped mappings agree with the typed authority"
+      (realStatus == 0) s!"{realOut}{realErr}",
+    check "platform: the clean verdict says how many mappings it compared"
+      (contains realOut "4 shipped platform mappings") realOut,
+    checkEq "platform: a planted clean checkout is accepted" cleanStatus 0,
+    check "platform: the clean verdict names the target list it covered"
+      (contains cleanOut "targets.json") cleanOut,
+    -- Each drift, refused, and named where a reader would look for it.
+    checkEq "platform: an installer os mapping that drifted is refused" installerOsStatus 1,
+    check "platform: the installer os refusal names the file and the block"
+      (contains installerOsErr "install.sh" && contains installerOsErr "detect_os")
+      installerOsErr,
+    check "platform: the installer os refusal shows both classifications"
+      (contains installerOsErr "shipped:" && contains installerOsErr "typed:")
+      installerOsErr,
+    checkEq "platform: an installer arch mapping that drifted is refused" installerArchStatus 1,
+    check "platform: the installer arch refusal names its own block"
+      (contains installerArchErr "detect_arch") installerArchErr,
+    checkEq "platform: a launcher os mapping that drifted is refused" launcherOsStatus 1,
+    check "platform: the launcher os refusal names the launcher, not the installer"
+      (contains launcherOsErr "npm/tl/bin/tl") launcherOsErr,
+    checkEq "platform: a launcher arch mapping that drifted is refused" launcherArchStatus 1,
+    check "platform: the launcher arch refusal names its own block"
+      (contains launcherArchErr "detect_arch") launcherArchErr,
+    checkEq "platform: dropping a refusing arm is refused" droppedStatus 1,
+    check "platform: the dropped-arm refusal shows the arm that went missing"
+      (contains droppedErr "MINGW") droppedErr,
+    -- The markers. A block the gate cannot find must never read as agreement.
+    checkEq "platform: a block whose marker is gone is refused" absentStatus 1,
+    check "platform: the absent-marker refusal says the guard would retire silently"
+      (contains absentErr "EMBEDDED-COPY-BEGIN detect_os") absentErr,
+    checkEq "platform: a block that is opened and never closed is refused" unclosedStatus 1,
+    check "platform: the unclosed-block refusal says what bounds the comparison"
+      (contains unclosedErr "never closes it") unclosedErr,
+    checkEq "platform: a block with no case arms is refused" emptyStatus 1,
+    check "platform: the empty-block refusal says it would report success over nothing"
+      (contains emptyErr "no case arms") emptyErr,
+    check "platform: an adapter that is not there is refused, not skipped"
+      (missingStatus != 0) missingErr,
+    -- The cross-check, both ways.
+    checkEq "platform: a published os no arm selects is refused" extraStatus 1,
+    check "platform: the uncovered-os refusal names the os it cannot reach"
+      (contains extraErr "freebsd") extraErr,
+    checkEq "platform: an arm selecting an os no target names is refused" narrowStatus 1,
+    check "platform: the unselected-os refusal names the target list"
+      (contains narrowErr "release/targets.json") narrowErr,
+    checkEq "platform: a published cpu no arm selects is refused" cpuStatus 1,
+    check "platform: the uncovered-cpu refusal names the cpu it cannot reach"
+      (contains cpuErr "riscv64") cpuErr,
+    -- A gate that cannot read its authority is a gate that failed, not one
+    -- that passed over less.
+    check "platform: a malformed target list is refused" (malformedStatus != 0) malformedErr,
+    check "platform: an absent target list is refused" (absentTargetsStatus != 0)
+      absentTargetsErr,
+    check "platform: no refusal above exits zero"
+      ([installerOsStatus, installerArchStatus, launcherOsStatus, launcherArchStatus,
+        droppedStatus, absentStatus, unclosedStatus, emptyStatus, missingStatus,
+        extraStatus, narrowStatus, cpuStatus, malformedStatus,
+        absentTargetsStatus].all (· != 0)) ""]
+
+private def platformTests : IO (List Outcome) := do
+  return platformPureTests ++ (← platformCommandTests)
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
@@ -5249,6 +5478,6 @@ def releaseToolTests : IO (List Outcome) := do
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
 
 end Tl.Tests
