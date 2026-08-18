@@ -163,8 +163,8 @@ jobs:
             ./.lake/build/bin/tlrelease version-consistency --targets release/targets.json
           fi
 
-      - name: the embedded shell copies still match the library
-        run: ./.lake/build/bin/tlrelease embedded-copies --library scripts/lib/release-common.sh
+      - name: the shipped uname mappings match the typed platform authority
+        run: ./.lake/build/bin/tlrelease platform-classification --root . --targets release/targets.json
 
       # Before anything is built or signed: the scripts this workflow is about
       # to run, read for an invocation of python, python3, ruby, brew, node or

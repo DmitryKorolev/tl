@@ -507,16 +507,18 @@ or shell grammar would add complexity without defending against malicious code
 inside an already admitted adapter.
 
 The three scripts are adapters with bounded decisions, not a shared policy
-layer. No surviving shell library is their canonical source. Before
-`scripts/lib/release-common.sh` is deleted, its current `embedded-copies` guard
-is replaced: platform classification is compared with the typed target model;
-the inert signing pin is render-and-compared with `release/identity.json`; and
-shared utility behavior is driven through one planted corpus against each
-public adapter. A block that is more safely generated may instead be rendered
-from a typed definition and compared byte-for-byte. The replacement is
-mutation-checked before the old library disappears, because deleting the
-literal file that `copyCheck` currently reads would otherwise delete the guard,
-not migrate it.
+layer. No surviving shell library is their canonical source. Nothing an adapter
+carries is held to a shell file: platform classification is compared with the
+typed target model, through `release/Platform.lean` and `tlrelease
+platform-classification`; the inert signing pin is render-and-compared with
+`release/identity.json`, through `tlrelease check-pin`; and shared utility
+behavior is driven through one planted corpus against each public adapter,
+which for the installer's digest and case helpers is the installer corpus in
+`Tests/ReleaseToolTests.lean`. A block that is more safely generated may
+instead be rendered from a typed definition and compared byte-for-byte. Each
+replacement was mutation-checked while the old library still existed, because
+deleting the literal file the old guard read would otherwise have deleted the
+guard rather than migrating it.
 
 No shell parser, command-spelling corpus, or repository-wide PATH-shim framework
 is part of the steady-state architecture. The bounded fixture PATHs
@@ -670,9 +672,11 @@ Six workstreams may proceed in parallel while the old gates remain live:
   port Homebrew and npm administration to public `tlrelease` commands;
 - port build stamping and task-ID lint, including the canonical GitHub
   file-set-hash handoff above and ADR-0026's resulting `gates` → `stamp` edge;
-- replace `embedded-copies` with the typed/rendered and behavioral adapter
-  guards above, mutation-checking them while
-  `scripts/lib/release-common.sh` still exists;
+- replace the embedded-copy guard with the typed/rendered and behavioral
+  adapter guards above, mutation-checking them while
+  `scripts/lib/release-common.sh` still exists (landed: the guard is
+  `tlrelease platform-classification` plus the installer corpus, and the
+  library's uname reference functions are gone);
 - build the nested hermetic harness and the three retained-adapter suites while
   the lexical and runtime arms still provide comparison evidence, moving every
   self-reexecution and nested-shell probe out of the retained files;

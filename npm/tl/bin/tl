@@ -37,12 +37,12 @@ here=$(CDPATH='' cd -- "$(dirname -- "$target")" && pwd -P)
 # bin/ -> package root
 root=$(CDPATH='' cd -- "$here/.." && pwd -P)
 
-# The two mappings below are embedded copies of `rc_detect_os`/`rc_detect_arch`
-# in scripts/lib/release-common.sh. The duplication is forced: this script ships
-# inside a published npm package and has no access to that repository.
-# `scripts/check-embedded-copies.sh` compares the classifications and fails when
-# they disagree, since a copy that maps a uname to a different target would
-# select the wrong binary rather than fail visibly.
+# The two mappings below live here rather than in a shared library, because this
+# script ships inside a published npm package and has no access to this
+# repository when it runs. `tlrelease platform-classification` compares the
+# marked blocks against the typed authority in release/Platform.lean, which is
+# cross-checked against release/targets.json — a copy that maps a uname to a
+# different target would select the wrong binary rather than fail visibly.
 # EMBEDDED-COPY-BEGIN detect_os
 case $(uname -s) in
   Darwin) os=darwin ;;

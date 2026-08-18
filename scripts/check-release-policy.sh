@@ -236,8 +236,8 @@ rc_gate "task-id leakage" ./scripts/check-task-ids.sh
 rc_tool_gate "shell static analysis" --tool shellcheck -- shellcheck_all
 
 rc_gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
-# Version consistency and embedded-copy drift are `tlrelease
-# version-consistency` and `tlrelease embedded-copies`, and the release
+# Version consistency and platform-mapping drift are `tlrelease
+# version-consistency` and `tlrelease platform-classification`, and the release
 # workflow's gates job runs both against the tagged commit before the build
 # matrix. They are not gates here for the same reason as the rest: this script
 # runs in a job with no Lean toolchain by design.

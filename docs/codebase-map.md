@@ -210,8 +210,10 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- TL_INSTALL_SKIP_SIGNATURE escape is refused rather
                         -- than honoured. install.sh does NOT call it — piped
                         -- from curl it has no checkout — and carries its own
-                        -- copy of the pin and the shared helpers, guarded by
-                        -- Tests/ReleaseTests.lean and tlrelease embedded-copies),
+                        -- copy of the pin and the shared helpers; the pin is
+                        -- guarded by Tests/ReleaseTests.lean and the helpers by
+                        -- the installer corpus in Tests/ReleaseToolTests.lean,
+                        -- which runs the script over a planted release),
                         -- npm-pack.sh (stages the npm packages around the
                         -- signed binaries; --selftest packs, installs and
                         -- drives the launcher),
@@ -227,8 +229,10 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- tlrelease version-consistency (one version across the
                         -- tag, productVersion, the lakefile, the pinned test
                         -- literal and the five npm manifests),
-                        -- tlrelease embedded-copies (guards the copies of
-                        -- lib/release-common.sh that cannot source it),
+                        -- tlrelease platform-classification (holds the uname
+                        -- mappings install.sh and the npm launcher each carry
+                        -- inline to release/Platform.lean, cross-checked
+                        -- against release/targets.json),
                         -- check-release-policy.sh (all of the above as one
                         -- command, in two profiles: `ci` adds
                         -- check-channel-policy.sh, whose four gates invoke npm

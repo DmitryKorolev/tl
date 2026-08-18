@@ -65,13 +65,19 @@ verify_signature() {
   esac
 }
 
-# The platform mapping and the digest helper below are embedded copies of the
-# definitions in scripts/lib/release-common.sh. The duplication is forced: this
-# script is piped straight into a shell and has no checkout to source from.
-# `tlrelease embedded-copies` compares the two and fails on drift, the
-# same discipline the signing pin already follows — three copies of a digest
-# helper that disagree about case or length are worse than one, because the
-# disagreement is invisible at the call site.
+# The platform mapping and the digest helper below live here rather than in a
+# shared library, because this script is piped straight into a shell and has no
+# checkout to source from.
+#
+# They are held to different things, because they are different kinds of claim.
+# The mapping is a decision — which uname is which target — and `tlrelease
+# platform-classification` compares the marked block below against the typed
+# authority in release/Platform.lean, which is itself cross-checked against
+# release/targets.json. The digest and case helpers are behaviour, and the
+# installer corpus in Tests/ReleaseToolTests.lean runs this script over a
+# planted release to establish what they actually do: a correct digest installs,
+# the same digest in uppercase also installs, a wrong one is refused as a
+# mismatch, and with no digest tool on PATH nothing installs at all.
 # EMBEDDED-COPY-BEGIN detect_os
 detect_os() {
   case $(uname -s) in

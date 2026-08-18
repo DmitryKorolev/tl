@@ -113,11 +113,13 @@ express:
   literal in `Tests/ReleaseTests.lean`, and the five npm manifests. Nothing
   compared them before, though two error messages instructed the operator to
   keep the lakefile in lockstep with a value neither of them read.
-- `tlrelease embedded-copies` guards the copies of
-  `scripts/lib/release-common.sh` that cannot source it — `install.sh`, piped
-  from curl, and the npm launcher, which ships inside a published package.
-  Textually where the code can be identical, and by classification for the
-  uname mapping, where the wording differs legitimately but a disagreement
+- `tlrelease platform-classification` holds the uname mapping that `install.sh`
+  and the npm launcher each carry inline — neither can read this repository when
+  it runs — to the typed authority in `release/Platform.lean`, which is itself
+  cross-checked against `release/targets.json` in both directions. What is
+  compared is the classification rather than the wording, which differs
+  legitimately between the two (their messages name different tools) but a
+  disagreement
   about which system is which would ship the wrong binary.
 - `scripts/npm-publish.sh --selftest` drives the publisher against a fixture
   registry: a first publish, a re-run that publishes nothing, a resume after a

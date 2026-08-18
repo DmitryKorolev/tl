@@ -11,9 +11,10 @@
 # either, because the divergence is invisible at the call site.
 #
 # `install.sh` deliberately does *not* source this. It is piped straight into a
-# shell with no checkout to read, so it carries embedded copies of the few
-# helpers it needs; `tlrelease embedded-copies` fails if those drift from
-# the definitions here, the same discipline the signing pin already follows.
+# shell with no checkout to read, so it carries its own digest and case helpers;
+# what those do is established by the installer corpus in
+# Tests/ReleaseToolTests.lean, which runs the script over a planted release
+# rather than comparing its text with the definitions here.
 #
 # Every function is prefixed `rc_` and every variable `RC_`/`rc_`, so a sourcing
 # script can tell at a glance what came from here.
@@ -147,47 +148,13 @@ rc_file_mode() {
 # keeps its own because it is piped from curl. Both are drift-guarded.
 # ---------------------------------------------------------------------------
 
-# Sets RC_OS. Returns 1 with a teaching message on an unsupported system.
-#
-# Nothing in this repository calls it, and that is the point: the two consumers
-# that need the mapping — install.sh and the npm launcher — cannot source this
-# file, so what lives here is the *reference* their copies are compared against
-# by tlrelease embedded-copies, which reads it as text. RC_OS therefore
-# has no reader in shell, which is what SC2034 is reporting.
-# shellcheck disable=SC2034
-rc_detect_os() {
-  case $(uname -s) in
-    Darwin) RC_OS=darwin ;;
-    Linux) RC_OS=linux ;;
-    MINGW* | MSYS* | CYGWIN* | Windows_NT)
-      echo "native Windows is not supported — tl's filesystem primitives are unimplemented there, so a binary would start but could not safely create or mutate task state. Use WSL2, where the Linux x86-64 build runs and is fully supported." >&2
-      return 1
-      ;;
-    *)
-      echo "unsupported operating system '$(uname -s)'. tl publishes binaries for Linux and macOS only; to use it elsewhere, build from source with Lean 4." >&2
-      return 1
-      ;;
-  esac
-}
-
-# Sets RC_ARCH. The reference for the shipped copies, as above.
-# shellcheck disable=SC2034
-rc_detect_arch() {
-  case $(uname -m) in
-    arm64 | aarch64) RC_ARCH=arm64 ;;
-    x86_64 | amd64) RC_ARCH=x64 ;;
-    *)
-      echo "unsupported CPU architecture '$(uname -m)'. tl publishes arm64 and x86-64 binaries; to use it elsewhere, build from source with Lean 4." >&2
-      return 1
-      ;;
-  esac
-}
-
-# There is deliberately no `rc_detect_target` composing the two above. One
-# existed and nothing called it: the consumers that need a target string are
-# install.sh and the npm launcher, and both carry their own copies precisely
-# because neither can source this file. A convenience wrapper with no caller is
-# a third definition of the mapping waiting to drift from the two that ship.
+# The uname mapping is deliberately not here. It used to be, as `rc_detect_os`
+# and `rc_detect_arch` — functions nothing in this repository called, kept only
+# so the two shipped copies had something to be compared against as text. The
+# authority is release/Platform.lean now, checked against release/targets.json
+# and compared with the shipped blocks by `tlrelease platform-classification`,
+# so a shell reference with no caller would be a third definition of the mapping
+# waiting to drift from the two that ship.
 
 # ---------------------------------------------------------------------------
 # Selftest harness

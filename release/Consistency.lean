@@ -171,25 +171,22 @@ theorem versionProblems_isEmpty_iff (product : String) (copies : List VersionCop
     versionProblems product copies tag = [] ↔ versionConsistent product copies tag = true :=
   (Check.allHeld_iff_noFailures (versionChecks product copies tag)).symm
 
-/-! ## The other thing said in two places: the embedded shell copies
+/-! ## Reading a marked block out of a shipped adapter
 
 `install.sh` is piped straight into a shell and has no checkout to source from;
 the npm launcher ships inside a published package and has none either. Both
-therefore carry copies of functions that live in `scripts/lib/release-common.sh`,
-and a copy that drifts ships the wrong binary to somebody.
+therefore carry the `uname` mapping inline, bounded by explicit markers.
 
-Two comparison modes, because the two kinds of drift are different. For code
-that can be identical the comparison is *textual*, after dropping comments,
-blank lines and the library's `rc_` namespace — a namespace the copies cannot
-have, which is naming rather than behaviour. For the uname mapping the wording
-differs legitimately (the messages name different tools) but a disagreement
-about which system is which ships the wrong binary, so what is compared is the
-*classification*: which pattern maps to which target.
+What that mapping is held to lives in `release/Platform.lean`, which is the
+authority and is cross-checked against `release/targets.json`. The two readers
+below are what let it be compared against the shell that will actually run:
+`embeddedBlock` bounds the text, and `caseClassification` reduces it to which
+pattern selects which target — because the wording around the arms differs
+legitimately between the two adapters (their messages name different tools)
+while a disagreement about which system is which ships the wrong binary.
 
 This is line scanning, not parsing. The blocks are delimited by explicit
-markers and the library functions by a name at column zero with a closing brace
-at column zero, both of which this repository's own shell obeys and shellcheck
-enforces. -/
+markers this repository's own shell obeys and shellcheck enforces. -/
 
 /-- A line with its surroundings stripped and the library namespace removed.
 
@@ -227,18 +224,6 @@ def embeddedBlock (document : String) (text : String) (name : String) :
           .error s!"{document} opens an embedded-copy block for '{name}' and never closes it. The END marker is what bounds the comparison, so without it this guard would compare the rest of the file."
   | _ =>
       .error s!"{document} has no '# EMBEDDED-COPY-BEGIN {name}' block. Either the copy was deleted — then delete its row from this gate too, deliberately — or the markers were lost, which retires the guard silently."
-
-/-- The body of a top-level `name() { … }` in the library. -/
-def libraryFunction (document : String) (text : String) (name : String) :
-    Except String String :=
-  match text.splitOn ("\n" ++ name ++ "() {\n") with
-  | _ :: after :: _ =>
-      match after.splitOn "\n}\n" with
-      | body :: _ :: _ => .ok body
-      | _ =>
-          .error s!"{name}() in {document} has no closing brace at column zero, so where it ends is a guess."
-  | _ =>
-      .error s!"{document} defines no function {name}(). The consumer copies guarded here have nothing left to be compared against; restore it, or retire the row deliberately."
 
 /-- Characters a shell case *pattern* is made of: globs and alternation and
     nothing else.
@@ -331,61 +316,6 @@ def caseClassification (body : String) : List (String × List String) :=
                       walk rest current updated
   walk (comparableLines body) none []
 
-/-- One guarded copy: where it lives, what it is called there, and how it is
-    compared. -/
-inductive CopyMode where
-  | text
-  | classification
-  deriving DecidableEq, Repr
-
-structure EmbeddedCopy where
-  consumer : String
-  blockName : String
-  libraryFunction : String
-  mode : CopyMode
-  deriving Repr
-
-/-- Every copy this gate guards. The list is the gate: a copy not named here is
-    not compared, which is why deleting a block means deleting its row in the
-    same change rather than discovering later that nothing was checking. -/
-def guardedCopies : List EmbeddedCopy :=
-  [{ consumer := "install.sh", blockName := "sha256_of",
-     libraryFunction := "rc_sha256_of", mode := .text },
-   { consumer := "install.sh", blockName := "lower",
-     libraryFunction := "rc_lower", mode := .text },
-   { consumer := "install.sh", blockName := "detect_os",
-     libraryFunction := "rc_detect_os", mode := .classification },
-   { consumer := "install.sh", blockName := "detect_arch",
-     libraryFunction := "rc_detect_arch", mode := .classification },
-   { consumer := "npm/tl/bin/tl", blockName := "detect_os",
-     libraryFunction := "rc_detect_os", mode := .classification },
-   { consumer := "npm/tl/bin/tl", blockName := "detect_arch",
-     libraryFunction := "rc_detect_arch", mode := .classification }]
-
-private def renderClassification (rows : List (String × List String)) : String :=
-  String.intercalate "; " (rows.map fun (pattern, values) =>
-    if values.isEmpty then s!"{pattern} -> <refuses>"
-    else s!"{pattern} -> {String.intercalate ", " values}")
-
-/-- One copy against its library original. -/
-def copyCheck (copy : EmbeddedCopy) (consumerText : String) (libraryText : String) :
-    Except String Check := do
-  let block ← embeddedBlock copy.consumer consumerText copy.blockName
-  let original ← libraryFunction "scripts/lib/release-common.sh" libraryText copy.libraryFunction
-  match copy.mode with
-  | .text =>
-      let embedded := comparableLines block
-      let library := comparableLines original
-      return { held := embedded == library,
-               failure := s!"{copy.consumer}: the embedded {copy.blockName} has drifted from {copy.libraryFunction} in scripts/lib/release-common.sh.\n    embedded: {embedded}\n    library:  {library}\n    Bring the copy back in line, or change both together." }
-  | .classification =>
-      let embedded := caseClassification block
-      let library := caseClassification original
-      if embedded.isEmpty then
-        .error s!"{copy.consumer}: the {copy.blockName} block has no case arms to compare. The markers probably no longer wrap the mapping, which would leave this guard reporting success over nothing."
-      return { held := embedded == library,
-               failure := s!"{copy.consumer}: the embedded {copy.blockName} classifies platforms differently from {copy.libraryFunction} in scripts/lib/release-common.sh.\n    embedded: {renderClassification embedded}\n    library:  {renderClassification library}\n    A copy that maps a uname to a different target ships the wrong binary to somebody, and neither file is wrong on its own." }
-
 /-! ## The commands -/
 
 private def versionOptions : List OptionSpec :=
@@ -441,45 +371,6 @@ private def versionCommand : Command :=
     ["--targets", "release/targets.json"]
     versionOptions versionArgs versionDecision
 
-private def embeddedOptions : List OptionSpec :=
-  [{ name := "library", takesValue := true }]
-
-/-- The library is an argument rather than a path this command knows, for the
-    same reason the SBOM's two inputs are: which file the copies are compared
-    against is not a detail to discover by reading the generator. It also means
-    the command cannot be invoked with nothing and do something, which is the
-    contract every other subcommand here keeps. -/
-private def embeddedDecision (libraryPath : String) : Decision String := do
-  let libraryText ← ofIO (readTextFile libraryPath)
-  let mut checks : Array Check := #[]
-  -- Each consumer read once, not once per row: two of them carry two blocks
-  -- each, and reading a file twice is how two rows come to disagree about what
-  -- it says.
-  let consumers := guardedCopies.map (·.consumer) |>.eraseDups
-  let mut texts : List (String × String) := []
-  for consumer in consumers do
-    let text ← ofIO (readTextFile consumer)
-    texts := texts ++ [(consumer, text)]
-  for copy in guardedCopies do
-    match texts.lookup copy.consumer with
-    | none => decline s!"{copy.consumer} was not read, which is this gate failing to look."
-    | some consumerText =>
-        let check ← ofExcept (copyCheck copy consumerText libraryText)
-        checks := checks.push check
-  match Check.failures checks.toList with
-  | [] =>
-      return s!"{checks.size} embedded copies still match {libraryPath}"
-  | problems =>
-      decline (s!"an embedded copy has drifted from the library.\n"
-        ++ String.join (problems.map fun problem => s!"  {problem}\n")
-        ++ "install.sh is piped from curl and the npm launcher ships inside a package, so neither can source the library; the copies are the interface, and a copy that drifts ships the wrong binary to somebody.")
-
-private def embeddedCommand : Command :=
-  optionCommand "embedded-copies" "--library <release-common.sh>"
-    "Refuse unless every embedded copy still matches its original in the shared release library."
-    ["--library", "scripts/lib/release-common.sh"]
-    embeddedOptions (fun options => options.required "library") embeddedDecision
-
-def consistencyCommands : List Command := [versionCommand, embeddedCommand]
+def consistencyCommands : List Command := [versionCommand]
 
 end Release

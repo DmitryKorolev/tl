@@ -16,9 +16,8 @@
 # `install.sh` performs the same checks but does not call this script — it is
 # piped into a shell with no checkout to read, so it carries its own copy of
 # the pinned issuer and expression. `Tests/ReleaseTests.lean` fails if that
-# copy drifts from `release/identity.json`, and
-# `tlrelease embedded-copies` fails if its copies of the shared helpers
-# drift from `scripts/lib/release-common.sh`.
+# copy drifts from `release/identity.json`. The digest and reporting helpers it
+# uses are sourced from `scripts/lib/release-common.sh` rather than copied.
 #
 # Order matters and is not an accident. The signature on `SHA256SUMS` is
 # checked *first*, because every digest comparison afterwards trusts that file;
