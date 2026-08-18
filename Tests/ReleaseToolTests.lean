@@ -3521,6 +3521,19 @@ private def policyRunnerTests : IO (List Outcome) := do
   let asksPerRun ← asked.get
   let noTools ← outcomesOf [] [] .ci false
   let oneFailing ← outcomesOf everyTool ["./scripts/check-task-ids.sh"] .release false
+  -- A gate that started and did not finish. The process layer's own bound is
+  -- covered where it lives; what the registry owns is that its report is a
+  -- failure carrying what happened, and never a skip — "it is there and did not
+  -- return" establishes nothing, which is not the same as "it is not here".
+  let timedOutRunner : Policy.Runner :=
+    { present := fun _ => pure true
+      invoke := fun invocation =>
+        pure (.error ((Release.RunOutcome.timedOut invocation.command 120000).failureMessage.getD "")) }
+  let timedOut ← (do
+    let sink ← IO.mkRef { : IO.FS.Stream.Buffer }
+    IO.withStdout (IO.FS.Stream.ofBuffer sink) <|
+      IO.withStderr (IO.FS.Stream.ofBuffer sink) <|
+        Policy.runGates timedOutRunner .release false)
   -- The real runner, over a gate whose command is not there. The process layer
   -- calls that `unavailable`; a gate that reached execution must report it as a
   -- failure rather than as a skip, because a skip is a claim about this machine
@@ -3571,6 +3584,16 @@ private def policyRunnerTests : IO (List Outcome) := do
     check "policy runner: one failing gate does not stop the rest running"
       ((outcomeNames oneFailing "passed").length + 2 == (Policy.gateNames .release false).length)
       s!"{outcomeNames oneFailing "passed"}",
+    check "policy runner: a gate that did not finish is a failure, not a skip"
+      (timedOut.all fun (_, outcome) =>
+        match outcome with
+        | .failed _ => true
+        | _ => false) "a timed-out gate was reported as something other than a failure",
+    check "policy runner: and the report says it established nothing by not returning"
+      ((Policy.runFailures false timedOut).any fun failure =>
+        contains failure "established nothing") "",
+    check "policy runner: a run of timed-out gates does not pass"
+      (!Policy.runAccepts false timedOut) "",
     -- The real world half: what `onPath` answers, and what a command that is
     -- not there does when a gate reaches it anyway.
     check "policy runner: a command on PATH is found" shellPresent "sh was not found on PATH",
