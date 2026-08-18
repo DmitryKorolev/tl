@@ -5416,8 +5416,154 @@ private def platformCommandTests : IO (List Outcome) := do
         extraStatus, narrowStatus, cpuStatus, malformedStatus,
         absentTargetsStatus].all (· != 0)) ""]
 
+
+/-! ## The installer's digest and case behaviour, driven over a planted corpus
+
+`install.sh` embeds `sha256_of` and `lower`. Those two used to be compared as
+text against `rc_sha256_of` and `rc_lower` in `scripts/lib/release-common.sh`,
+which established that two files said the same thing and nothing about what
+either one did. They are exercised here instead: one planted release, served
+over `file://` to the real script, with the digest column varied per row.
+
+`scripts/verify-release-artifacts.sh` retains the same two behaviours by
+*sourcing* the library rather than embedding a copy, which is why it carried no
+row in the old guard and carries none here. When it stops sourcing tracked
+code, its copies join this corpus.
+
+Signature verification is skipped throughout — deliberately, and it is the
+documented escape rather than a test-only branch. These rows are about the
+SHA-256 check, which that escape explicitly keeps mandatory. -/
+
+private def installerAssets : List String :=
+  ["tl-linux-x64", "tl-linux-arm64", "tl-darwin-arm64", "tl-darwin-x64"]
+
+/-- The stub every planted asset holds. Identical across targets, so one digest
+    describes all four and the corpus does not have to work out which one this
+    host will ask for — whichever it resolves to is present and correct. -/
+private def installerStub : String := "#!/bin/sh\necho \"stub tl\"\n"
+
+private def shellOut (script : String) : IO (UInt32 × String) := do
+  let out ← IO.Process.output { cmd := "/bin/sh", args := #["-c", script] }
+  return (out.exitCode, out.stdout ++ out.stderr)
+
+/-- A fabricated release directory, and the digest its assets actually hash to.
+    The digest is computed by the same tools the script will use, so a row that
+    plants "the correct digest" plants one that is correct here. -/
+private def plantRelease (dir : System.FilePath) : IO String := do
+  IO.FS.createDirAll dir
+  for asset in installerAssets do
+    IO.FS.writeFile (dir / asset) installerStub
+  let (_, digest) ← shellOut s!"cd {dir} && ( command -v sha256sum >/dev/null 2>&1 && sha256sum tl-linux-x64 || shasum -a 256 tl-linux-x64 ) | cut -d' ' -f1"
+  return digest.trimAscii.toString
+
+private def sumsFile (digest : String) : String :=
+  String.join (installerAssets.map fun asset => s!"{digest}  {asset}\n")
+
+/-- Run the real installer against a planted release. `env -i` so the row's
+    `PATH` is the whole of what the script can see: the digest-tool-absent row
+    is only meaningful if nothing else is reachable. -/
+private def runInstaller (installer : System.FilePath) (release dest : System.FilePath)
+    (path : String) : IO (UInt32 × String) := do
+  let out ← IO.Process.output {
+    cmd := "/usr/bin/env",
+    args := #["-i", s!"PATH={path}", s!"HOME={dest}",
+              "TL_VERSION=v0.0.0-corpus",
+              s!"TL_INSTALL_BASE_URL=file://{release}",
+              s!"TL_INSTALL_DIR={dest}",
+              "TL_INSTALL_SKIP_SIGNATURE=1",
+              "/bin/sh", installer.toString] }
+  return (out.exitCode, out.stdout ++ out.stderr)
+
+/-- Every tool the installer legitimately needs, minus the digest tools, which
+    each row decides for itself. -/
+private def installerTools : List String :=
+  ["awk", "cat", "chmod", "cp", "curl", "dirname", "id", "ln", "mkdir", "mktemp",
+   "mv", "printf", "rm", "sed", "stat", "sysctl", "touch", "tr", "uname"]
+
+private def linkTools (bin : System.FilePath) (tools : List String) : IO Unit := do
+  IO.FS.createDirAll bin
+  let _ ← shellOut (String.join (tools.map fun tool =>
+    s!"p=$(command -v {tool}) && ln -sf \"$p\" {bin}/{tool}; "))
+  return ()
+
+private def installerCorpusTests : IO (List Outcome) := do
+  let installer := (← IO.currentDir) / "install.sh"
+  let base ← IO.FS.createTempDir
+  let release := base / "release"
+  let digest ← plantRelease release
+  -- A PATH with the digest tools, and one deliberately without them.
+  let fullBin := base / "bin-full"
+  linkTools fullBin (installerTools ++ ["sha256sum", "shasum"])
+  let bareBin := base / "bin-bare"
+  linkTools bareBin installerTools
+  let sums := release / "SHA256SUMS"
+  let dest (name : String) : IO System.FilePath := do
+    let path := base / name
+    IO.FS.createDirAll path
+    return path
+  -- Row 1: the digest as the tools produce it.
+  IO.FS.writeFile sums (sumsFile digest)
+  let lowerDest ← dest "dest-lower"
+  let (lowerStatus, lowerOut) ← runInstaller installer release lowerDest fullBin.toString
+  let lowerInstalled ← (lowerDest / "tl").pathExists
+  -- Row 2: the same digest in uppercase. `sha256_of` always produces lowercase,
+  -- so without `lower` this is correct bytes reported as tampering — the one
+  -- verdict the installer must not get wrong.
+  IO.FS.writeFile sums (sumsFile digest.toUpper)
+  let upperDest ← dest "dest-upper"
+  let (upperStatus, upperOut) ← runInstaller installer release upperDest fullBin.toString
+  let upperInstalled ← (upperDest / "tl").pathExists
+  -- Row 3: a digest that is well-formed and wrong. Establishes that row 1 is
+  -- comparing something: a `sha256_of` returning a constant would pass it.
+  IO.FS.writeFile sums (sumsFile (String.ofList (List.replicate 64 '0')))
+  let wrongDest ← dest "dest-wrong"
+  let (wrongStatus, wrongOut) ← runInstaller installer release wrongDest fullBin.toString
+  let wrongInstalled ← (wrongDest / "tl").pathExists
+  -- Row 4: no digest tool reachable at all. The check is mandatory, so this is
+  -- a refusal rather than an install that skipped it.
+  IO.FS.writeFile sums (sumsFile digest)
+  let bareDest ← dest "dest-bare"
+  let (bareStatus, bareOut) ← runInstaller installer release bareDest bareBin.toString
+  let bareInstalled ← (bareDest / "tl").pathExists
+  IO.FS.removeDirAll base
+  return [
+    check "installer corpus: the planted release hashes to a 64-character digest"
+      (digest.length == 64) digest,
+    -- What the installer does with a correct digest.
+    checkEq "installer corpus: a correct lowercase digest installs" lowerStatus 0,
+    check "installer corpus: the correct-digest row actually installed a binary"
+      lowerInstalled lowerOut,
+    check "installer corpus: the correct-digest row says the digest was verified"
+      (contains lowerOut "digest verified") lowerOut,
+    -- `lower`, through the behaviour that needs it.
+    checkEq "installer corpus: the same digest in uppercase also installs" upperStatus 0,
+    check "installer corpus: the uppercase-digest row installed a binary"
+      upperInstalled upperOut,
+    check "installer corpus: an uppercase digest is not reported as tampering"
+      (!contains upperOut "digest mismatch") upperOut,
+    -- `sha256_of`, through the comparison that needs it.
+    check "installer corpus: a wrong digest is refused" (wrongStatus != 0) wrongOut,
+    check "installer corpus: a wrong digest installs nothing" (!wrongInstalled) wrongOut,
+    check "installer corpus: the wrong-digest refusal is reported as a mismatch"
+      (contains wrongOut "digest mismatch") wrongOut,
+    check "installer corpus: the mismatch names the digest it computed"
+      (contains wrongOut digest) wrongOut,
+    check "installer corpus: the mismatch says nothing was installed"
+      (contains wrongOut "Nothing has been installed") wrongOut,
+    -- The fail-closed arm: a check that cannot run is not a check that passed.
+    check "installer corpus: no digest tool on PATH is refused" (bareStatus != 0) bareOut,
+    check "installer corpus: no digest tool on PATH installs nothing"
+      (!bareInstalled) bareOut,
+    check "installer corpus: the absent-tool refusal says the check cannot be skipped"
+      (contains bareOut "mandatory") bareOut,
+    check "installer corpus: the absent-tool refusal names both tools it looked for"
+      (contains bareOut "sha256sum" && contains bareOut "shasum") bareOut,
+    -- The corpus is only evidence if its rows disagree with each other.
+    check "installer corpus: accepting and refusing rows have different statuses"
+      (lowerStatus == 0 && upperStatus == 0 && wrongStatus != 0 && bareStatus != 0)
+      s!"lower={lowerStatus} upper={upperStatus} wrong={wrongStatus} bare={bareStatus}"]
 private def platformTests : IO (List Outcome) := do
-  return platformPureTests ++ (← platformCommandTests)
+  return platformPureTests ++ (← platformCommandTests) ++ (← installerCorpusTests)
 def releaseToolTests : IO (List Outcome) := do
   let (helpStatus, helpOut, helpErr) ← dispatchCaptured ["--help"]
   let (shortStatus, shortOut, _) ← dispatchCaptured ["-h"]
