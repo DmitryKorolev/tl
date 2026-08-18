@@ -199,33 +199,336 @@ private def hygieneFailures (path : String) (text : String) : List String :=
       some s!"  {path}:{number}: calls rc_skip_gate directly — {line.trimAscii}"
     else none
 
-/-! ## The current release-tool artifact handoff
+/-! ## The release-tool artifact handoff, structurally
 
-`upload-artifact` excludes files below a dot-directory by default. The release
-tool used to be uploaded directly from `.lake/`, so the action found no file
-even though the preceding build and digest succeeded. Until ADR-0028 replaces
-this raw-digest handoff with its typed file-set-hash form, pin the three paths
-that must denote the same staged bytes. -/
+The tool the privileged jobs run is built once, in the unprivileged `gates` job,
+and carried to each of them through an artifact. Everything about that carriage
+is what this models: where the bytes are staged from, what is hashed, what is
+uploaded under which name, and — on the receiving side — that each consumer
+validates the bytes it received *before* running them, with nothing in between.
 
-private def occursExactlyOnce (text needle : String) : Bool :=
-  (text.splitOn needle).length == 2
+The previous guard counted substrings over the whole file. Three of its four
+rows would have been satisfied by a comment, and the fourth by a decoy step in
+any job at all; nothing in it could tell a consumer that had dropped its
+comparison from a consumer that never existed, because it never looked at
+consumers. This reads the workflow as jobs and steps and binds each fact to the
+place that must carry it.
 
-private def refusesWith (expected : String) : Except String Unit → Bool
-  | .error actual => actual == expected
+What is deliberately *not* here: ADR-0028's end-state prefix, whose comparison
+is `releaseToolFileSetHash` against `hashFiles`, whose mismatch arm is the
+canonical `/usr/bin/false` step, and which a dedicated capability-free rehearsal
+consumer also instantiates. That lands with the workflow cutover, and it needs a
+real hosted run first — `hashFiles`' file-selection semantics are not something
+local parsing can establish. The model below is written over the migration
+shape and names the transition in one place, so the cutover edits a value rather
+than a scan. -/
+
+/-- One step of a job, as much of it as this model reads. -/
+private structure Step where
+  /-- Its `name:`, or the empty string for a bare `uses:` step. -/
+  name : String
+  /-- The `uses:` reference, if it is an action step. -/
+  uses : Option String
+  /-- Every line of the step, so a `run:` body can be read as text. -/
+  lines : List String
+
+/-- Whether the step's body mentions the text — its `run:` script and `with:`
+    block included. -/
+private def Step.mentions (step : Step) (needle : String) : Bool :=
+  step.lines.any fun line => (line.splitOn needle).length > 1
+
+/-- The step's body with comment lines dropped.
+
+    The distinction the old guard could not make: a canonical string inside a
+    `#` comment describes the rule, and one in a command obeys it. A guard that
+    reads both alike can be satisfied by writing the sentence down. -/
+private def Step.code (step : Step) : List String :=
+  step.lines.filter fun line => !(line.trimAscii.toString.startsWith "#")
+
+private def Step.runs (step : Step) (needle : String) : Bool :=
+  step.code.any fun line => (line.splitOn needle).length > 1
+
+/-- Split one job's lines into its steps. A step begins at a `- name:` or
+    `- uses:` item under `steps:`; everything up to the next one is its body. -/
+private def stepsOf (jobLines : List String) : List Step := Id.run do
+  let mut steps : List Step := []
+  let mut current : Option Step := none
+  let mut inSteps := false
+  for line in jobLines do
+    let body := line.trimAscii.toString
+    if body == "steps:" then
+      inSteps := true
+      continue
+    if !inSteps then continue
+    if body.startsWith "- " then
+      if let some step := current then steps := steps ++ [{ step with lines := step.lines.reverse }]
+      let head := (body.drop 2).toString
+      let named := if head.startsWith "name:" then (head.drop 5).toString.trimAscii.toString else ""
+      let used := if head.startsWith "uses:" then some (head.drop 5).toString.trimAscii.toString
+                  else none
+      current := some { name := named, uses := used, lines := [line] }
+    else if let some step := current then
+      -- A `uses:` on its own line belongs to the step being read.
+      let used := if body.startsWith "uses:" then some (body.drop 5).toString.trimAscii.toString
+                  else step.uses
+      current := some { step with uses := used, lines := line :: step.lines }
+  if let some step := current then steps := steps ++ [{ step with lines := step.lines.reverse }]
+  return steps
+
+/-- The workflow's top-level jobs, each with its lines. -/
+private def jobsOf (workflow : String) : List (String × List String) := Id.run do
+  let mut jobs : List (String × List String) := []
+  let mut current : Option (String × List String) := none
+  let mut inJobs := false
+  for line in workflow.splitOn "\n" do
+    if !inJobs then
+      if line == "jobs:" then inJobs := true
+      continue
+    if line != "" && !line.startsWith " " && !line.startsWith "#" then break
+    let isHeader := line.startsWith "  " && !line.startsWith "   "
+      && (line.trimAscii.toString.splitOn ":").length > 1
+      && !line.trimAscii.toString.startsWith "#"
+      && !line.trimAscii.toString.startsWith "- "
+    if isHeader then
+      if let some (name, ls) := current then jobs := jobs ++ [(name, ls.reverse)]
+      let name := ((line.trimAscii.toString.splitOn ":").headD "")
+      current := some (name, [])
+    else if let some (name, ls) := current then
+      current := some (name, line :: ls)
+  if let some (name, ls) := current then jobs := jobs ++ [(name, ls.reverse)]
+  return jobs
+
+/-! ### The names this handoff is made of
+
+Every literal the model matches on, in one place. The cutover replaces the
+digest transition below with the file-set hash and this list is where it is
+edited; a scan spread through the rows would be edited in six. -/
+
+/-- Where the gated binary is staged to, and therefore what is hashed and
+    uploaded. Non-hidden deliberately: `upload-artifact` excludes files below a
+    dot-directory, so uploading from `.lake/` found no file at all while the
+    build and the digest before it both succeeded. -/
+private def stagedToolPath : String := "release-tool/tlrelease"
+
+private def gatedToolPath : String := ".lake/build/bin/tlrelease"
+
+/-- The artifact the tool travels in. -/
+private def toolArtifactName : String := "release-tool"
+
+/-- Where a consumer receives it. Necessarily different from the staging path:
+    the producer stages into the workspace it built in, and the consumer
+    downloads into its own. -/
+private def consumerToolPath : String := "tool/tlrelease"
+
+/-- The job output carrying the expectation, and the step that produces it.
+
+    `releaseToolDigest` is a raw SHA-256 throughout the migration and keeps that
+    meaning until it is removed; ADR-0028's `releaseToolFileSetHash` is a
+    `hashFiles` result over a one-file set and is deliberately a *different*
+    name, because the two are not comparable values. -/
+private def toolDigestOutput : String := "releaseToolDigest"
+
+private def toolDigestProducer : String := "tool"
+
+private def uploadAction : String := "actions/upload-artifact@"
+
+private def downloadAction : String := "actions/download-artifact@"
+
+/-! ### The producer
+
+One job stages the gated binary, one step hashes exactly those bytes into one
+named output, and one pinned action uploads exactly that path under the artifact
+name every consumer downloads. -/
+
+private def producerFailures (jobs : List (String × List String)) : List String := Id.run do
+  let mut failures : List String := []
+  let some gates := jobs.lookup "gates"
+    | return ["the workflow has no `gates` job, which is where the release tool is built and handed off"]
+  let steps := stepsOf gates
+  -- Staged from the gated binary into the non-hidden artifact path, in code
+  -- rather than in a comment describing it. Counted over the job's command
+  -- lines rather than over the steps carrying them, so a second copy inside one
+  -- step is the same finding as a second step: what must be true is that one
+  -- command decides what the uploaded bytes are.
+  let staging := (steps.flatMap (·.code)).filter fun line =>
+    (line.splitOn s!"install -D -m 0755 {gatedToolPath} {stagedToolPath}").length > 1
+  if staging.length != 1 then
+    failures := failures ++
+      [s!"the gates job stages the release tool {staging.length} time(s); exactly one command must copy {gatedToolPath} to {stagedToolPath}, because that path is what is hashed and what is uploaded"]
+  -- Hashed, by the step whose id the job output names, over the staged path.
+  let producers := steps.filter fun step =>
+    step.mentions s!"id: {toolDigestProducer}" && step.runs s!"sha256sum {stagedToolPath}"
+  if producers.length != 1 then
+    failures := failures ++
+      [s!"the gates job has {producers.length} step(s) with `id: {toolDigestProducer}` hashing {stagedToolPath}; the expectation every consumer compares against must be produced once, from the bytes that were staged"]
+  -- Published as the job output the consumers read, from that step.
+  let mapping := toolDigestOutput ++ ": ${{ steps." ++ toolDigestProducer ++ ".outputs.digest }}"
+  if !gates.any fun line => (line.splitOn mapping).length > 1 then
+    failures := failures ++
+      ["the gates job does not map `" ++ toolDigestOutput ++ "` to the digest step's output; a consumer reading an output nothing produces gets the empty string, and an empty expectation must not pass for a matching one"]
+  -- Uploaded from that same path, under that name, by the pinned action.
+  let uploads := steps.filter fun step =>
+    (step.uses.getD "").startsWith uploadAction && step.mentions s!"name: {toolArtifactName}"
+  match uploads with
+  | [upload] =>
+      if !upload.mentions s!"path: {stagedToolPath}" then
+        failures := failures ++
+          [s!"the step uploading the `{toolArtifactName}` artifact does not upload {stagedToolPath}; it must upload exactly the bytes that were staged and hashed"]
+      if upload.mentions s!"path: {gatedToolPath}" then
+        failures := failures ++
+          [s!"the `{toolArtifactName}` artifact is uploaded from {gatedToolPath}, which is below a dot-directory — `upload-artifact` excludes those by default, so it would find no file while every step before it succeeded"]
+  | _ =>
+      failures := failures ++
+        [s!"the gates job has {uploads.length} step(s) uploading an artifact named `{toolArtifactName}`; exactly one must, or which bytes a consumer receives depends on upload order"]
+  return failures
+
+/-! ### The consumers, and the prefix each one instantiates
+
+A consumer is any job that downloads the tool artifact — found by what it does,
+so a fifth privileged job is covered the day it is written rather than the day
+somebody remembers to add it here. Each must instantiate the same prefix:
+
+    download the artifact → compare the received bytes → first use of the tool
+
+with *nothing* between the comparison and the first use. That contiguity is the
+point rather than a tidiness: a step admitted into the gap is a step that runs
+before the bytes have been established, and an exception for one class of step
+is a place for a later one to be added. -/
+
+/-- Whether a step runs the downloaded tool. -/
+private def Step.usesTool (step : Step) : Bool :=
+  step.code.any fun line =>
+    let text := line.trimAscii.toString
+    (text.splitOn s!"./{consumerToolPath}").length > 1
+      || (text.splitOn s!" {consumerToolPath} ").length > 1
+
+/-- Whether a step is the download of the tool artifact. -/
+private def Step.downloadsTool (step : Step) : Bool :=
+  (step.uses.getD "").startsWith downloadAction && step.mentions s!"name: {toolArtifactName}"
+
+/-- Whether a step is the comparison: it reads the published expectation, hashes
+    what arrived, and refuses an empty expectation as well as a mismatched one.
+
+    All three, because each alone is satisfiable without the others. A step that
+    hashes and never compares establishes nothing; one that compares against
+    `needs.gates.outputs.…` without refusing the empty string passes when the
+    producer did not run, since an unset output is `''` and `'' == ''`. -/
+private def Step.comparesTool (step : Step) : Bool :=
+  step.runs s!"needs.gates.outputs.{toolDigestOutput}"
+    && step.runs s!"sha256sum {consumerToolPath}"
+    && step.runs "-z" && step.runs "exit 1"
+
+private def consumerFailures (jobs : List (String × List String)) : List String := Id.run do
+  let consumers := jobs.filter fun (_, lines) => (stepsOf lines).any (·.downloadsTool)
+  if consumers.length < 2 then
+    return [s!"only {consumers.length} job(s) download the `{toolArtifactName}` artifact. This scan finds consumers by what they do, so too few of them means it stopped recognising the download rather than that the workflow has one consumer — and a guard that checks nothing reports the same clean result as a workflow that is correct."]
+  let mut failures : List String := []
+  for (job, lines) in consumers do
+    let steps := stepsOf lines
+    let indexed := steps.zipIdx
+    let downloadAt := (indexed.find? fun (step, _) => step.downloadsTool).map (·.2)
+    let compareAt := (indexed.find? fun (step, _) => step.comparesTool).map (·.2)
+    let firstUseAt := (indexed.find? fun (step, _) => step.usesTool).map (·.2)
+    match downloadAt, compareAt, firstUseAt with
+    | _, none, _ =>
+        failures := failures ++
+          [s!"the `{job}` job downloads the release tool and no step of it compares what arrived against `needs.gates.outputs.{toolDigestOutput}`, hashes {consumerToolPath}, and refuses an empty expectation. It is about to run that binary on the strength of the artifact store alone."]
+    | none, _, _ =>
+        failures := failures ++
+          [s!"the `{job}` job compares the release tool without a step that downloads it, which this scan cannot read as a handoff at all."]
+    | some download, some compare, use? =>
+        if compare < download then
+          failures := failures ++
+            [s!"the `{job}` job compares the release tool before downloading it, so the comparison is over whatever was there beforehand."]
+        match use? with
+        | none =>
+            failures := failures ++
+              [s!"the `{job}` job downloads and validates the release tool and never runs it. Either the job does not need the handoff, or the step that used it was removed and its download left behind."]
+        | some use =>
+            if use < compare then
+              failures := failures ++
+                [s!"the `{job}` job runs the release tool at step {use + 1} and validates it at step {compare + 1}. The bytes are used before they are established, which is the whole failure the comparison exists to prevent."]
+            else if use != compare + 1 then
+              let between := ((steps.drop (compare + 1)).take (use - compare - 1)).map fun step =>
+                if step.name.isEmpty then step.uses.getD "an unnamed step" else step.name
+              failures := failures ++
+                [s!"the `{job}` job has {use - compare - 1} step(s) between validating the release tool and first using it: {String.intercalate ", " between}. The prefix is contiguous by construction — a step admitted into that gap runs before the bytes have been established, and an exception for one is a place for the next to be added. Move it above the download."]
+  return failures
+
+/-- The jobs this scan reads as consumers, for a test that says which. -/
+def releaseToolConsumers (workflow : String) : List String :=
+  (jobsOf workflow).filterMap fun (job, lines) =>
+    if (stepsOf lines).any (·.downloadsTool) then some job else none
+
+/-- The whole handoff: one producer, and every consumer instantiating the same
+    prefix. -/
+def releaseToolHandoffShape (workflow : String) : Except String Unit :=
+  let jobs := jobsOf workflow
+  match producerFailures jobs ++ consumerFailures jobs with
+  | [] => .ok ()
+  | problems => .error (String.intercalate "\n" problems)
+
+/-! ### The guard's own fixtures
+
+A canonical workflow, and one mutation per way the handoff can be broken. Every
+row is a workflow this parser reads as jobs and steps, because the defect the
+old substring guard had was precisely that it never looked at either: its rows
+were four lines of text that no workflow shape could contradict. -/
+
+private def handoffConsumer (job : String) (steps : String) : String :=
+  s!"  {job}:\n    needs: [gates]\n    steps:\n" ++ steps
+
+private def canonicalPrefix : String :=
+  "      - name: download the release tool\n" ++
+  "        uses: actions/download-artifact@abc # v8\n" ++
+  "        with:\n" ++
+  "          name: release-tool\n" ++
+  "          path: tool\n" ++
+  "      - name: confirm the release tool landed unchanged\n" ++
+  "        run: |\n" ++
+  "          want='${{ needs.gates.outputs.releaseToolDigest }}'\n" ++
+  "          if [ -z \"$want\" ]; then exit 1; fi\n" ++
+  "          got_line=$(sha256sum tool/tlrelease)\n" ++
+  "          if [ \"$got_line\" != \"$want\" ]; then exit 1; fi\n" ++
+  "          chmod +x tool/tlrelease\n" ++
+  "      - name: use it\n" ++
+  "        run: ./tool/tlrelease manifest-verify --dist dist\n"
+
+private def canonicalGates : String :=
+  "  gates:\n" ++
+  "    outputs:\n" ++
+  "      releaseToolDigest: ${{ steps.tool.outputs.digest }}\n" ++
+  "    steps:\n" ++
+  "      - name: stage the release tool\n" ++
+  "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n" ++
+  "      - name: hash it\n" ++
+  "        id: tool\n" ++
+  "        run: |\n" ++
+  "          line=$(sha256sum release-tool/tlrelease)\n" ++
+  "          printf 'digest=%s\\n' \"${line%% *}\" >> \"$GITHUB_OUTPUT\"\n" ++
+  "      - name: upload it\n" ++
+  "        uses: actions/upload-artifact@def # v7\n" ++
+  "        with:\n" ++
+  "          name: release-tool\n" ++
+  "          path: release-tool/tlrelease\n"
+
+/-- The canonical workflow: one producer and two consumers. Two, because a
+    single-consumer fixture cannot distinguish a scan that checks every consumer
+    from one that checks the first. -/
+private def canonicalHandoff : String :=
+  "jobs:\n" ++ canonicalGates
+    ++ handoffConsumer "sign" canonicalPrefix
+    ++ handoffConsumer "publish-release" canonicalPrefix
+
+private def handoffRefuses (workflow : String) (needle : String) : Bool :=
+  match releaseToolHandoffShape workflow with
   | .ok () => false
+  | .error message => (message.splitOn needle).length > 1
 
-def releaseToolHandoffShape (workflow : String) : Except String Unit := do
-  let stage := "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease"
-  let digest := "line=$(sha256sum release-tool/tlrelease)"
-  let upload := "path: release-tool/tlrelease"
-  if !occursExactlyOnce workflow stage then
-    throw "the release tool must be staged once from the gated binary into a non-hidden artifact path"
-  if !occursExactlyOnce workflow digest then
-    throw "the raw transition digest must hash exactly the staged artifact bytes"
-  if !occursExactlyOnce workflow upload then
-    throw "upload-artifact must upload exactly the staged non-hidden release-tool path"
-  if workflow.contains "path: .lake/build/bin/tlrelease" then
-    throw "upload-artifact excludes the hidden .lake path by default"
+/-- Replace every occurrence, for building one mutation out of the canonical
+    workflow. -/
+private def swap (text : String) (before after : String) : String :=
+  String.intercalate after (text.splitOn before)
 
 /-! ## Native errors stay structured
 
@@ -477,11 +780,19 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
       (!classifiesFormattedErrno "  s!\"{what}:E: something\""),
     check "release errors: a name with no closing colon is not the formatted shape"
       (!classifiesFormattedErrno "  -- ENOSPC and EDQUOT both mean the same fix"),
-    check "release workflow: the current release-tool upload hashes and uploads one staged path"
+    check "release workflow: every consumer instantiates the release-tool handoff prefix"
       (releaseToolHandoffShape releaseWorkflow).toOption.isSome
       (match releaseToolHandoffShape releaseWorkflow with
        | .ok () => ""
        | .error message => message),
+    -- Non-vacuity against the live file, which the fixtures cannot give: the
+    -- scan finds consumers by what they do, so a parser that stopped reading
+    -- the download step would report a clean workflow having checked one job.
+    -- Four is what release.yml has — sign and the three publish jobs — and a
+    -- fifth is a change to make deliberately.
+    checkEq "release workflow: the scan reads all four real consumers"
+      (releaseToolConsumers releaseWorkflow)
+      ["sign", "publish-release", "publish-homebrew", "publish-npm"],
     -- Non-vacuity, both halves. A walk that found no documents, or no script
     -- under the rule, reports the same clean result as a repository that
     -- satisfies it.
@@ -539,37 +850,104 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
       (callsDirectly "  rc_skip_gate \"workflow lint\" \"actionlint is not on PATH\"" "rc_skip_gate"),
     check "release policy: going through the helper is not one"
       (!callsDirectly "rc_tool_gate \"workflow lint\" --tool actionlint -- actionlint" "rc_skip_gate"),
-    check "release workflow: a hidden upload source is refused"
-      (refusesWith "upload-artifact excludes the hidden .lake path by default" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease\npath: .lake/build/bin/tlrelease"),
-    check "release workflow: hashing the build path instead of the upload source is refused"
-      (refusesWith "the raw transition digest must hash exactly the staged artifact bytes" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum .lake/build/bin/tlrelease)\npath: release-tool/tlrelease"),
-    check "release workflow: an unstaged upload is refused"
-      (refusesWith "the release tool must be staged once from the gated binary into a non-hidden artifact path" <|
-        releaseToolHandoffShape
-          "line=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
-    check "release workflow: staging the release tool twice is refused"
-      (refusesWith "the release tool must be staged once from the gated binary into a non-hidden artifact path" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\ninstall -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
-    check "release workflow: hashing the staged release tool twice is refused"
-      (refusesWith "the raw transition digest must hash exactly the staged artifact bytes" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease"),
-    check "release workflow: omitting the staged upload is refused"
-      (refusesWith "upload-artifact must upload exactly the staged non-hidden release-tool path" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)"),
-    check "release workflow: uploading the staged release tool twice is refused"
-      (refusesWith "upload-artifact must upload exactly the staged non-hidden release-tool path" <|
-        releaseToolHandoffShape
-          "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease\npath: release-tool/tlrelease"),
-    check "release workflow: the canonical staged handoff is accepted"
-      (releaseToolHandoffShape
-        "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\nline=$(sha256sum release-tool/tlrelease)\npath: release-tool/tlrelease").toOption.isSome,
+    -- The canonical shape is accepted. Without this every refusal row below
+    -- would be satisfied by a guard that refuses everything.
+    check "release handoff: the canonical workflow is accepted"
+      (releaseToolHandoffShape canonicalHandoff).toOption.isSome
+      (match releaseToolHandoffShape canonicalHandoff with
+       | .ok () => ""
+       | .error message => message),
+    -- The producer.
+    check "release handoff: an unstaged upload is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n" "")
+        "stages the release tool 0 time(s)"),
+    check "release handoff: staging twice is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: stage the release tool\n"
+        "      - name: stage the release tool\n        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n")
+        "stages the release tool 2 time(s)"),
+    -- The mutation the old guard could not see at all: the canonical text
+    -- present, as a comment. Three of its four rows were satisfiable this way.
+    check "release handoff: the staging command in a comment does not satisfy the rule"
+      (handoffRefuses (swap canonicalHandoff
+        "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease"
+        "        # install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n        run: true")
+        "stages the release tool 0 time(s)"),
+    check "release handoff: hashing a path other than the staged one is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "sha256sum release-tool/tlrelease" "sha256sum .lake/build/bin/tlrelease")
+        "hashing release-tool/tlrelease"),
+    check "release handoff: a digest produced under another step id is refused"
+      (handoffRefuses (swap canonicalHandoff "        id: tool\n" "        id: hasher\n")
+        "with `id: tool`"),
+    check "release handoff: an output mapped from somewhere else is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "releaseToolDigest: ${{ steps.tool.outputs.digest }}"
+        "releaseToolDigest: ${{ steps.hasher.outputs.digest }}")
+        "does not map `releaseToolDigest`"),
+    check "release handoff: uploading a path other than the staged one is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "          path: release-tool/tlrelease" "          path: .lake/build/bin/tlrelease")
+        "below a dot-directory"),
+    check "release handoff: a second artifact under the same name is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: upload it\n"
+        "      - name: upload a decoy\n        uses: actions/upload-artifact@def # v7\n        with:\n          name: release-tool\n          path: decoy\n      - name: upload it\n")
+        "2 step(s) uploading"),
+    -- The consumers.
+    check "release handoff: a consumer that never validates what it downloaded is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: confirm the release tool landed unchanged\n        run: |\n          want='${{ needs.gates.outputs.releaseToolDigest }}'\n          if [ -z \"$want\" ]; then exit 1; fi\n          got_line=$(sha256sum tool/tlrelease)\n          if [ \"$got_line\" != \"$want\" ]; then exit 1; fi\n          chmod +x tool/tlrelease\n" "")
+        "no step of it compares"),
+    -- Its own half of the comparison, each removed separately: a step that
+    -- hashes and never compares establishes nothing, and one that compares
+    -- without refusing an empty expectation passes when the producer did not
+    -- run, since an unset output is '' and '' == ''.
+    check "release handoff: a comparison that does not refuse an empty expectation is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "          if [ -z \"$want\" ]; then exit 1; fi\n" "")
+        "no step of it compares"),
+    check "release handoff: a comparison that never hashes what arrived is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "          got_line=$(sha256sum tool/tlrelease)\n" "")
+        "no step of it compares"),
+    -- Domination, in both directions.
+    check "release handoff: a step inserted between validation and first use is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: use it\n"
+        "      - name: install cosign\n        uses: sigstore/cosign-installer@ghi\n      - name: use it\n")
+        "step(s) between validating the release tool and first using it"),
+    check "release handoff: the inserted step is named, so the fix is obvious"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: use it\n"
+        "      - name: install cosign\n        uses: sigstore/cosign-installer@ghi\n      - name: use it\n")
+        "install cosign"),
+    check "release handoff: using the tool before validating it is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: confirm the release tool landed unchanged\n"
+        "      - name: use it early\n        run: ./tool/tlrelease prereqs\n      - name: confirm the release tool landed unchanged\n")
+        "before they are established"),
+    check "release handoff: a consumer that validates and never runs the tool is refused"
+      (handoffRefuses (swap canonicalHandoff
+        "      - name: use it\n        run: ./tool/tlrelease manifest-verify --dist dist\n" "")
+        "never runs it"),
+    -- The mutation that only a per-consumer scan can see: one consumer correct,
+    -- the other not. A whole-file guard reports this as clean.
+    check "release handoff: a second consumer that skips validation is refused"
+      (handoffRefuses
+        ("jobs:\n" ++ canonicalGates ++ handoffConsumer "sign" canonicalPrefix
+          ++ handoffConsumer "publish-release"
+            ("      - name: download the release tool\n" ++
+             "        uses: actions/download-artifact@abc # v8\n" ++
+             "        with:\n          name: release-tool\n          path: tool\n" ++
+             "      - name: use it\n        run: ./tool/tlrelease manifest-verify --dist dist\n"))
+        "the `publish-release` job downloads the release tool and no step of it compares"),
+    -- Non-vacuity: the scan must be reading consumers at all.
+    check "release handoff: a workflow whose consumers this scan cannot find is refused"
+      (handoffRefuses ("jobs:\n" ++ canonicalGates) "download the `release-tool` artifact"),
+    check "release handoff: a workflow with no gates job is refused"
+      (handoffRefuses ("jobs:\n" ++ handoffConsumer "sign" canonicalPrefix) "no `gates` job"),
     -- The commands' own examples. `arguments` is the shape and `invocation` is
     -- an instance of it, and the second is what makes the first checkable.
     check "tlrelease: every command's canonical invocation is one it accepts"
