@@ -214,28 +214,32 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- guarded by Tests/ReleaseTests.lean and the helpers by
                         -- the installer corpus in Tests/ReleaseToolTests.lean,
                         -- which runs the script over a planted release),
-                        -- npm-pack.sh (stages the npm packages around the
-                        -- signed binaries; --selftest packs, installs and
-                        -- drives the launcher),
                         -- tlrelease homebrew-render / homebrew-placeholder /
                         -- homebrew-publish (the whole formula rendered from the
                         -- signed manifest, the tracked placeholder rendered
                         -- from release/identity.json + release/targets.json,
                         -- and one idempotent tap update),
-                        -- npm-publish.sh (idempotent publication: query, then
-                        -- publish / accept-if-identical / refuse a differing
-                        -- version, since npm versions are immutable and a
-                        -- partial run must be resumable),
+                        -- tlrelease npm-manifests / npm-stage / npm-publish /
+                        -- npm-bootstrap / npm-selftest (the five package
+                        -- manifests rendered from the identity and the target
+                        -- list; staging around the signed binaries with every
+                        -- one held to the digest the manifest pins; a survey of
+                        -- the whole registry followed by resumable publication,
+                        -- launcher last, refusing a version whose contents
+                        -- differ; the one-time placeholder bootstrap; and the
+                        -- real-npm net over packing, install layout and the
+                        -- launcher),
                         -- tlrelease version-consistency (one version across the
-                        -- tag, productVersion, the lakefile, the pinned test
-                        -- literal and the five npm manifests),
+                        -- tag, productVersion, the lakefile and the pinned test
+                        -- literal — the npm manifests are generated at a
+                        -- placeholder version and are not among them),
                         -- tlrelease platform-classification (holds the uname
                         -- mappings install.sh and the npm launcher each carry
                         -- inline to release/Platform.lean, cross-checked
                         -- against release/targets.json),
                         -- check-release-policy.sh (all of the above as one
                         -- command, in two profiles: `ci` adds
-                        -- check-channel-policy.sh, whose four gates invoke npm
+                        -- check-channel-policy.sh, whose two gates invoke npm
                         -- and ruby for the deferred channels, and
                         -- `release` — what the release workflow runs against
                         -- the tagged commit — does not have them),
@@ -250,15 +254,6 @@ scripts/lib/            -- shared by the release scripts
                         --   and npm/tl/bin/tl carry marked copies of the parts
                         --   they need, because neither can source a file from
                         --   this repository at the moment it runs
-  channel-common.sh     --   the deferred npm channel's reads of
-                        --   release/targets.json and release/plan.json, which
-                        --   use python3. Sourced only by the three npm
-                        --   scripts — Homebrew's reads moved into tlrelease
-                        --   with its port: the v0.1 release path sources
-                        --   release-common.sh, and ADR-0026's dependency
-                        --   boundary keeps an interpreter out of everything it
-                        --   can reach
-
 release/                -- what a release is, machine-readable; ADR-0028 owns
                         -- the release-machinery boundaries and migration end state
   identity.json         --   the signing pin every verifier checks against

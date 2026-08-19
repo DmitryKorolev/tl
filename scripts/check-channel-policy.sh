@@ -55,9 +55,7 @@ done
 # own count against this, so the two cannot drift apart silently.
 gate_names() {
   cat <<'NAMES'
-npm package selftest
-npm publisher selftest
-npm bootstrap selftest
+npm packaging over the real client
 the rendered formulae parse
 NAMES
 }
@@ -70,9 +68,7 @@ fi
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 deferred-channel gates, in order:
-  npm package selftest                scripts/npm-pack.sh --selftest    (needs npm)
-  npm publisher selftest              scripts/npm-publish.sh --selftest (needs npm)
-  npm bootstrap selftest              scripts/npm-bootstrap.sh --selftest (needs npm)
+  npm packaging over the real client  tlrelease npm-selftest --root .   (needs npm)
   the rendered formulae parse         ruby -c over Formula/tl.rb and the
                                       Tests/fixtures/homebrew rows      (needs ruby)
 GATES
@@ -118,13 +114,14 @@ rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]
 # present or absent, strict or not, passed or failed. Stating it per gate rather
 # than wrapping three in one `command -v` also stops a fourth npm gate from
 # landing inside a branch written for the three above it.
-rc_tool_gate "npm package selftest" --tool npm -- ./scripts/npm-pack.sh --selftest
-# The publisher's refusals are the ones that matter most: an npm version
-# cannot be reissued, so a mistake here is not correctable after the fact.
-rc_tool_gate "npm publisher selftest" --tool npm -- ./scripts/npm-publish.sh --selftest
-# The one-time bootstrap is the only manual step before the first release,
-# and the only one that publishes an immutable version by hand.
-rc_tool_gate "npm bootstrap selftest" --tool npm -- ./scripts/npm-bootstrap.sh --selftest
+# What only the real client can answer: which files a package actually
+# contains, the modes they are published with, where an optional dependency
+# lands, and whether the bin symlink npm creates execs the platform binary.
+# The channel's own decisions — staging, comparison, ordering, publication —
+# are decided by `tlrelease` and covered against a stub in the ordinary suite,
+# which is what lets them run where npm may not be reached at all.
+rc_tool_gate "npm packaging over the real client" --tool npm -- \
+  ./.lake/build/bin/tlrelease npm-selftest --root .
 
 rc_tool_gate "the rendered formulae parse" --tool ruby -- formulae_parse
 

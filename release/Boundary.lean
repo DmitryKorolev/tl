@@ -99,16 +99,8 @@ structure DeferredPath where
 def deferredPaths : List DeferredPath :=
   [{ path := "scripts/check-channel-policy.sh", channels := [.npm, .homebrew],
      why := "the deferred channels' own gates; the ci profile runs them on every commit and the release profile does not have them" },
-   { path := "scripts/npm-pack.sh", channels := [.npm],
-     why := "stages the packages and drives npm pack/install over them" },
-   { path := "scripts/npm-publish.sh", channels := [.npm],
-     why := "publishes the packages with npm" },
-   { path := "scripts/npm-bootstrap.sh", channels := [.npm],
-     why := "the one-time manual npm bootstrap before the channel can authenticate" },
    { path := "npm/tl/bin/tl", channels := [.npm],
-     why := "the launcher inside the npm package, run by node" },
-   { path := "scripts/lib/channel-common.sh", channels := [.npm],
-     why := "the release-data reads the npm scripts share, which use python3" }]
+     why := "the launcher inside the npm package, which npm execs" }]
 
 /-- A workflow job the scan does not read, and why it does not run.
 

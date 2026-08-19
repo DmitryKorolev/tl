@@ -1,28 +1,28 @@
 {
-  "name": "@taskloop/tl-bin-darwin-arm64",
-  "version": "0.1.0",
-  "description": "The tl binary for macOS on Apple silicon. Installed automatically by @taskloop/tl; not useful on its own.",
-  "homepage": "https://github.com/DmitryKorolev/tl#readme",
   "bugs": "https://github.com/DmitryKorolev/tl/issues",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/DmitryKorolev/tl.git"
-  },
-  "license": "Apache-2.0",
+  "cpu": [
+    "arm64"
+  ],
+  "description": "The tl binary for macOS on Apple silicon. Installed automatically by @taskloop/tl; not useful on its own.",
   "files": [
     "bin/tl",
     "README.md",
     "LICENSE",
     "THIRD-PARTY-LICENSES"
   ],
+  "homepage": "https://github.com/DmitryKorolev/tl#readme",
+  "license": "Apache-2.0",
+  "name": "@taskloop/tl-bin-darwin-arm64",
   "os": [
     "darwin"
-  ],
-  "cpu": [
-    "arm64"
   ],
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DmitryKorolev/tl.git"
+  },
+  "version": "0.0.0"
 }

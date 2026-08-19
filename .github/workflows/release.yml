@@ -157,10 +157,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.ref_type }}" = tag ]; then
-            ./.lake/build/bin/tlrelease version-consistency \
-              --targets release/targets.json --tag "${GITHUB_REF_NAME}"
+            ./.lake/build/bin/tlrelease version-consistency --root . --tag "${GITHUB_REF_NAME}"
           else
-            ./.lake/build/bin/tlrelease version-consistency --targets release/targets.json
+            ./.lake/build/bin/tlrelease version-consistency --root .
           fi
 
       - name: the shipped uname mappings match the typed platform authority
@@ -1470,39 +1469,31 @@ jobs:
           # of bytes, not evidence that they are the bytes we signed.
           ./tool/tlrelease manifest-verify --dist dist --manifest dist/release-manifest.json
 
+      # Built from the signed manifest, not from this checkout: the package
+      # metadata that decides where npm installs a package, and the exact
+      # versions the launcher pins, follow from the release rather than from a
+      # file somebody remembered to edit. Every staged binary is compared
+      # against the digest the manifest pins before anything is packed.
       - name: stage the npm packages around the signed binaries
-        run: ./scripts/npm-pack.sh npm-staging dist
+        run: |
+          set -euo pipefail
+          ./tool/tlrelease npm-stage --root . --dist dist \
+            --manifest dist/release-manifest.json --staging npm-staging
 
-      # --selftest exercises the package *sources* with stub binaries; this
-      # checks the staged tree that is about to be published, running the real
-      # signed binary and asserting it reports the commit this release names.
-      - name: the staged packages carry the released binary
-        run: ./scripts/npm-pack.sh --check-staged npm-staging "${{ needs.stamp.outputs.commit }}"
-
+      # npm versions are immutable, so a loop of `npm publish` that dies half
+      # way through strands the version permanently: what went out cannot be
+      # replaced, the launcher that publishes last never went out at all, and a
+      # re-run dies on E403 for the first package. This asks the registry what
+      # is already there, publishes what is missing, accepts what matches
+      # path-for-path, and stops on a version whose contents differ — so
+      # re-running this job is always safe and always converges.
+      #
+      # The dist-tag is the manifest's, not this job's: it is a function of the
+      # version, and the manifest is signed alongside SHA256SUMS. A prerelease
+      # published as `latest` is what `npm install @taskloop/tl` resolves to
+      # for everyone, and it cannot be withdrawn.
       - name: publish
         run: |
           set -euo pipefail
-          # A prerelease tag must not become what `npm install @taskloop/tl`
-          # resolves to. npm applies `latest` unless told otherwise, and a
-          # published version cannot be reissued under a different tag without
-          # a manual dist-tag fix.
-          case "${GITHUB_REF_NAME}" in
-            *-*) dist_tag=next ;;
-            *) dist_tag=latest ;;
-          esac
-          # scripts/npm-publish.sh rather than a loop of `npm publish`. npm
-          # versions are immutable, so a loop that dies half way through
-          # strands the version permanently: the packages that went out cannot
-          # be replaced, the launcher that publishes last never went out at
-          # all, and a re-run dies on E403 for the first package. The script
-          # asks the registry what is already there, publishes what is missing,
-          # accepts what matches, and stops on a version whose contents differ
-          # — so re-running this job is always safe and always converges.
-          #
-          # Which packages exist in the staging tree is npm-pack.sh's decision,
-          # taken from the ADR-0006 tiers: a Best-effort target that did not
-          # build is absent from the tree *and* dropped from the launcher's
-          # optionalDependencies. The loop this replaces warned that the
-          # launcher "still lists it as an optional dependency", which was the
-          # opposite of what was published.
-          ./scripts/npm-publish.sh npm-staging "$dist_tag"
+          ./tool/tlrelease npm-publish --staging npm-staging \
+            --manifest dist/release-manifest.json

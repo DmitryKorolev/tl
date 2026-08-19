@@ -210,18 +210,10 @@ def gates : List Gate :=
    -- The deferred channels. Each invokes a runtime ADR-0026's dependency budget
    -- forbids on the release path, which is the whole reason they are the
    -- profiles' one difference.
-   { name := "npm package selftest"
+   { name := "npm packaging over the real client"
      profiles := [.ci], onTag := .always, requires := [npmTool]
-     invocation := .script "./scripts/npm-pack.sh" ["--selftest"]
-     summary := "Staging, then a real npm pack, install and launcher run over the result." },
-   { name := "npm publisher selftest"
-     profiles := [.ci], onTag := .always, requires := [npmTool]
-     invocation := .script "./scripts/npm-publish.sh" ["--selftest"]
-     summary := "The publisher's refusals, which are the ones an immutable registry makes final." },
-   { name := "npm bootstrap selftest"
-     profiles := [.ci], onTag := .always, requires := [npmTool]
-     invocation := .script "./scripts/npm-bootstrap.sh" ["--selftest"]
-     summary := "The one manual step before the first release, and the only one that publishes by hand." },
+     invocation := .tool "./.lake/build/bin/tlrelease" ["npm-selftest", "--root", "."]
+     summary := "What only npm establishes: what a package contains, its modes, and the launcher installed and run." },
    { name := "the rendered formulae parse"
      profiles := [.ci], onTag := .always
      requires := [{ tool := "ruby", lost := "ruby is not on PATH" }]

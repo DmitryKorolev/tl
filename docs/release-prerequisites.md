@@ -100,20 +100,20 @@ There is no way to pre-register trust for a name that does not exist, so the
 2FA publish is manual. Everything around it is not:
 
 ```sh
-scripts/npm-bootstrap.sh /tmp/tl-bootstrap
+tlrelease npm-bootstrap --root . --identity release/identity.json \
+  --targets release/targets.json --output /tmp/tl-bootstrap
 ```
 
 That builds the five placeholder packages at version `0.0.0`, each carrying
 `LICENSE`, `THIRD-PARTY-LICENSES`, a README explaining what it is, and an
-executable that exits non-zero saying so; validates all five tarballs actually
-contain those files; and prints the exact `npm publish` commands. Do not
-hand-roll this. The obvious reading of "publish 0.0.0 from a local checkout"
-does not work: the checked-in manifests say `0.1.0`, so it would consume the
-real first release number; the platform directories hold no binary and no
-licence files until `npm-pack.sh` stages them, so the tarballs would contain a
-README and a manifest and nothing else; and the default dist-tag is `latest`,
-so those empty placeholders would be what `npm install @taskloop/tl` resolved
-to until the first real release.
+executable that exits non-zero saying so; and prints the exact `npm publish`
+commands, in publication order with the launcher last. Do not hand-roll it. The
+obvious reading of "publish 0.0.0 from a local checkout" does not work: the
+platform directories hold no binary and no licence files until a staging step
+puts them there, so the tarballs would contain a README and a manifest and
+nothing else, and the default dist-tag is `latest`, so those empty placeholders
+would be what `npm install @taskloop/tl` resolved to until the first real
+release.
 
 Then:
 
@@ -192,7 +192,7 @@ when the channel is enabled, not a detail to discover mid-release.
 ## Before every release
 
 - The tag is a SemVer `v` tag whose version matches every copy
-  (`tlrelease version-consistency --targets release/targets.json --tag <tag>` —
+  (`tlrelease version-consistency --root . --tag <tag>` —
   also run by the release policy on the tagged commit).
 - The tagged commit is on `main`. The `sign` job enforces this.
 - `tlrelease prereqs` passes.

@@ -82,9 +82,13 @@ structure VersionSources where
   releaseTestsText : String
   identityPath : String
   identityText : String
-  /-- The launcher manifest first: its `name` is the published package, and is
-      held to `release/identity.json`. -/
-  manifests : List (String × String)
+  /-- The launcher's npm manifest: path and text. Read for its `name`, which
+      is held to `release/identity.json`, and for nothing else — the five npm
+      manifests are rendered by `tlrelease npm-manifests` at the placeholder
+      version `0.0.0`, so they are not places the release version is written
+      and holding them to it would be holding a generated file to a value it
+      deliberately does not carry. -/
+  launcherManifest : String × String
   deriving Inhabited
 
 /-- The canonical version: what the binary reports about itself.
@@ -103,14 +107,8 @@ def versionCopies (sources : VersionSources) : Except String (List VersionCopy) 
   let pinned ← oneLiteral sources.releaseTestsPath
     "the pinned `tl version` product-version literal" sources.releaseTestsText
     "checkEq \"tl version: product version\" (jStr out.data \"version\") (some \"" "\")"
-  let fromManifests ← sources.manifests.mapM fun (path, text) => do
-    let cursor : Cursor := { document := path }
-    let root ← parseDocument cursor text
-    let value ← nonEmptyStringField cursor root "version"
-    return { label := path, value }
-  return { label := s!"{sources.lakefilePath} package version", value := lakefile }
-    :: { label := s!"{sources.releaseTestsPath} pinned `tl version` payload", value := pinned }
-    :: fromManifests
+  return [{ label := s!"{sources.lakefilePath} package version", value := lakefile },
+          { label := s!"{sources.releaseTestsPath} pinned `tl version` payload", value := pinned }]
 
 /-- The published package name, and what the launcher manifest calls itself.
 
@@ -122,15 +120,12 @@ def packageNameChecks (sources : VersionSources) : Except String (List Check) :=
   let cursor : Cursor := { document := sources.identityPath }
   let identity ← parseDocument cursor sources.identityText
   let pinned ← nonEmptyStringField cursor identity "npmPackage"
-  match sources.manifests with
-  | [] =>
-      .error s!"no npm manifests were read, so the published package name was compared against nothing. That is this gate failing to look rather than the name being right."
-  | (launcherPath, launcherText) :: _ =>
-      let launcherCursor : Cursor := { document := launcherPath }
-      let launcher ← parseDocument launcherCursor launcherText
-      let name ← nonEmptyStringField launcherCursor launcher "name"
-      return [{ held := name == pinned,
-                failure := s!"{launcherPath} calls itself '{name}', and {sources.identityPath} pins the published package as '{pinned}'. Every consumer — VERIFYING.md, the installer, the prose documents — is pinned to that name, so a launcher published under another one is a package nobody installs." }]
+  let (launcherPath, launcherText) := sources.launcherManifest
+  let launcherCursor : Cursor := { document := launcherPath }
+  let launcher ← parseDocument launcherCursor launcherText
+  let name ← nonEmptyStringField launcherCursor launcher "name"
+  return [{ held := name == pinned,
+            failure := s!"{launcherPath} calls itself '{name}', and {sources.identityPath} pins the published package as '{pinned}'. Every consumer — VERIFYING.md, the installer, the prose documents — is pinned to that name, so a launcher published under another one is a package nobody installs." }]
 
 /-! ## The verdict -/
 
@@ -319,41 +314,35 @@ def caseClassification (body : String) : List (String × List String) :=
 /-! ## The commands -/
 
 private def versionOptions : List OptionSpec :=
-  [{ name := "targets", takesValue := true },
+  [{ name := "root", takesValue := true },
    { name := "tag", takesValue := true }]
 
 private structure VersionArgs where
-  targetsPath : String
+  root : String
   tag : Option String
 
 private def versionArgs (options : Options) : Except String VersionArgs := do
-  return { targetsPath := ← options.required "targets"
-           tag := options.value? "tag" }
+  return { root := ← options.required "root", tag := options.value? "tag" }
 
-/-- Read every file the comparison needs.
-
-    The npm manifest list is derived from `release/targets.json` rather than
-    written out, so a target added there is a manifest this gate expects — the
-    alternative is a sixth manifest nobody compares. -/
-private def readSources (targetsPath : String) : Decision VersionSources := do
-  let targets ← readParsed targetsPath Targets.parse
-  let commandsText ← ofIO (readTextFile "Tl/Cli/Commands.lean")
-  let identityText ← ofIO (readTextFile "release/identity.json")
-  let lakefileText ← ofIO (readTextFile "lakefile.lean")
-  let releaseTestsText ← ofIO (readTextFile "Tests/ReleaseTests.lean")
-  let manifestPaths := "npm/tl/package.json"
-    :: targets.targets.map fun target => s!"npm/platform/{target.name}/package.json"
-  let manifests ← manifestPaths.mapM fun path => do
-    let text ← ofIO (readTextFile path)
-    return (path, text)
-  return { commandsPath := "Tl/Cli/Commands.lean", commandsText
-           lakefilePath := "lakefile.lean", lakefileText
-           releaseTestsPath := "Tests/ReleaseTests.lean", releaseTestsText
-           identityPath := "release/identity.json", identityText
-           manifests }
+/-- Read every file the comparison needs, beneath the checkout the caller
+    named. Taken as a root rather than resolved from the working directory: a
+    gate that only works when it is started in one place is a gate whose
+    verdict depends on how it was invoked. -/
+private def readSources (root : String) : Decision VersionSources := do
+  let beneath (relative : String) : String := root ++ "/" ++ relative
+  let commandsPath := beneath "Tl/Cli/Commands.lean"
+  let lakefilePath := beneath "lakefile.lean"
+  let releaseTestsPath := beneath "Tests/ReleaseTests.lean"
+  let identityPath := beneath "release/identity.json"
+  let launcherPath := beneath "npm/tl/package.json"
+  return { commandsPath, commandsText := ← ofIO (readTextFile commandsPath)
+           lakefilePath, lakefileText := ← ofIO (readTextFile lakefilePath)
+           releaseTestsPath, releaseTestsText := ← ofIO (readTextFile releaseTestsPath)
+           identityPath, identityText := ← ofIO (readTextFile identityPath)
+           launcherManifest := (launcherPath, ← ofIO (readTextFile launcherPath)) }
 
 private def versionDecision (args : VersionArgs) : Decision String := do
-  let sources ← readSources args.targetsPath
+  let sources ← readSources args.root
   let product ← ofExcept (productVersionOf sources)
   let copies ← ofExcept (versionCopies sources)
   let names ← ofExcept (packageNameChecks sources)
@@ -366,9 +355,9 @@ private def versionDecision (args : VersionArgs) : Decision String := do
         ++ "A release named for one version, reporting another and resolving to a third is one nobody can reason about.")
 
 private def versionCommand : Command :=
-  optionCommand "version-consistency" "--targets <targets.json> [--tag <vX.Y.Z>]"
+  optionCommand "version-consistency" "--root <dir> [--tag <vX.Y.Z>]"
     "Refuse unless every copy of the release version agrees with the binary's own."
-    ["--targets", "release/targets.json"]
+    ["--root", "."]
     versionOptions versionArgs versionDecision
 
 def consistencyCommands : List Command := [versionCommand]

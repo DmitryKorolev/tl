@@ -85,7 +85,7 @@ lean_lib ReleaseCore where
     `release.Boundary, `release.Write, `release.Sys,
     `release.Certificate, `release.Consistency, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
-    `release.Homebrew, `release.Platform, `release.Policy,
+    `release.Homebrew, `release.Npm, `release.Platform, `release.Policy,
     `release.Cli]
 
 /-- A default target so `lake build --wfail` holds the release tool to the same

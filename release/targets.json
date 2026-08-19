@@ -1,10 +1,10 @@
 {
   "comment": [
     "The distributed targets and their ADR-0006 support tiers, in one place.",
-    "Read by scripts/lib/release-common.sh and, through it, by npm-pack.sh, the",
-    "Homebrew generator, the release-policy gate and the release workflow. Before",
-    "this file the same tier split was written out independently in five scripts",
-    "with nothing checking that they agreed.",
+    "Read by tlrelease, which renders the npm package manifests and the Homebrew",
+    "formula placeholder from it and cross-checks the shipped uname mappings",
+    "against it. Before this file the same tier split was written out",
+    "independently in five scripts with nothing checking that they agreed.",
     "",
     "Target names are stored bare, without the `tl-` asset prefix: the task-ID",
     "lint reads that prefix followed by Crockford digits as a tracker reference,",

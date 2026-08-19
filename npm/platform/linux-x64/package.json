@@ -1,31 +1,31 @@
 {
-  "name": "@taskloop/tl-bin-linux-x64",
-  "version": "0.1.0",
-  "description": "The tl binary for Linux on x86-64. Installed automatically by @taskloop/tl; not useful on its own.",
-  "homepage": "https://github.com/DmitryKorolev/tl#readme",
   "bugs": "https://github.com/DmitryKorolev/tl/issues",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/DmitryKorolev/tl.git"
-  },
-  "license": "Apache-2.0",
+  "cpu": [
+    "x64"
+  ],
+  "description": "The tl binary for Linux on x86-64. Installed automatically by @taskloop/tl; not useful on its own.",
   "files": [
     "bin/tl",
     "README.md",
     "LICENSE",
     "THIRD-PARTY-LICENSES"
   ],
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "x64"
-  ],
+  "homepage": "https://github.com/DmitryKorolev/tl#readme",
   "libc": [
     "glibc"
+  ],
+  "license": "Apache-2.0",
+  "name": "@taskloop/tl-bin-linux-x64",
+  "os": [
+    "linux"
   ],
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DmitryKorolev/tl.git"
+  },
+  "version": "0.0.0"
 }

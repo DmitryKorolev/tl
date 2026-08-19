@@ -219,13 +219,15 @@ twenty-one gates failing under refusing `python3`/`ruby` shims, five of them the
 npm and Homebrew gates and the rest generators that have since moved into
 `tlrelease` — is kept there as the reason, not as a description of the present.
 
-The interpreter-backed administration that remains belongs to the deferred npm
-channel: the three npm scripts, the `python3` release-data reads they share in
-`scripts/lib/channel-common.sh`, and the gates for them in
-`scripts/check-channel-policy.sh`. Homebrew no longer has any — the formula is
-rendered, compared and published by `tlrelease`, and the only Ruby left is the
-formula itself, which is a Ruby DSL by Homebrew's definition. The npm launcher itself is
-POSIX shell and starts neither Node nor a lifecycle hook. None of the
+No interpreter-backed administration remains. Both channels are administered by
+`tlrelease`: the formula is rendered, compared and published by it, and so are
+the five npm packages — staged around the signed binaries, compared with the
+registry path-for-path, and published resumably with the launcher last. What is
+left of each ecosystem is the part its own tooling defines: `Formula/tl.rb` is a
+Ruby DSL because Homebrew formulas are, and the npm channel invokes the
+channel-native `npm` client. The npm launcher itself is POSIX shell and starts
+neither Node nor a lifecycle hook. The gates that reach those two tools live in
+`scripts/check-channel-policy.sh`. None of the
 interpreter-backed administration is reachable from the four entry points above
 while `release/plan.json` defers both channels; enabling one puts its scripts
 back on the release path, and its reads have to move into `tlrelease` first.
@@ -673,8 +675,9 @@ rebuild and the LGPLv3 §4 relink.
 
 For the deferred channels the mechanism exists and is gated with them: the
 formula installs the notice to `doc`, and it is bundled in all five npm
-packages (`scripts/npm-pack.sh` refuses a manifest that stops listing it, and
-its selftest inspects every platform tarball rather than only the host's).
+packages (`tlrelease npm-stage` puts it in every package by construction, and
+`tlrelease npm-selftest` inspects every platform tarball rather than only the
+host's).
 Those are covered by CI today and become live obligations on the release that
 turns each channel on. (A *closed-source* fork
 would instead owe §4 object files — out of scope here; confirm with counsel before

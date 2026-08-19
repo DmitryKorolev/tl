@@ -757,6 +757,12 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.Homebrew.coverageBlockers_isEmpty_iff
   let _ := @Release.Homebrew.tapDisposition_identical_iff
   let _ := @Release.Homebrew.tapDisposition_absent_iff
+  let _ := @Release.Npm.treeAgrees_iff
+  let _ := @Release.Npm.versionDisposition_identical_iff
+  let _ := @Release.Npm.versionDisposition_absent_iff
+  let _ := @Release.Npm.publicationOrder_launcher_last
+  let _ := @Release.Npm.publicationOrder_mem_iff
+  let _ := @Release.Npm.stagingCovers_iff
   let _ := @Release.Platform.agrees_iff
   let _ := @Release.Platform.covers_iff
   let _ := @Release.Policy.gateRuns_iff
@@ -3382,11 +3388,11 @@ private def policyTests : List Outcome :=
     (ReleasePlan.parse "p" (planTextOf npm brew)).toOption
   [ -- Profiles, and the one difference between them.
     checkEq "policy: the release profile is the ci profile without the deferred channels"
-      (ciNames.filter fun name => !name.startsWith "npm " && name != "the rendered formulae parse")
+      (ciNames.filter fun name =>
+        name != "npm packaging over the real client" && name != "the rendered formulae parse")
       releaseNames,
     check "policy: the deferred-channel gates are in ci and not in release"
-      (["npm package selftest", "npm publisher selftest", "npm bootstrap selftest",
-        "the rendered formulae parse"].all fun name =>
+      (["npm packaging over the real client", "the rendered formulae parse"].all fun name =>
           ciNames.contains name && !releaseNames.contains name)
       s!"{ciNames}",
     -- The tag run omits the working-tree gate rather than skipping it.
@@ -3651,7 +3657,7 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: the ci profile matches the shell policy on this commit"
           (ciStatus == 0) ciErr,
         check "policy parity: it says how many gates it compared"
-          (contains ciOut "13 gate(s)") ciOut,
+          (contains ciOut "11 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
         check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
         checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
@@ -3915,26 +3921,17 @@ these run here — against the real repository files, which is what makes them a
 drift guard rather than a test of a fixture. -/
 
 private def consistencyTests : IO (List Outcome) := do
-  let targetsText ← IO.FS.readFile "release/targets.json"
   let commandsText ← IO.FS.readFile "Tl/Cli/Commands.lean"
   let lakefileText ← IO.FS.readFile "lakefile.lean"
   let releaseTestsText ← IO.FS.readFile "Tests/ReleaseTests.lean"
   let identityText ← IO.FS.readFile "release/identity.json"
-  let manifestPaths : List String := match Targets.parse "release/targets.json" targetsText with
-    | .ok targets =>
-        "npm/tl/package.json"
-          :: targets.targets.map (fun target => "npm/platform/" ++ target.name ++ "/package.json")
-    | .error _ => []
-  let mut manifests : Array (String × String) := #[]
-  for path in manifestPaths do
-    let text ← IO.FS.readFile path
-    manifests := manifests.push (path, text)
+  let launcherText ← IO.FS.readFile "npm/tl/package.json"
   let sources : VersionSources :=
     { commandsPath := "Tl/Cli/Commands.lean", commandsText
       lakefilePath := "lakefile.lean", lakefileText
       releaseTestsPath := "Tests/ReleaseTests.lean", releaseTestsText
       identityPath := "release/identity.json", identityText
-      manifests := manifests.toList }
+      launcherManifest := ("npm/tl/package.json", launcherText) }
   let product := productVersionOf sources
   let copies := versionCopies sources
   let problems := match product, copies with
@@ -3955,9 +3952,8 @@ private def consistencyTests : IO (List Outcome) := do
       nameProblems [],
     check "version: a launcher under another name is refused"
       (match packageNameChecks
-          { sources with manifests :=
-              ("npm/tl/package.json", "{\"name\": \"@other/tl\", \"version\": \"0.1.0\"}")
-                :: sources.manifests.drop 1 } with
+          { sources with launcherManifest :=
+              ("npm/tl/package.json", "{\"name\": \"@other/tl\", \"version\": \"0.0.0\"}") } with
        | .ok checks => !(Check.failures checks).isEmpty
        | .error _ => false) "a launcher published under another name was accepted",
     -- The gate must also be able to fail: a comparison that accepted anything
@@ -3970,6 +3966,808 @@ private def consistencyTests : IO (List Outcome) := do
     check "version: a missing definition is refused with a different message"
       (mentions (oneLiteral "f" "it" "nothing here" "def productVersion : String := \"" "\"") "has no")
       "an absent definition was not distinguished from a duplicated one"]
+
+/-! ## The npm package manifests
+
+The five `package.json` documents are rendered from `release/identity.json` and
+`release/targets.json` rather than tracked by hand, so the rows below are a
+drift guard over the real repository files: the tracked copies must be exactly
+what this renderer produces at the placeholder version, and the tracked
+directory set must be exactly the target set. An orphaned `npm/platform/<gone>/`
+would otherwise sit there being published by a staging step that globs. -/
+
+private def npmSpecOf (identityText targetsText : String) (version : String) :
+    Except String Npm.Spec := do
+  let identity ← Identity.parse "release/identity.json" identityText
+  let targets ← Targets.parse "release/targets.json" targetsText
+  return { launcher := identity.npmPackage, repository := identity.repository
+           version, targets := targets.targets, provenance := true }
+
+private def npmManifestTests : IO (List Outcome) := do
+  let identityText ← IO.FS.readFile "release/identity.json"
+  let targetsText ← IO.FS.readFile "release/targets.json"
+  let licenseText ← IO.FS.readFile "LICENSE"
+  let license := Npm.spdxOf "LICENSE" licenseText
+  let rendered : Except String (List Npm.Rendered) := do
+    Npm.renderAll (← npmSpecOf identityText targetsText Npm.placeholderVersion) (← license)
+  let mut outs : List Outcome := [
+    check "npm: the repository licence resolves to its SPDX identifier"
+      (match license with | .ok spdx => spdx == "Apache-2.0" | .error _ => false)
+      "LICENSE did not resolve to Apache-2.0",
+    -- The three other arms of the reader, so "Apache-2.0" above is a decision
+    -- rather than the only answer it can give.
+    check "npm: an Apache notice with no version is refused"
+      (match Npm.spdxOf "L" "Apache License\n" with
+       | .error message => contains message "without a version"
+       | .ok _ => false) "an unversioned Apache notice resolved to an identifier",
+    check "npm: an MIT notice resolves to MIT"
+      (match Npm.spdxOf "L" "MIT License\n\nPermission is hereby granted" with
+       | .ok spdx => spdx == "MIT" | .error _ => false)
+      "an MIT notice did not resolve to MIT",
+    check "npm: an unrecognised licence refuses the render"
+      (match Npm.spdxOf "L" "The Beerware Licence\n" with
+       | .error message => contains message "cannot be republished"
+       | .ok _ => false) "an unknown licence produced an identifier anyway"]
+  match rendered with
+  | .error message =>
+      return outs ++ [check "npm: the tracked manifests render" false message]
+  | .ok packages =>
+      -- Each tracked file, against the render. Compared per package rather than
+      -- as one blob so a failure names the package that drifted.
+      for package in packages do
+        let path := s!"npm/{package.directory}/package.json"
+        let tracked ← if ← System.FilePath.pathExists path then IO.FS.readFile path else pure ""
+        outs := outs ++ [
+          check s!"npm: {path} is what the renderer produces"
+            (tracked == package.manifest)
+            s!"tracked and rendered differ; run `tlrelease npm-manifests --identity release/identity.json --targets release/targets.json --license LICENSE --output-dir npm`"]
+      -- And nothing else is tracked there. A directory left behind after a
+      -- target was retired is a package a staging step would still stage.
+      let entries ← System.FilePath.readDir "npm/platform"
+      let onDisk := (entries.map (·.fileName)).qsort (· < ·) |>.toList
+      let expected := (packages.filterMap fun package =>
+        if package.directory == Npm.launcherDirectory then none
+        else some (package.directory.splitOn "/").getLast!)
+      outs := outs ++ [
+        checkEq "npm: the tracked platform directories are exactly the distributed targets"
+          onDisk (expected.toArray.qsort (· < ·)).toList,
+        -- The launcher pins each platform package at the exact version. A
+        -- range would let npm resolve a platform package from another release,
+        -- which is a binary the manifest does not describe.
+        check "npm: the launcher pins every platform package at the exact version"
+          (match rendered with
+           | .ok (launcher :: _) =>
+               expected.all fun target =>
+                 contains launcher.manifest s!"\"@taskloop/tl-bin-{target}\": \"{Npm.placeholderVersion}\""
+           | _ => false) "a platform package was not pinned exactly",
+        -- The tracked set is a placeholder on purpose: a stray `npm publish`
+        -- from a checkout must not burn the real first release number.
+        check "npm: the tracked launcher carries the placeholder version"
+          (match rendered with
+           | .ok (launcher :: _) =>
+               contains launcher.manifest s!"\"version\": \"{Npm.placeholderVersion}\""
+           | _ => false) "the tracked launcher does not carry 0.0.0"]
+      -- An unknown platform refuses rather than composing prose from the wire
+      -- names, because the description is published immutably.
+      let exotic : Target :=
+        { name := "plan9-riscv64", tier := .bestEffort, os := "plan9", cpu := "riscv64", libc := none }
+      let exoticSpec : Except String Npm.Spec := do
+        let spec ← npmSpecOf identityText targetsText Npm.placeholderVersion
+        return { spec with targets := spec.targets ++ [exotic] }
+      outs := outs ++ [
+        check "npm: a platform with no written description refuses the render"
+          (match exoticSpec, license with
+           | .ok spec, .ok license =>
+               match Npm.renderAll spec license with
+               | .error message => contains message "platformProse"
+               | .ok _ => false
+           | _, _ => false) "an undescribed platform rendered anyway",
+        -- The glibc constraint is what keeps a glibc-linked binary off musl.
+        check "npm: a Linux package declares its libc floor"
+          (match rendered with
+           | .ok packages =>
+               match packages.find? (·.directory == Npm.platformDirectory "linux-x64") with
+               | some package => contains package.manifest "\"libc\""
+               | none => false
+           | _ => false) "the Linux package carries no libc constraint",
+        check "npm: a macOS package declares no libc floor"
+          (match rendered with
+           | .ok packages =>
+               match packages.find? (·.directory == Npm.platformDirectory "darwin-arm64") with
+               | some package => !contains package.manifest "\"libc\""
+               | none => false
+           | _ => false) "the macOS package carries a libc constraint"]
+      -- The libc contract, in all three ways it can be broken. npm ignores a
+      -- constraint it does not recognise and applies none where there is none,
+      -- so each of these renders a package that installs where its binary
+      -- cannot run — and reads in the manifest as though it were constrained.
+      let withLibc (os cpu : String) (libc : Option String) : Except String Npm.Spec := do
+        let spec ← npmSpecOf identityText targetsText Npm.placeholderVersion
+        return { spec with targets :=
+          [{ name := "probe", tier := .supported, os, cpu, libc }] }
+      let renderRefusal (os cpu : String) (libc : Option String) : Option String :=
+        match withLibc os cpu libc, license with
+        | .ok spec, .ok license =>
+            match Npm.renderAll spec license with
+            | .error message => some message
+            | .ok _ => none
+        | _, _ => some "<the fixture stopped assembling>"
+      outs := outs ++ [
+        check "npm: a Linux package with no libc family is refused"
+          (match renderRefusal "linux" "x64" none with
+           | some message => contains message "without a libc family"
+           | none => false) "a Linux package rendered with no libc constraint",
+        check "npm: a libc family npm does not select on is refused"
+          (match renderRefusal "linux" "x64" (some "gnu") with
+           | some message => contains message "not a family npm selects on"
+           | none => false) "an unrecognised libc family rendered anyway",
+        check "npm: a libc declared where npm does not select on one is refused"
+          (match renderRefusal "darwin" "arm64" (some "glibc") with
+           | some message => contains message "Only Linux packages"
+           | none => false) "a macOS package rendered with a libc constraint",
+        check "npm: a Linux package with a recognised family renders"
+          (renderRefusal "linux" "x64" (some "musl") == none)
+          "a musl-constrained package was refused",
+        -- The name is handed to npm as a package spec, where a leading dash is
+        -- an option rather than a name.
+        check "npm: a launcher name npm would read as an option is refused"
+          (match (do
+              let spec ← npmSpecOf identityText targetsText Npm.placeholderVersion
+              (({ spec with launcher := "-rf/tl" } : Npm.Spec)).validate) with
+           | .error message => contains message "changes what npm was asked to do"
+           | .ok _ => false) "a launcher name beginning with '-' was accepted",
+        check "npm: an unscoped launcher name is refused"
+          (match (do
+              let spec ← npmSpecOf identityText targetsText Npm.placeholderVersion
+              (({ spec with launcher := "tl" } : Npm.Spec)).validate) with
+           | .error _ => true
+           | .ok _ => false) "an unscoped launcher name was accepted",
+        -- Provenance is a property of who publishes, not of the package. npm
+        -- generates it only on a CI provider it supports and refuses the
+        -- publish anywhere else, so the by-hand bootstrap must not declare it.
+        check "npm: the tracked manifests declare provenance"
+          (match rendered with
+           | .ok (launcher :: _) => contains launcher.manifest "\"provenance\": true"
+           | _ => false) "the tracked launcher does not declare provenance"]
+      return outs
+
+/-- The command, over a scratch directory: what it writes, and every way it
+    refuses before writing anything. -/
+private def npmManifestCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let out := (base / "npm").toString
+  IO.FS.createDirAll out
+  let (status, stdout, _) ← runCommand "npm-manifests"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--license", "LICENSE", "--output-dir", out]
+  let launcher ← if ← System.FilePath.pathExists (out ++ "/tl/package.json") then
+      IO.FS.readFile (out ++ "/tl/package.json") else pure ""
+  let tracked ← IO.FS.readFile "npm/tl/package.json"
+  let (missingIdentity, _, missingIdentityErr) ← runCommand "npm-manifests"
+    ["--identity", "nothing.json", "--targets", "release/targets.json",
+     "--license", "LICENSE", "--output-dir", out]
+  let (missingLicense, _, missingLicenseErr) ← runCommand "npm-manifests"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--license", "nowhere/LICENSE", "--output-dir", out]
+  let badLicense := (base / "BADLICENSE").toString
+  IO.FS.writeFile badLicense "The Beerware Licence\n"
+  let (unknownLicense, _, unknownLicenseErr) ← runCommand "npm-manifests"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--license", badLicense, "--output-dir", out]
+  let (usage, _, _) ← runCommand "npm-manifests" ["--targets", "release/targets.json"]
+  IO.FS.removeDirAll base
+  return [
+    checkEq "npm-manifests: the tracked set renders" status 0,
+    check "npm-manifests: it says how many manifests it wrote"
+      (contains stdout "5 package manifest(s)") stdout,
+    check "npm-manifests: what it writes is what is tracked" (launcher == tracked)
+      "the command's output differs from npm/tl/package.json",
+    checkEq "npm-manifests: an identity file that is not there is refused" missingIdentity 1,
+    check "npm-manifests: that refusal names the path"
+      (contains missingIdentityErr "nothing.json") missingIdentityErr,
+    checkEq "npm-manifests: a licence file that is not there is refused" missingLicense 1,
+    check "npm-manifests: that refusal names the path"
+      (contains missingLicenseErr "nowhere/LICENSE") missingLicenseErr,
+    checkEq "npm-manifests: an unrecognised licence is refused" unknownLicense 1,
+    check "npm-manifests: that refusal says the registry records it permanently"
+      (contains unknownLicenseErr "cannot be republished") unknownLicenseErr,
+    checkEq "npm-manifests: a missing --identity is a usage error" usage 2]
+
+/-! ### Staging, and publishing to a stubbed registry
+
+Two nets cover the npm channel, and this is the first: every decision and every
+refusal, driven through the public commands against a stub client that answers
+from a planted registry. It needs no npm, so it runs in the ordinary suite —
+which matters, because the release profile may not reach npm at all (ADR-0026).
+The second net is the deferred-channel gate, where real `npm pack` and `npm
+install` establish npm's own packaging and layout.
+
+The stub is deliberately dumb: it logs its argv and answers by file. Anything it
+decided would make these rows checks of the fixture rather than of the
+command. -/
+
+private def npmStub (root : String) : String := root ++ "/npm-stub"
+
+private def npmStubScript : String :=
+  "#!/bin/sh\n" ++
+  "set -eu\n" ++
+  "here=$(dirname \"$0\")\n" ++
+  "printf '%s\\n' \"$*\" >> \"$here/npm.log\"\n" ++
+  "safe() { printf '%s' \"$1\" | tr '/@' '__'; }\n" ++
+  "case \"$1\" in\n" ++
+  "  pack)\n" ++
+  "    spec=$2\n" ++
+  "    case \"$spec\" in\n" ++
+  "      /*)\n" ++
+  "        key=$(basename \"$spec\" .tgz)\n" ++
+  "        if [ -f \"$here/registry/pack-$key.json\" ]; then\n" ++
+  "          cat \"$here/registry/pack-$key.json\"; exit 0\n" ++
+  "        fi\n" ++
+  "        echo \"npm-stub: no planted listing for $key\" >&2; exit 4\n" ++
+  "        ;;\n" ++
+  "      *)\n" ++
+  "        dest=''\n" ++
+  "        while [ \"$#\" -gt 0 ]; do\n" ++
+  "          if [ \"$1\" = --pack-destination ]; then dest=$2; fi\n" ++
+  "          shift\n" ++
+  "        done\n" ++
+  "        tarball=\"$here/registry/$(safe \"$spec\").tgz\"\n" ++
+  "        [ -f \"$tarball\" ] || { echo 'npm error code E404' >&2; exit 1; }\n" ++
+  "        cp \"$tarball\" \"$dest/served.tgz\"\n" ++
+  "        exit 0\n" ++
+  "        ;;\n" ++
+  "    esac\n" ++
+  "    ;;\n" ++
+  "  view)\n" ++
+  "    case \"${3:-}\" in\n" ++
+  "      dist-tags.*)\n" ++
+  "        tag=${3#dist-tags.}\n" ++
+  "        if [ -f \"$here/registry/broken-tag\" ]; then\n" ++
+  "          echo 'npm error code E500' >&2; exit 1\n" ++
+  "        fi\n" ++
+  "        if [ -f \"$here/registry/$(safe \"$2\").tag-$tag\" ]; then\n" ++
+  "          cat \"$here/registry/$(safe \"$2\").tag-$tag\"\n" ++
+  "        fi\n" ++
+  "        exit 0\n" ++
+  "        ;;\n" ++
+  "    esac\n" ++
+  "    if [ -f \"$here/registry/$(safe \"$2\").version\" ]; then\n" ++
+  "      cat \"$here/registry/$(safe \"$2\").version\"; exit 0\n" ++
+  "    fi\n" ++
+  "    if [ -f \"$here/registry/$(safe \"$2\").broken\" ]; then\n" ++
+  "      echo 'npm error code E500 the registry is unwell' >&2; exit 1\n" ++
+  "    fi\n" ++
+  "    echo 'npm error code E404' >&2\n" ++
+  "    echo 'npm error 404 Not Found' >&2\n" ++
+  "    exit 1\n" ++
+  "    ;;\n" ++
+  "  publish)\n" ++
+  "    if [ -f \"$here/registry/refuse-publish\" ]; then\n" ++
+  "      echo 'npm error code ENEEDAUTH' >&2; exit 1\n" ++
+  "    fi\n" ++
+  "    echo \"+ $2\"\n" ++
+  "    exit 0\n" ++
+  "    ;;\n" ++
+  "esac\n" ++
+  "echo \"npm-stub: unexpected $*\" >&2\n" ++
+  "exit 3\n"
+
+private def executableRights : IO.FileRight :=
+  { user := { read := true, write := true, execution := true }
+    group := { read := true, execution := true }
+    other := { read := true, execution := true } }
+
+private def plantNpmStub (root : String) : IO Unit := do
+  IO.FS.createDirAll (root ++ "/registry")
+  IO.FS.writeFile (npmStub root) npmStubScript
+  IO.setAccessRights (npmStub root) executableRights
+
+private def npmStubLog (root : String) : IO (List String) := do
+  let path := root ++ "/npm.log"
+  if ← System.FilePath.pathExists path then
+    return ((← IO.FS.readFile path).splitOn "\n").filter (!·.isEmpty)
+  else return []
+
+private def resetNpmStubLog (root : String) : IO Unit :=
+  IO.FS.writeFile (root ++ "/npm.log") ""
+
+private partial def treeFiles (base : String) (parent : String) :
+    IO (List String) := do
+  let mut found := []
+  for entry in ← System.FilePath.readDir base do
+    let relative := if parent.isEmpty then entry.fileName else parent ++ "/" ++ entry.fileName
+    let metadata ← entry.path.symlinkMetadata
+    match metadata.type with
+    | .dir => found := found ++ (← treeFiles entry.path.toString relative)
+    | _ => found := found ++ [relative]
+  return found
+
+/-- Plant the `npm pack --dry-run --json` answer for a directory by listing what
+    is in it. Which files npm *would* include is npm's decision and the second
+    net's subject; here the stub reports the tree so the rows exercise the
+    command's own branches. -/
+private def plantListing (root key directory : String) : IO Unit := do
+  let files ← treeFiles directory ""
+  let rows := files.map fun path =>
+    Json.mkObj [("path", Json.str path), ("size", Json.num 1),
+                ("mode", Json.num (if path.endsWith "bin/tl" then 493 else 420))]
+  let document := Json.arr #[Json.mkObj [("name", Json.str "x"), ("files", Json.arr rows.toArray)]]
+  IO.FS.writeFile s!"{root}/registry/pack-{key}.json" (okOr "<unrenderable>" (render document))
+
+/-- A planted release: four binaries and a manifest describing them, built the
+    way the real one is rather than pasted, so a manifest field this tool starts
+    requiring fails these rows instead of being missing from a literal. -/
+private def plantNpmRelease (dist : String) (rows : List (String × String × String × String × Option String) :=
+      [("linux-x64", "supported", "linux", "x64", some "glibc"),
+       ("linux-arm64", "supported", "linux", "arm64", some "glibc"),
+       ("darwin-arm64", "supported", "darwin", "arm64", none),
+       ("darwin-x64", "best-effort", "darwin", "x64", none)])
+    (published : String → Bool := fun _ => true)
+    (launcher : String := "@taskloop/tl") : IO String := do
+  IO.FS.createDirAll dist
+  let digester ← Digester.resolve
+  let commit := String.ofList (List.replicate 40 'b')
+  let filler := String.ofList (List.replicate 64 'a')
+  let mut targetRows := #[]
+  let mut assetRows := #[]
+  for (name, tier, os, cpu, libc) in rows do
+    let asset := dist ++ "/" ++ assetNameFor name
+    IO.FS.writeFile asset s!"#!/bin/sh\necho \"planted tl for {name}\"\n"
+    let digest ← match digester with
+      | .ok digester =>
+          match ← digester.digest asset with
+          | .ok digest => pure digest.hex
+          | .error _ => pure filler
+      | .error _ => pure filler
+    let isPublished := published name
+    targetRows := targetRows.push (Json.mkObj (
+      [("cpu", Json.str cpu),
+       ("libc", match libc with | some libc => Json.str libc | none => Json.null),
+       ("os", Json.str os), ("published", Json.bool isPublished),
+       ("target", Json.str name), ("tier", Json.str tier)]
+      ++ (if isPublished then
+            [("asset", Json.str (assetNameFor name)), ("sha256", Json.str digest),
+             ("build", Json.mkObj [
+               ("commit", Json.str commit), ("containerImage", Json.str ""),
+               ("lakeManifestSha256", Json.str filler), ("runAttempt", Json.str ""),
+               ("runId", Json.str "42"), ("runner", Json.str "ubuntu-latest"),
+               ("runnerArch", Json.str ""), ("runnerOs", Json.str ""),
+               ("sha256", Json.str digest), ("target", Json.str name),
+               ("tier", Json.str tier), ("toolchain", Json.str "t"),
+               ("workflowRef", Json.str "w")])]
+          else
+            -- An unpublished row keeps every key with a null value, so the two
+            -- row shapes stay one shape for a reader.
+            [("asset", Json.null), ("sha256", Json.null), ("build", Json.null)])))
+    if isPublished then
+      assetRows := assetRows.push (Json.mkObj [
+        ("kind", Json.str "binary"), ("name", Json.str (assetNameFor name)),
+        ("sha256", Json.str digest)])
+  let names := (rows.filter fun (name, _, _, _, _) => published name).map
+    fun (name, _, _, _, _) => name
+  let manifest := Json.mkObj [
+    ("assets", Json.arr assetRows), ("commit", Json.str commit),
+    ("homebrew", Json.mkObj [
+      ("pinnedTargets", Json.arr ((names.map Json.str).toArray)),
+      ("push", Json.bool true), ("tap", Json.str "DmitryKorolev/homebrew-tap")]),
+    ("lakeManifestSha256", Json.str filler),
+    ("npm", Json.mkObj [
+      ("distTag", Json.str "latest"),
+      ("packages", Json.arr ((Json.str launcher
+        :: names.map fun name =>
+             Json.str s!"{npmScopeOf launcher}/tl-bin-{name}").toArray))]),
+    ("product", Json.str "tl"), ("repository", Json.str "DmitryKorolev/tl"),
+    ("schemaVersion", Json.num 1),
+    ("signing", Json.mkObj [
+      ("certificateIdentityRegexp", Json.str "e"), ("certificateOidcIssuer", Json.str "i"),
+      ("workflow", Json.str "w")]),
+    ("tag", Json.str "v0.1.0"), ("targets", Json.arr targetRows),
+    ("toolchain", Json.str "t"), ("version", Json.str "0.1.0")]
+  let path := dist ++ "/release-manifest.json"
+  IO.FS.writeFile path (okOr "<unrenderable>" (render manifest))
+  return path
+
+private def npmStageTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let dist := (base / "dist").toString
+  let manifestPath ← plantNpmRelease dist
+  let staging := (base / "staging").toString
+  let (status, stdout, _) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", dist, "--manifest", manifestPath, "--staging", staging]
+  let staged ← System.FilePath.pathExists (staging ++ "/platform/linux-x64/bin/tl")
+  let launcherStaged ← System.FilePath.pathExists (staging ++ "/tl/bin/tl")
+  let licenceStaged ← System.FilePath.pathExists
+    (staging ++ "/platform/darwin-x64/THIRD-PARTY-LICENSES")
+  let stagedManifest ← if ← System.FilePath.pathExists (staging ++ "/tl/package.json") then
+      IO.FS.readFile (staging ++ "/tl/package.json") else pure ""
+  let (again, _, againErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", dist, "--manifest", manifestPath, "--staging", staging]
+  -- A dist whose binary is not the one the manifest pins.
+  let tampered := (base / "tampered").toString
+  IO.FS.createDirAll tampered
+  for entry in ← System.FilePath.readDir dist do
+    IO.FS.writeFile (tampered ++ "/" ++ entry.fileName) (← IO.FS.readFile entry.path.toString)
+  IO.FS.writeFile (tampered ++ "/" ++ assetNameFor "linux-arm64") "#!/bin/sh\necho other\n"
+  let (tamperedStatus, _, tamperedErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", tampered, "--manifest", manifestPath,
+     "--staging", (base / "staging-tampered").toString]
+  -- A dist that carries nothing at all.
+  let (missingStatus, _, missingErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", (base / "empty").toString, "--manifest", manifestPath,
+     "--staging", (base / "staging-missing").toString]
+  -- A release that did not publish a Supported target. ADR-0006 makes that
+  -- release-blocking for this channel: everyone on that platform would install
+  -- a launcher whose platform package the registry never received.
+  let gapped := (base / "gapped").toString
+  let gappedManifest ← plantNpmRelease gapped
+    (published := fun name => name != "linux-arm64")
+  let (gappedStatus, _, gappedErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", gapped, "--manifest", gappedManifest,
+     "--staging", (base / "staging-gapped").toString]
+  -- A Best-effort target that did not build is not release-blocking, and the
+  -- launcher simply does not pin it.
+  let partial? := (base / "partial").toString
+  let partialManifest ← plantNpmRelease partial?
+    (published := fun name => name != "darwin-x64")
+  let partialStaging := (base / "staging-partial").toString
+  let (partialStatus, partialOut, _) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", partial?, "--manifest", partialManifest,
+     "--staging", partialStaging]
+  let partialLauncher ← if ← System.FilePath.pathExists (partialStaging ++ "/tl/package.json") then
+      IO.FS.readFile (partialStaging ++ "/tl/package.json") else pure ""
+  -- A manifest publishing under a scope that is not the one this repository
+  -- is pinned to. Its own coherence check cannot catch it: it holds the
+  -- package list to the shape of its first element and cannot know what that
+  -- element ought to be.
+  let alien := (base / "alien").toString
+  let alienManifest ← plantNpmRelease alien (launcher := "@other/tl")
+  let (alienStatus, _, alienErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", alien, "--manifest", alienManifest,
+     "--staging", (base / "staging-alien").toString]
+  -- A --staging that is a file, and one that is an existing empty directory.
+  let occupied := (base / "occupied").toString
+  IO.FS.writeFile occupied "not a directory\n"
+  let (occupiedStatus, _, occupiedErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", dist, "--manifest", manifestPath, "--staging", occupied]
+  let emptyStaging := (base / "already-empty").toString
+  IO.FS.createDirAll emptyStaging
+  let (emptyStatus, _, _) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", dist, "--manifest", manifestPath, "--staging", emptyStaging]
+  let (usage, _, _) ← runCommand "npm-stage" ["--root", "."]
+  let outcomes := [
+    checkEq "npm-stage: a verified release stages" status 0,
+    checkEq "npm-stage: a release missing a Supported target is refused" gappedStatus 1,
+    check "npm-stage: that refusal names the target and says what users there would get"
+      (contains gappedErr "linux-arm64" && contains gappedErr "Supported target") gappedErr,
+    checkEq "npm-stage: a release missing a Best-effort target still stages" partialStatus 0,
+    check "npm-stage: and stages one package fewer"
+      (contains partialOut "staged 4 package(s)") partialOut,
+    -- A pin for a package this release never publishes would have npm resolve
+    -- a name the registry has not received.
+    check "npm-stage: the launcher does not pin a package this release skipped"
+      (!contains partialLauncher "tl-bin-darwin-x64") partialLauncher,
+    checkEq "npm-stage: a manifest publishing under another name is refused" alienStatus 1,
+    check "npm-stage: that refusal names both the manifest's name and the pinned one"
+      (contains alienErr "@other/tl" && contains alienErr "@taskloop/tl") alienErr,
+    checkEq "npm-stage: a --staging that is not a directory is refused" occupiedStatus 1,
+    check "npm-stage: that refusal says to pass a path it may create"
+      (contains occupiedErr "not a directory") occupiedErr,
+    checkEq "npm-stage: an existing empty directory is staged into" emptyStatus 0,
+    check "npm-stage: it says how many packages, and that the digests matched"
+      (contains stdout "staged 5 package(s)" && contains stdout "digest the manifest pins") stdout,
+    check "npm-stage: each platform package carries its binary" staged
+      "no binary was staged for linux-x64",
+    check "npm-stage: the launcher package carries the dispatcher" launcherStaged
+      "the launcher was staged without bin/tl",
+    check "npm-stage: the licence notices travel in every package" licenceStaged
+      "a package was staged without THIRD-PARTY-LICENSES",
+    -- The staged manifest carries the release version, not the tracked
+    -- placeholder: a package published at 0.0.0 is the bootstrap placeholder.
+    check "npm-stage: the staged manifest carries the release version, pinned exactly"
+      (contains stagedManifest "\"version\": \"0.1.0\""
+        && contains stagedManifest "\"@taskloop/tl-bin-linux-x64\": \"0.1.0\"") stagedManifest,
+    checkEq "npm-stage: staging over a previous run is refused" again 1,
+    check "npm-stage: that refusal says npm publishes what it finds"
+      (contains againErr "not empty") againErr,
+    checkEq "npm-stage: a binary that is not the one the manifest pins is refused"
+      tamperedStatus 1,
+    check "npm-stage: that refusal names the pinned digest"
+      (contains tamperedErr "the manifest pins") tamperedErr,
+    checkEq "npm-stage: a dist with no binaries is refused" missingStatus 1,
+    check "npm-stage: that refusal names the file it could not read"
+      (contains missingErr "could not copy") missingErr,
+    checkEq "npm-stage: a missing --dist is a usage error" usage 2]
+  IO.FS.removeDirAll base
+  return outcomes
+
+private def npmPublishTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let root := base.toString
+  plantNpmStub root
+  let client := npmStub root
+  let dist := (base / "dist").toString
+  let manifestPath ← plantNpmRelease dist
+  let staging := (base / "staging").toString
+  let (stageStatus, _, stageErr) ← runCommand "npm-stage"
+    ["--root", ".", "--dist", dist, "--manifest", manifestPath, "--staging", staging]
+  for directory in ["tl", "platform/linux-x64", "platform/linux-arm64",
+                    "platform/darwin-arm64", "platform/darwin-x64"] do
+    plantListing root ((directory.splitOn "/").getLast!) (staging ++ "/" ++ directory)
+  resetNpmStubLog root
+  let (planStatus, planOut, _) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  let planLog ← npmStubLog root
+  resetNpmStubLog root
+  let (firstStatus, firstOut, _) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  let firstLog ← npmStubLog root
+  let publishOrder := (firstLog.filter (·.startsWith "publish")).map fun line =>
+    (line.splitOn " ").getD 1 "" |>.splitOn "/" |>.getLast!
+  -- The registry now holds linux-x64, byte-identical to the staged tree.
+  let served := root ++ "/registry/_taskloop_tl-bin-linux-x64_0.1.0"
+  IO.FS.writeFile (served ++ ".version") "0.1.0\n"
+  -- The dist-tag is separate registry state and is what `npm install`
+  -- resolves; a matching version whose tag still points at the previous
+  -- release is the shape a partial run leaves behind.
+  IO.FS.writeFile (root ++ "/registry/_taskloop_tl-bin-linux-x64.tag-latest") "0.1.0\n"
+  let packageRoot := served ++ "/package"
+  IO.FS.createDirAll (packageRoot ++ "/bin")
+  for name in ["package.json", "README.md", "LICENSE", "THIRD-PARTY-LICENSES"] do
+    IO.FS.writeFile (packageRoot ++ "/" ++ name)
+      (← IO.FS.readFile (staging ++ "/platform/linux-x64/" ++ name))
+  IO.FS.writeFile (packageRoot ++ "/bin/tl")
+    (← IO.FS.readFile (staging ++ "/platform/linux-x64/bin/tl"))
+  let _ ← Release.succeeded "tar" #["-czf", served ++ ".tgz", "-C", served, "package"]
+  plantListing root "served" packageRoot
+  resetNpmStubLog root
+  let (matchStatus, matchOut, _) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  let matchLog ← npmStubLog root
+  -- The mode, on its own. Same paths, same bytes, and the published `bin/tl`
+  -- not executable: a package that installs and then cannot be run. Without
+  -- this row an `executableMode` returning a constant passes the whole suite,
+  -- because both sides are otherwise fabricated by the same rule.
+  IO.FS.writeFile (root ++ "/registry/pack-served.json")
+    (okOr "<unrenderable>" (render (Json.arr #[Json.mkObj [("files", Json.arr
+      ((← treeFiles packageRoot "").map fun path =>
+        Json.mkObj [("path", Json.str path), ("size", Json.num 1),
+                    ("mode", Json.num 420)]).toArray)]])))
+  let (modeStatus, _, modeErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  plantListing root "served" packageRoot
+  -- The same version, published, matching — and a dist-tag that lags it.
+  IO.FS.writeFile (root ++ "/registry/_taskloop_tl-bin-linux-x64.tag-latest") "0.0.9\n"
+  let (lagStatus, _, lagErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  let (lagPlanStatus, lagPlanOut, _) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  -- And a registry that cannot answer the tag read at all. npm answers an
+  -- unset tag with status zero, so a non-zero status is an error and never
+  -- "the tag is unset" — read the other way it prescribes a manual dist-tag
+  -- repair on an answer nobody read.
+  IO.FS.writeFile (root ++ "/registry/broken-tag") ""
+  let (tagBrokenStatus, _, tagBrokenErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  IO.FS.removeFile (root ++ "/registry/broken-tag")
+  IO.FS.writeFile (root ++ "/registry/_taskloop_tl-bin-linux-x64.tag-latest") "0.1.0\n"
+  -- A staged package.json naming something other than what this release
+  -- publishes. npm takes the published name and version from that file.
+  let renamed := staging ++ "/platform/darwin-arm64/package.json"
+  let original ← IO.FS.readFile renamed
+  IO.FS.writeFile renamed
+    (okOr "<unrenderable>" (render (Json.mkObj
+      [("name", Json.str "@attacker/tl-bin-darwin-arm64"), ("version", Json.str "9.9.9")])))
+  let (renamedStatus, _, renamedErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  IO.FS.writeFile renamed original
+  -- A staging tree whose binary is not the one this release's manifest pins:
+  -- a leftover from another release packs and publishes just as cleanly.
+  let stale := staging ++ "/platform/darwin-x64/bin/tl"
+  let staleOriginal ← IO.FS.readFile stale
+  IO.FS.writeFile stale "#!/bin/sh\necho from another release\n"
+  let (staleStatus, _, staleErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  IO.FS.writeFile stale staleOriginal
+  -- The same version, holding different bytes.
+  IO.FS.writeFile (packageRoot ++ "/bin/tl") "#!/bin/sh\necho a different build\n"
+  IO.FS.removeFile (served ++ ".tgz")
+  let _ ← Release.succeeded "tar" #["-czf", served ++ ".tgz", "-C", served, "package"]
+  resetNpmStubLog root
+  let (conflictStatus, _, conflictErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  let conflictLog ← npmStubLog root
+  -- A registry that cannot answer must not read as "there is no such version".
+  IO.FS.removeFile (served ++ ".version")
+  IO.FS.removeFile (served ++ ".tgz")
+  IO.FS.writeFile (root ++ "/registry/_taskloop_tl-bin-linux-arm64_0.1.0.broken") ""
+  let (brokenStatus, _, brokenErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  IO.FS.removeFile (root ++ "/registry/_taskloop_tl-bin-linux-arm64_0.1.0.broken")
+  -- A staged symbolic link has nothing on the published side to compare to.
+  let _ ← Release.succeeded "ln"
+    #["-s", "README.md", staging ++ "/platform/linux-x64/LINK.md"]
+  let (linkStatus, _, linkErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  IO.FS.removeFile (staging ++ "/platform/linux-x64/LINK.md")
+  -- npm naming a file the tree does not hold: the two answers describe one
+  -- package, and the shorter of them must not be what is compared.
+  IO.FS.writeFile (root ++ "/registry/pack-linux-x64.json")
+    (okOr "<unrenderable>" (render (Json.arr #[Json.mkObj [("files", Json.arr #[
+      Json.mkObj [("path", Json.str "bin/tl"), ("size", Json.num 1), ("mode", Json.num 493)],
+      Json.mkObj [("path", Json.str "GONE.md"), ("size", Json.num 1), ("mode", Json.num 420)]])]])))
+  let (goneStatus, _, goneErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  -- And npm naming nothing at all: two empty packages compare equal.
+  IO.FS.writeFile (root ++ "/registry/pack-linux-x64.json")
+    (okOr "<unrenderable>" (render (Json.arr #[Json.mkObj [("files", Json.arr #[])]])))
+  let (emptyStatus, _, emptyErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  -- The first-release authentication case, reported as the prerequisite it is.
+  plantListing root "linux-x64" (staging ++ "/platform/linux-x64")
+  IO.FS.writeFile (root ++ "/registry/refuse-publish") ""
+  let (authStatus, _, authErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client]
+  IO.FS.removeFile (root ++ "/registry/refuse-publish")
+  -- A package the manifest lists and the staging tree does not hold.
+  IO.FS.removeDirAll (staging ++ "/platform/darwin-x64")
+  let (goneDirStatus, _, goneDirErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  let (usage, _, _) ← runCommand "npm-publish" ["--staging", staging]
+  let outcomes := [
+    checkEq "npm-publish: the fixture staged" stageStatus 0,
+    check "npm-publish: the fixture staged without complaint" stageErr.isEmpty stageErr,
+    checkEq "npm-publish: --plan decides and publishes nothing" planStatus 0,
+    check "npm-publish: --plan says what it would do"
+      (contains planOut "5 package(s) would be published") planOut,
+    check "npm-publish: --plan reaches no publish"
+      (!planLog.isEmpty && planLog.all fun line => !line.startsWith "publish")
+      (String.intercalate " | " planLog),
+    checkEq "npm-publish: an absent version is published" firstStatus 0,
+    check "npm-publish: it reports what it published" (contains firstOut "5 published") firstOut,
+    -- The launcher declares the platform packages as exact-version optional
+    -- dependencies, so publishing it first leaves a window in which installing
+    -- it resolves nothing to run.
+    check "npm-publish: the launcher is published last"
+      (publishOrder.getLast? == some "tl")
+      s!"publication order was {String.intercalate ", " publishOrder}",
+    checkEq "npm-publish: every package is published, not a subset"
+      publishOrder.length 5,
+    checkEq "npm-publish: a version already holding this package is left alone" matchStatus 0,
+    check "npm-publish: it says which one already matched, and where the tag points"
+      (contains matchOut "already published, matches this staging tree, and 'latest' points at it")
+      matchOut,
+    -- The one package the registry already holds. The others are absent and
+    -- publish on this run, so the assertion has to name the package rather
+    -- than look for the word: a run in which nothing published at all would
+    -- satisfy a broader form without establishing anything.
+    check "npm-publish: a matching version is not published over"
+      (matchLog.all fun line =>
+        !(line.startsWith "publish " && contains line "platform/linux-x64"))
+      (String.intercalate " | " matchLog),
+    checkEq "npm-publish: a version holding different bytes stops the release" conflictStatus 1,
+    check "npm-publish: that refusal says the version cannot be reissued, and names the entry"
+      (contains conflictErr "immutable" && contains conflictErr "bin/tl") conflictErr,
+    -- The survey runs before the first publish, so a conflict on any package
+    -- is found before any of them is published irreversibly.
+    check "npm-publish: a conflict is found before anything is published"
+      (contains conflictErr "Nothing has been published by this run"
+        && conflictLog.all fun line => !line.startsWith "publish ")
+      (String.intercalate " | " conflictLog),
+    checkEq "npm-publish: a published entry that lost its executable bit is a conflict"
+      modeStatus 1,
+    check "npm-publish: that conflict names the entry whose mode differs"
+      (contains modeErr "bin/tl" && contains modeErr "contents differ") modeErr,
+    checkEq "npm-publish: a dist-tag pointing elsewhere stops the release" lagStatus 1,
+    check "npm-publish: that refusal names the tag, where it points, and the 2FA repair"
+      (contains lagErr "0.0.9" && contains lagErr "npm dist-tag add") lagErr,
+    checkEq "npm-publish: --plan reports a lagging dist-tag rather than refusing" lagPlanStatus 0,
+    check "npm-publish: and says a manual repair would be needed"
+      (contains lagPlanOut "manual dist-tag repair") lagPlanOut,
+    checkEq "npm-publish: a dist-tag read that failed is not read as unset" tagBrokenStatus 1,
+    check "npm-publish: that refusal says npm could not be read"
+      (contains tagBrokenErr "could not read the 'latest' dist-tag") tagBrokenErr,
+    checkEq "npm-publish: a staged package naming something else is refused" renamedStatus 1,
+    check "npm-publish: that refusal says npm takes the name from that file"
+      (contains renamedErr "@attacker/tl-bin-darwin-arm64"
+        && contains renamedErr "takes the published name") renamedErr,
+    checkEq "npm-publish: a staging tree from another release is refused" staleStatus 1,
+    check "npm-publish: that refusal names both digests and says to re-stage"
+      (contains staleErr "the manifest pins" && contains staleErr "npm-stage") staleErr,
+    checkEq "npm-publish: a registry that cannot answer is a refusal" brokenStatus 1,
+    check "npm-publish: that refusal does not read as absence"
+      (contains brokenErr "could not find out whether") brokenErr,
+    checkEq "npm-publish: a staged symbolic link is refused" linkStatus 1,
+    check "npm-publish: that refusal says npm cannot represent one comparably"
+      (contains linkErr "symbolic link") linkErr,
+    checkEq "npm-publish: a file npm names and the tree lacks is refused" goneStatus 1,
+    check "npm-publish: that refusal names the missing entry" (contains goneErr "GONE.md") goneErr,
+    checkEq "npm-publish: a package npm reports as empty is refused" emptyStatus 1,
+    check "npm-publish: that refusal says an empty package compares equal to any other"
+      (contains emptyErr "no files at all") emptyErr,
+    checkEq "npm-publish: a publish that cannot authenticate is a refusal" authStatus 1,
+    check "npm-publish: that refusal names the bootstrap prerequisite"
+      (contains authErr "bootstrapped by hand") authErr,
+    checkEq "npm-publish: a package the manifest lists and the tree lacks is refused"
+      goneDirStatus 1,
+    check "npm-publish: that refusal says to stage first"
+      (contains goneDirErr "npm-stage") goneDirErr,
+    checkEq "npm-publish: a missing --manifest is a usage error" usage 2]
+  IO.FS.removeDirAll base
+  return outcomes
+
+/-- The comparison unit, on its own. `treeAgrees` decides whether an immutable
+    version is published over, and the two things it must do — ignore the order
+    npm and a tarball happen to report entries in, and notice a difference in
+    any field — are neither of them visible in a command-level row. -/
+private def npmComparisonTests : List Outcome :=
+  let entry (path : String) (executable : Bool) (digest : String) : Npm.Entry :=
+    { path, executable, digest }
+  let staged := [entry "package.json" false "aa", entry "bin/tl" true "bb",
+                 entry "LICENSE" false "cc"]
+  let reordered := [entry "LICENSE" false "cc", entry "package.json" false "aa",
+                    entry "bin/tl" true "bb"]
+  [check "npm compare: the same entries in another order are the same package"
+     (Npm.treeAgrees staged reordered)
+     "a reordering was reported as a different package, which is a spurious conflict on an immutable version",
+   check "npm compare: a differing digest is a different package"
+     (!Npm.treeAgrees staged [entry "package.json" false "aa", entry "bin/tl" true "zz",
+                              entry "LICENSE" false "cc"])
+     "a changed digest compared equal",
+   -- The bit npm publishes 0755 for. A package that loses it installs and
+   -- then cannot be run.
+   check "npm compare: a differing executable bit is a different package"
+     (!Npm.treeAgrees staged [entry "package.json" false "aa", entry "bin/tl" false "bb",
+                              entry "LICENSE" false "cc"])
+     "a lost executable bit compared equal",
+   check "npm compare: a missing entry is a different package"
+     (!Npm.treeAgrees staged [entry "package.json" false "aa", entry "bin/tl" true "bb"])
+     "a shorter package compared equal",
+   -- The mode npm reports, against the one bit that carries information.
+   check "npm compare: 0755 reads as executable and 0644 does not"
+     (Npm.executableMode 493 && !Npm.executableMode 420)
+     "the owner-execute bit was not read out of npm's mode",
+   check "npm compare: a full stat mode still reads its execute bit"
+     (Npm.executableMode 33261 && !Npm.executableMode 33188)
+     "a mode carrying the file-type bits was misread"]
+
+private def npmBootstrapTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let out := (base / "bootstrap").toString
+  let (status, stdout, _) ← runCommand "npm-bootstrap"
+    ["--root", ".", "--identity", "release/identity.json",
+     "--targets", "release/targets.json", "--output", out]
+  let placeholder ← if ← System.FilePath.pathExists (out ++ "/tl/bin/tl") then
+      IO.FS.readFile (out ++ "/tl/bin/tl") else pure ""
+  let manifest ← if ← System.FilePath.pathExists (out ++ "/tl/package.json") then
+      IO.FS.readFile (out ++ "/tl/package.json") else pure ""
+  -- It has to run, and it has to refuse: whoever reaches it should learn what
+  -- it is rather than file a bug about a corrupt install.
+  let ran ← Release.run "sh" #[out ++ "/tl/bin/tl"]
+  let (again, _, againErr) ← runCommand "npm-bootstrap"
+    ["--root", ".", "--identity", "release/identity.json",
+     "--targets", "release/targets.json", "--output", out]
+  let (usage, _, _) ← runCommand "npm-bootstrap" ["--root", "."]
+  let publishLines := (stdout.splitOn "npm publish").length - 1
+  let outcomes := [
+    checkEq "npm-bootstrap: the placeholder set is prepared" status 0,
+    checkEq "npm-bootstrap: it prints one publish command per package" publishLines 5,
+    check "npm-bootstrap: those commands carry the dist-tag no user resolves"
+      (contains stdout s!"--tag {Npm.bootstrapTag}") stdout,
+    check "npm-bootstrap: the launcher is published last"
+      (((stdout.splitOn "npm publish").getLast!).startsWith s!" {out}/tl ") stdout,
+    check "npm-bootstrap: the placeholder explains itself"
+      (contains placeholder "bootstrap placeholder package") placeholder,
+    check "npm-bootstrap: it carries the placeholder version, not a real one"
+      (contains manifest s!"\"version\": \"{Npm.placeholderVersion}\"") manifest,
+    check "npm-bootstrap: the placeholder exits non-zero"
+      (match ran with
+       | .completed output => output.exitCode != 0 && contains output.stderr "no tl binary"
+       | _ => false) "the placeholder did not run, or exited zero",
+    checkEq "npm-bootstrap: preparing over a previous run is refused" again 1,
+    check "npm-bootstrap: that refusal says why" (contains againErr "not empty") againErr,
+    checkEq "npm-bootstrap: a missing --output is a usage error" usage 2]
+  IO.FS.removeDirAll base
+  return outcomes
 
 /-! ## The prerequisite audit, driven over a stubbed GitHub
 
@@ -4403,7 +5201,7 @@ private def boundaryTests : List Outcome :=
       (match planWith true false with
        | .ok plan =>
          let stale := staleExclusions plan
-         stale.any (fun line => (line.splitOn "npm-pack.sh").length > 1)
+         stale.any (fun line => (line.splitOn "npm/tl/bin/tl").length > 1)
            && stale.any (fun line => (line.splitOn "publish-npm").length > 1)
            && !stale.any (fun line => (line.splitOn "publish-homebrew").length > 1)
        | .error _ => false) ]
@@ -4614,8 +5412,8 @@ private def boundaryCommandTests : IO (List Outcome) := do
   let cleanRoot ← plant "clean" "#!/bin/sh\necho install\n" "echo policy\n"
   let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
   let deferredRoot ← plant "deferred" "#!/bin/sh\necho install\n"
-    "./scripts/npm-pack.sh --selftest\n"
-  write deferredRoot "scripts/npm-pack.sh" "#!/bin/sh\nnpm pack\n"
+    "./scripts/check-channel-policy.sh --strict\n"
+  write deferredRoot "scripts/check-channel-policy.sh" "#!/bin/sh\nnpm pack\n"
   let danglingRoot ← plant "dangling" "#!/bin/sh\necho install\n"
     "./scripts/absent-helper.sh\n"
   -- A single-line step in a job that runs, and the same command in one that
@@ -4681,7 +5479,7 @@ private def boundaryCommandTests : IO (List Outcome) := do
     check "boundary: a deferred channel's script is not entered" (deferredStatus == 0)
       s!"{deferredOut}{deferredErr}",
     check "boundary: the deferred script is absent from what was read"
-      ((deferredOut.splitOn "npm-pack").length == 1) deferredOut,
+      ((deferredOut.splitOn "check-channel-policy").length == 1) deferredOut,
     -- A reference to a file that is not there means either the reference or
     -- the inventory is wrong, and both readings end in a file nobody scanned.
     check "boundary: a referenced script that is missing refuses" (danglingStatus == 1) danglingErr,
@@ -4732,7 +5530,7 @@ private def boundaryCommandTests : IO (List Outcome) := do
     check "boundary: a channel this release publishes through cannot stay excluded"
       (enabledStatus == 1) enabledErr,
     check "boundary: and the refusal names the file and the edit that clears it"
-      (((enabledErr.splitOn "npm-pack.sh").length > 1) &&
+      (((enabledErr.splitOn "check-channel-policy.sh").length > 1) &&
         ((enabledErr.splitOn "deferredPaths").length > 1)) enabledErr]
 
 /-! ## The release-evidence write, as a model
@@ -5602,6 +6400,7 @@ def releaseToolTests : IO (List Outcome) := do
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
+    ++ npmComparisonTests ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
 
 end Tl.Tests

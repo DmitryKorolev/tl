@@ -97,22 +97,27 @@ express:
   `clean build — commit <stale>` while passing the whole suite. It is a CI step
   rather than a `tltest` assertion so the release job, which stamps on purpose,
   is unaffected.
-- `scripts/npm-pack.sh --selftest` stages the npm packages, packs and really
-  installs them (global-style and local-style), and drives the launcher through
-  every platform selection, the missing-package path, native Windows, an
-  unsupported OS and CPU, argument passing, exit status, and signals. It also
-  checks that the manifests agree on one version, pin each platform package
-  exactly, declare the SPDX id read from the repository `LICENSE`, ship the
-  notice files, and carry no lifecycle script.
+- `tlrelease npm-selftest` packs and really installs the npm packages with the
+  real client, then drives the launcher through them: the entry list and the
+  modes npm publishes, the installed `bin` symlink, argument transparency, exit
+  status, and the absent-package diagnosis. It is the second of the channel's
+  two nets and covers only what a stub cannot answer — what npm itself does.
+  The channel's own decisions are `tlrelease`'s and are covered against a stub
+  client in `lake exe tltest`, which is what lets them run where the release
+  profile may not reach npm at all.
 - `install.sh --selftest` runs the installer against a fabricated local
   release, covering each refusal path including a rejected signature, a digest
   mismatch, a missing bundle, an unwritable install directory, and every
   unsupported platform.
 - `tlrelease version-consistency` compares every place the release version
-  is written: the tag, `productVersion`, the Lake package version, the pinned
-  literal in `Tests/ReleaseTests.lean`, and the five npm manifests. Nothing
-  compared them before, though two error messages instructed the operator to
-  keep the lakefile in lockstep with a value neither of them read.
+  is written by hand: the tag, `productVersion`, the Lake package version and
+  the pinned literal in `Tests/ReleaseTests.lean`. Nothing compared them before,
+  though two error messages instructed the operator to keep the lakefile in
+  lockstep with a value neither of them read. The five npm manifests are not
+  among them: they are rendered by `tlrelease npm-manifests` at a placeholder
+  version, and holding a generated file to a value it deliberately does not
+  carry would be a comparison about the generator rather than about the
+  release.
 - `tlrelease platform-classification` holds the uname mapping that `install.sh`
   and the npm launcher each carry inline — neither can read this repository when
   it runs — to the typed authority in `release/Platform.lean`, which is itself
@@ -121,11 +126,6 @@ express:
   legitimately between the two (their messages name different tools) but a
   disagreement
   about which system is which would ship the wrong binary.
-- `scripts/npm-publish.sh --selftest` drives the publisher against a fixture
-  registry: a first publish, a re-run that publishes nothing, a resume after a
-  partial failure, and an already-published version whose contents differ,
-  which must stop rather than retry. npm versions are immutable, so this is the
-  one gate whose failure cannot be corrected afterwards.
 - Neither generator whose output is signed is a gate in this script. The SBOM
   is `tlrelease sbom`, the release manifest is `tlrelease manifest` and
   `tlrelease manifest-verify`, and each build leg's record is
@@ -152,10 +152,6 @@ express:
 - `shellcheck -S warning` over every tracked shell file, found by shebang and
   extension rather than listed — a list stops covering a new script silently,
   and the gate refuses outright if the discovery pattern matches nothing.
-- `scripts/npm-bootstrap.sh --selftest` covers the one manual step before the
-  first release: the placeholder packages must carry the licence files and a
-  version nobody resolves, and the commands it prints must not publish to
-  `latest`.
 - A `ruby -c` gate over the tracked formula and the rendered fixtures beside it.
   It skips visibly rather than failing when ruby is absent, and it is an early
   signal rather than a verdict: real Homebrew is the acceptance authority and

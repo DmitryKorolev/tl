@@ -1,7 +1,23 @@
 {
-  "name": "@taskloop/tl",
-  "version": "0.1.0",
+  "bin": {
+    "tl": "bin/tl"
+  },
+  "bugs": "https://github.com/DmitryKorolev/tl/issues",
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
   "description": "tl \u2014 a formally verified, git-native task tracker for AI agents",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/tl",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES"
+  ],
+  "homepage": "https://github.com/DmitryKorolev/tl#readme",
   "keywords": [
     "task",
     "tracker",
@@ -11,41 +27,25 @@
     "crdt",
     "lean"
   ],
-  "homepage": "https://github.com/DmitryKorolev/tl#readme",
-  "bugs": "https://github.com/DmitryKorolev/tl/issues",
+  "license": "Apache-2.0",
+  "name": "@taskloop/tl",
+  "optionalDependencies": {
+    "@taskloop/tl-bin-darwin-arm64": "0.0.0",
+    "@taskloop/tl-bin-darwin-x64": "0.0.0",
+    "@taskloop/tl-bin-linux-arm64": "0.0.0",
+    "@taskloop/tl-bin-linux-x64": "0.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DmitryKorolev/tl.git"
   },
-  "license": "Apache-2.0",
-  "bin": {
-    "tl": "bin/tl"
-  },
-  "files": [
-    "bin/tl",
-    "README.md",
-    "LICENSE",
-    "THIRD-PARTY-LICENSES"
-  ],
-  "os": [
-    "darwin",
-    "linux"
-  ],
-  "cpu": [
-    "arm64",
-    "x64"
-  ],
-  "engines": {
-    "node": ">=18"
-  },
-  "optionalDependencies": {
-    "@taskloop/tl-bin-darwin-arm64": "0.1.0",
-    "@taskloop/tl-bin-darwin-x64": "0.1.0",
-    "@taskloop/tl-bin-linux-arm64": "0.1.0",
-    "@taskloop/tl-bin-linux-x64": "0.1.0"
-  },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  }
+  "version": "0.0.0"
 }

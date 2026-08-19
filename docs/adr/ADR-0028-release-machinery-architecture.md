@@ -446,14 +446,49 @@ native binary own signals, process identity, standard streams, job control, and
 exit status directly. It may not source or evaluate tracked repository code;
 its complete behavior is in this one adapter.
 
-All npm administration—staging the five packages, comparing regular-file
-contents and modes while refusing symbolic links, selecting `latest` versus
-`next`, bootstrapping placeholder packages, checking registry state, and
-publishing resumably—belongs to
-`tlrelease` and the channel-native `npm` client.
+All npm administration—rendering the five package manifests, staging the
+packages, comparing regular-file contents and modes while refusing symbolic
+links, selecting `latest` versus `next`, bootstrapping placeholder packages,
+checking registry state, and publishing resumably—belongs to `tlrelease` and the
+channel-native `npm` client.
 
-The launcher is exercised twice. Real npm pack/install/process tests establish
-npm's package layout, executable mode, and transparent process behavior. In
+The five `package.json` documents are rendered from `release/identity.json` and
+`release/targets.json` rather than tracked by hand and patched at staging time.
+The `os`, `cpu` and `libc` constraints that decide where npm installs a package,
+and the exact-version `optionalDependencies` that decide which packages resolve,
+are therefore a function of the release. A Linux target must name a libc family
+npm selects on; declaring none renders a package that installs on musl as
+readily as on glibc, and declaring one npm does not recognise reads in the
+manifest as a constraint while applying none. The tracked copies under `npm/`
+are what the renderer produces at version `0.0.0` and are compared against a
+fresh render on every commit; they are reviewable, not authoritative, and a
+stray `npm publish` from a checkout cannot consume a real release number.
+Provenance is declared by everything the workflow publishes and by nothing the
+one-time bootstrap produces, because npm generates an attestation only on a CI
+provider it supports and refuses the publish anywhere else.
+
+What npm will publish is asked of npm rather than derived from the tree: `npm
+pack --dry-run --json` reports the entry list and mode for a directory or a
+tarball, which is the question `files`, `.npmignore` and npm's always-included
+set jointly answer. A directory argument is passed unambiguously — npm reads a
+bare two-segment relative path as a hosted-git shorthand — and the `package.json`
+of the directory about to be published is compared against the name and version
+this release reports publishing, because npm takes both from that file and from
+nothing else.
+
+Publication is surveyed before it acts. Every package's registry state is
+established first, and a conflict on any of them refuses before the first
+irreversible publish; the dist-tag is read as part of that survey, because it is
+separate registry state that a partial run leaves lagging and OIDC trusted
+publishing authorizes `npm publish` and no other mutation.
+
+The channel is exercised twice, and so is the launcher. Every decision and
+refusal is driven through the public commands against a stub client, which needs
+no npm and therefore runs in the ordinary suite; `tlrelease npm-selftest` packs
+and installs real packages with the real client and drives the launcher through
+them, establishing npm's package layout, executable mode, tarball round-trip and
+transparent process behavior. It is a deferred-channel gate rather than part of
+the ordinary suite, because the release profile may not reach npm at all. In
 addition, the same post-pack launcher bytes run inside the runtime-stripped
 inner container against a planted installed-package tree and stub native
 binary. Injected `uname` and libc observations drive every supported and

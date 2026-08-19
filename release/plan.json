@@ -54,7 +54,7 @@
       "channel": "npm",
       "enabled": false,
       "plannedFor": "0.2.0",
-      "note": "Deferred. Trusted publishing is configured per package and npm only allows it for a package that already exists, so the first release cannot authenticate: enabling this channel requires a five-package manual bootstrap (scripts/npm-bootstrap.sh) publishing an immutable placeholder version by hand, then registering this repository, workflow and environment as each package's trusted publisher. None of that is a prerequisite for publishing a GitHub Release."
+      "note": "Deferred. Trusted publishing is configured per package and npm only allows it for a package that already exists, so the first release cannot authenticate: enabling this channel requires a five-package manual bootstrap (tlrelease npm-bootstrap) publishing an immutable placeholder version by hand, then registering this repository, workflow and environment as each package's trusted publisher. None of that is a prerequisite for publishing a GitHub Release."
     },
     {
       "channel": "homebrew",
