@@ -864,24 +864,78 @@ private def currentBranch (tap : String) : Decision String := do
         decline s!"the checkout at {tap} is not on a branch, so there is no branch for this release to publish to. Clone the tap rather than checking out a commit from it."
   | outcome => decline (outcome.failureMessage.getD "git could not be run")
 
+/-- What the remote's published branch holds, and whether it is there at all.
+
+    Two facts rather than one `Option`, because they have different
+    consequences and collapsing them hid the second. "The tap carries no
+    formula yet" is a state to publish into; "there is no branch here" is the
+    absence of anything a checkout could be compared against, and it is the one
+    case where what this command pushes is not confined by the tap's own
+    history. -/
+private structure RemoteBranch where
+  /-- Whether `origin` carries the branch. False makes `FETCH_HEAD` meaningless:
+      nothing was fetched, so nothing below may diff against it. -/
+  present : Bool
+  /-- The formula that branch carries, when it carries one. -/
+  formula : Option String
+
 /-- What the remote's published branch holds for the formula.
 
     Read from the remote rather than from the checkout, and read *before*
     anything is written: this is the only state a publication decision may be
     taken on, and every other one is a stage on the way to it. -/
-private def remoteFormula (tapPath branch : String) : Decision (Option String) := do
+private def remoteBranch (tapPath branch : String) : Decision RemoteBranch := do
   -- Does the branch exist there at all? A tap that has just been created has no
   -- branches, and a first publication creates one; asking the remote is also
   -- what establishes it can be reached before a byte is written.
   let heads ← gitIn tapPath ["ls-remote", "--heads", "origin", branch]
-  if heads.isEmpty then return none
+  if heads.isEmpty then return { present := false, formula := none }
   let _ ← gitIn tapPath ["fetch", "--quiet", "origin", branch]
   -- `ls-tree` rather than `show`, so "the branch does not carry this file" is
   -- an empty answer instead of a non-zero status this would have to tell apart
   -- from a repository it could not read.
   let entry ← gitIn tapPath ["ls-tree", "FETCH_HEAD", "--", tapFormulaRelative]
-  if entry.isEmpty then return none
-  return some (← gitRaw tapPath ["show", s!"FETCH_HEAD:{tapFormulaRelative}"])
+  if entry.isEmpty then return { present := true, formula := none }
+  return { present := true
+           formula := some (← gitRaw tapPath ["show", s!"FETCH_HEAD:{tapFormulaRelative}"]) }
+
+/-- The paths a `-z` listing named.
+
+    `-z` rather than splitting lines, and it is not fastidiousness: git quotes a
+    path containing a newline, a quote or a non-ASCII byte in its ordinary
+    listings, so a line-split reading would see `"caf\303\251.txt"` as a name
+    unlike the formula's and, worse, would read a path with an embedded newline
+    as two names that are each unlike it. Both directions of that error are the
+    same failure here — a comparison that does not recognise what it was given.
+    NUL-separated output is the one spelling git never rewrites. -/
+private def namedPaths (listing : String) : List String :=
+  (listing.splitOn "\x00").filter (· != "")
+
+/-- Everything the push would carry into the tap beyond the branch it read.
+
+    A push sends a branch, not a file. This command writes one path and stages
+    one path, and neither of those facts constrains what `git push` then sends:
+    a checkout holding an unrelated local commit publishes that commit too, and
+    the release job reports having pushed a formula. The tap is a public
+    repository that `brew install` resolves through, so what lands in it is not
+    a private matter for the checkout it was pushed from.
+
+    Both questions are asked because each is blind to the other. The tree diff
+    is what the tap ends up serving, and it sees content a merge brought in that
+    no single commit's own listing names; the per-commit listing sees a path
+    that was added and reverted again, which the tree diff cancels to nothing
+    while the history still carries it. Their union is what the push publishes.
+
+    Nothing is asked when the branch is absent: there is no fetched tip to
+    compare against, and a push that *creates* the branch publishes the local
+    history by definition rather than in addition to something. -/
+private def wouldPublishBeyondFormula (tapPath : String) (branch : RemoteBranch) :
+    Decision (List String) := do
+  if !branch.present then return []
+  let carried ← gitRaw tapPath ["diff", "--name-only", "-z", "FETCH_HEAD", "HEAD"]
+  let touched ← gitRaw tapPath ["log", "--format=", "--name-only", "-z", "FETCH_HEAD..HEAD"]
+  let named := namedPaths carried ++ namedPaths touched
+  return (named.filter (· != tapFormulaRelative)).eraseDups
 
 private def publishDecision (args : PublishArgs) : Decision String := do
   let description ← readParsed args.manifestPath ManifestDescription.parse
@@ -918,12 +972,18 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   let formulaDirectoryExists ← ofIO (do return .ok (← System.FilePath.isDir formulaDirectory))
   if !formulaDirectoryExists then
     decline s!"{formulaDirectory} is not a directory. A Homebrew tap keeps its formulae under Formula/, and creating it here would mean this command deciding the shape of a repository it is only supposed to update. Create it in the tap and commit it once."
-  let published ← remoteFormula args.tapPath branch
-  let state := tapDisposition formula published
+  let published ← remoteBranch args.tapPath branch
+  let state := tapDisposition formula published.formula
   -- Idempotence, over the remote. A retried job reaches this and stops because
   -- the *tap* already has the formula, not because this checkout does.
   if state == .identical then
     return s!"{description.homebrew.tap} already carries the formula for {description.tag} on {branch}; nothing to push"
+  -- Before the dry run as well as before the write, so a rehearsal answers the
+  -- question a rehearsal is for: whether running this for real would publish
+  -- only the formula.
+  let strangers ← wouldPublishBeyondFormula args.tapPath published
+  if !strangers.isEmpty then
+    decline s!"the checkout at {args.tapPath} is ahead of {branch} on {description.homebrew.tap} by changes to {String.intercalate ", " strangers}, and pushing this release's formula would publish those too — a push sends the branch, not the file this command wrote. The tap is what `brew install tl` resolves through, so this would be published rather than kept locally. Clone the tap fresh and re-run; if those changes belong in the tap, push them deliberately first."
   if args.dryRun then
     return s!"{state.describe}, and this release would replace it with the formula for {description.tag} — not written, --dry-run"
   let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
@@ -935,9 +995,18 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   -- failed publication — the publication decision was taken above, against the
   -- remote.
   if ← somethingStaged args.tapPath then
+    -- `--only <path>`, so the commit is this file whatever else the index holds.
+    -- The check above establishes that the *history* carries nothing unrelated;
+    -- this establishes that the commit about to join it does not either, and it
+    -- does so by construction rather than by having looked. A maintainer's
+    -- half-staged edit is left staged rather than committed or discarded: this
+    -- command publishes a formula, and rearranging someone's index is not
+    -- within that. `-m` precedes `--`, because after `--` git reads every word
+    -- as a pathspec.
     let _ ← gitIn args.tapPath
       ["-c", s!"user.name={commitAuthorName}", "-c", s!"user.email={commitAuthorEmail}",
-       "commit", "--no-verify", "-m", s!"tl {description.tag}: pin the released digests"]
+       "commit", "--only", "--no-verify",
+       "-m", s!"tl {description.tag}: pin the released digests", "--", tapFormulaRelative]
   -- Named explicitly. A bare `git push` consults `branch.<name>.remote` and
   -- `push.default`, so the destination would be configuration rather than the
   -- remote this command just checked.
@@ -945,8 +1014,8 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   -- And read back. "Pushed" is a claim about the remote, and the only evidence
   -- for it is the remote: a push that reported success while the ref did not
   -- move is exactly the outcome this command exists to make impossible.
-  let landed ← remoteFormula args.tapPath branch
-  if tapDisposition formula landed != .identical then
+  let landed ← remoteBranch args.tapPath branch
+  if tapDisposition formula landed.formula != .identical then
     decline s!"the push to {description.homebrew.tap} reported success and {branch} there does not carry this release's formula. Nothing about the tap can be assumed from here; look at the branch before re-running."
   return disclosing
     s!"pushed the formula for {description.tag} to {description.homebrew.tap} on {branch}, and read it back ({state.describe})"

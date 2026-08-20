@@ -3035,6 +3035,69 @@ private def tapPublishTests : IO (List Outcome) := do
     ["--dist", (base / "nowhere").toString, "--manifest", manifestPath, "--tap", checkout]
   let (notARepo, _, notARepoErr) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", base.toString]
+  -- (c) What a push carries that neither the write nor the staging decides.
+  --
+  -- `git push` sends a branch. This command writes one path and stages one
+  -- path, and neither of those constrains what the push then sends: an
+  -- unrelated pre-staged file joined the release commit, and an unrelated local
+  -- commit was published alongside the formula, in both cases with the job
+  -- reporting that it had pushed a formula. Each needs its own tap whose branch
+  -- does not already carry this release's formula — against the one above, the
+  -- run would stop at "already carries" before reaching any of this.
+  let sideTap (name : String) : IO (String × String) := do
+    let owner := base / (name ++ "-origin") / "Owner"
+    IO.FS.createDirAll owner
+    let remote := (owner / "homebrew-tap.git").toString
+    gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", remote]
+    let clone := (base / name).toString
+    gitFixture base.toString ["clone", "--quiet", "--", remote, clone]
+    IO.FS.createDirAll (clone ++ "/Formula")
+    IO.FS.writeFile (clone ++ "/README.md") "tap\n"
+    gitFixture clone ["add", "-A"]
+    gitFixture clone ["commit", "-q", "--no-verify", "-m", "init"]
+    gitFixture clone ["push", "--quiet", "origin", "HEAD:main"]
+    return (remote, clone)
+  -- An index holding something this release has nothing to do with. The push is
+  -- correct — the checkout is at the remote's tip — so this must publish, and
+  -- publish the formula alone.
+  let (stagedRemote, stagedTap) ← sideTap "staged"
+  IO.FS.writeFile (stagedTap ++ "/unrelated.txt") "a maintainer's half-finished edit\n"
+  gitFixture stagedTap ["add", "--", "unrelated.txt"]
+  let (stagedStatus, stagedOut, stagedErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", stagedTap]
+  let stagedRemoteFormula ← Release.succeeded "git" #["-C", stagedRemote, "show", "main:Formula/tl.rb"]
+  let stagedRemoteStranger ← Release.succeeded "git" #["-C", stagedRemote, "show", "main:unrelated.txt"]
+  -- Still staged: this command publishes a formula, and discarding or
+  -- committing someone's index is not within that.
+  let stagedStillStaged ← Release.succeeded "git"
+    #["-C", stagedTap, "diff", "--cached", "--name-only"]
+  -- A local commit the tap has never seen, touching something else. Refused:
+  -- the formula cannot be pushed without pushing this with it.
+  let (aheadRemote, aheadTap) ← sideTap "ahead"
+  IO.FS.writeFile (aheadTap ++ "/README.md") "a local edit that was never pushed\n"
+  gitFixture aheadTap ["add", "-A"]
+  gitFixture aheadTap ["commit", "-q", "--no-verify", "-m", "unrelated local work"]
+  let (aheadStatus, _, aheadErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap]
+  let aheadRemoteFormula ← Release.succeeded "git" #["-C", aheadRemote, "show", "main:Formula/tl.rb"]
+  -- And the dry run, which is a rehearsal of exactly this and would otherwise
+  -- report what the real run would do while the real run refuses.
+  let (aheadDryStatus, _, aheadDryErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap, "--dry-run"]
+  -- Added and taken away again. The tree diff against the tap's tip cancels to
+  -- nothing, so only the per-commit listing sees this — the history is pushed
+  -- too, and it is the history this file lands in.
+  let (revertedRemote, revertedTap) ← sideTap "reverted"
+  IO.FS.writeFile (revertedTap ++ "/leaked.txt") "not for a public tap\n"
+  gitFixture revertedTap ["add", "-A"]
+  gitFixture revertedTap ["commit", "-q", "--no-verify", "-m", "add"]
+  IO.FS.removeFile (revertedTap ++ "/leaked.txt")
+  gitFixture revertedTap ["add", "-A"]
+  gitFixture revertedTap ["commit", "-q", "--no-verify", "-m", "remove"]
+  let (revertedStatus, _, revertedErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", revertedTap]
+  let revertedRemoteFormula ← Release.succeeded "git"
+    #["-C", revertedRemote, "show", "main:Formula/tl.rb"]
   let (publishUsage, _, _) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath]
   IO.FS.removeDirAll base
@@ -3102,6 +3165,37 @@ private def tapPublishTests : IO (List Outcome) := do
     checkEq "homebrew-publish: a directory that is not a git checkout is refused" notARepo 1,
     check "homebrew-publish: that refusal carries git's own diagnosis"
       (contains notARepoErr "git") notARepoErr,
+    -- What the push carries, which the write and the staging do not decide.
+    check "homebrew-publish: a tap at the remote's tip publishes with an unrelated file staged"
+      (stagedStatus == 0) stagedErr,
+    check "homebrew-publish: and it reports pushing rather than refusing"
+      (contains stagedOut "pushed the formula") stagedOut,
+    check "homebrew-publish: and the formula it pushed is this release's"
+      (stagedRemoteFormula.toOption.map (·.stdout) == some expected)
+      s!"the tap does not hold the formula: {errorOf stagedRemoteFormula}",
+    check "homebrew-publish: the staged stranger did not travel with it"
+      stagedRemoteStranger.toOption.isNone
+      s!"unrelated.txt reached the tap: {okOr "" (stagedRemoteStranger.map (·.stdout))}",
+    check "homebrew-publish: and it is left staged rather than committed or discarded"
+      (contains (okOr "" (stagedStillStaged.map (·.stdout))) "unrelated.txt")
+      s!"the index no longer holds it: {okOr "<git failed>" (stagedStillStaged.map (·.stdout))}",
+    checkEq "homebrew-publish: a checkout ahead by unrelated work is refused" aheadStatus 1,
+    check "homebrew-publish: the refusal names the path that would be published with it"
+      (contains aheadErr "README.md" && contains aheadErr "a push sends the branch") aheadErr,
+    check "homebrew-publish: and nothing was pushed to that tap"
+      aheadRemoteFormula.toOption.isNone
+      s!"the tap received a formula: {okOr "" (aheadRemoteFormula.map (·.stdout))}",
+    checkEq "homebrew-publish: the dry run refuses it too, which is what a rehearsal is for"
+      aheadDryStatus 1,
+    check "homebrew-publish: the dry run gives the same reason rather than reporting the write"
+      (contains aheadDryErr "README.md") aheadDryErr,
+    checkEq "homebrew-publish: a path added and reverted is refused, though the tree diff is empty"
+      revertedStatus 1,
+    check "homebrew-publish: that refusal names it, because the history is pushed too"
+      (contains revertedErr "leaked.txt") revertedErr,
+    check "homebrew-publish: and that tap received nothing either"
+      revertedRemoteFormula.toOption.isNone
+      s!"the tap received a formula: {okOr "" (revertedRemoteFormula.map (·.stdout))}",
     checkEq "homebrew-publish: a missing --tap is a usage error" publishUsage 2]
 
 /-- Every url a remote may be written as, and the ones that are not this tap. -/
