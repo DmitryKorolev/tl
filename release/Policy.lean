@@ -77,11 +77,10 @@ def Profile.parse (what : String) (text : String) : Except String Profile :=
 
 /-- Whether this run is checking a tagged commit.
 
-    One gate is about the working tree rather than about the release: the
-    checked-in build stamp must be the *development* stamp, and a tag run stamps
-    on purpose. It is omitted rather than skipped, because "not applicable" and
+    A gate that is about the working tree rather than about the release is
+    *omitted* on a tag run rather than skipped, because "not applicable" and
     "could not run" have different remedies and only one of them is worth
-    reporting. -/
+    reporting. No gate is one today — see the constructor below. -/
 inductive TagBehaviour where
   /-- Runs on every commit. -/
   | always
@@ -163,9 +162,8 @@ of the contract: a policy run is read top to bottom, and two runs of the same
 profile that reported their gates in different orders would be two documents to
 compare by hand.
 
-Three gates still invoke a shell script's single-gate flag — the ShellCheck
-sweep, the build-stamp comparison and the formula parse — because their bodies
-have not been ported yet. Naming a real invocation rather than a placeholder is
+Two gates still invoke a shell script's single-gate flag — the ShellCheck
+sweep and the formula parse — because their bodies have not been ported yet. Naming a real invocation rather than a placeholder is
 what lets this run before it is authoritative; each becomes a `tlrelease`
 command as its own port lands, and the shell allowlist is what will say when
 none is left. -/
@@ -222,11 +220,21 @@ def gates : List Gate :=
      invocation := .script "./scripts/check-channel-policy.sh" ["--ruby-only"]
      summary := "An early signal on the rendered formulae; real Homebrew is the acceptance authority." }]
 
-/-- The gates of one profile, in registry order. -/
-def gatesIn (profile : Profile) (tagRun : Bool) : List Gate :=
-  gates.filter fun gate =>
+/-- The gates of one profile, in registry order, out of a given registry.
+
+    Parameterised over the registry so the tag clause is reachable. Applied only
+    to `gates` it is not: no gate carries `workingTreeOnly` today, so dropping
+    the clause entirely would leave every row green — a branch nothing exercises
+    is one nothing is holding in place. `Tests/ReleaseToolTests.lean` drives it
+    over a registry that does carry one. -/
+def gatesFrom (registry : List Gate) (profile : Profile) (tagRun : Bool) : List Gate :=
+  registry.filter fun gate =>
     gate.profiles.contains profile
       && (!tagRun || gate.onTag == .always)
+
+/-- The gates of one profile, in registry order. -/
+def gatesIn (profile : Profile) (tagRun : Bool) : List Gate :=
+  gatesFrom gates profile tagRun
 
 /-- Their names, which is what a listing and the parity oracle compare. -/
 def gateNames (profile : Profile) (tagRun : Bool) : List String :=

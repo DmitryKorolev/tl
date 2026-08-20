@@ -97,12 +97,20 @@ express:
   published procedure would reject. `install.sh` performs the same checks with
   its own embedded copy of the pin, because a piped installer has no checkout
   to read; `Tests/ReleaseTests.lean` guards that copy against drift.
-- A regeneration diff on `Tl/Build/Stamp.lean`. Three places state as fact that
-  the checked-in copy is the development stamp; without this step a stamped
+- A regeneration comparison on `Tl/Build/Stamp.lean`. Three places state as
+  fact that the committed copy is the development stamp; without it a stamped
   copy swept in by `git commit -a` would make every build from that tree claim
-  `clean build — commit <stale>` while passing the whole suite. It is a CI step
-  rather than a `tltest` assertion so the release job, which stamps on purpose,
-  is unaffected.
+  `clean build — commit <stale>`. It is a `tltest` assertion rather than a step
+  in this script, because the generator is `tlrelease stamp` and this script
+  runs in a job with no Lean toolchain by design — the same reason
+  `version-consistency` and `platform-classification` are not gates here. The
+  assertion runs the command over a copy of this repository's inputs rather
+  than rebuilding the provenance in the test, so a regression in the command's
+  own derivation fails it; and it reads the committed bytes with `git show`
+  rather than the working tree, so a job that has already stamped — the release
+  workflow does — cannot fail it. `--list` names it under "covered by a
+  different required gate", so a reader auditing the policy is not told the
+  development stamp is unenforced.
 - `tlrelease npm-selftest` packs and really installs the npm packages with the
   real client, then drives the launcher through them: the entry list and the
   modes npm publishes, the installed `bin` symlink, argument transparency, exit

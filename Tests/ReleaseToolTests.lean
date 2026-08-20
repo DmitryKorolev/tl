@@ -3365,6 +3365,12 @@ private def sampleGate (name : String) (requires : List Policy.ToolRequirement) 
   { name, requires, profiles := [.ci], onTag := .always
     invocation := .tool "true" [], summary := "" }
 
+/-- A registry carrying both tag behaviours. The real one carries only
+    `always`, so this is what makes `gatesFrom`'s tag clause reachable. -/
+private def syntheticRegistry : List Policy.Gate :=
+  [sampleGate "always" [],
+   { sampleGate "working tree" [] with onTag := .workingTreeOnly }]
+
 private def presentOnly (tools : List String) : String → Bool := fun tool => tools.contains tool
 
 private def policyTests : List Outcome :=
@@ -3404,9 +3410,18 @@ private def policyTests : List Outcome :=
     -- says the tag path now differs.
     checkEq "policy: a tag run performs the whole release profile"
       releaseNames releaseTagNames,
-    check "policy: no gate is working-tree-only, and the filter says so"
+    check "policy: no gate in the registry is working-tree-only"
       (Policy.gates.all fun gate => gate.onTag == .always)
       s!"{(Policy.gates.filter fun gate => gate.onTag != .always).map (·.name)}",
+    -- And the filter itself, over a registry that does carry one. Applied to
+    -- the real registry the tag clause is unreachable while nothing carries
+    -- `workingTreeOnly`, so deleting it would leave every row above green;
+    -- these two rows are what hold it in place until a real gate takes it.
+    checkEq "policy: a working-tree-only gate is omitted from a tag run"
+      ((Policy.gatesFrom syntheticRegistry .ci true).map (·.name)) ["always"],
+    checkEq "policy: and present when the run is not a tag"
+      ((Policy.gatesFrom syntheticRegistry .ci false).map (·.name))
+      ["always", "working tree"],
     check "policy: every gate is in at least one profile"
       (Policy.gates.all fun gate => !gate.profiles.isEmpty) "a gate no profile runs",
     check "policy: every gate name is distinct"
@@ -3651,10 +3666,6 @@ private def policyParityTests : IO (List Outcome) := do
       -- gate, which flattens to nothing without a channel listing and leaves
       -- exactly the release profile's gates behind.
       let (crossed, _, crossedErr) ← run ["--profile", "release", "--observed", ciPath]
-      -- A non-tag listing against a tag run. It matches today, because no gate
-      -- is working-tree-only any more; the row below states that rather than
-      -- asserting a refusal that has nothing left to refuse.
-      let (tagDrift, _, tagDriftErr) ← run ["--profile", "release", "--observed", relPath, "--tag"]
       let emptyPath := (base / "empty.txt").toString
       IO.FS.writeFile emptyPath "\n\n"
       let (emptyStatus, _, emptyErr) ← run ["--profile", "ci", "--observed", emptyPath]
@@ -3667,19 +3678,16 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: it says how many gates it compared"
           (contains ciOut "9 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
+        -- One row for the tag listing, not two: `relTag` and `rel` are the
+        -- same list while nothing is working-tree-only, so a second comparison
+        -- over the same bytes states nothing the first did not. What holds the
+        -- distinction in place is `gatesFrom` driven over a registry that
+        -- carries one, in `policyTests`.
         check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
         checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
         check "policy parity: that refusal names the grouping gate"
           (contains crossedErr "deferred-channel gates") crossedErr,
-        -- The release profile's tag and non-tag listings are the same list
-        -- while nothing is working-tree-only, so this passes rather than
-        -- refuses. It is kept, and paired with the registry row that pins the
-        -- emptiness, so that a gate taking `workingTreeOnly` makes both say so
-        -- instead of leaving the tag path unexercised.
-        checkEq "policy parity: a non-tag listing satisfies a tag run while nothing is omitted"
-          tagDrift 0,
-        check "policy parity: and it compared the release profile rather than refusing"
-          tagDriftErr.isEmpty tagDriftErr,
+
         checkEq "policy parity: an empty listing is refused" emptyStatus 1,
         check "policy parity: that refusal says the comparison would have nothing to compare"
           (contains emptyErr "nothing to compare") emptyErr,
@@ -4805,21 +4813,35 @@ private def stampFixture (base : System.FilePath) (name : String) : IO String :=
 private def stampTests : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
   -- The live repository first: what the command writes is what is tracked.
-  -- This is the drift guard, and it is the reason the gate exists at all —
+  -- This is the drift guard, and it is why the shell gate it replaced existed —
   -- three documents state as fact that the checked-in copy is the development
   -- stamp, and nothing but a comparison enforces it.
-  let tracked ← IO.FS.readFile "Tl/Build/Stamp.lean"
-  let toolchainText ← IO.FS.readFile "lean-toolchain"
-  let digester ← Digester.resolve
-  let manifestDigest ← match digester with
-    | .ok digester =>
-        match ← digester.digest "lake-manifest.json" with
-        | .ok digest => pure digest.hex
-        | .error message => pure message
-    | .error message => pure message
-  let rendered := Stamp.render
-    { commit := "", dirty := false, toolchain := toolchainText.trimAscii.toString
-      manifestDigest }
+  --
+  -- Through the command, over a copy of the real inputs, rather than by
+  -- rebuilding a `Provenance` here and rendering it. Rebuilding it would
+  -- compare the renderer against itself: a regression in how the command
+  -- derives the provenance for a real root — the toolchain trim, the
+  -- development-provenance selection, the output path — would leave the tracked
+  -- file stale while this row passed, and its failure text names a command it
+  -- had not run.
+  -- From git, not from the working tree. What this guards is the *committed*
+  -- copy — "a stamped copy swept in by `git commit -a`" — and reading the
+  -- working tree instead would make the row fail in any job that has stamped,
+  -- which is a real ordering hazard rather than a hypothetical: the release
+  -- workflow stamps the checkout, and today only the job ordering (gates runs
+  -- the suite before stamp does its work) keeps a tagged release from failing
+  -- here after the tag exists.
+  let trackedRead ← Release.succeeded "git" #["show", "HEAD:Tl/Build/Stamp.lean"]
+  let tracked := match trackedRead with
+    | .ok output => output.stdout
+    | .error _ => ""
+  let mirror := (base / "mirror").toString
+  IO.FS.createDirAll (mirror ++ "/Tl/Build")
+  IO.FS.writeFile (mirror ++ "/lean-toolchain") (← IO.FS.readFile "lean-toolchain")
+  IO.FS.writeFile (mirror ++ "/lake-manifest.json") (← IO.FS.readFile "lake-manifest.json")
+  let (mirrorStatus, _, mirrorErr) ← runCommand "stamp" ["--root", mirror]
+  let rendered ← if ← System.FilePath.pathExists (mirror ++ "/Tl/Build/Stamp.lean") then
+      IO.FS.readFile (mirror ++ "/Tl/Build/Stamp.lean") else pure ""
   -- A development stamp, in a directory of its own.
   let plain ← stampFixture base "plain"
   let (plainStatus, plainOut, _) ← runCommand "stamp" ["--root", plain]
@@ -4869,10 +4891,23 @@ private def stampTests : IO (List Outcome) := do
   let (oddStatus, _, oddErr) ← runCommand "stamp" ["--root", odd]
   let (usage, _, _) ← runCommand "stamp" ["--commit"]
   let outcomes := [
-    -- The drift guard, against the real repository.
-    check "stamp: the tracked build stamp is what this command writes"
-      (tracked == rendered)
-      "Tl/Build/Stamp.lean differs from a fresh render; run `tlrelease stamp --root .`",
+    -- The drift guard, against the real repository. Two rows, because a run
+    -- that could not produce a stamp at all is not the same finding as a stamp
+    -- that differs: the first sends a developer to repair their digest tool,
+    -- the second to regenerate a file. Collapsing them tells whoever has
+    -- neither sha256sum nor shasum to regenerate a file that is already right.
+    check "stamp: the committed build stamp could be read at all"
+      (match trackedRead with | .ok _ => true | .error _ => false)
+      (match trackedRead with
+       | .ok _ => ""
+       | .error message => s!"could not read HEAD:Tl/Build/Stamp.lean ({message}); the drift comparison was made against nothing"),
+    checkEq "stamp: the command can write a stamp from this repository's inputs"
+      mirrorStatus 0,
+    check "stamp: and it says why when it cannot" (mirrorStatus == 0 || !mirrorErr.isEmpty)
+      "the command failed without saying why",
+    check "stamp: the committed build stamp is what this command writes"
+      (mirrorStatus != 0 || tracked.isEmpty || tracked == rendered)
+      "the committed Tl/Build/Stamp.lean differs from what the command writes; run `tlrelease stamp --root .` and commit the result",
     checkEq "stamp: a development stamp is written" plainStatus 0,
     check "stamp: it says the commit is a development one" (contains plainOut "<development>")
       plainOut,

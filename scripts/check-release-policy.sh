@@ -13,17 +13,21 @@
 # while the typed registry and this file both exist. It is a projection of the
 # same sequence the run performs — the run counts what it executed and refuses
 # if the two disagree — so it cannot become a third description that drifts from
-# both. The two `--*-only` flags exist for the same coexistence: they let the
-# typed registry name a real invocation for the two gates whose bodies live in
-# this file, so the registry's runner can be exercised before it is
-# authoritative. All three go with this script.
+# both. `--shellcheck-only` exists for the same coexistence: it lets the typed
+# registry name a real invocation for the one gate whose body lives in this
+# file, so the registry's runner can be exercised before it is authoritative.
+# Both go with this script.
 #
 # `--tag` states that this is a release run rather than a working-tree check.
 # It no longer gates tag agreement: that moved to `tlrelease version-consistency
 # --tag`, which the release workflow's gates job runs on the tagged commit
 # before the build matrix, because it needs a Lean toolchain this job does not
-# have. What `--tag` still decides here is the development-stamp gate, which a
-# tag run is expected to fail: a tag stamps on purpose.
+# have. `--tag` decides nothing this script executes any more: the one gate it
+# used to omit — the development-stamp comparison — moved into `lake exe tltest`
+# with the generator it checks. It is kept because it is what the header line
+# says the run was about, and because the release workflow passes it through;
+# the typed registry keeps the tag/working-tree distinction for the gate that
+# takes it next.
 #
 # There were two definitions of "the release policy". `ci.yml` ran nine gates
 # on every commit; `release.yml`'s `gates` job ran four and described itself as
@@ -186,6 +190,12 @@ covered by a different required gate, and deliberately not run here:
   the SBOM generator                  `lake exe tltest`, over Tests/ReleaseToolTests.lean
                                       — it is `tlrelease sbom`, and this script
                                       answers in seconds without a toolchain
+  the checked-in build stamp is       `lake exe tltest`, which runs
+    the development stamp             `tlrelease stamp` over a copy of this
+                                      repository's inputs and compares the
+                                      result with the tracked file — same
+                                      reason: the generator is the release tool
+                                      now, and this script has no toolchain
   the v0.1 dependency boundary        `tlrelease dependency-boundary`, in the
                                       job that has a Lean toolchain; this script
                                       is itself one of the entry points it reads
