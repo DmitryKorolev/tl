@@ -111,22 +111,28 @@ formulae_parse() {
 # package would actually publish — ran against the caller's real cache and
 # npmrc. Nothing showed it, because an ambient cache normally works.
 #
-# So the run is handed a HOME whose `.npmrc` names a cache that cannot exist:
-# its parent is a regular file, so creating it is ENOTDIR on every platform
-# rather than a fact about how one of them treats /proc. An invocation that
-# stays inside the pinned configuration never reads this file. One that escapes
-# fails, here, on the gate — which is what makes the isolation a checked
-# property rather than a claim in a comment.
+# So the run is given an ambient configuration that cannot work: each of the
+# three settings the tool pins is also set in the environment, to a path whose
+# parent is a regular file. npm resolves a command-line argument ahead of an
+# `npm_config_*` variable, so an invocation carrying the argument never sees
+# these and one that omits it fails with ENOTDIR — on every platform, rather
+# than as a fact about how one of them treats a directory like /proc.
+#
+# Through the environment rather than through HOME, though the escape was into
+# `~/.npm`. Both detect it, because `--userconfig` *is* the path to the file
+# under HOME. The environment is the narrower instrument: it says nothing about
+# where a home directory is, so it cannot break a runner whose npm needs one to
+# resolve at all, and what it tests is the precedence rule the pinning relies
+# on rather than a side effect of it.
 npm_packaging() {
-  npm_home=$(mktemp -d "${TMPDIR:-/tmp}/tl-npm-ambient.XXXXXX") || return 1
-  : > "$npm_home/not-a-directory"
-  cat > "$npm_home/.npmrc" <<NPMRC
-cache=$npm_home/not-a-directory/cache
-registry=http://127.0.0.1:9/tl-must-not-reach-a-registry/
-NPMRC
+  ambient=$(mktemp -d "${TMPDIR:-/tmp}/tl-npm-ambient.XXXXXX") || return 1
+  : > "$ambient/not-a-directory"
   npm_status=0
-  HOME=$npm_home ./.lake/build/bin/tlrelease npm-selftest --root . || npm_status=$?
-  rm -rf "$npm_home"
+  npm_config_cache="$ambient/not-a-directory/cache" \
+  npm_config_userconfig="$ambient/not-a-directory/npmrc" \
+  npm_config_globalconfig="$ambient/not-a-directory/globalrc" \
+    ./.lake/build/bin/tlrelease npm-selftest --root . || npm_status=$?
+  rm -rf "$ambient"
   return "$npm_status"
 }
 

@@ -928,7 +928,13 @@ private def namedPaths (listing : String) : List String :=
 
     Nothing is asked when the branch is absent: there is no fetched tip to
     compare against, and a push that *creates* the branch publishes the local
-    history by definition rather than in addition to something. -/
+    history by definition rather than in addition to something.
+
+    One thing this does not confine, recorded rather than implied: a commit that
+    changes no file at all is named by neither query, so its message travels
+    with the push. What is being kept out of the tap is content, and a message
+    on an empty commit is the one carrier that is not content — worth knowing
+    before reading a green run as "nothing but the formula moved". -/
 private def wouldPublishBeyondFormula (tapPath : String) (branch : RemoteBranch) :
     Decision (List String) := do
   if !branch.present then return []
