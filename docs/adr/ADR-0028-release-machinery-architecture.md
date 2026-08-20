@@ -265,7 +265,12 @@ never discovers a repository root or derives a base by splitting the output
 path. Its output name is a sealed, non-empty list of validated relative
 components. Absolute paths, empty components, `.`, `..`, and embedded NUL are
 rejected at the Lean boundary, and the native primitive consumes the component
-array without reparsing a path string. The raw array-taking extern is private to
+array without reparsing a path string. A writing command creates no directory
+on the way to its output either: a path-resolving `createDirAll` beside the
+anchored writer follows a symlinked component and puts the directory outside the
+base the writer would then refuse to be redirected out of, which is the boundary
+undone by its own preparation. Directories beneath the base are required to
+exist, and the writer's refusal names the one that does not. The raw array-taking extern is private to
 the binding module, so another release module cannot bypass the sealed
 component type by constructing an unchecked array.
 

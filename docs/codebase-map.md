@@ -857,7 +857,12 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   updates the tap once — a prerelease does not push,
                         --   an identical formula is a no-op, and a checkout
                         --   whose origin is not the tap the manifest names is a
-                        --   refusal that does not repeat the url. formulaCovers_iff
+                        --   refusal that does not repeat the url. A push sends
+                        --   a branch rather than the file that was written, so
+                        --   the commit is made with `--only` and a checkout
+                        --   carrying anything the tap's branch does not have,
+                        --   beyond the formula itself, is refused before the
+                        --   write and before the dry run. formulaCovers_iff
                         --   is the rule that matters: a stable spec missing a
                         --   url for a Supported target makes Homebrew raise on
                         --   *load*, for every brew command touching the tap.
