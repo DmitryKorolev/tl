@@ -572,6 +572,29 @@ def tally (rows : List (Gate × GateOutcome)) : Nat × Nat × Nat :=
     | .failed _ => (passed, failed + 1, skipped)
     | .skipped _ => (passed, failed, skipped + 1)
 
+/-- What a failed run says after it has listed the problems.
+
+    Two endings, because the two runs leave the reader with different work. When
+    every gate ran, the list above is the whole of it. When one did not, the run
+    was smaller than the policy and the remedy — install the tool, run it again —
+    is not in that list at all: under `--strict` the skip appears as a problem
+    saying it may not be skipped, and without it the skip is not a problem at
+    all and the list can be entirely about something else.
+
+    A single ending said "Every gate ran" either way, one line below a count of
+    the gates that had not. A report that contradicts its own figures is read as
+    a rendering slip, and the reader who acts on the sentence rather than the
+    number goes looking for a fault in a gate that never ran.
+
+    Separated from the command so that both endings are reachable from a test:
+    the gates themselves invoke real scripts, so the only way this text was ever
+    read was by a person in front of a broken job. -/
+def runRemedy (skipped : Nat) : String :=
+  if skipped == 0 then
+    "Every gate ran; the ones above are the ones to fix."
+  else
+    s!"{skipped} gate(s) did not run, so this was a smaller policy than the one being reported on — install the tools they name above and run it again."
+
 /-! ## The parity oracle
 
 Temporary, and deleted with the shell policy. Until then the shell is
@@ -601,11 +624,13 @@ def flattenShellNames (outer : List String) (channel : List String) : List Strin
 
     Checked before the comparison, and separately from it, because both make the
     comparison *pass* rather than fail. A `ci` listing given with no channel
-    listing has its wrapper flattened to nothing, which leaves exactly the nine
-    gates of the release profile — so comparing the ci listing against the
-    release registry succeeded, having silently dropped four gates. A channel
-    listing given for a profile with no wrapper is the same mistake in the other
-    direction: four gate names that never reach the comparison. -/
+    listing has its wrapper flattened to nothing, which leaves exactly the gates
+    of the release profile — so comparing the ci listing against the release
+    registry succeeded, having silently dropped the channel's. A channel listing
+    given for a profile with no wrapper is the same mistake in the other
+    direction: gate names that never reach the comparison. The counts are the
+    registry's and are deliberately not repeated here; a number in a comment
+    beside a list that owns it is a second definition that drifts. -/
 def groupingProblems (outer : List String) (channelGiven : Bool) : List String :=
   let grouped := outer.contains shellChannelGroupGate
   (if grouped && !channelGiven then
@@ -746,7 +771,7 @@ private def runDecision (args : RunArgs) : Decision String := do
   | problems =>
       decline (s!"the {args.profile.wire} profile did not pass: {failed} failed, {skipped} skipped, {passed} passed.\n"
         ++ String.join (problems.map fun problem => s!"  {problem}\n")
-        ++ "Every gate ran; the ones above are the ones to fix.")
+        ++ Policy.runRemedy skipped)
 
 open Policy in
 private def runCommand : Command :=

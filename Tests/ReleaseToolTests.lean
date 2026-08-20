@@ -3485,6 +3485,12 @@ private def policyTests : List Outcome :=
     (Policy.runFailures strict (rows [outcome])).any fun failure => contains failure needle
   let saysAny (problems : List String) (needle : String) : Bool :=
     problems.any fun problem => contains problem needle
+  -- Through `tally`, not from a number written beside it: what the ending says
+  -- about skipped gates has to be the same count the line above it prints, and
+  -- that is exactly the agreement that was broken.
+  let remedyFor (outcomes : List Policy.GateOutcome) : String :=
+    let (_, _, skipped) := Policy.tally (rows outcomes)
+    Policy.runRemedy skipped
   let planWithChannels (npm brew : Bool) : Option ReleasePlan :=
     (ReleasePlan.parse "p" (planTextOf npm brew)).toOption
   [ -- Profiles, and the one difference between them.
@@ -3565,6 +3571,25 @@ private def policyTests : List Outcome :=
     check "policy: a failed gate's report names the gate"
       (reportSays false (.failed "it refused") "no tools") "",
     checkEq "policy: a passing run reports nothing" (Policy.runFailures true (rows [.passed])) [],
+    -- How a failed run ends. It said "Every gate ran" unconditionally, one line
+    -- below the count of the gates that had not — so the reader was told to go
+    -- and fix a gate that never ran, and not told to install the tool it needs.
+    check "policy: a run where every gate ran says the listed failures are the whole story"
+      (contains (remedyFor [.passed, .failed "it refused"]) "Every gate ran") "",
+    check "policy: a run with a skipped gate does not claim every gate ran"
+      (let remedy := remedyFor
+        [.failed "it refused", .skipped { tool := "ruby", lost := "ruby is not on PATH" }]
+       !contains remedy "Every gate ran") "",
+    check "policy: it says how many did not run, and to install what they need"
+      (let remedy := remedyFor
+        [.failed "it refused", .skipped { tool := "ruby", lost := "ruby is not on PATH" }]
+       contains remedy "1 gate(s) did not run" && contains remedy "install the tools") "",
+    -- The strict shape: nothing failed on its own, and the run still refuses
+    -- because a gate was skipped. The ending must be about the skip.
+    check "policy: a strict run whose only problem is a skip ends on the skip"
+      (let remedy := remedyFor
+        [.passed, .skipped { tool := "ruby", lost := "ruby is not on PATH" }]
+       contains remedy "did not run" && !contains remedy "Every gate ran") "",
     -- Surface effects. The installer is the row worth reading twice.
     check "policy: the three publication channels publish"
       (Policy.publicationChannels.all fun channel =>
