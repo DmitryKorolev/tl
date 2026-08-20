@@ -805,16 +805,19 @@ private def manifestsDecision (args : ManifestsArgs) : Decision String := do
   let rendered ← ofExcept (renderAll spec license)
   let mut disclosures := []
   for package in rendered do
-    -- The directory has to exist before the anchored writer descends into it,
-    -- and a package directory that is not there is a package this repository
-    -- does not track — created rather than refused, so adding a target is one
-    -- edit to release/targets.json.
-    ofIO (do
-      try
-        IO.FS.createDirAll (args.baseText ++ "/" ++ package.directory)
-        return .ok ()
-      catch error =>
-        return .error s!"could not create {args.baseText}/{package.directory}: {error}")
+    -- No directory is created here, and the reason is the capability boundary
+    -- rather than tidiness. `IO.FS.createDirAll` resolves a path the way the
+    -- shell does, so a symlink at a component of it — `platform`, say — was
+    -- followed, and the package directory appeared wherever the link pointed.
+    -- The anchored writer then refused the file, which made the escape look
+    -- contained: it was not, the directory was already outside the granted
+    -- base. A writer that refuses to be redirected next to a helper that
+    -- redirects is not a boundary.
+    --
+    -- Requiring them costs nothing that was really being bought: a package
+    -- directory is tracked structure that also carries a README and the licence
+    -- notices, so adding a target was never one edit to release/targets.json,
+    -- and creating one here only hid which of those files was missing.
     let path ← ofExcept
       (Write.OutputPath.parse "the package manifest" (package.directory ++ "/package.json"))
     let disclosure ← ofIO (writeEvidence args.base path package.manifest)

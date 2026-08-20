@@ -4253,6 +4253,25 @@ private def npmManifestCommandTests : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
   let out := (base / "npm").toString
   IO.FS.createDirAll out
+  -- The package directories the command writes into, taken from the renderer it
+  -- walks itself so the fixture cannot fall behind release/targets.json. It
+  -- creates none of them: a package directory is tracked structure that also
+  -- carries a README and the licence notices, and creating one here resolved
+  -- the path the way a shell does — which is how a symlinked component put a
+  -- package directory outside the granted base.
+  let identityText ← IO.FS.readFile "release/identity.json"
+  let targetsText ← IO.FS.readFile "release/targets.json"
+  let licenseText ← IO.FS.readFile "LICENSE"
+  let assembled : Except String (List String) := do
+    let spec ← npmSpecOf identityText targetsText Npm.placeholderVersion
+    let rendered ← Npm.renderAll spec (← Npm.spdxOf "LICENSE" licenseText)
+    return rendered.map (fun package => package.directory)
+  let packageDirectories : List String :=
+    match assembled with
+    | .ok directories => directories
+    | .error _ => []
+  for directory in packageDirectories do
+    IO.FS.createDirAll (out ++ "/" ++ directory)
   let (status, stdout, _) ← runCommand "npm-manifests"
     ["--identity", "release/identity.json", "--targets", "release/targets.json",
      "--license", "LICENSE", "--output-dir", out]
@@ -4271,6 +4290,34 @@ private def npmManifestCommandTests : IO (List Outcome) := do
     ["--identity", "release/identity.json", "--targets", "release/targets.json",
      "--license", badLicense, "--output-dir", out]
   let (usage, _, _) ← runCommand "npm-manifests" ["--targets", "release/targets.json"]
+  -- A base whose package directories are simply not there. The command creates
+  -- none, so this refuses — and the refusal has to name the path, because
+  -- "something under npm/ is missing" is not actionable and the whole point of
+  -- not creating it is that a maintainer finds out which file is absent.
+  let bare := (base / "bare").toString
+  IO.FS.createDirAll bare
+  let (bareStatus, _, bareErr) ← runCommand "npm-manifests"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--license", "LICENSE", "--output-dir", bare]
+  -- And the case the directory creation used to walk straight through: an
+  -- intermediate component that is a symlink out of the granted base. The
+  -- write already refused; what it could not undo was the directory that
+  -- creating the path had already made on the other side of the link.
+  let hostile := (base / "hostile").toString
+  let elsewhere := (base / "elsewhere").toString
+  IO.FS.createDirAll hostile
+  IO.FS.createDirAll elsewhere
+  IO.FS.createDirAll (hostile ++ "/" ++ Npm.launcherDirectory)
+  let linked ← (do
+    match ← Release.run "ln" #["-s", elsewhere, hostile ++ "/platform"] with
+    | .completed output => return output.exitCode == 0
+    | _ => return false)
+  let (hostileStatus, _, hostileErr) ← runCommand "npm-manifests"
+    ["--identity", "release/identity.json", "--targets", "release/targets.json",
+     "--license", "LICENSE", "--output-dir", hostile]
+  let escaped ← (do
+    try return (← System.FilePath.readDir elsewhere).toList.map (·.fileName)
+    catch _ => return ["<could not read the directory the link points at>"])
   IO.FS.removeDirAll base
   return [
     checkEq "npm-manifests: the tracked set renders" status 0,
@@ -4287,7 +4334,21 @@ private def npmManifestCommandTests : IO (List Outcome) := do
     checkEq "npm-manifests: an unrecognised licence is refused" unknownLicense 1,
     check "npm-manifests: that refusal says the registry records it permanently"
       (contains unknownLicenseErr "cannot be republished") unknownLicenseErr,
-    checkEq "npm-manifests: a missing --identity is a usage error" usage 2]
+    checkEq "npm-manifests: a missing --identity is a usage error" usage 2,
+    -- The package directories, which this command requires rather than creates.
+    checkEq "npm-manifests: a base without the package directories is refused"
+      bareStatus 1,
+    check "npm-manifests: that refusal names the path and says it creates none"
+      (contains bareErr "/tl/package.json" && contains bareErr "creates no directories")
+      bareErr,
+    check "npm-manifests: the fixture's link was planted, so the row below decides something"
+      linked "ln -s did not create the symlinked component",
+    checkEq "npm-manifests: a symlinked component under the output base is refused"
+      hostileStatus 1,
+    check "npm-manifests: that refusal says links are not followed"
+      (contains hostileErr "refused rather than followed") hostileErr,
+    checkEq "npm-manifests: and nothing was created on the other side of the link"
+      escaped []]
 
 /-! ### Staging, and publishing to a stubbed registry
 
