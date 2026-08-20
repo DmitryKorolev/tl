@@ -3396,13 +3396,17 @@ private def policyTests : List Outcome :=
       (["npm packaging over the real client", "the rendered formulae parse"].all fun name =>
           ciNames.contains name && !releaseNames.contains name)
       s!"{ciNames}",
-    -- The tag run omits the working-tree gate rather than skipping it.
-    checkEq "policy: a tag run omits the build-stamp gate"
-      (releaseNames.filter (· != "the checked-in build stamp is what the generator writes"))
-      releaseTagNames,
-    check "policy: nothing else changes on a tag run"
-      (releaseTagNames.length + 1 == releaseNames.length)
-      s!"{releaseNames.length} against {releaseTagNames.length}",
+    -- Every gate in the release profile runs on a tag, because no gate is
+    -- working-tree-only any more: the last one that was — the checked-in build
+    -- stamp against a fresh render — moved into `lake exe tltest` when the
+    -- generator became `tlrelease stamp`. Stated as an equality rather than
+    -- left implicit, so a gate that takes `workingTreeOnly` fails this row and
+    -- says the tag path now differs.
+    checkEq "policy: a tag run performs the whole release profile"
+      releaseNames releaseTagNames,
+    check "policy: no gate is working-tree-only, and the filter says so"
+      (Policy.gates.all fun gate => gate.onTag == .always)
+      s!"{(Policy.gates.filter fun gate => gate.onTag != .always).map (·.name)}",
     check "policy: every gate is in at least one profile"
       (Policy.gates.all fun gate => !gate.profiles.isEmpty) "a gate no profile runs",
     check "policy: every gate name is distinct"
@@ -3647,6 +3651,9 @@ private def policyParityTests : IO (List Outcome) := do
       -- gate, which flattens to nothing without a channel listing and leaves
       -- exactly the release profile's gates behind.
       let (crossed, _, crossedErr) ← run ["--profile", "release", "--observed", ciPath]
+      -- A non-tag listing against a tag run. It matches today, because no gate
+      -- is working-tree-only any more; the row below states that rather than
+      -- asserting a refusal that has nothing left to refuse.
       let (tagDrift, _, tagDriftErr) ← run ["--profile", "release", "--observed", relPath, "--tag"]
       let emptyPath := (base / "empty.txt").toString
       IO.FS.writeFile emptyPath "\n\n"
@@ -3658,15 +3665,21 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: the ci profile matches the shell policy on this commit"
           (ciStatus == 0) ciErr,
         check "policy parity: it says how many gates it compared"
-          (contains ciOut "10 gate(s)") ciOut,
+          (contains ciOut "9 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
         check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
         checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
         check "policy parity: that refusal names the grouping gate"
           (contains crossedErr "deferred-channel gates") crossedErr,
-        checkEq "policy parity: a non-tag listing does not satisfy a tag run" tagDrift 1,
-        check "policy parity: that refusal names the gate a tag run omits"
-          (contains tagDriftErr "build stamp") tagDriftErr,
+        -- The release profile's tag and non-tag listings are the same list
+        -- while nothing is working-tree-only, so this passes rather than
+        -- refuses. It is kept, and paired with the registry row that pins the
+        -- emptiness, so that a gate taking `workingTreeOnly` makes both say so
+        -- instead of leaving the tag path unexercised.
+        checkEq "policy parity: a non-tag listing satisfies a tag run while nothing is omitted"
+          tagDrift 0,
+        check "policy parity: and it compared the release profile rather than refusing"
+          tagDriftErr.isEmpty tagDriftErr,
         checkEq "policy parity: an empty listing is refused" emptyStatus 1,
         check "policy parity: that refusal says the comparison would have nothing to compare"
           (contains emptyErr "nothing to compare") emptyErr,

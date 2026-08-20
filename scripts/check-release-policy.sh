@@ -8,7 +8,6 @@
 #   scripts/check-release-policy.sh --list              name the gates and exit
 #   scripts/check-release-policy.sh --list-names        one gate name per line
 #   scripts/check-release-policy.sh --shellcheck-only   just that gate's body
-#   scripts/check-release-policy.sh --stamp-only        just that gate's body
 #
 # `--list-names` is the machine-readable listing `tlrelease policy-parity` reads
 # while the typed registry and this file both exist. It is a projection of the
@@ -70,7 +69,6 @@ while [ "$#" -gt 0 ]; do
     --list) list=1; shift ;;
     --list-names) list_names=1; shift ;;
     --shellcheck-only) only=shellcheck; shift ;;
-    --stamp-only) only=stamp; shift ;;
     --profile)
       [ "$#" -ge 2 ] || {
         echo "check-release-policy: --profile takes ci or release" >&2
@@ -94,7 +92,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "check-release-policy: unknown argument '$1' — pass --strict, --tag <tag>, --profile <ci|release>, --list, --list-names, --shellcheck-only, --stamp-only, or nothing" >&2
+      echo "check-release-policy: unknown argument '$1' — pass --strict, --tag <tag>, --profile <ci|release>, --list, --list-names, --shellcheck-only, or nothing" >&2
       exit 2
       ;;
   esac
@@ -109,21 +107,6 @@ RC_LIB_SELF="$script_dir/lib/release-common.sh"
 # stamp; nothing but this enforces it, and a stamped copy swept in by
 # `git commit -a` would make every build from that tree report an
 # exact-correspondence claim that is false while passing the whole suite.
-development_stamp_is_checked_in() {
-  # Through the built tool, which this script cannot build: it runs in a job
-  # with no Lean toolchain by design, so a missing binary is a gate that could
-  # not run rather than one that passed.
-  if [ ! -x ./.lake/build/bin/tlrelease ]; then
-    echo "::error::./.lake/build/bin/tlrelease is not there, so the checked-in stamp was compared against nothing. Run 'lake build tlrelease' first; a gate that cannot look must not report clean." >&2
-    return 1
-  fi
-  ./.lake/build/bin/tlrelease stamp --root . >/dev/null
-  if ! git diff --exit-code -- Tl/Build/Stamp.lean; then
-    echo "::error::Tl/Build/Stamp.lean differs from what 'tlrelease stamp --root .' produces. Either a stamped copy was committed (run the generator with no arguments and commit the result), or lean-toolchain / lake-manifest.json changed without regenerating it." >&2
-    return 1
-  fi
-}
-
 # -S warning is the floor: the info level is advisory style over
 # script-controlled temp paths, and admitting it would mean a wave of
 # suppressions rather than better code. Anything genuinely wrong there is fixed
@@ -157,7 +140,6 @@ release runtime boundary selftest
 installer selftest
 workflow lint
 NAMES
-  [ -n "$tag" ] || echo "the checked-in build stamp is what the generator writes"
   [ "$profile" = ci ] && echo "deferred-channel gates"
   return 0
 }
@@ -165,7 +147,6 @@ NAMES
 if [ -n "$only" ]; then
   case $only in
     shellcheck) shellcheck_all ;;
-    stamp) development_stamp_is_checked_in ;;
   esac
   exit $?
 fi
@@ -185,9 +166,6 @@ release-policy gates, in order:
   release runtime boundary selftest   scripts/check-release-runtimes.sh --selftest
   installer selftest                  sh install.sh --selftest
   workflow lint                       actionlint .github/workflows/*.yml (needs actionlint)
-  the checked-in build stamp is       git diff after regenerating it with
-    what the generator writes         tlrelease (skipped with --tag: a tag
-                                      run stamps on purpose)
 GATES
   if [ "$profile" = ci ]; then
     printf '  deferred-channel gates              scripts/check-channel-policy.sh\n\n'
@@ -297,12 +275,6 @@ rc_tool_gate "workflow lint" \
   --tool shellcheck \
   --why "actionlint is present but shellcheck is not, and without it actionlint checks the YAML only" \
   -- actionlint -color .github/workflows/ci.yml .github/workflows/release.yml
-
-if [ -n "$tag" ]; then
-  echo "── the checked-in build stamp is what the generator writes: not applicable on a tag run (the release workflow stamps the tagged commit on purpose)"
-else
-  rc_gate "the checked-in build stamp is what the generator writes" development_stamp_is_checked_in
-fi
 
 # Last, and only under the ci profile. One gate rather than four, because the
 # channel policy counts and reports its own; what this file decides is whether

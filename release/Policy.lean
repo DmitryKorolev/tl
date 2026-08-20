@@ -85,7 +85,17 @@ def Profile.parse (what : String) (text : String) : Except String Profile :=
 inductive TagBehaviour where
   /-- Runs on every commit. -/
   | always
-  /-- Not applicable to a tagged commit. -/
+  /-- Omitted on a tag run, because the gate is about the working tree rather
+      than about the release.
+
+      No gate carries it today: the last one that did — the checked-in build
+      stamp against a fresh render — moved into `lake exe tltest` when the
+      generator became `tlrelease stamp`, because it needs the built tool and
+      the policy script runs in a job with no Lean toolchain by design. The
+      constructor stays because the distinction is a real one a future gate may
+      need, and `Tests/ReleaseToolTests.lean` pins that the two listings agree
+      exactly while it is unpopulated — so the day a gate takes it, the tag
+      path visibly differs rather than silently. -/
   | workingTreeOnly
   deriving DecidableEq, Repr
 
@@ -199,10 +209,6 @@ def gates : List Gate :=
      invocation := .tool "actionlint"
        ["-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
      summary := "A workflow cannot validate itself; actionlint parses both and shells out to ShellCheck." },
-   { name := "the checked-in build stamp is what the generator writes"
-     profiles := Profile.all, onTag := .workingTreeOnly, requires := []
-     invocation := .script "./scripts/check-release-policy.sh" ["--stamp-only"]
-     summary := "The tracked stamp is the development one, byte-for-byte what `tlrelease stamp` produces." },
    -- The deferred channels. Each invokes a runtime ADR-0026's dependency budget
    -- forbids on the release path, which is the whole reason they are the
    -- profiles' one difference.
