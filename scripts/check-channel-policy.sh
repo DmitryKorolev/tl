@@ -101,9 +101,48 @@ formulae_parse() {
   echo "Formula/tl.rb and $(printf '%s\n' "$fixtures" | wc -l | tr -d ' ') rendered fixtures parse as Ruby"
 }
 
+# The npm gate, run against an ambient configuration that would break it.
+#
+# `tlrelease npm-selftest` pins npm's cache and all three of its config layers
+# to a scratch directory, because a gate whose verdict moves with the
+# developer's `~/.npm` reports on the machine rather than on the code. That
+# pinning was once appended by each call site, and one of them did not append
+# it: every `npm pack --dry-run --json` — the rows that read which files a
+# package would actually publish — ran against the caller's real cache and
+# npmrc. Nothing showed it, because an ambient cache normally works.
+#
+# So the run is handed a HOME whose `.npmrc` names a cache that cannot exist:
+# its parent is a regular file, so creating it is ENOTDIR on every platform
+# rather than a fact about how one of them treats /proc. An invocation that
+# stays inside the pinned configuration never reads this file. One that escapes
+# fails, here, on the gate — which is what makes the isolation a checked
+# property rather than a claim in a comment.
+npm_packaging() {
+  npm_home=$(mktemp -d "${TMPDIR:-/tmp}/tl-npm-ambient.XXXXXX") || return 1
+  : > "$npm_home/not-a-directory"
+  cat > "$npm_home/.npmrc" <<NPMRC
+cache=$npm_home/not-a-directory/cache
+registry=http://127.0.0.1:9/tl-must-not-reach-a-registry/
+NPMRC
+  npm_status=0
+  HOME=$npm_home ./.lake/build/bin/tlrelease npm-selftest --root . || npm_status=$?
+  rm -rf "$npm_home"
+  return "$npm_status"
+}
+
 if [ -n "$only" ]; then
   case $only in
     ruby) formulae_parse ;;
+    *)
+      # The arm that must exist even while every flag has one. `case` with no
+      # match runs nothing and leaves `$?` at the last command's status, so
+      # `exit $?` here would report a pass for a run that performed no gate —
+      # and the caller asking for a single gate is the typed registry, which
+      # would then be naming an invocation that checks nothing. A flag added to
+      # the parser and not to this dispatch fails loudly instead.
+      echo "check-channel-policy: '$only' names no gate in this dispatch, so this run would report a pass having run nothing. Add the arm beside the flag that sets it." >&2
+      exit 2
+      ;;
   esac
   exit $?
 fi
@@ -120,8 +159,7 @@ rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]
 # The channel's own decisions — staging, comparison, ordering, publication —
 # are decided by `tlrelease` and covered against a stub in the ordinary suite,
 # which is what lets them run where npm may not be reached at all.
-rc_tool_gate "npm packaging over the real client" --tool npm -- \
-  ./.lake/build/bin/tlrelease npm-selftest --root .
+rc_tool_gate "npm packaging over the real client" --tool npm -- npm_packaging
 
 rc_tool_gate "the rendered formulae parse" --tool ruby -- formulae_parse
 

@@ -42,7 +42,7 @@
 #
 # `--profile` is the one thing they do not share, and it is not a narrowing of
 # convenience. `ci` (the default) additionally runs scripts/check-channel-policy.sh,
-# whose four gates invoke npm and ruby to keep the deferred npm and Homebrew
+# whose gates invoke npm and ruby to keep the deferred npm and Homebrew
 # machinery from rotting while it waits. `release` is the profile the release
 # workflow runs, and ADR-0026's v0.1 dependency boundary forbids those
 # interpreters anywhere the GitHub-only release path can reach. So a
@@ -151,6 +151,16 @@ NAMES
 if [ -n "$only" ]; then
   case $only in
     shellcheck) shellcheck_all ;;
+    *)
+      # The arm that must exist even while every flag has one. `case` with no
+      # match runs nothing and leaves `$?` at the last command's status, so
+      # `exit $?` here would report a pass for a run that performed no gate —
+      # and the caller asking for a single gate is the typed registry, which
+      # would then be naming an invocation that checks nothing. A flag added to
+      # the parser and not to this dispatch fails loudly instead.
+      echo "check-release-policy: '$only' names no gate in this dispatch, so this run would report a pass having run nothing. Add the arm beside the flag that sets it." >&2
+      exit 2
+      ;;
   esac
   exit $?
 fi

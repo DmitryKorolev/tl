@@ -557,19 +557,35 @@ def unambiguousDirectory (path : String) : String :=
 
 /-- The npm client, as a value rather than a literal, so a suite can drive every
     branch below against a stub that answers from a fixture registry. Real
-    releases pass nothing and get the pinned client the workflow installed. -/
+    releases pass nothing and get the pinned client the workflow installed.
+
+    `globalArgs` is the isolation, and it lives on the client rather than at the
+    call sites for one reason: an argument list that each caller appends is one
+    a caller can forget, and the caller that forgot was invisible. The gate ran
+    every `npm pack --dry-run` against the developer's own `~/.npm` and
+    `~/.npmrc` while three neighbouring calls were isolated, so its verdict
+    tracked the machine it ran on — which is the one thing a gate may never do.
+    Prepended in `attempt`, there is no invocation below that can escape it. -/
 structure Client where
   program : String
+  globalArgs : List String := []
   deriving Repr
 
 def Client.default : Client := { program := "npm" }
+
+/-- The whole invocation: what this client always passes, then what the caller
+    asked for. Named because a refusal has to quote the command that actually
+    ran — an operator handed a shorter one cannot reproduce the failure, and the
+    isolation is exactly the part that would be missing from it. -/
+def Client.invocation (client : Client) (args : List String) : List String :=
+  client.globalArgs ++ args
 
 /-- Run the client and hand back the whole outcome: several call sites branch on
     a non-zero status rather than requiring zero, because "there is no such
     version" is one of npm's answers and not a failure. -/
 private def Client.attempt (client : Client) (args : List String) :
     IO RunOutcome :=
-  Release.run client.program args.toArray
+  Release.run client.program (client.invocation args).toArray
 
 /-- Run the client, requiring success. -/
 private def Client.must (client : Client) (what : String) (args : List String) :
@@ -579,7 +595,7 @@ private def Client.must (client : Client) (what : String) (args : List String) :
       if output.exitCode == 0 then return output.stdout
       else
         let detail := if output.stderr.trimAscii.isEmpty then output.stdout else output.stderr
-        decline s!"{what}: `{client.program} {String.intercalate " " args}` exited {output.exitCode}. {detail.trimAscii}"
+        decline s!"{what}: `{client.program} {String.intercalate " " (client.invocation args)}` exited {output.exitCode}. {detail.trimAscii}"
   | outcome =>
       decline s!"{what}: {outcome.failureMessage.getD s!"{client.program} could not be run"}"
 
@@ -1392,10 +1408,20 @@ private structure Row where
     platform packages as optional dependencies, so an install resolves those
     names against the registry — a network round trip inside a gate whose whole
     claim is that it depends on nothing but this checkout, and one that retries
-    with backoff rather than failing when the registry is unreachable. -/
+    with backoff rather than failing when the registry is unreachable.
+
+    All three config layers, not just the user's. npm reads a global `npmrc`
+    beside its own installation as well as `~/.npmrc`, and a machine that set a
+    registry or a cache there would reach every row that `--userconfig` alone
+    left open. The scratch files are created empty rather than left absent: an
+    unreadable path and an empty file are the same configuration, but only one
+    of them says so to anyone reading the run.
+
+    Carried on the client rather than appended per call — see `Client`. -/
 private def hermetic (scratch : String) : List String :=
   ["--cache", scratch ++ "/cache", "--userconfig", scratch ++ "/npmrc",
-   "--no-audit", "--no-fund", "--ignore-scripts"]
+   "--globalconfig", scratch ++ "/globalrc",
+   "--no-audit", "--no-fund", "--ignore-scripts", "--offline"]
 
 private def selftestDecision (args : SelftestArgs) : Decision String := do
   let target ← hostTarget
@@ -1403,11 +1429,16 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
     try return .ok (← IO.FS.createTempDir).toString
     catch error => return .error s!"could not create a scratch directory: {error}")
   ensureDirectory (scratch ++ "/cache")
-  ofIO (do
-    try
-      IO.FS.writeFile (scratch ++ "/npmrc") ""
-      return .ok ()
-    catch error => return .error s!"could not write {scratch}/npmrc: {error}")
+  for configuration in ["npmrc", "globalrc"] do
+    ofIO (do
+      try
+        IO.FS.writeFile (scratch ++ "/" ++ configuration) ""
+        return .ok ()
+      catch error => return .error s!"could not write {scratch}/{configuration}: {error}")
+  -- Every npm invocation below goes through this one, and none of them adds
+  -- isolation of its own: the client carries it, so a row added later is
+  -- isolated by construction rather than by its author remembering to be.
+  let client : Client := { args.client with globalArgs := hermetic scratch }
   -- The package set, at the placeholder version, with stub binaries. Built
   -- through the same renderer a release stages with, so what npm packs here is
   -- the shape it would pack then.
@@ -1450,7 +1481,7 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
   -- ships only because `files` names it, and dropping that entry yields a
   -- package that installs cleanly and contains no tl.
   for package in rendered do
-    let entries ← packedEntries args.client s!"reading the staged {package.directory}"
+    let entries ← packedEntries client s!"reading the staged {package.directory}"
       (staging ++ "/" ++ package.directory)
     let binary := entries.find? fun entry => entry.path == binRelative
     rows := rows ++ [
@@ -1478,8 +1509,8 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
     let before ← ofIO (do
       try return .ok ((← System.FilePath.readDir packed).toList.map (·.fileName))
       catch error => return .error s!"could not read {packed}: {error}")
-    let _ ← args.client.must s!"packing {relative}"
-      (["pack", staging ++ "/" ++ relative, "--pack-destination", packed] ++ hermetic scratch)
+    let _ ← client.must s!"packing {relative}"
+      ["pack", staging ++ "/" ++ relative, "--pack-destination", packed]
     let after ← ofIO (do
       try return .ok ((← System.FilePath.readDir packed).toList.map (·.fileName))
       catch error => return .error s!"could not read {packed}: {error}")
@@ -1494,9 +1525,9 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
   -- spelling. If npm's answer for a tarball spec is not the shape this tool
   -- parses, every already-published comparison fails at release time, on the
   -- one path that cannot be retried.
-  let fromDirectory ← packedEntries args.client "reading the staged launcher"
+  let fromDirectory ← packedEntries client "reading the staged launcher"
     (unambiguousDirectory (staging ++ "/" ++ launcherDirectory))
-  let fromTarball ← packedEntries args.client "reading the packed launcher"
+  let fromTarball ← packedEntries client "reading the packed launcher"
     (unambiguousDirectory launcherTarball)
   rows := rows ++ [
     { name := "npm reads a tarball back as the same entry set it packed"
@@ -1507,8 +1538,8 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
       detail := s!"directory: {String.intercalate ", " (fromDirectory.map (·.path))}; tarball: {String.intercalate ", " (fromTarball.map (·.path))}" }]
   let install (prefix? : String) (tarballs : List String) : Decision Unit := do
     ensureDirectory prefix?
-    let _ ← args.client.must s!"installing into {prefix?}"
-      (["install"] ++ tarballs ++ ["--prefix", prefix?, "--offline"] ++ hermetic scratch)
+    let _ ← client.must s!"installing into {prefix?}"
+      (["install"] ++ tarballs ++ ["--prefix", prefix?])
     return ()
   let drive (prefix? : String) (arguments : List String) : Decision ProcessOutput := do
     let launcher := prefix? ++ "/node_modules/.bin/tl"
@@ -1532,9 +1563,8 @@ private def selftestDecision (args : SelftestArgs) : Decision String := do
   -- somewhere else: a `bin/` beside the prefix rather than `node_modules/.bin`.
   let global := scratch ++ "/global"
   ensureDirectory global
-  let _ ← args.client.must "installing globally"
-    (["install", "--global", launcherTarball, platformTarball, "--prefix", global, "--offline"]
-      ++ hermetic scratch)
+  let _ ← client.must "installing globally"
+    ["install", "--global", launcherTarball, platformTarball, "--prefix", global]
   let globallyRan ← ofIO (do
     return .ok (← Release.run (global ++ "/bin/tl") #["create", "a task"]))
   rows := rows ++ [
