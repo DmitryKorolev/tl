@@ -329,8 +329,8 @@ carried by the Sigstore certificate identity pinned in `release/identity.json`
 and verified per `VERIFYING.md`, never by the binary's own self-report.
 
 The provenance is compiled in from the generated `Tl/Build/Stamp.lean`, whose
-checked-in copy is the development stamp; `scripts/gen-build-provenance.sh
---stamp` rewrites it from git HEAD, which the release workflow runs on a clean
+checked-in copy is the development stamp; `tlrelease stamp --root . --commit`
+rewrites it from git HEAD, which the release workflow runs on a clean
 checkout of the tag before building and then smoke-tests against the compiled
 binary. CI regenerates the file and diffs it, so a stamped copy cannot reach
 `main` and be mistaken for the development stamp everything else assumes.

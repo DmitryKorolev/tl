@@ -262,6 +262,11 @@ jobs:
   stamp:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The stamp is written by `tlrelease` now, so this job runs after the job
+    # that builds and gates it: gates -> stamp -> build. It is therefore a
+    # consumer of the release-tool handoff and validates the bytes it received
+    # before running them, exactly as the four publication jobs do.
+    needs: [gates]
     outputs:
       version: ${{ steps.stamp.outputs.version }}
       commit: ${{ steps.stamp.outputs.commit }}
@@ -282,6 +287,30 @@ jobs:
         run: |
           echo "::error::this workflow was dispatched against the tag ${GITHUB_REF_NAME}. A dispatch run is a build-only rehearsal; dispatching a tag ref would sign and publish for real. Push the tag to release, or dispatch against a branch to rehearse."
           exit 1
+
+      - name: download the release tool
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-tool
+          path: tool
+
+      - name: confirm the release tool landed unchanged
+        run: |
+          set -euo pipefail
+          want='${{ needs.gates.outputs.releaseToolDigest }}'
+          if [ -z "$want" ]; then
+            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
+            exit 1
+          fi
+          got_line=$(sha256sum tool/tlrelease)
+          got=${got_line%% *}
+          if [ "$got" != "$want" ]; then
+            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit. Nothing is stamped."
+            exit 1
+          fi
+          # An uploaded artifact does not carry its executable bit.
+          chmod +x tool/tlrelease
+          echo "the release tool is the one the gates job built (${got})"
 
       - name: stamp the tagged commit
         id: stamp
@@ -307,7 +336,7 @@ jobs:
             fi
           fi
 
-          ./scripts/gen-build-provenance.sh --stamp
+          ./tool/tlrelease stamp --root . --commit
 
           commit=$(git rev-parse HEAD)
           # A fresh checkout is clean; a dirty stamp means something wrote into
@@ -318,7 +347,7 @@ jobs:
             exit 1
           fi
           if ! grep -q "stampCommit : String := \"${commit}\"" Tl/Build/Stamp.lean; then
-            echo "::error::the generated stamp does not carry HEAD (${commit}) — scripts/gen-build-provenance.sh did not stamp what this job checked out."
+            echo "::error::the generated stamp does not carry HEAD (${commit}) — 'tlrelease stamp' did not stamp what this job checked out."
             exit 1
           fi
 

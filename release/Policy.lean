@@ -179,10 +179,6 @@ def gates : List Gate :=
      profiles := Profile.all, onTag := .always, requires := [shellcheckTool]
      invocation := .script "./scripts/check-release-policy.sh" ["--shellcheck-only"]
      summary := "ShellCheck over every tracked shell file, found by shebang and extension." },
-   { name := "build-provenance generator selftest"
-     profiles := Profile.all, onTag := .always, requires := []
-     invocation := .script "./scripts/gen-build-provenance.sh" ["--selftest"]
-     summary := "The build-stamp generator proves it fails closed on what it cannot establish." },
    { name := "artifact verifier selftest"
      profiles := Profile.all, onTag := .always, requires := []
      invocation := .script "./scripts/verify-release-artifacts.sh" ["--selftest"]
@@ -203,10 +199,10 @@ def gates : List Gate :=
      invocation := .tool "actionlint"
        ["-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
      summary := "A workflow cannot validate itself; actionlint parses both and shells out to ShellCheck." },
-   { name := "the checked-in build stamp is the development stamp"
+   { name := "the checked-in build stamp is what the generator writes"
      profiles := Profile.all, onTag := .workingTreeOnly, requires := []
      invocation := .script "./scripts/check-release-policy.sh" ["--stamp-only"]
-     summary := "The tracked stamp is the development one; a tag run stamps on purpose." },
+     summary := "The tracked stamp is the development one, byte-for-byte what `tlrelease stamp` produces." },
    -- The deferred channels. Each invokes a runtime ADR-0026's dependency budget
    -- forbids on the release path, which is the whole reason they are the
    -- profiles' one difference.

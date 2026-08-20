@@ -788,11 +788,13 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
     -- Non-vacuity against the live file, which the fixtures cannot give: the
     -- scan finds consumers by what they do, so a parser that stopped reading
     -- the download step would report a clean workflow having checked one job.
-    -- Four is what release.yml has — sign and the three publish jobs — and a
-    -- fifth is a change to make deliberately.
-    checkEq "release workflow: the scan reads all four real consumers"
+    -- Five is what release.yml has — stamp, sign and the three publish jobs —
+    -- and a sixth is a change to make deliberately. `stamp` joined when the
+    -- build provenance moved into `tlrelease`: it runs the tool, so it
+    -- validates the bytes it received like every other consumer.
+    checkEq "release workflow: the scan reads all five real consumers"
       (releaseToolConsumers releaseWorkflow)
-      ["sign", "publish-release", "publish-homebrew", "publish-npm"],
+      ["stamp", "sign", "publish-release", "publish-homebrew", "publish-npm"],
     -- Non-vacuity, both halves. A walk that found no documents, or no script
     -- under the rule, reports the same clean result as a repository that
     -- satisfies it.

@@ -3,15 +3,15 @@
 
 GENERATED FILE — do not edit by hand. Regenerate with
 
-    scripts/gen-build-provenance.sh              # development stamp (this copy)
-    scripts/gen-build-provenance.sh --stamp      # stamp the current git HEAD
+    tlrelease stamp --root .              # development stamp (this copy)
+    tlrelease stamp --root . --commit     # stamp the current git HEAD
 
 The checked-in copy is deliberately the *development* stamp: `commit` is empty,
 so a plain `lake build` produces a binary that reports itself as an
 unidentified local build rather than claiming a source commit it may not match.
 CI regenerates this file and diffs it, so a stamped copy cannot reach main. The
-release workflow runs `--stamp` on a clean checkout of the tagged commit before
-building, which is what puts a real commit here.
+release workflow stamps a clean checkout of the tagged commit before building,
+which is what puts a real commit here.
 
 `toolchain` and `manifestDigest` are the pins in effect for *this* checkout and
 are the same in the development and stamped copies; `Tests/ReleaseTests.lean`

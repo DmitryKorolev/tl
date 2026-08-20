@@ -763,6 +763,7 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.Npm.publicationOrder_launcher_last
   let _ := @Release.Npm.publicationOrder_mem_iff
   let _ := @Release.Npm.stagingCovers_iff
+  let _ := @Release.Stamp.embeddable_iff
   let _ := @Release.Platform.agrees_iff
   let _ := @Release.Platform.covers_iff
   let _ := @Release.Policy.gateRuns_iff
@@ -3397,7 +3398,7 @@ private def policyTests : List Outcome :=
       s!"{ciNames}",
     -- The tag run omits the working-tree gate rather than skipping it.
     checkEq "policy: a tag run omits the build-stamp gate"
-      (releaseNames.filter (· != "the checked-in build stamp is the development stamp"))
+      (releaseNames.filter (· != "the checked-in build stamp is what the generator writes"))
       releaseTagNames,
     check "policy: nothing else changes on a tag run"
       (releaseTagNames.length + 1 == releaseNames.length)
@@ -3657,7 +3658,7 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: the ci profile matches the shell policy on this commit"
           (ciStatus == 0) ciErr,
         check "policy parity: it says how many gates it compared"
-          (contains ciOut "11 gate(s)") ciOut,
+          (contains ciOut "10 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
         check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
         checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
@@ -4766,6 +4767,139 @@ private def npmBootstrapTests : IO (List Outcome) := do
     checkEq "npm-bootstrap: preparing over a previous run is refused" again 1,
     check "npm-bootstrap: that refusal says why" (contains againErr "not empty") againErr,
     checkEq "npm-bootstrap: a missing --output is a usage error" usage 2]
+  IO.FS.removeDirAll base
+  return outcomes
+
+/-! ## The build stamp
+
+The provenance compiled into every released binary, and the one file release
+administration writes into the product. `clean` is read as "this binary
+corresponds exactly to that commit", so every row here is about a way of not
+establishing that and refusing rather than assuming it.
+
+Driven against real git checkouts on disk, because the three subtle cases are
+all git's: a repository setting that hides untracked files, a source tree
+sitting inside an unrelated checkout, and a git that cannot report at all. A
+stub git could be made to say anything about any of them. -/
+
+private def stampFixture (base : System.FilePath) (name : String) : IO String := do
+  let root := (base / name).toString
+  IO.FS.createDirAll (root ++ "/Tl/Build")
+  IO.FS.writeFile (root ++ "/lean-toolchain") "leanprover/lean4:v4.33.0\n"
+  IO.FS.writeFile (root ++ "/lake-manifest.json") "{\"version\": \"1.1.0\"}\n"
+  return root
+
+private def stampTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  -- The live repository first: what the command writes is what is tracked.
+  -- This is the drift guard, and it is the reason the gate exists at all —
+  -- three documents state as fact that the checked-in copy is the development
+  -- stamp, and nothing but a comparison enforces it.
+  let tracked ← IO.FS.readFile "Tl/Build/Stamp.lean"
+  let toolchainText ← IO.FS.readFile "lean-toolchain"
+  let digester ← Digester.resolve
+  let manifestDigest ← match digester with
+    | .ok digester =>
+        match ← digester.digest "lake-manifest.json" with
+        | .ok digest => pure digest.hex
+        | .error message => pure message
+    | .error message => pure message
+  let rendered := Stamp.render
+    { commit := "", dirty := false, toolchain := toolchainText.trimAscii.toString
+      manifestDigest }
+  -- A development stamp, in a directory of its own.
+  let plain ← stampFixture base "plain"
+  let (plainStatus, plainOut, _) ← runCommand "stamp" ["--root", plain]
+  let plainWritten ← IO.FS.readFile (plain ++ "/Tl/Build/Stamp.lean")
+  -- A checkout with a commit.
+  let repo ← stampFixture base "repo"
+  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", repo]
+  gitFixture repo ["add", "-A"]
+  gitFixture repo ["commit", "-q", "--no-verify", "-m", "seed"]
+  let head ← match ← Release.succeeded "git" #["-C", repo, "rev-parse", "HEAD"] with
+    | .ok output => pure output.stdout.trimAscii.toString
+    | .error message => pure message
+  let (cleanStatus, cleanOut, _) ← runCommand "stamp" ["--root", repo, "--commit"]
+  let cleanWritten ← IO.FS.readFile (repo ++ "/Tl/Build/Stamp.lean")
+  -- Stamped twice: the command's own output is excluded from the dirtiness
+  -- probe, so a second stamp in one checkout must not call the tree dirty on
+  -- account of the first.
+  let (twiceStatus, _, _) ← runCommand "stamp" ["--root", repo, "--commit"]
+  let twiceWritten ← IO.FS.readFile (repo ++ "/Tl/Build/Stamp.lean")
+  -- An untracked file changes what gets compiled, so it counts — including
+  -- when the repository's own configuration tells git to hide it.
+  gitFixture repo ["config", "status.showUntrackedFiles", "no"]
+  IO.FS.writeFile (repo ++ "/EXTRA.c") ""
+  let (hiddenStatus, _, _) ← runCommand "stamp" ["--root", repo, "--commit"]
+  let hiddenWritten ← IO.FS.readFile (repo ++ "/Tl/Build/Stamp.lean")
+  IO.FS.removeFile (repo ++ "/EXTRA.c")
+  -- A source tree merely sitting inside an unrelated checkout. `git rev-parse`
+  -- walks up to the nearest ancestor repository, so this would otherwise be
+  -- stamped with a commit that does not contain this source at all.
+  let nested ← stampFixture (System.FilePath.mk repo) "inner"
+  let (nestedStatus, _, nestedErr) ← runCommand "stamp" ["--root", nested, "--commit"]
+  -- A directory that is not a checkout.
+  let (noRepoStatus, _, noRepoErr) ← runCommand "stamp" ["--root", plain, "--commit"]
+  -- A git that cannot report. A corrupt index is the usual cause, and it must
+  -- not read as a clean tree.
+  let broken ← stampFixture base "broken"
+  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", broken]
+  gitFixture broken ["add", "-A"]
+  gitFixture broken ["commit", "-q", "--no-verify", "-m", "seed"]
+  IO.FS.writeFile (broken ++ "/.git/index") "garbage"
+  let (brokenStatus, _, brokenErr) ← runCommand "stamp" ["--root", broken, "--commit"]
+  -- Inputs the stamp cannot be written without.
+  let (noToolchainStatus, _, noToolchainErr) ← runCommand "stamp"
+    ["--root", (base / "nothing").toString]
+  let odd ← stampFixture base "odd"
+  IO.FS.writeFile (odd ++ "/lean-toolchain") "leanprover/lean4:v4.33.0 \"; evil\n"
+  let (oddStatus, _, oddErr) ← runCommand "stamp" ["--root", odd]
+  let (usage, _, _) ← runCommand "stamp" ["--commit"]
+  let outcomes := [
+    -- The drift guard, against the real repository.
+    check "stamp: the tracked build stamp is what this command writes"
+      (tracked == rendered)
+      "Tl/Build/Stamp.lean differs from a fresh render; run `tlrelease stamp --root .`",
+    checkEq "stamp: a development stamp is written" plainStatus 0,
+    check "stamp: it says the commit is a development one" (contains plainOut "<development>")
+      plainOut,
+    check "stamp: a development stamp names no commit"
+      (contains plainWritten "def stampCommit : String := \"\""
+        && contains plainWritten "def stampDirty : Bool := false") plainWritten,
+    checkEq "stamp: a clean checkout is stamped with its commit" cleanStatus 0,
+    check "stamp: the stamp carries HEAD, and says the tree was clean"
+      (contains cleanWritten s!"def stampCommit : String := \"{head}\""
+        && contains cleanWritten "def stampDirty : Bool := false") cleanOut,
+    checkEq "stamp: stamping twice in one checkout still reports it clean" twiceStatus 0,
+    check "stamp: the command's own output does not make the tree dirty"
+      (contains twiceWritten "def stampDirty : Bool := false") twiceWritten,
+    checkEq "stamp: an untracked file is stamped as dirty" hiddenStatus 0,
+    check "stamp: even under status.showUntrackedFiles=no"
+      (contains hiddenWritten "def stampDirty : Bool := true") hiddenWritten,
+    checkEq "stamp: a source tree inside an unrelated checkout is refused" nestedStatus 1,
+    check "stamp: that refusal says the repository found is not this directory"
+      (contains nestedErr "not at") nestedErr,
+    checkEq "stamp: --commit outside a checkout is refused" noRepoStatus 1,
+    check "stamp: that refusal comes from git rather than from a guess"
+      (contains noRepoErr "git") noRepoErr,
+    checkEq "stamp: a git that cannot report is refused" brokenStatus 1,
+    check "stamp: a broken index does not read as a clean tree"
+      (!contains brokenErr "clean") brokenErr,
+    checkEq "stamp: a missing lean-toolchain is refused" noToolchainStatus 1,
+    check "stamp: that refusal names the file"
+      (contains noToolchainErr "lean-toolchain") noToolchainErr,
+    checkEq "stamp: a toolchain value that would not survive embedding is refused"
+      oddStatus 1,
+    check "stamp: that refusal says the value is spliced into a string literal"
+      (contains oddErr "string literal") oddErr,
+    checkEq "stamp: a missing --root is a usage error" usage 2,
+    -- The acceptance itself, on the characters that decide it.
+    check "stamp: an ordinary toolchain line and object id are embeddable"
+      (Stamp.embeddable "leanprover/lean4:v4.33.0"
+        && Stamp.embeddable (String.ofList (List.replicate 40 'a'))) "a legitimate value was refused",
+    check "stamp: a quote, a backslash, a space and the empty string are not"
+      (!Stamp.embeddable "a\"b" && !Stamp.embeddable "a\\b" && !Stamp.embeddable "a b"
+        && !Stamp.embeddable "") "a value that would close the literal was accepted"]
   IO.FS.removeDirAll base
   return outcomes
 
@@ -6401,6 +6535,6 @@ def releaseToolTests : IO (List Outcome) := do
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
-    ++ npmComparisonTests ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
+    ++ npmComparisonTests ++ (← stampTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
 
 end Tl.Tests

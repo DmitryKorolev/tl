@@ -80,8 +80,14 @@ express:
   that is anchored and well-formed while matching the wrong repository would
   pass a text-equality guard and hollow out the fail-closed verifier
   (ADR-0014 T3).
-- `scripts/gen-build-provenance.sh --selftest` exercises the stamp generator's
-  refusal paths.
+- The stamp generator's refusal paths are exercised in `lake exe tltest`,
+  against real git checkouts on disk: the three that matter are all git's — a
+  repository setting that hides untracked files, a source tree sitting inside an
+  unrelated checkout, and a git that cannot report at all — and a stub could be
+  made to say anything about any of them. The gate here is the drift check:
+  `tlrelease stamp --root .` regenerated and diffed, because three documents
+  state as fact that the checked-in copy is the development stamp and nothing
+  but a comparison enforces it.
 - `scripts/verify-release-artifacts.sh --selftest` exercises the artifact
   verifier's, against fabricated missing, malformed, mismatched, and
   rejected-signature inputs, and against a verifier that cannot run — which

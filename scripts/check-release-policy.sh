@@ -110,9 +110,16 @@ RC_LIB_SELF="$script_dir/lib/release-common.sh"
 # `git commit -a` would make every build from that tree report an
 # exact-correspondence claim that is false while passing the whole suite.
 development_stamp_is_checked_in() {
-  ./scripts/gen-build-provenance.sh >/dev/null
+  # Through the built tool, which this script cannot build: it runs in a job
+  # with no Lean toolchain by design, so a missing binary is a gate that could
+  # not run rather than one that passed.
+  if [ ! -x ./.lake/build/bin/tlrelease ]; then
+    echo "::error::./.lake/build/bin/tlrelease is not there, so the checked-in stamp was compared against nothing. Run 'lake build tlrelease' first; a gate that cannot look must not report clean." >&2
+    return 1
+  fi
+  ./.lake/build/bin/tlrelease stamp --root . >/dev/null
   if ! git diff --exit-code -- Tl/Build/Stamp.lean; then
-    echo "::error::Tl/Build/Stamp.lean differs from what scripts/gen-build-provenance.sh produces. Either a stamped copy was committed (run the generator with no arguments and commit the result), or lean-toolchain / lake-manifest.json changed without regenerating it." >&2
+    echo "::error::Tl/Build/Stamp.lean differs from what 'tlrelease stamp --root .' produces. Either a stamped copy was committed (run the generator with no arguments and commit the result), or lean-toolchain / lake-manifest.json changed without regenerating it." >&2
     return 1
   fi
 }
@@ -145,13 +152,12 @@ gate_names() {
 task-id lint selftest
 task-id leakage
 shell static analysis
-build-provenance generator selftest
 artifact verifier selftest
 release runtime boundary selftest
 installer selftest
 workflow lint
 NAMES
-  [ -n "$tag" ] || echo "the checked-in build stamp is the development stamp"
+  [ -n "$tag" ] || echo "the checked-in build stamp is what the generator writes"
   [ "$profile" = ci ] && echo "deferred-channel gates"
   return 0
 }
@@ -175,13 +181,13 @@ release-policy gates, in order:
   task-id lint selftest               scripts/check-task-ids.sh --selftest
   task-id leakage                     scripts/check-task-ids.sh
   shell static analysis               shellcheck over every tracked shell file
-  build-provenance generator selftest scripts/gen-build-provenance.sh --selftest
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   release runtime boundary selftest   scripts/check-release-runtimes.sh --selftest
   installer selftest                  sh install.sh --selftest
   workflow lint                       actionlint .github/workflows/*.yml (needs actionlint)
-  the checked-in build stamp is       git diff after regenerating it
-    the development stamp             (skipped with --tag: a tag run stamps on purpose)
+  the checked-in build stamp is       git diff after regenerating it with
+    what the generator writes         tlrelease (skipped with --tag: a tag
+                                      run stamps on purpose)
 GATES
   if [ "$profile" = ci ]; then
     printf '  deferred-channel gates              scripts/check-channel-policy.sh\n\n'
@@ -235,7 +241,6 @@ rc_gate "task-id leakage" ./scripts/check-task-ids.sh
 # reads as a malformed directive and treats as an error.
 rc_tool_gate "shell static analysis" --tool shellcheck -- shellcheck_all
 
-rc_gate "build-provenance generator selftest" ./scripts/gen-build-provenance.sh --selftest
 # Version consistency and platform-mapping drift are `tlrelease
 # version-consistency` and `tlrelease platform-classification`, and the release
 # workflow's gates job runs both against the tagged commit before the build
@@ -294,9 +299,9 @@ rc_tool_gate "workflow lint" \
   -- actionlint -color .github/workflows/ci.yml .github/workflows/release.yml
 
 if [ -n "$tag" ]; then
-  echo "── the checked-in build stamp is the development stamp: not applicable on a tag run (the release workflow stamps the tagged commit on purpose)"
+  echo "── the checked-in build stamp is what the generator writes: not applicable on a tag run (the release workflow stamps the tagged commit on purpose)"
 else
-  rc_gate "the checked-in build stamp is the development stamp" development_stamp_is_checked_in
+  rc_gate "the checked-in build stamp is what the generator writes" development_stamp_is_checked_in
 fi
 
 # Last, and only under the ci profile. One gate rather than four, because the
