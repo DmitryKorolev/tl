@@ -355,35 +355,60 @@ generate the awkward case is not a gate.
 
 **The sampled properties, and what each sample is evidence about.** They are not
 all the same kind of claim, and calling them all "proved" would misdescribe two
-of them:
+of them.
 
-*Re-checks of a proved statement.* Each is proved over `Tl/Kernel`'s source and
-re-checked against the compiled function, so a disagreement means compilation
-stopped preserving the theorem:
+*Re-checks of a proved statement* (`proved`). Each is proved over `Tl/Kernel`'s
+source and re-checked against the compiled function, so a disagreement means
+compilation stopped preserving the theorem. Associativity is proved and not
+sampled; the two join laws below are the ones a state fingerprint can observe.
+Rollup totality is in this class too, and its proved statement is the
+definition's own: Lean accepts only total definitions, so what the sample
+re-checks is that the compiled form still terminates and returns a status on
+whatever cyclic and dangling graph the generator produced.
 
-- fold order-insensitivity and duplicate re-delivery;
-- the two join laws a state fingerprint can observe, commutativity and
-  idempotence (associativity is proved and not sampled);
-- the ready queue's soundness and its proved ranking order;
-- `unblocks` as exactly the ready-set difference;
-- rollup totality on whatever cyclic and dangling graphs the generator
-  produces;
-- the fast/spec refinement bridges — the batched rollup, the fast ready queue,
-  the fast `unblocks`/`why` including the bucketed form the CLI calls, and the
-  pre-hoisted view forms of the cycle diagnostics;
-- the cycle implementations against their spec forms.
+*A delegation the kernel makes to the shell, which only a test can discharge*
+(`tested`). Encoding order-preservation: the kernel proves the LWW/OR-Set order
+over the decoded `(hlc, replica, nonce)` triple and delegates that the canonical
+wire strings compare bytewise in the same order. Nothing proves that — it is a
+fact about the encoding, checked over every pair of a seeded set plus the
+crafted near-ties, and it is the linchpin tying the proved order to the on-disk
+bytes.
 
-*A delegation the kernel makes to the shell, which only a test can discharge.*
-Encoding order-preservation: the kernel proves the LWW/OR-Set order over the
-decoded `(hlc, replica, nonce)` triple and delegates that the canonical wire
-strings compare bytewise in the same order. Nothing proves that — it is a fact
-about the encoding, checked over every pair of a seeded set plus the crafted
-near-ties, and it is the linchpin tying the proved order to the on-disk bytes.
+*Which branch the compiled code took* (`observed`), which no theorem states:
+that `cyclesCertAccepted` accepts Tarjan's partition, so the certificate fast
+path runs and the proved fallback is not what produced the answer. The
+fallback's agreement is proved; that the fast branch was taken is observed.
 
-*Which branch the compiled code took*, which no theorem states: that
-`cyclesCertAccepted` accepts Tarjan's partition, so the certificate fast path
-runs and the proved fallback is not what produced the answer. The fallback's
-agreement is proved; that the fast branch was taken is observed.
+The list is below, and it is checked rather than maintained. `sampledProperties`
+in `Tests/CrossTests.lean` pairs each property with its evidence — a `proved`
+row naming its statement as a `Name` resolved at elaboration, so renaming or
+retiring the statement fails the build instead of leaving a claim to a proof
+that is gone — and `crossEvidenceTests` fails when this block and that registry
+disagree in either direction, including on a property whose evidence kind
+changed on one side only. The names stay in the registry: a second copy of them
+here is a copy that drifts.
+
+<!-- tl:cross-evidence start -->
+- `proved` — the fold is insensitive to the order ops arrive in
+- `proved` — re-delivering the whole log changes nothing
+- `proved` — join commutativity, as far as a state fingerprint observes it
+- `proved` — join idempotence, as far as a state fingerprint observes it
+- `proved` — every ready issue is present, open, non-epic and unblocked
+- `proved` — the ready queue is sorted by the proved ranking order
+- `proved` — unblocks is exactly the ready-set difference
+- `proved` — the rollup is total on cyclic and dangling graphs
+- `proved` — the batched rollup agrees with the spec rollup
+- `proved` — the batched readiness check agrees with the spec
+- `proved` — the fast ready queue agrees with the spec queue
+- `proved` — the fast unblocks agrees with the spec
+- `proved` — the fast why agrees with the spec
+- `proved` — the bucketed why the CLI calls agrees with the spec
+- `proved` — the fast cycle witnesses agree with the spec
+- `proved` — the fast readiness-deadlock witnesses agree with the spec
+- `proved` — the pre-hoisted view forms agree with the state-derived forms
+- `tested` — the canonical wire strings compare in the decoded stamp order
+- `observed` — the cycle certificate accepts Tarjan's partition, so the fast branch runs
+<!-- tl:cross-evidence end -->
 
 **Crafted fixtures stay alongside the random corpus.** The seeded generator
 covers what it happens to reach; the SCC fixtures (ring, twin components, self

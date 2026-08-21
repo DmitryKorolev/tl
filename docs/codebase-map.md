@@ -651,7 +651,13 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   batched fold, warm cached materialize, rollup,
                         --   ready, diagnostics, provenance, sync union)
   CrossTests.lean       --   encoding order-preservation (all pairs) + the
-                        --   compiled-kernel-vs-spec property cross-check
+                        --   compiled-kernel-vs-spec property cross-check, each
+                        --   sampled property registered with the evidence its
+                        --   sample carries (proved/tested/observed; a proved row
+                        --   names the theorem as an elaboration-resolved Name,
+                        --   so a retired one fails the build) and the registry
+                        --   checked both ways against ADR-0004's
+                        --   tl:cross-evidence block
   SanitizeTests.lean    --   one row per ADR-0014 sanitizer class
   ImportsTests.lean     --   structural: every `.lean` under Tl/ is imported by the
                         --   root module (guards the "invisible to lake build" class)

@@ -41,6 +41,7 @@ unsafe def main : IO UInt32 := do
   let cli ← cliTests
   let grammar ← grammarTests
   let docGrammar ← docGrammarTests
+  let crossEvidence ← crossEvidenceTests
   let releaseIdentity ← releaseIdentityTests
   let releasePlan ← releasePlanTests
   let releaseTool ← releaseToolTests
@@ -73,6 +74,7 @@ unsafe def main : IO UInt32 := do
     ("Store: discovery, transact, adversity, locking", store),
     ("CLI contract: verbs, guards, envelope, exit codes", cli),
     ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
+    ("Cross-check evidence: the drift guard, and ADR-0004's list == the registry", crossEvidenceGuardTests ++ crossEvidence),
     ("Render sanitization (ADR-0014)", sanitizeTests),
     ("Grammar: tl help --json schema & parser agreement", grammar),
     ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
