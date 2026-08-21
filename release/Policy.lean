@@ -175,15 +175,7 @@ private def npmTool : ToolRequirement :=
   { tool := "npm", lost := "npm is not on PATH" }
 
 def gates : List Gate :=
-  [{ name := "task-id lint selftest"
-     profiles := Profile.all, onTag := .always, requires := []
-     invocation := .script "./scripts/check-task-ids.sh" ["--selftest"]
-     summary := "The task-ID checker proves it still refuses before its silence is believed." },
-   { name := "task-id leakage"
-     profiles := Profile.all, onTag := .always, requires := []
-     invocation := .script "./scripts/check-task-ids.sh" []
-     summary := "No tracker id in a tracked artifact outside docs/ and README.md." },
-   { name := "shell static analysis"
+  [{ name := "shell static analysis"
      profiles := Profile.all, onTag := .always, requires := [shellcheckTool]
      invocation := .script "./scripts/check-release-policy.sh" ["--shellcheck-only"]
      summary := "ShellCheck over every tracked shell file, found by shebang and extension." },

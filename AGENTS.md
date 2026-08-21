@@ -125,12 +125,17 @@ CI gates (mirror these locally before declaring done):
   each error code it can emit; do not rely on an unspecified
   coverage percentage.
 - No task-ID leakage in code and comments (see "Artifacts" below).
-  `scripts/check-task-ids.sh` rejects any `tl-`-affixed Crockford token — the
-  ADR-0007 display form, four digits or more — in a tracked file outside
+  `tlrelease task-id-lint --root .` rejects any `tl-`-affixed Crockford token —
+  the ADR-0007 display form, four digits or more — in a tracked file outside
   `docs/` and `README.md`, unless it is registered in
   `scripts/task-id-placeholders.txt`. That registry is the pinned exclusion
   set, and registering a token is where a human asserts it is a placeholder and
-  not a tracker reference, so a new test id lands there in the same change.
+  not a tracker reference, so a new test id lands there in the same change. It
+  is a Lean binary rather than a script, so CI runs it in the job that has a
+  toolchain and `check-release-policy.sh` does not carry it; the rule, the
+  scope predicate and the registry lookup are covered in
+  `Tests/ReleaseToolTests.lean`, over a corpus of the shapes a leak takes and
+  over planted checkouts through the command itself.
 - `./scripts/check-release-policy.sh --strict` — the release policy, which is
   its own required CI job and is *not* implied by the four gates above. One
   script, two profiles, and `--list` names the gates of whichever you ask for.
@@ -292,7 +297,7 @@ open. **Do not reference task-tracker IDs** in code or comments — describe the
 substance. (tl is *itself* a tracker; the temptation to cross-reference its own
 issue IDs into its own source is exactly the thing to resist.) Cross-references
 between code/docs/ADR anchors are fine; references into a tracker are not.
-`scripts/check-task-ids.sh` enforces this over tracked code, and
+`tlrelease task-id-lint` enforces this over tracked code, and
 `scripts/task-id-placeholders.txt` is the registry of tokens that only look
 like ids.
 

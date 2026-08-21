@@ -199,9 +199,11 @@ Tl/Error.lean           -- the structured error contract: the closed code enum,
                         -- identity (ADR-0006), so moving it is a rotation
 scripts/                -- gates that need no toolchain, each with a --selftest
                         -- arm so a checker that stopped detecting cannot pass
-                        -- unnoticed: check-task-ids.sh (no tracker ids in
-                        -- tracked artifacts), tlrelease stamp (writes Tl/Build/Stamp.lean;
-                        -- fails closed on anything it cannot establish),
+                        -- unnoticed. Two of them are the release tool's now and
+                        -- run where a toolchain exists: tlrelease stamp (writes
+                        -- Tl/Build/Stamp.lean; fails closed on anything it
+                        -- cannot establish) and tlrelease task-id-lint (no
+                        -- tracker ids in tracked artifacts). What is left here:
                         -- verify-release-artifacts.sh (the VERIFYING.md
                         -- procedure as code, run by the release workflow's
                         -- pre-publish check and by its own selftest, so the
@@ -908,6 +910,22 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   held in a variable was the one shape neither arm
                         --   saw. What remains uncovered (a path assembled at
                         --   runtime) is pinned by a corpus row, not assumed
+  TaskId.lean           --   `task-id-lint` states the ADR-0026 lexical rule
+                        --   once — the ADR-0007 affix, a token boundary, and a
+                        --   Crockford run at or above the four-digit floor — as
+                        --   a scan over bytes, plus one predicate for the scope
+                        --   and one registry lookup. The shell it replaced held
+                        --   the rule three times (a regex for the line scan, a
+                        --   second for the tokens on a hit line, a pathspec its
+                        --   selftest compared against a second spelling of the
+                        --   scope) and proved it still detected from inside
+                        --   itself. Reading bytes retires `git grep -a` and
+                        --   `LC_ALL=C` both; a tracked symlink is counted and
+                        --   not read, as `git grep` also leaves it, and the
+                        --   count is disclosed so a run says what it covered.
+                        --   A candidate that fails resumes at the next byte,
+                        --   which is how the token in `<affix><affix>abcd` is
+                        --   still found
 ```
 
 Each type in `Model.lean` exists because the shell could hold a value that

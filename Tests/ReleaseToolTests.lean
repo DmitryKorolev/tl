@@ -3667,7 +3667,7 @@ private def policyRunnerTests : IO (List Outcome) := do
   let allPresent ← outcomesOf everyTool [] .ci false
   let asksPerRun ← asked.get
   let noTools ← outcomesOf [] [] .ci false
-  let oneFailing ← outcomesOf everyTool ["./scripts/check-task-ids.sh"] .release false
+  let oneFailing ← outcomesOf everyTool ["./scripts/verify-release-artifacts.sh"] .release false
   -- A gate that started and did not finish. The process layer's own bound is
   -- covered where it lives; what the registry owns is that its report is a
   -- failure carrying what happened, and never a skip — "it is there and did not
@@ -3691,7 +3691,7 @@ private def policyRunnerTests : IO (List Outcome) := do
   let absentOutcome ← Policy.defaultRunner.invoke absentCommand.invocation
   let shellPresent ← Policy.onPath "sh"
   let nonsensePresent ← Policy.onPath "tl-no-such-program-exists"
-  let relativePresent ← Policy.onPath "./scripts/check-task-ids.sh"
+  let relativePresent ← Policy.onPath "./scripts/check-release-policy.sh"
   let relativeAbsent ← Policy.onPath "./scripts/there-is-no-such-script.sh"
   let outcomeNames (rows : List (Policy.Gate × Policy.GateOutcome)) (which : String) :=
     (rows.filter fun (_, outcome) =>
@@ -3725,11 +3725,11 @@ private def policyRunnerTests : IO (List Outcome) := do
       (!Policy.runAccepts true noTools) "",
     -- A refusing gate fails the run, and the report carries what it said.
     checkEq "policy runner: a gate whose command refuses is a failure"
-      (outcomeNames oneFailing "failed") ["task-id lint selftest", "task-id leakage"],
+      (outcomeNames oneFailing "failed") ["artifact verifier selftest"],
     check "policy runner: the report carries what the gate said"
       ((Policy.runFailures false oneFailing).any fun failure => contains failure "refused") "",
     check "policy runner: one failing gate does not stop the rest running"
-      ((outcomeNames oneFailing "passed").length + 2 == (Policy.gateNames .release false).length)
+      ((outcomeNames oneFailing "passed").length + 1 == (Policy.gateNames .release false).length)
       s!"{outcomeNames oneFailing "passed"}",
     check "policy runner: a gate that did not finish is a failure, not a skip"
       (timedOut.all fun (_, outcome) =>
@@ -3746,7 +3746,7 @@ private def policyRunnerTests : IO (List Outcome) := do
     check "policy runner: a command on PATH is found" shellPresent "sh was not found on PATH",
     check "policy runner: a command that does not exist is not found" (!nonsensePresent) "",
     check "policy runner: a relative path is checked as a path, not searched for on PATH"
-      relativePresent "./scripts/check-task-ids.sh was not found",
+      relativePresent "./scripts/check-release-policy.sh was not found",
     check "policy runner: a relative path that is not there is not found" (!relativeAbsent) "",
     check "policy runner: a gate whose command cannot be run fails rather than skipping"
       (absentOutcome.toOption.isNone) "an absent command was reported as success",
@@ -3795,7 +3795,7 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: the ci profile matches the shell policy on this commit"
           (ciStatus == 0) ciErr,
         check "policy parity: it says how many gates it compared"
-          (contains ciOut "9 gate(s)") ciOut,
+          (contains ciOut "7 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
         -- One row for the tag listing, not two: `relTag` and `rel` are the
         -- same list while nothing is working-tree-only, so a second comparison
@@ -5428,7 +5428,7 @@ private def invocationsIn (kind : SourceKind) (text : String) : List Invocation 
 
 private def boundaryTests : List Outcome :=
   let jobs :=
-    "on:\n  push:\n\njobs:\n  gates:\n    steps:\n      - run: ./scripts/check-task-ids.sh\n" ++
+    "on:\n  push:\n\njobs:\n  gates:\n    steps:\n      - run: ./scripts/check-release-runtimes.sh\n" ++
     "  publish-npm:\n    steps:\n      - run: npm publish --provenance\n" ++
     "  publish-release:\n    steps:\n      - run: gh release create\n"
   let running := workflowRunningText jobs
@@ -5486,7 +5486,8 @@ private def boundaryTests : List Outcome :=
          site := .shebang, text := "#! /usr/bin/python3" }],
     -- References, as the scripts really write them.
     check "boundary: a plain reference is followed"
-      ((referencedScripts "./scripts/check-task-ids.sh --selftest").contains "scripts/check-task-ids.sh"),
+      ((referencedScripts "./scripts/check-release-runtimes.sh --selftest").contains
+        "scripts/check-release-runtimes.sh"),
     check "boundary: a reference through a variable resolves to the same file"
       ((referencedScripts "RC_LIB_SELF=\"$repo_root/scripts/lib/release-common.sh\"").contains
         "scripts/lib/release-common.sh"),
@@ -6700,6 +6701,269 @@ private def installerCorpusTests : IO (List Outcome) := do
     check "installer corpus: accepting and refusing rows have different statuses"
       (lowerStatus == 0 && upperStatus == 0 && wrongStatus != 0 && bareStatus != 0)
       s!"lower={lowerStatus} upper={upperStatus} wrong={wrongStatus} bare={bareStatus}"]
+
+/-! ## The no-task-ID-leakage gate
+
+The lexical rule ADR-0026 pins, the scope it applies to, and the command that
+carries both. The shell this replaced stated the rule three times — a regular
+expression for the line scan, a second one for pulling tokens off a matching
+line, and a pathspec its selftest compared against a `git ls-files | grep -v`
+spelling of the same scope — and proved it still detected through a `--selftest`
+arm inside the file being tested. The rows below are that evidence, from
+outside: the shapes a leak takes go through `findingsIn`, and the gate itself
+goes through the public command over planted checkouts.
+
+Every token here is assembled from the affix rather than written out. This file
+is inside the gate's own scope, so a literal would be a leak the gate is obliged
+to report — which is the same reason the shell built its probe strings from
+`$affix`. -/
+
+private def taskToken (digits : String) : String := Release.TaskId.affix ++ digits
+
+private def scannedTokens (text : String) : List String :=
+  (Release.TaskId.findingsIn text).map (·.token)
+
+/-- One row of the lexical corpus: a string, and every token it holds. -/
+private structure RuleRow where
+  what : String
+  text : String
+  tokens : List String
+
+private def ruleCorpus : List RuleRow :=
+  let short := taskToken "8wmb"
+  let long := taskToken "f01vn6s6n79wmqa8"
+  [{ what := "a reference in prose", text := s!"see {short} for context", tokens := [short] },
+   { what := "a reference ending a sentence", text := s!"fixed in {taskToken "pyvg"}.",
+     tokens := [taskToken "pyvg"] },
+   { what := "a long id after a comment marker", text := s!"-- {long} is the epic",
+     tokens := [long] },
+   { what := "a reference in parentheses", text := s!"({taskToken "d1zh"})",
+     tokens := [taskToken "d1zh"] },
+   { what := "a reference after a slash", text := s!"url/{short}", tokens := [short] },
+   { what := "a reference after a hyphen", text := s!"x-{short}", tokens := [short] },
+   { what := "the uppercase rendering the CLI resolves just as readily",
+     text := s!"upper {short.toUpper}", tokens := [short.toUpper] },
+   { what := "two references on one line", text := s!"{short} and {long}",
+     tokens := [short, long] },
+   { what := "the token runs to the end of the Crockford run",
+     text := s!"x {taskToken "abcdefgh0123"} y", tokens := [taskToken "abcdefgh0123"] },
+   -- What is not a token.
+   { what := "the affix alone is not a token", text := s!"the {Release.TaskId.affix} prefix is reserved",
+     tokens := [] },
+   { what := "one digit is short of the floor", text := s!"a {taskToken "x"} short form",
+     tokens := [] },
+   { what := "three digits are short of the floor", text := s!"a {taskToken "abc"} short form",
+     tokens := [] },
+   { what := "four digits are the floor", text := s!"a {taskToken "abcd"} id",
+     tokens := [taskToken "abcd"] },
+   { what := "a word character before the affix does not open a token",
+     text := s!"x{short}", tokens := [] },
+   -- The recorded ADR-0026 residuals, pinned so that widening one is deliberate.
+   { what := "the symbol aliases stay outside the canonical class (recorded limit)",
+     text := s!"{taskToken "o231q9wgofse7km2"}", tokens := [] },
+   { what := "a hyphenated English compound matches (recorded limit)",
+     text := s!"the {taskToken "managed"} cache", tokens := [taskToken "managed"] },
+   { what := "a bare stored id without the affix is not detected (recorded limit)",
+     text := "f01vn6s6n79wmqa8", tokens := [] },
+   -- The case a scan that consumed its failed candidate would step over.
+   { what := "a token starting inside a failed candidate is still found",
+     text := s!"{Release.TaskId.affix}{taskToken "abcd"}", tokens := [taskToken "abcd"] }]
+
+private def taskIdRuleTests : List Outcome :=
+  let long := taskToken "f01vn6s6n79wmqa8"
+  let registry := Release.TaskId.registryTokens
+    s!"{taskToken "aaaa"}\n\n  {(taskToken "bbbb").toUpper}  \n"
+  let mixed := Release.TaskId.findingsIn s!"{taskToken "aaaa"} and {long}"
+  let sniffed :=
+    "lead".toUTF8 ++ ByteArray.mk #[0, 0xc3, 0xbf, 32] ++ s!"{long} trail".toUTF8
+  ruleCorpus.map (fun row =>
+    checkEq s!"task-id rule: {row.what}" (scannedTokens row.text) row.tokens)
+  ++ [
+    -- The line a token sits on, which is what a reader needs to find it.
+    checkEq "task-id rule: a token reports the line it sits on"
+      ((Release.TaskId.findingsIn s!"one\ntwo\nsee {taskToken "8wmb"}\n").map (·.line)) [3],
+    checkEq "task-id rule: each token on its own line"
+      ((Release.TaskId.findingsIn
+        s!"{taskToken "aaaa"}\nplain\n{taskToken "bbbb"}\n").map (·.line)) [1, 3],
+    -- Bytes, not text: a NUL and a high byte are what `git grep` needed `-a`
+    -- and `LC_ALL=C` to see past.
+    checkEq "task-id rule: a NUL and a high byte do not hide a token"
+      ((Release.TaskId.findings sniffed).map (·.token)) [long],
+    -- The registry.
+    checkEq "task-id registry: entries are lowercased and blank lines dropped"
+      registry [taskToken "aaaa", taskToken "bbbb"],
+    checkEq "task-id registry: a registered token is not a leak"
+      (Release.TaskId.unregistered registry "a.lean" (Release.TaskId.findingsIn (taskToken "aaaa")))
+      [],
+    checkEq "task-id registry: an unregistered token is a leak"
+      ((Release.TaskId.unregistered registry "a.lean" (Release.TaskId.findingsIn long)).map (·.token))
+      [long],
+    checkEq "task-id registry: a registered token written uppercase is still registered"
+      (Release.TaskId.unregistered registry "a.lean"
+        (Release.TaskId.findingsIn (taskToken "aaaa").toUpper)) [],
+    checkEq "task-id registry: a leak sharing a line with a placeholder is still reported"
+      ((Release.TaskId.unregistered registry "a.lean" mixed).map (·.token)) [long],
+    check "task-id registry: a leak renders as file, line and token"
+      (((Release.TaskId.unregistered registry "a.lean" mixed).map (·.render)).any
+        (fun rendered => contains rendered "a.lean:1: " && contains rendered long))
+      s!"{(Release.TaskId.unregistered registry "a.lean" mixed).map (·.render)}",
+    -- The scope, as a predicate rather than as a pathspec.
+    check "task-id scope: tracked code is in scope"
+      (Release.TaskId.inScope "Tests/ReleaseToolTests.lean"
+        && Release.TaskId.inScope "npm/tl/bin/tl"
+        && Release.TaskId.inScope ".github/workflows/ci.yml") "",
+    check "task-id scope: the three documented exclusions are out"
+      (!Release.TaskId.inScope "docs/vision.md"
+        && !Release.TaskId.inScope "docs/adr/ADR-0026-continuous-integration.md"
+        && !Release.TaskId.inScope "README.md"
+        && !Release.TaskId.inScope Release.TaskId.registryRelative) "",
+    check "task-id scope: only the docs directory and the top-level README are excluded"
+      (Release.TaskId.inScope "docsy/note.md" && Release.TaskId.inScope "Tests/README.md") "",
+    -- The listing git hands over.
+    checkEq "task-id listing: a regular file parses to its mode and path"
+      ((Release.TaskId.parseEntry "100644 8c0effd7 0\tTests/CliTests.lean").toOption.map
+        (fun entry => (entry.mode, entry.path)))
+      (some ("100644", "Tests/CliTests.lean")),
+    check "task-id listing: an executable file is a regular file"
+      ((Release.TaskId.Entry.mk "100755" "install.sh").isRegularFile) "",
+    check "task-id listing: a symlink and a submodule are not"
+      (!(Release.TaskId.Entry.mk "120000" "CLAUDE.md").isRegularFile
+        && !(Release.TaskId.Entry.mk "160000" "vendor/x").isRegularFile) "",
+    check "task-id listing: a path holding a tab is a refusal, not a guess"
+      ((Release.TaskId.parseEntry "100644 8c0effd7 0\ta\tb").isOk == false)
+      "a record whose path holds a tab was parsed rather than refused",
+    check "task-id listing: a record with no path is a refusal"
+      ((Release.TaskId.parseEntry "100644 8c0effd7 0\t").isOk == false) "",
+    check "task-id listing: a record git did not write is a refusal"
+      ((Release.TaskId.parseEntry "not a record").isOk == false) "",
+    checkEq "task-id listing: the trailing NUL is a terminator, not an entry"
+      ((Release.TaskId.parseEntries "100644 aa 0\ta.lean\x00100755 bb 0\tb.sh\x00").toOption.map
+        (fun entries => entries.map (·.path)))
+      (some ["a.lean", "b.sh"]),
+    check "task-id listing: one unreadable record refuses the whole listing"
+      ((Release.TaskId.parseEntries "100644 aa 0\ta.lean\x00garbage\x00").isOk == false) ""]
+
+/-- One planted checkout: files, then `git add`. -/
+private def taskIdCheckout (base : System.FilePath) (name : String)
+    (files : List (String × String)) : IO String := do
+  let root := (base / name).toString
+  IO.FS.createDirAll root
+  for (path, contents) in files do
+    let full := root ++ "/" ++ path
+    match (System.FilePath.mk full).parent with
+    | some parent => IO.FS.createDirAll parent
+    | none => pure ()
+    IO.FS.writeFile full contents
+  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", root]
+  gitFixture root ["add", "-A"]
+  return root
+
+private def taskIdCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let short := taskToken "8wmb"
+  let long := taskToken "f01vn6s6n79wmqa8"
+  let registry := "tl-aaaa\n"
+  -- A checkout whose only tokens are excused: the registered placeholder, the
+  -- registry itself, and the two prose surfaces the prohibition does not bind.
+  let clean ← taskIdCheckout base "clean"
+    [(Release.TaskId.registryRelative, registry),
+     ("Tests/Fixture.lean", s!"the placeholder {taskToken "aaaa"} is registered\n"),
+     ("Tl/Cli/Commands.lean", "nothing to see\n"),
+     ("docs/guide.md", s!"sample output: {long}\n"),
+     ("README.md", s!"sample output: {short}\n")]
+  let (cleanStatus, cleanOut, _) ← runCommand "task-id-lint" ["--root", clean]
+  -- The same checkout, plus one leak.
+  let leaking ← taskIdCheckout base "leaking"
+    [(Release.TaskId.registryRelative, registry),
+     ("Tests/Fixture.lean", s!"the placeholder {taskToken "aaaa"} is registered\n"),
+     ("Tl/Cli/Commands.lean", s!"-- one\n-- see {short} for context\n")]
+  let (leakStatus, _, leakErr) ← runCommand "task-id-lint" ["--root", leaking]
+  -- The two arms `git grep` needed `-a` and a byte locale to reach, through the
+  -- command rather than through the scanner: a gate that lost them would still
+  -- pass the corpus rows above.
+  let blob ← taskIdCheckout base "blob" [(Release.TaskId.registryRelative, registry)]
+  IO.FS.writeBinFile (blob ++ "/sniffed.bin")
+    ("lead".toUTF8 ++ ByteArray.mk #[0, 0xc3, 0xbf, 32] ++ s!"{long} trail".toUTF8)
+  IO.FS.writeFile (blob ++ "/.gitattributes") "*.dat binary\n"
+  IO.FS.writeFile (blob ++ "/marked.dat") s!"marked {long}\n"
+  IO.FS.writeFile (blob ++ "/upper.txt") s!"upper {long.toUpper}\n"
+  gitFixture blob ["add", "-A"]
+  let (blobStatus, _, blobErr) ← runCommand "task-id-lint" ["--root", blob]
+  -- A tracked symlink. `git grep` does not follow one, and neither does this:
+  -- the count is disclosed so the scope a run covered stays legible.
+  let linked ← taskIdCheckout base "linked"
+    [(Release.TaskId.registryRelative, registry), ("plain.txt", "nothing here\n")]
+  IO.FS.writeFile (base.toString ++ "/outside.txt") s!"outside {long}\n"
+  match ← Release.run "ln" #["-s", base.toString ++ "/outside.txt", linked ++ "/link.md"] with
+  | .completed _ => pure ()
+  | outcome => throw (IO.userError s!"fixture ln failed: {outcome.failureMessage.getD "unknown"}")
+  gitFixture linked ["add", "-A"]
+  let (linkStatus, linkOut, _) ← runCommand "task-id-lint" ["--root", linked]
+  -- The registry: absent, and present but empty.
+  let noRegistry ← taskIdCheckout base "no-registry" [("Tests/Fixture.lean", "nothing\n")]
+  let (noRegistryStatus, _, noRegistryErr) ← runCommand "task-id-lint" ["--root", noRegistry]
+  let emptyRegistry ← taskIdCheckout base "empty-registry"
+    [(Release.TaskId.registryRelative, "\n\n"), ("Tests/Fixture.lean", "nothing\n")]
+  let (emptyStatus, _, emptyErr) ← runCommand "task-id-lint" ["--root", emptyRegistry]
+  -- A scope that selected nothing. Everything tracked here is excluded, so the
+  -- scan would have read no file at all — which must not report clean.
+  let noScope ← taskIdCheckout base "no-scope"
+    [(Release.TaskId.registryRelative, registry), ("docs/only.md", s!"{long}\n")]
+  let (noScopeStatus, _, noScopeErr) ← runCommand "task-id-lint" ["--root", noScope]
+  -- A directory that is not a checkout: the scope cannot be read, so nothing
+  -- about it is evidence.
+  let bare := (base / "bare").toString
+  IO.FS.createDirAll (bare ++ "/scripts")
+  IO.FS.writeFile (bare ++ "/" ++ Release.TaskId.registryRelative) registry
+  let (bareStatus, _, bareErr) ← runCommand "task-id-lint" ["--root", bare]
+  -- A file the index lists and the working tree does not hold. The scan cannot
+  -- cover the scope it would report, so it refuses rather than passing over it.
+  let deleted ← taskIdCheckout base "deleted"
+    [(Release.TaskId.registryRelative, registry), ("Tests/Gone.lean", "nothing\n")]
+  IO.FS.removeFile (deleted ++ "/Tests/Gone.lean")
+  let (deletedStatus, _, deletedErr) ← runCommand "task-id-lint" ["--root", deleted]
+  let (usageStatus, _, _) ← runCommand "task-id-lint" []
+  return [
+    checkEq "task-id-lint: a checkout whose tokens are all excused is clean" cleanStatus 0,
+    check "task-id-lint: and it says how many files it read"
+      (contains cleanOut "2 tracked files") cleanOut,
+    checkEq "task-id-lint: an unregistered token is a refusal" leakStatus 1,
+    check "task-id-lint: the refusal names the file, the line and the token"
+      (contains leakErr s!"Tl/Cli/Commands.lean:2: {short}") leakErr,
+    check "task-id-lint: the refusal says what to do about a placeholder"
+      (contains leakErr Release.TaskId.registryRelative) leakErr,
+    checkEq "task-id-lint: a token inside a blob git sniffs as binary is found" blobStatus 1,
+    check "task-id-lint: including one in a file .gitattributes marks binary"
+      (contains blobErr "marked.dat") blobErr,
+    check "task-id-lint: and the uppercase rendering the CLI resolves"
+      (contains blobErr "upper.txt") blobErr,
+    check "task-id-lint: the NUL-bearing blob is read too"
+      (contains blobErr "sniffed.bin") blobErr,
+    checkEq "task-id-lint: a tracked symlink is not followed" linkStatus 0,
+    check "task-id-lint: and the run discloses that it counted one without reading it"
+      (contains linkOut "symlink") linkOut,
+    checkEq "task-id-lint: an absent registry is a refusal" noRegistryStatus 1,
+    check "task-id-lint: that refusal names the registry"
+      (contains noRegistryErr Release.TaskId.registryRelative) noRegistryErr,
+    checkEq "task-id-lint: an empty registry is a refusal" emptyStatus 1,
+    check "task-id-lint: that refusal says an empty exclusion set is not the same as none"
+      (contains emptyErr "truncated") emptyErr,
+    checkEq "task-id-lint: a scope that selected nothing is a refusal" noScopeStatus 1,
+    check "task-id-lint: that refusal says a scan over nothing must not report clean"
+      (contains noScopeErr "must not report clean") noScopeErr,
+    checkEq "task-id-lint: a directory that is not a checkout is a refusal" bareStatus 1,
+    check "task-id-lint: that refusal says the scope comes from git"
+      (contains bareErr "git") bareErr,
+    checkEq "task-id-lint: a tracked file missing from the working tree is a refusal"
+      deletedStatus 1,
+    check "task-id-lint: that refusal names the file it could not read"
+      (contains deletedErr "Tests/Gone.lean") deletedErr,
+    checkEq "task-id-lint: no --root is a usage error, not a decision" usageStatus 2,
+    -- The corpus is only evidence if its rows disagree with each other.
+    check "task-id-lint: the accepting and refusing rows have different statuses"
+      (cleanStatus == 0 && linkStatus == 0 && leakStatus == 1 && blobStatus == 1)
+      s!"clean={cleanStatus} link={linkStatus} leak={leakStatus} blob={blobStatus}"]
+
 private def platformTests : IO (List Outcome) := do
   return platformPureTests ++ (← platformCommandTests) ++ (← installerCorpusTests)
 def releaseToolTests : IO (List Outcome) := do
@@ -6763,6 +7027,6 @@ def releaseToolTests : IO (List Outcome) := do
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
-    ++ npmComparisonTests ++ (← stampTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
+    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
 
 end Tl.Tests

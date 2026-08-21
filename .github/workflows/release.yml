@@ -79,11 +79,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: task-id lint selftest
-        run: ./scripts/check-task-ids.sh --selftest
-      - name: task-id leakage
-        run: ./scripts/check-task-ids.sh
-
       - name: install actionlint
         env:
           ACTIONLINT_VERSION: "1.7.12"
@@ -164,6 +159,13 @@ jobs:
 
       - name: the shipped uname mappings match the typed platform authority
         run: ./.lake/build/bin/tlrelease platform-classification --root . --targets release/targets.json
+
+      # No task-tracker id in the artifact being released. Here rather than
+      # before the build for the same reason as the two above: the gate is a
+      # Lean binary now, and it runs on the tagged commit where the toolchain
+      # exists.
+      - name: no tracker id in a tracked artifact
+        run: ./.lake/build/bin/tlrelease task-id-lint --root .
 
       # Before anything is built or signed: the scripts this workflow is about
       # to run, read for an invocation of python, python3, ruby, brew, node or

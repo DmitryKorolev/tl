@@ -136,8 +136,6 @@ shellcheck_all() {
 # nobody reads.
 gate_names() {
   cat <<'NAMES'
-task-id lint selftest
-task-id leakage
 shell static analysis
 artifact verifier selftest
 release runtime boundary selftest
@@ -173,8 +171,6 @@ fi
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 release-policy gates, in order:
-  task-id lint selftest               scripts/check-task-ids.sh --selftest
-  task-id leakage                     scripts/check-task-ids.sh
   shell static analysis               shellcheck over every tracked shell file
   artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
   release runtime boundary selftest   scripts/check-release-runtimes.sh --selftest
@@ -197,6 +193,10 @@ ABSENT
   fi
   cat <<'ELSEWHERE'
 covered by a different required gate, and deliberately not run here:
+  no tracker id in a tracked          `tlrelease task-id-lint`, in the job that has
+    artifact                          a Lean toolchain; the rule, the scope and the
+                                      placeholder registry are the release tool's
+                                      now, and this script has no toolchain
   the SBOM generator                  `lake exe tltest`, over Tests/ReleaseToolTests.lean
                                       — it is `tlrelease sbom`, and this script
                                       answers in seconds without a toolchain
@@ -219,13 +219,6 @@ ELSEWHERE
 fi
 
 rc_policy_begin "release policy: $(if [ -n "$tag" ]; then echo "tag $tag"; else echo "working tree"; fi), $profile profile$(if [ "$RC_POLICY_STRICT" -eq 1 ]; then echo ", strict"; fi)"
-
-# The task-id lint. ci.yml runs it as its own job so a lint failure and a build
-# failure are separately visible, but it belongs in "the whole release policy"
-# too — without it this script can be green on a commit CI will reject, which
-# is exactly what happened to the commit that introduced this file.
-rc_gate "task-id lint selftest" ./scripts/check-task-ids.sh --selftest
-rc_gate "task-id leakage" ./scripts/check-task-ids.sh
 
 # Each gate proves it can still fail before its silence is believed, then runs.
 # The selftest/real pairing is the discipline the identity gate established;

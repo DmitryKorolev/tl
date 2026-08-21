@@ -26,14 +26,18 @@ pinned to full commit hashes.
 
 The graph is:
 
-1. `task-id-lint`, needing no toolchain;
-2. `release-policy`, also needing no toolchain;
+1. `release-policy`, needing no toolchain;
+2. `homebrew-formula`, needing Homebrew rather than a Lean toolchain;
 3. `build-and-test` on Ubuntu and macOS;
 4. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
 Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
-of the build so a lexical or policy failure and a build failure are both
-visible from one run, and they fail in seconds rather than after the matrix.
+of the build so a policy failure and a build failure are both visible from one
+run, and they fail in seconds rather than after the matrix. The lexical task-ID
+gate was a fifth job on the same reasoning until it became `tlrelease
+task-id-lint`; a Lean binary cannot run in a job with no Lean, so it is a step
+of `build-and-test` now, beside the dependency boundary that moved for the same
+reason.
 
 ADR-0028 changes one edge during the typed release-machinery cutover. Once the
 build stamp is produced by `tlrelease`, the release workflow first builds and
@@ -187,9 +191,11 @@ express:
   spec has no url for the running platform passes `ruby -c` and makes Homebrew
   raise on *load*, for every brew command against the tap.
 
-Each of those scripts carries a `--selftest` arm on the same reasoning as the
-task-ID lint: a checker that quietly stopped detecting would pass forever, so
-it proves it can still fail before its silence is believed.
+Each of those scripts carries a `--selftest` arm on one reasoning: a checker
+that quietly stopped detecting would pass forever, so it proves it can still
+fail before its silence is believed. What replaces that arm for a gate that has
+moved into `tlrelease` is a suite in `lake exe tltest` driving the command over
+planted inputs — the same evidence, from outside the thing it tests.
 
 ### The policy has two profiles, because it gates two different things
 
@@ -314,27 +320,48 @@ identity every verifier checks.
 
 The earlier `lint` job carried the source greps this ADR replaces, plus an
 advisory task-ID-leakage warning, and went away with them. The task-ID check
-returns as its own gating job now that its pattern and exclusion set are a
-pinned contract rather than a preference:
+returns as a gating step now that its pattern and exclusion set are a pinned
+contract rather than a preference. It is `tlrelease task-id-lint --root .`,
+which states the rule once — `release/TaskId.lean` — where the shell it
+replaced stated it three times:
 
-- Pattern `(^|[^0-9A-Za-z_])tl-[0-9a-hjkmnp-tv-z]{4,}` — the ADR-0007 display
-  affix followed by at least `shortIdFloor` = 4 Crockford base32 digits. The
-  leading class is a token boundary that still admits a preceding hyphen, so a
-  compound cannot hide a match. Matched case-insensitively, because the id
-  surface is: `Tl/Cli/Resolve` lowercases a token before testing the affix and
-  applies the Crockford aliases, so `TL-…` and `tl-…` resolve to the same issue
-  and are equally a leak. Case is where that stops: the *symbol* aliases
-  (`o`→`0`, `i`/`l`→`1`) are deliberately not admitted into the class — see the
-  residuals below.
-- Scope: every tracked file, minus exactly three pathspecs — `docs/`,
-  `README.md`, and the registry itself. Fail-closed: a new top-level file is in
-  scope automatically, and `git grep` reads tracked content only.
+- The class: the ADR-0007 display affix followed by at least `shortIdFloor` = 4
+  Crockford base32 digits (`0-9 a-z` minus `i l o u`), opened by a token
+  boundary — anything that is not a word character, which still admits a
+  preceding hyphen, so a compound cannot hide a match while `xtl-8wmb` is not a
+  token. The boundary governs both detection and reporting; the shell applied it
+  only to its line scan and then re-extracted tokens without it. Matched
+  case-insensitively, because the id surface is: `Tl/Cli/Resolve` lowercases a
+  token before testing the affix and applies the Crockford aliases, so `TL-…`
+  and `tl-…` resolve to the same issue and are equally a leak. Case is where
+  that stops: the *symbol* aliases (`o`→`0`, `i`/`l`→`1`) are deliberately not
+  admitted into the class — see the residuals below.
+- Scope: every tracked file, minus exactly three paths — `docs/`, `README.md`,
+  and the registry itself — as one predicate rather than as a pathspec whose
+  agreement with the rule had to be checked separately. Fail-closed: a new
+  top-level file is in scope automatically, and the file list comes from `git
+  ls-files`, so it is tracked content only. A tracked symlink is counted and not
+  read, which is what `git grep` does with one — its content is a path, and
+  where its target is tracked it is scanned as its own entry — and the count is
+  disclosed, so a run says what it covered rather than only that it was clean.
+- Bytes, not text: the scan reads each file as bytes, which retires both the
+  `-a` that kept `git grep` from skipping a blob it sniffed as binary and the
+  `LC_ALL=C` that kept the comparison from depending on a locale.
 - `scripts/task-id-placeholders.txt` lists the tokens that only look like ids —
   synthetic ids in the CLI test fixtures. Registering one is where a human
-  asserts it is a placeholder rather than a tracker reference.
-- `--selftest` runs first and asserts the pattern still matches known leak
-  shapes and still rejects known non-ids. A lint that quietly stopped matching
-  would pass forever, which is the failure mode a gate like this actually has.
+  asserts it is a placeholder rather than a tracker reference. Both sides of the
+  lookup fold case, so a placeholder written the way the CLI also accepts is not
+  a leak.
+- What a `--selftest` arm used to assert is a corpus in
+  `Tests/ReleaseToolTests.lean`: every leak shape the gate must keep matching,
+  every non-id it must keep rejecting, each recorded residual below, and the
+  command itself over planted checkouts — a leak, a registered placeholder, a
+  blob git sniffs as binary, an uppercase rendering, an absent registry, an
+  empty one, a scope that selected nothing, a directory that is not a checkout,
+  and a tracked file the working tree does not hold. A lint that quietly stopped
+  matching would pass forever, which is the failure mode a gate like this
+  actually has; the difference from a selftest is that the evidence is no longer
+  produced by the thing it is evidence about.
 
 This is not a regression to the greps that were removed. Those approximated
 *semantic* properties — an axiom, a Mathlib dependency — with text, and missed

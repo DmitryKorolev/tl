@@ -1,11 +1,12 @@
 # ShellCheck configuration for tl's shell code.
 #
-# No `shell=` override: each file's shebang decides. install.sh and the release
-# scripts are POSIX sh — install.sh is piped into whatever /bin/sh the user has,
-# and the others run on macOS where /bin/sh is not bash — while
-# check-task-ids.sh is deliberately bash. Forcing one dialect on both would
-# report every `local` in the bash script as a portability defect and drown the
-# findings that matter.
+# No `shell=` override: each file's shebang decides, and every tracked file now
+# declares `#!/bin/sh`. install.sh is piped into whatever /bin/sh the user has
+# and the release scripts run on macOS, where /bin/sh is not bash. The last bash
+# file was the task-id lint, which is `tlrelease task-id-lint` now; keeping the
+# shebang as the authority rather than pinning `shell=sh` here means a file that
+# reintroduces bash is read as bash instead of being reported line by line as a
+# portability defect.
 
 # Follow `. "$RC_LIB_SELF"` into scripts/lib/release-common.sh, so the helpers
 # it defines are not reported as undefined and the variables it sets are not
