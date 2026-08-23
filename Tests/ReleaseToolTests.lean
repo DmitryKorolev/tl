@@ -6836,6 +6836,50 @@ private def taskIdRuleTests : List Outcome :=
       ((Release.TaskId.parseEntry "100644 8c0effd7 0\t").isOk == false) "",
     check "task-id listing: a record git did not write is a refusal"
       ((Release.TaskId.parseEntry "not a record").isOk == false) "",
+    check "task-id listing: a record whose metadata is not mode/object/stage is a refusal"
+      (((Release.TaskId.parseEntry "100644 8c0effd7\tTests/CliTests.lean").toOption.isNone)
+        && (match Release.TaskId.parseEntry "100644 8c0effd7\tTests/CliTests.lean" with
+            | .error message => contains message "could not read the mode"
+            | .ok _ => false))
+      "a record with two metadata fields was read rather than refused",
+    -- `git ls-files -s` writes one record per index stage, so an unresolved
+    -- merge lists a path two or three times. Reading it once per stage scans one
+    -- file repeatedly and reports one leak as several; keeping one stage of a
+    -- path whose stages disagree about having bytes decides whether the working
+    -- tree's file is read at all, which is the refusal below.
+    checkEq "task-id listing: a path at several index stages is one entry"
+      ((Release.TaskId.collapseStages
+        [Release.TaskId.Entry.mk "100644" "c.lean", Release.TaskId.Entry.mk "100644" "c.lean",
+         Release.TaskId.Entry.mk "100755" "c.lean",
+         Release.TaskId.Entry.mk "100644" "d.lean"]).toOption.map (fun kept => kept.map (·.path)))
+      (some ["c.lean", "d.lean"]),
+    checkEq "task-id listing: an executable and a plain stage of one path still agree"
+      ((Release.TaskId.collapseStages
+        [Release.TaskId.Entry.mk "100755" "c.lean",
+         Release.TaskId.Entry.mk "100644" "c.lean"]).toOption.map
+        (fun kept => kept.map (·.isRegularFile)))
+      (some [true]),
+    checkEq "task-id listing: and distinct paths all survive"
+      ((Release.TaskId.collapseStages
+        [Release.TaskId.Entry.mk "100644" "a", Release.TaskId.Entry.mk "100644" "b",
+         Release.TaskId.Entry.mk "100644" "a"]).toOption.map (fun kept => kept.map (·.path)))
+      (some ["a", "b", "a"]),
+    -- The type-change conflict: a symlink at one stage, a regular file at
+    -- another. Keeping the symlink stage would count the path as unread and
+    -- pass over a file that is really in the working tree.
+    check "task-id listing: a path whose stages disagree about having bytes is a refusal"
+      (match Release.TaskId.collapseStages
+          [Release.TaskId.Entry.mk "120000" "c.lean", Release.TaskId.Entry.mk "100644" "c.lean",
+           Release.TaskId.Entry.mk "100644" "c.lean"] with
+       | .error message => contains message "c.lean" && contains message "type-change"
+       | .ok kept => (kept.map (·.path)) == ["never"])
+      "a symlink stage and a regular-file stage of one path were collapsed rather than refused",
+    check "task-id listing: two stages that agree on being unreadable are one entry"
+      (match Release.TaskId.collapseStages
+          [Release.TaskId.Entry.mk "120000" "c.lean",
+           Release.TaskId.Entry.mk "120000" "c.lean"] with
+       | .ok kept => kept.length == 1 && !(kept.headD (Release.TaskId.Entry.mk "" "")).isRegularFile
+       | .error _ => false) "",
     checkEq "task-id listing: the trailing NUL is a terminator, not an entry"
       ((Release.TaskId.parseEntries "100644 aa 0\ta.lean\x00100755 bb 0\tb.sh\x00").toOption.map
         (fun entries => entries.map (·.path)))
@@ -6862,7 +6906,7 @@ private def taskIdCommandTests : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
   let short := taskToken "8wmb"
   let long := taskToken "f01vn6s6n79wmqa8"
-  let registry := "tl-aaaa\n"
+  let registry := s!"{taskToken "aaaa"}\n"
   -- A checkout whose only tokens are excused: the registered placeholder, the
   -- registry itself, and the two prose surfaces the prohibition does not bind.
   let clean ← taskIdCheckout base "clean"
@@ -6922,6 +6966,40 @@ private def taskIdCommandTests : IO (List Outcome) := do
     [(Release.TaskId.registryRelative, registry), ("Tests/Gone.lean", "nothing\n")]
   IO.FS.removeFile (deleted ++ "/Tests/Gone.lean")
   let (deletedStatus, _, deletedErr) ← runCommand "task-id-lint" ["--root", deleted]
+  -- A path git tracks at two stages with different kinds, planted as the merge
+  -- that produces one: a symlink on the base, a regular file on each side. The
+  -- working tree holds a real file with a leak in it, so a run that kept the
+  -- symlink stage would report clean having read nothing.
+  let typed ← taskIdCheckout base "type-change"
+    [(Release.TaskId.registryRelative, registry), ("Tl/Keep.lean", "nothing\n")]
+  IO.FS.removeFile (typed ++ "/Tl/Keep.lean")
+  match ← Release.run "ln" #["-s", base.toString ++ "/outside.txt", typed ++ "/Tl/Keep.lean"] with
+  | .completed _ => pure ()
+  | outcome => throw (IO.userError s!"fixture ln failed: {outcome.failureMessage.getD "unknown"}")
+  gitFixture typed ["add", "-A"]
+  gitFixture typed ["commit", "--quiet", "-m", "base"]
+  IO.FS.removeFile (typed ++ "/Tl/Keep.lean")
+  IO.FS.writeFile (typed ++ "/Tl/Keep.lean") s!"-- see {short} for context\n"
+  gitFixture typed ["add", "-A"]
+  gitFixture typed ["commit", "--quiet", "-m", "ours"]
+  gitFixture typed ["checkout", "--quiet", "-b", "other", "HEAD~1"]
+  IO.FS.removeFile (typed ++ "/Tl/Keep.lean")
+  IO.FS.writeFile (typed ++ "/Tl/Keep.lean") s!"-- and {long} too\n"
+  gitFixture typed ["add", "-A"]
+  gitFixture typed ["commit", "--quiet", "-m", "theirs"]
+  -- The merge conflicts by design, so its status is the fixture rather than a
+  -- failure: what the run needs is the index it leaves behind.
+  let _ ← Release.run "git" #["-C", typed, "-c", "user.email=ci@example.test",
+    "-c", "user.name=ci", "merge", "main"]
+  let (typedStatus, _, typedErr) ← runCommand "task-id-lint" ["--root", typed]
+  -- A checkout whose whole in-scope set is a symlink: nothing was read, and a
+  -- run that read nothing must not report clean.
+  let unreadable ← taskIdCheckout base "unreadable" [(Release.TaskId.registryRelative, registry)]
+  match ← Release.run "ln" #["-s", base.toString ++ "/outside.txt", unreadable ++ "/only.md"] with
+  | .completed _ => pure ()
+  | outcome => throw (IO.userError s!"fixture ln failed: {outcome.failureMessage.getD "unknown"}")
+  gitFixture unreadable ["add", "-A"]
+  let (unreadableStatus, _, unreadableErr) ← runCommand "task-id-lint" ["--root", unreadable]
   let (usageStatus, _, _) ← runCommand "task-id-lint" []
   return [
     checkEq "task-id-lint: a checkout whose tokens are all excused is clean" cleanStatus 0,
@@ -6943,8 +7021,10 @@ private def taskIdCommandTests : IO (List Outcome) := do
     check "task-id-lint: and the run discloses that it counted one without reading it"
       (contains linkOut "symlink") linkOut,
     checkEq "task-id-lint: an absent registry is a refusal" noRegistryStatus 1,
-    check "task-id-lint: that refusal names the registry"
-      (contains noRegistryErr Release.TaskId.registryRelative) noRegistryErr,
+    check "task-id-lint: that refusal says what the registry is, not only that a read failed"
+      (contains noRegistryErr Release.TaskId.registryRelative
+        && contains noRegistryErr "pinned contract"
+        && contains noRegistryErr "Restore it") noRegistryErr,
     checkEq "task-id-lint: an empty registry is a refusal" emptyStatus 1,
     check "task-id-lint: that refusal says an empty exclusion set is not the same as none"
       (contains emptyErr "truncated") emptyErr,
@@ -6958,6 +7038,13 @@ private def taskIdCommandTests : IO (List Outcome) := do
       deletedStatus 1,
     check "task-id-lint: that refusal names the file it could not read"
       (contains deletedErr "Tests/Gone.lean") deletedErr,
+    checkEq "task-id-lint: a path whose index stages disagree about kind is a refusal"
+      typedStatus 1,
+    check "task-id-lint: that refusal names the path and says to resolve the merge"
+      (contains typedErr "Tl/Keep.lean" && contains typedErr "Resolve the merge") typedErr,
+    checkEq "task-id-lint: a scope with nothing to read is a refusal" unreadableStatus 1,
+    check "task-id-lint: that refusal says a scan that read nothing is not clean"
+      (contains unreadableErr "must not report clean") unreadableErr,
     checkEq "task-id-lint: no --root is a usage error, not a decision" usageStatus 2,
     -- The corpus is only evidence if its rows disagree with each other.
     check "task-id-lint: the accepting and refusing rows have different statuses"

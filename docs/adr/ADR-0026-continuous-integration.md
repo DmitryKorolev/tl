@@ -39,6 +39,13 @@ task-id-lint`; a Lean binary cannot run in a job with no Lean, so it is a step
 of `build-and-test` now, beside the dependency boundary that moved for the same
 reason.
 
+That move costs what the separate job bought: a leak is no longer reported in
+seconds, it is reported after the matrix builds, and a build that fails does not
+report it at all. The trade is deliberate. The alternative is a second,
+toolchain-free implementation of the same lexical rule, which is the copy the
+gate spent a change removing — and a rule stated twice is the failure this
+project keeps finding, where a rule reported late is a delay.
+
 ADR-0028 changes one edge during the typed release-machinery cutover. Once the
 build stamp is produced by `tlrelease`, the release workflow first builds and
 tests that separately scoped executable in `gates`, hands it off with a
@@ -346,7 +353,10 @@ replaced stated it three times:
   disclosed, so a run says what it covered rather than only that it was clean.
 - Bytes, not text: the scan reads each file as bytes, which retires both the
   `-a` that kept `git grep` from skipping a blob it sniffed as binary and the
-  `LC_ALL=C` that kept the comparison from depending on a locale.
+  `LC_ALL=C` that kept the comparison from depending on a locale. One entry per
+  path: `git ls-files -s` writes a record per index stage, so an unresolved merge
+  lists a path more than once, and reading it per stage would report one leak as
+  several.
 - `scripts/task-id-placeholders.txt` lists the tokens that only look like ids —
   synthetic ids in the CLI test fixtures. Registering one is where a human
   asserts it is a placeholder rather than a tracker reference. Both sides of the

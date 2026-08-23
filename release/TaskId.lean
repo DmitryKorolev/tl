@@ -48,9 +48,12 @@ namespace TaskId
 /-! ## The lexical rule
 
 Bytes rather than characters, because that is the unit the scan is defined over:
-a tracked file is a byte string, and a multi-byte sequence carries no Crockford
-digit and no token boundary in any of its bytes. Each byte is read as the
-character of the same code point purely so the classes read like the ones
+a tracked file is a byte string. No byte of a multi-byte sequence is a Crockford
+digit or a word character, so such a sequence can never extend a token, and every
+one of its bytes *opens* a boundary — which is both what `git grep` under
+`LC_ALL=C` did with the same bytes and the conservative direction, since a token
+written straight after a non-ASCII character is still found. Each byte is read as
+the character of the same code point purely so the classes read like the ones
 ADR-0026 states. -/
 
 /-- The display affix (ADR-0007). Assembled from here rather than written into
@@ -216,6 +219,36 @@ def parseEntry (record : String) : Except String Entry :=
       | _ => .error s!"could not read the mode of a tracked entry: '{record}'"
   | _ => .error s!"could not read a tracked entry as '<mode> <object> <stage><tab><path>': '{record}'"
 
+/-- One entry per path, or a refusal.
+
+    `git ls-files -s` writes a record per index stage, so a path in an unresolved
+    merge arrives two or three times — consecutively, the index being ordered by
+    path and then stage. Reading it once per stage would scan one working-tree
+    file repeatedly and report a single leak as several. `git grep` reads such a
+    path once, and so does this.
+
+    Keeping one stage and discarding the rest is only sound while they agree
+    about whether the path has bytes. A type-change conflict — a symlink on one
+    side, a regular file on the other — lists both, and then the stage that
+    happens to be kept decides whether the working tree's file is scanned at all:
+    keeping the symlink stage counts the path as unread and passes over a file
+    that is really there. There is no honest guess between them, so a path whose
+    stages disagree is a refusal. -/
+def collapseStages (entries : List Entry) : Except String (List Entry) :=
+  let (kept, ambiguous) := entries.foldl
+    (fun (state : List Entry × List String) entry =>
+      let (kept, ambiguous) := state
+      match kept with
+      | previous :: _ =>
+          if previous.path != entry.path then (entry :: kept, ambiguous)
+          else if previous.isRegularFile == entry.isRegularFile then state
+          else (kept, entry.path :: ambiguous)
+      | [] => ([entry], ambiguous))
+    ([], [])
+  if ambiguous.isEmpty then .ok kept.reverse
+  else
+    .error s!"the index lists {String.intercalate ", " ambiguous.eraseDups} at more than one stage, and the stages disagree about whether the path has bytes to read — a symlink at one and a regular file at another, which an unresolved type-change conflict produces. Which stage this kept would decide whether the working tree's file is scanned at all, so it refuses instead. Resolve the merge, then run this again."
+
 /-- Every tracked entry in a `git ls-files -s -z` listing. The trailing NUL
     leaves an empty final record, which is the listing's terminator and not an
     entry. -/
@@ -223,6 +256,9 @@ def parseEntries (listing : String) : Except String (List Entry) :=
   ((listing.splitOn "\x00").filter (!·.isEmpty)).mapM parseEntry
 
 /-! ## The decision -/
+
+/-- One or many, for a count a human reads. -/
+private def plural (n : Nat) (one many : String) : String := if n == 1 then one else many
 
 private def lintOptions : List OptionSpec :=
   [{ name := "root", takesValue := true }]
@@ -249,16 +285,21 @@ private def trackedEntries (root : String) : Decision (List Entry) := do
 
 private def lintDecision (args : LintArgs) : Decision String := do
   let registryPath := args.root ++ "/" ++ registryRelative
-  let registryText ← ofIO (readTextFile registryPath)
+  let registryText ← attempt
+    s!"could not read {registryPath}. The registry is part of this gate's pinned contract (ADR-0026): it is the exclusion set, and its absence means the file was removed rather than that nothing is registered. Restore it rather than removing the gate's exclusions"
+    (IO.FS.readFile registryPath)
   let registry := registryTokens registryText
   if registry.isEmpty then
     decline s!"{registryPath} holds no placeholder. The registry is part of this gate's pinned contract (ADR-0026): it is the exclusion set, and an empty one means the file was truncated rather than that nothing is registered. Restore it rather than removing the gate's exclusions."
   let entries ← trackedEntries args.root
-  let inspected := entries.filter (fun entry => inScope entry.path)
+  let collapsed ← ofExcept (collapseStages entries)
+  let inspected := collapsed.filter (fun entry => inScope entry.path)
   if inspected.isEmpty then
     decline s!"no tracked file under {args.root} is in scope. Every tracked file except docs/, README.md and {registryRelative} is (ADR-0026), so an empty scope means the listing was read wrongly rather than that there is nothing to check — a scan over nothing must not report clean."
   let readable := inspected.filter (·.isRegularFile)
   let unread := inspected.filter (!·.isRegularFile)
+  if readable.isEmpty then
+    decline s!"no tracked file under {args.root} has bytes to scan: every one of the {inspected.length} in scope is a symlink or a submodule. A scan that read nothing must not report clean, for the same reason an empty scope must not."
   let perFile ← readable.mapM fun entry => do
     let filePath : String := args.root ++ "/" ++ entry.path
     let bytes ← attempt
@@ -269,8 +310,9 @@ private def lintDecision (args : LintArgs) : Decision String := do
   if leaks.isEmpty then
     let disclosure :=
       if unread.isEmpty then ""
-      else s!", and {unread.length} tracked symlinks counted but not read (a symlink's content is a path; where its target is tracked it is scanned as its own entry)"
-    return s!"clean — no tracker id in {readable.length} tracked files{disclosure}"
+      else
+        s!", and {unread.length} tracked {plural unread.length "entry" "entries"} with no bytes at that path (a symlink or a submodule) counted and not read — a symlink's content is a path, and where its target is tracked it is scanned as its own entry"
+    return s!"clean — no tracker id in {readable.length} tracked {plural readable.length "file" "files"}{disclosure}"
   decline (s!"task-tracker id in a tracked artifact. Code and comments must stand on their own — describe the substance instead (AGENTS.md, \"Artifacts must be human-readable\"). If one of these is a test or example placeholder rather than a reference into the tracker, register it in {registryRelative} in this same change.\n"
     ++ String.join (leaks.map fun leak => s!"  {leak.render}\n"))
 

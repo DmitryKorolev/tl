@@ -925,7 +925,10 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   count is disclosed so a run says what it covered.
                         --   A candidate that fails resumes at the next byte,
                         --   which is how the token in `<affix><affix>abcd` is
-                        --   still found
+                        --   still found. One entry per path, because
+                        --   `git ls-files -s` writes one per index stage and an
+                        --   unresolved merge would otherwise report a leak once
+                        --   per stage
 ```
 
 Each type in `Model.lean` exists because the shell could hold a value that
