@@ -214,9 +214,35 @@ rehearsal runs.
 
 `--profile ci`, the default, is repository hygiene: everything above plus the
 gates for channels that are built but switched off, which live in
-`scripts/check-channel-policy.sh` — the three npm selftests and `ruby -c` over
-the tracked formula and the rendered fixtures beside it. `ci.yml` runs it on
-every commit, so a deferred channel cannot rot while it waits.
+`scripts/check-channel-policy.sh` — `ruby -c` over the tracked formula and the
+rendered fixtures beside it. `ci.yml` runs it on every commit, so a deferred
+channel cannot rot while it waits.
+
+The npm half of that file is not in the profile. It is `tlrelease npm-selftest`,
+so the toolchain-free job that runs the policy cannot run it; `build-and-test`
+invokes it as `check-channel-policy.sh --npm-only`, which keeps it on every
+commit and keeps the ambient npm configuration the gate is run against in the
+script rather than in a workflow's `run:` block. Same move as `tlrelease stamp`,
+the dependency boundary and the task-ID lint, and the same reason. The profiles
+still differ by the deferred channels, because the gate a shell alone can run —
+`ruby -c` — is still ci-only.
+
+**This gate has no owner, and that is a recorded gap.** Every other gate here is
+in `release/Policy.lean`, which the parity check compares against the shell's own
+listing, so a gate that stopped being run fails a build. This one is not: it is
+neither in a profile nor in the registry, and the only thing that runs it is a
+step in `ci.yml`. Deleting that step, or misrouting the flag that reaches it,
+breaks nothing that CI would notice.
+
+A guard was written for it and removed. It read the workflow and the script as
+text, and six successive readings of it — a commented-out step, a command named
+in another field, a key of the same name nested under a step, a `- ` line inside
+a heredoc, an arm bound from an unrelated `case`, a gate function with an empty
+body — each reported the gate as running when nothing ran it. A guard that
+answers "clean" on that many workflows is worse than a recorded absence, because
+an absence can be seen. What replaces it is a shared workflow model and a
+black-box test that drives `--npm-only` against a stub, which is a different
+instrument and its own change.
 
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`

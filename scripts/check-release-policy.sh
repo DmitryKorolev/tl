@@ -42,9 +42,10 @@
 #
 # `--profile` is the one thing they do not share, and it is not a narrowing of
 # convenience. `ci` (the default) additionally runs scripts/check-channel-policy.sh,
-# whose gates invoke npm and ruby to keep the deferred npm and Homebrew
-# machinery from rotting while it waits. `release` is the profile the release
-# workflow runs, and ADR-0026's v0.1 dependency boundary forbids those
+# whose gate invokes ruby to keep the deferred Homebrew machinery from rotting
+# while it waits. That file's other gate needs the built tool, so it runs from
+# --npm-only in the job that builds it rather than from any profile here — see
+# the listing below. `release` is the profile the release workflow runs, and ADR-0026's v0.1 dependency boundary forbids those
 # interpreters anywhere the GitHub-only release path can reach. So a
 # deferred channel's gates are *absent* from the release profile rather than
 # skipped: a skip is a report about this run, and absence is a statement about
@@ -186,13 +187,17 @@ GATES
 
 not in the release profile, and absent rather than skipped:
   the deferred-channel gates          scripts/check-channel-policy.sh --list
-                                      — each invokes npm or ruby, and
-                                      ADR-0026's v0.1 dependency boundary
-                                      forbids those on the release path
+                                      — it invokes ruby, and ADR-0026's v0.1
+                                      dependency boundary forbids that on the
+                                      release path
 ABSENT
   fi
   cat <<'ELSEWHERE'
 covered by a different required gate, and deliberately not run here:
+  the npm packaging gate              `check-channel-policy.sh --npm-only`, in the
+                                      job that has a Lean toolchain; the gate is
+                                      `tlrelease npm-selftest`, and this script
+                                      has no toolchain
   no tracker id in a tracked          `tlrelease task-id-lint`, in the job that has
     artifact                          a Lean toolchain; the rule, the scope and the
                                       placeholder registry are the release tool's

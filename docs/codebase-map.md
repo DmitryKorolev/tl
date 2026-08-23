@@ -241,8 +241,10 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- against release/targets.json),
                         -- check-release-policy.sh (all of the above as one
                         -- command, in two profiles: `ci` adds
-                        -- check-channel-policy.sh, whose two gates invoke npm
-                        -- and ruby for the deferred channels, and
+                        -- check-channel-policy.sh, whose gate invokes ruby for
+                        -- the deferred Homebrew channel — its npm gate needs
+                        -- the built tool and runs from --npm-only in
+                        -- build-and-test instead, and
                         -- `release` — what the release workflow runs against
                         -- the tagged commit — does not have them),
                         -- check-release-runtimes.sh (the release profile again,

@@ -63,11 +63,12 @@ jobs:
       # two definitions of "ready to release" from drifting apart, which is
       # exactly what they had already done.
       #
-      # The default ci profile, which additionally runs the deferred channels'
-      # gates: npm and Homebrew are not published by a v0.1 release, but their
-      # machinery is exercised on every commit so it does not rot while it
-      # waits (ADR-0006). Those gates invoke npm, python3 and ruby, which is
-      # exactly why the release workflow runs a profile without them.
+      # The default ci profile, which additionally runs the deferred Homebrew
+      # channel's gate: Homebrew and npm are not published by a v0.1 release,
+      # but their machinery is exercised on every commit so it does not rot
+      # while it waits (ADR-0006). That gate invokes ruby, which is exactly why
+      # the release workflow runs a profile without it. The npm half of the same
+      # file needs the built tool and runs in build-and-test instead.
       - name: release policy
         run: ./scripts/check-release-policy.sh --strict
 
@@ -239,6 +240,16 @@ jobs:
       # move the dependency boundary and the build stamp already made.
       - name: no tracker id in a tracked artifact
         run: ./.lake/build/bin/tlrelease task-id-lint --root .
+
+      # The deferred npm channel's gate, for the same reason and by the same
+      # move: it is `tlrelease npm-selftest`, so the release-policy job — which
+      # has no toolchain, by design — cannot run it. It stays a step of the
+      # channel-policy script rather than a bare `run:` block because the
+      # ambient npm configuration it is run against is what the gate is for.
+      # On every commit, whether or not release/plan.json publishes through npm:
+      # a deferred channel that stopped being exercised would rot (ADR-0006).
+      - name: npm packaging over the real client
+        run: ./scripts/check-channel-policy.sh --npm-only
 
       # Exact source/module inventory, transitive axiom inspection, direct
       # dependency policy, and independent kernel replay of the safe, total

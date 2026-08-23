@@ -3494,13 +3494,21 @@ private def policyTests : List Outcome :=
   let planWithChannels (npm brew : Bool) : Option ReleasePlan :=
     (ReleasePlan.parse "p" (planTextOf npm brew)).toOption
   [ -- Profiles, and the one difference between them.
+    -- The npm half of the deferred channels is not in this registry: it needs
+    -- the built tool, so it runs from `check-channel-policy.sh --npm-only` in
+    -- the job that builds it, and the policy this registry describes has no
+    -- toolchain. What is left here is the one deferred-channel gate a shell can
+    -- run, and it is still the profiles' only difference.
     checkEq "policy: the release profile is the ci profile without the deferred channels"
-      (ciNames.filter fun name =>
-        name != "npm packaging over the real client" && name != "the rendered formulae parse")
+      (ciNames.filter fun name => name != "the rendered formulae parse")
       releaseNames,
-    check "policy: the deferred-channel gates are in ci and not in release"
-      (["npm packaging over the real client", "the rendered formulae parse"].all fun name =>
-          ciNames.contains name && !releaseNames.contains name)
+    check "policy: the deferred-channel gate is in ci and not in release"
+      (ciNames.contains "the rendered formulae parse"
+        && !releaseNames.contains "the rendered formulae parse")
+      s!"{ciNames}",
+    check "policy: and the gate that needs the built tool is in neither"
+      (!ciNames.contains "npm packaging over the real client"
+        && !releaseNames.contains "npm packaging over the real client")
       s!"{ciNames}",
     -- Every gate in the release profile runs on a tag, because no gate is
     -- working-tree-only any more: the last one that was — the checked-in build
@@ -3795,7 +3803,7 @@ private def policyParityTests : IO (List Outcome) := do
         check "policy parity: the ci profile matches the shell policy on this commit"
           (ciStatus == 0) ciErr,
         check "policy parity: it says how many gates it compared"
-          (contains ciOut "7 gate(s)") ciOut,
+          (contains ciOut "6 gate(s)") ciOut,
         check "policy parity: the release profile matches" (relStatus == 0) relErr,
         -- One row for the tag listing, not two: `relTag` and `rel` are the
         -- same list while nothing is working-tree-only, so a second comparison

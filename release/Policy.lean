@@ -171,9 +171,6 @@ none is left. -/
 private def shellcheckTool : ToolRequirement :=
   { tool := "shellcheck", lost := "shellcheck is not on PATH" }
 
-private def npmTool : ToolRequirement :=
-  { tool := "npm", lost := "npm is not on PATH" }
-
 def gates : List Gate :=
   [{ name := "shell static analysis"
      profiles := Profile.all, onTag := .always, requires := [shellcheckTool]
@@ -199,13 +196,13 @@ def gates : List Gate :=
      invocation := .tool "actionlint"
        ["-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
      summary := "A workflow cannot validate itself; actionlint parses both and shells out to ShellCheck." },
-   -- The deferred channels. Each invokes a runtime ADR-0026's dependency budget
-   -- forbids on the release path, which is the whole reason they are the
-   -- profiles' one difference.
-   { name := "npm packaging over the real client"
-     profiles := [.ci], onTag := .always, requires := [npmTool]
-     invocation := .tool "./.lake/build/bin/tlrelease" ["npm-selftest", "--root", "."]
-     summary := "What only npm establishes: what a package contains, its modes, and the launcher installed and run." },
+   -- The deferred channels' one gate here. It invokes a runtime ADR-0026's
+   -- dependency budget forbids on the release path, which is the whole reason
+   -- the profiles differ at all. The npm half is not in this registry: it is
+   -- `tlrelease npm-selftest`, so it cannot run in the toolchain-free job that
+   -- runs this policy, and it runs from `check-channel-policy.sh --npm-only` in
+   -- the job that builds the tool — the move `tlrelease stamp`, the dependency
+   -- boundary and `task-id-lint` already made.
    { name := "the rendered formulae parse"
      profiles := [.ci], onTag := .always
      requires := [{ tool := "ruby", lost := "ruby is not on PATH" }]

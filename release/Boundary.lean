@@ -98,7 +98,7 @@ structure DeferredPath where
 
 def deferredPaths : List DeferredPath :=
   [{ path := "scripts/check-channel-policy.sh", channels := [.npm, .homebrew],
-     why := "the deferred channels' own gates; the ci profile runs them on every commit and the release profile does not have them" },
+     why := "the deferred channels' own gates; the ci profile runs the Homebrew one on every commit and the npm one runs from --npm-only where the tool is built, and the release profile has neither" },
    { path := "npm/tl/bin/tl", channels := [.npm],
      why := "the launcher inside the npm package, which npm execs" }]
 

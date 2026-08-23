@@ -44,8 +44,9 @@ while [ "$#" -gt 0 ]; do
     --list) list=1; shift ;;
     --list-names) list_names=1; shift ;;
     --ruby-only) only=ruby; shift ;;
+    --npm-only) only=npm; shift ;;
     *)
-      echo "check-channel-policy: unknown argument '$1' — pass --strict, --list, --list-names, --ruby-only, or nothing" >&2
+      echo "check-channel-policy: unknown argument '$1' — pass --strict, --list, --list-names, --ruby-only, --npm-only, or nothing" >&2
       exit 2
       ;;
   esac
@@ -55,7 +56,6 @@ done
 # own count against this, so the two cannot drift apart silently.
 gate_names() {
   cat <<'NAMES'
-npm packaging over the real client
 the rendered formulae parse
 NAMES
 }
@@ -68,9 +68,14 @@ fi
 if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 deferred-channel gates, in order:
-  npm packaging over the real client  tlrelease npm-selftest --root .   (needs npm)
   the rendered formulae parse         ruby -c over Formula/tl.rb and the
                                       Tests/fixtures/homebrew rows      (needs ruby)
+
+covered by a different required gate, and deliberately not run here:
+  npm packaging over the real         `check-channel-policy.sh --npm-only`, in the
+    client                            job that has a Lean toolchain; the gate is
+                                      `tlrelease npm-selftest`, and the caller of
+                                      this script has no built tool
 GATES
   exit 0
 fi
@@ -139,6 +144,7 @@ npm_packaging() {
 if [ -n "$only" ]; then
   case $only in
     ruby) formulae_parse ;;
+    npm) npm_packaging ;;
     *)
       # The arm that must exist even while every flag has one. `case` with no
       # match runs nothing and leaves `$?` at the last command's status, so
@@ -157,16 +163,14 @@ rc_policy_begin "channel policy: npm, Homebrew$(if [ "$RC_POLICY_STRICT" -eq 1 ]
 
 # Each gate states the tool it needs and `rc_tool_gate` decides the rest —
 # present or absent, strict or not, passed or failed. Stating it per gate rather
-# than wrapping three in one `command -v` also stops a fourth npm gate from
-# landing inside a branch written for the three above it.
-# What only the real client can answer: which files a package actually
-# contains, the modes they are published with, where an optional dependency
-# lands, and whether the bin symlink npm creates execs the platform binary.
-# The channel's own decisions — staging, comparison, ordering, publication —
-# are decided by `tlrelease` and covered against a stub in the ordinary suite,
-# which is what lets them run where npm may not be reached at all.
-rc_tool_gate "npm packaging over the real client" --tool npm -- npm_packaging
-
+# than wrapping several in one `command -v` also stops a later gate from landing
+# inside a branch written for the ones above it.
+#
+# The npm gate is not here: it is `tlrelease npm-selftest`, so it cannot run in
+# the toolchain-free job that calls this script, and it runs from
+# `--npm-only` in the job that builds the tool. Its wrapper stays in this file
+# because the ambient configuration it is run against is what the gate is for,
+# and a `run:` block in a workflow is not where that belongs.
 rc_tool_gate "the rendered formulae parse" --tool ruby -- formulae_parse
 
 listed=$(gate_names | wc -l | tr -d ' ')

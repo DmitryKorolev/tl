@@ -135,7 +135,10 @@ CI gates (mirror these locally before declaring done):
   toolchain and `check-release-policy.sh` does not carry it; the rule, the
   scope predicate and the registry lookup are covered in
   `Tests/ReleaseToolTests.lean`, over a corpus of the shapes a leak takes and
-  over planted checkouts through the command itself.
+  over planted checkouts through the command itself. The deferred npm channel's
+  gate moved for the same reason: `build-and-test` runs
+  `./scripts/check-channel-policy.sh --npm-only`, and the ci profile of the
+  policy no longer carries it.
 - `./scripts/check-release-policy.sh --strict` — the release policy, which is
   its own required CI job and is *not* implied by the four gates above. One
   script, two profiles, and `--list` names the gates of whichever you ask for.
@@ -152,9 +155,9 @@ CI gates (mirror these locally before declaring done):
 - The profiles differ in one thing, and it is the ADR-0026 v0.1 dependency
   boundary: no path the GitHub-only release reaches may invoke `python`,
   `python3`, `ruby`, `brew`, `node` or `npm`. `--profile ci` (the default, what
-  `ci.yml` runs) additionally runs `scripts/check-channel-policy.sh`, whose four
-  gates invoke exactly those for the deferred npm and Homebrew channels;
-  `--profile release` (what the release workflow runs) does not have them —
+  `ci.yml` runs) additionally runs `scripts/check-channel-policy.sh`, whose
+  Homebrew gate invokes exactly those for the deferred channel;
+  `--profile release` (what the release workflow runs) does not have it —
   absent rather than skipped, because a skip is a report about this run and
   absence is a statement about the release. The boundary itself is enforced
   twice: `tlrelease dependency-boundary --root . --plan release/plan.json`

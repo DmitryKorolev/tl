@@ -17,8 +17,10 @@
 # which is the whole v0.1 policy: the installer selftest and the artifact
 # verifier selftest are gates inside it, so both are exercised here without a
 # second list of what to run. The deferred channels' gates are not in that
-# profile — they invoke npm, python3 and ruby by design — and they keep running
-# on every commit under the ci profile, where these shims are not on PATH.
+# profile: each reaches for a runtime it forbids, by design. The Homebrew one
+# keeps running on every commit under the ci profile, and the npm one from
+# --npm-only in the job that builds the tool it is; neither has these shims on
+# PATH.
 #
 # The shims are proved to fire before the run is believed. A shim directory that
 # was not on PATH, or a shim that was not executable, would make every release
