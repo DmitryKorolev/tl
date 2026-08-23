@@ -109,9 +109,12 @@ private def wireOrderAgrees (a b : Stamp) : Bool :=
   (compare sa sb == .lt) == decide (TotalOrd.lt a b)
     && (sa == sb) == decide (a = b)
 
+/-- The stamps every pair is drawn from: the seeded ones and the near-ties. -/
+private def stampCorpus : List Stamp := craftedStamps ++ sampleStamps 0xbeef 60
+
 /-- The pairs on which the wire order and the decoded order disagree. -/
 private def wireOrderFailures : List String :=
-  let stamps := craftedStamps ++ sampleStamps 0xbeef 60
+  let stamps := stampCorpus
   stamps.flatMap (fun a => stamps.filterMap (fun b =>
     if wireOrderAgrees a b then none else some s!"pair ({tagOfStamp a}, {tagOfStamp b})"))
 
@@ -271,18 +274,17 @@ def sampledProperties : List Sampled :=
       (.proved ``State.precCyclesFast_eq)
       (fun c => State.precCyclesFast c.rollup c.s == c.s.precCycles),
     -- The hoisted forms are what the CLI calls with one shared present/edge
-    -- scan. `cyclesFast` unfolds to `cyclesFastWith` at these arguments; the
-    -- deadlock form additionally swaps the shipped `parentEdgesFast` for
-    -- `parentEdges`, which is the named theorem's content.
-    onEverySeed "the pre-hoisted view forms agree with the state-derived forms"
+    -- scan. Only the parent-edge swap is sampled: `cyclesFast s k` is *defined*
+    -- as `cyclesFastWith s.presentIssues s.presentEdges k`, so comparing the two
+    -- at those arguments compares an expression with itself and cannot fail,
+    -- which is a green row carrying nothing. The deadlock form is the one that
+    -- differs — it swaps the shipped `parentEdgesFast` for `parentEdges` — and
+    -- that difference is the named theorem's content.
+    onEverySeed "the hoisted parent edges give the same deadlock witnesses as the state-derived ones"
       (.proved ``State.parentEdgesFast_eq)
       (fun c =>
-        State.cyclesFastWith c.s.presentIssues c.s.presentEdges .Blocks
-            == State.cyclesFast c.s .Blocks
-        && State.cyclesFastWith c.s.presentIssues c.s.presentEdges .Parent
-            == State.cyclesFast c.s .Parent
-        && State.precCyclesFastWith c.rollup c.s.presentIssues c.s.presentEdges
-            c.s.parentEdges c.s == State.precCyclesFast c.rollup c.s),
+        State.precCyclesFastWith c.rollup c.s.presentIssues c.s.presentEdges
+          c.s.parentEdges c.s == State.precCyclesFast c.rollup c.s),
     { key := "the canonical wire strings compare in the decoded stamp order"
       evidence := .tested "the encoding is the shell's, and the kernel delegates it"
       failures := fun _ => wireOrderFailures },
@@ -292,12 +294,25 @@ def sampledProperties : List Sampled :=
         State.cyclesCertAccepted c.s .Blocks && State.cyclesCertAccepted c.s .Parent
           && State.precCyclesCertAccepted c.rollup c.s) ]
 
+/-- The corpus the properties above are read over, at the dimensions ADR-0004
+    names (`seeds`, `genOps`, `idPool`, `sampleStamps`).
+
+    Every row reports the instances it *failed* on, so a corpus narrowed to
+    nothing would leave all of them green while claiming the same things. This
+    row is what makes "the corpus was not quietly shrunk" part of the run rather
+    than part of the review. -/
+private def corpusDimensions : Outcome :=
+  check "the sampled corpus is the size the properties are read over"
+    (corpora.length == 25 && corpora.all (fun c => c.ops.length == 40)
+      && idPool.length == 8 && stampCorpus.length == 68)
+    s!"{corpora.length} seeds x {(corpora.head?.map (·.ops.length)).getD 0} ops over {idPool.length} ids, {stampCorpus.length} stamps — change these together with ADR-0004's \"The numbers live in the test\" section, never on their own"
+
 /-- Every registry row, run over the shared corpus. One row per property rather
     than one per seed: a failure then names the property *and* the seeds, where a
     per-seed row conjoining every property named only the seed. -/
 def sampledPropertyTests : List Outcome :=
   let cs := corpora
-  sampledProperties.map (fun p =>
+  corpusDimensions :: sampledProperties.map (fun p =>
     let failed := p.failures cs
     check s!"{p.key} [{p.evidence.render}]" failed.isEmpty
       s!"{failed.length} sampled instances disagreed ({String.intercalate ", " (failed.take 4)}); the corpus is seeded, so each replays exactly")
@@ -441,7 +456,12 @@ private structure Drift where
   unrecorded : List (String × String)
   /-- Claimed by the block, no longer sampled here. -/
   unsampled : List (String × String)
+  /-- Listed twice in the block. -/
   duplicated : List (String × String)
+  /-- Sampled twice under one kind and key. One block row satisfies both, so
+      without this the guard is bidirectional about membership and one-directional
+      about multiplicity. -/
+  registryDuplicated : List (String × String)
 
 /-- Compare a parsed block against a registry. Pure, so the guard's own refusals
     are tested from planted rows rather than from whatever the tree happens to
@@ -454,7 +474,8 @@ private def evidenceDrift (block : List String) (registry : List (String × Stri
     parseErrors := parsed.filterMap (fun | .error e => some e | .ok _ => none)
     unrecorded := registry.filter (fun r => !(recorded.contains r))
     unsampled := recorded.filter (fun a => !(registry.contains a))
-    duplicated := recorded.filter (fun a => (recorded.filter (· == a)).length > 1) }
+    duplicated := recorded.filter (fun a => (recorded.filter (· == a)).length > 1)
+    registryDuplicated := registry.filter (fun r => (registry.filter (· == r)).length > 1) }
 
 private def registryEvidence : List (String × String) :=
   sampledProperties.map (fun p => (p.evidence.kind, p.key))
@@ -475,7 +496,10 @@ private def driftOutcomes (source : String) (d : Drift) : List Outcome :=
     d.unsampled.isEmpty
     s!"{source} claims {d.unsampled.map renderRow}, absent from sampledProperties — restore the check, or narrow the contract in the ADR deliberately",
    check s!"no tl:cross-evidence row in {source} is listed twice"
-    d.duplicated.isEmpty s!"duplicated: {d.duplicated.map renderRow}"]
+    d.duplicated.isEmpty s!"duplicated: {d.duplicated.map renderRow}",
+   check s!"no property is sampled twice under the kind and key {source} records"
+    d.registryDuplicated.isEmpty
+    s!"sampledProperties holds {d.registryDuplicated.map renderRow} more than once, which one row in {source} satisfies — and two rows with one key report under one assertion name"]
 
 /-- The registry and ADR-0004's `tl:cross-evidence` block agree. -/
 def crossEvidenceTests : IO (List Outcome) := do
@@ -525,6 +549,8 @@ def crossEvidenceGuardTests : List Outcome :=
   let extra := evidenceDrift
     (plantedBlock ++ ["- `proved` — a property nobody samples"]) planted
   let dupe := evidenceDrift (plantedBlock ++ [plantedBlock.headD ""]) planted
+  -- the same multiplicity drift from the other side: two samples, one block row
+  let registryDupe := evidenceDrift plantedBlock (planted ++ [planted.headD ("", "")])
   let malformed := evidenceDrift (plantedBlock ++ ["the fold is insensitive"]) planted
   let unknownKind := evidenceDrift
     (plantedBlock ++ ["- `assumed` — something else"]) planted
@@ -546,6 +572,12 @@ def crossEvidenceGuardTests : List Outcome :=
     extra.unsampled [("proved", "a property nobody samples")],
    checkEq "a duplicated row is reported"
     dupe.duplicated [planted.getD 0 ("", ""), planted.getD 0 ("", "")],
+   checkEq "a property sampled twice under one key is reported too"
+    registryDupe.registryDuplicated [planted.getD 0 ("", ""), planted.getD 0 ("", "")],
+   check "and it is not mistaken for a block that drifted"
+    (registryDupe.unrecorded.isEmpty && registryDupe.unsampled.isEmpty
+      && registryDupe.duplicated.isEmpty)
+    s!"unrecorded {registryDupe.unrecorded}, unsampled {registryDupe.unsampled}, duplicated {registryDupe.duplicated}",
    check "a row that is not an evidence row is a parse error, not a skip"
     (malformed.parseErrors.length == 1 && malformed.unsampled.isEmpty)
     s!"{malformed.parseErrors}",
@@ -558,7 +590,7 @@ def crossEvidenceGuardTests : List Outcome :=
       && rekinded.unsampled == [("tested", "the fold is insensitive to the order ops arrive in")])
     s!"unrecorded {rekinded.unrecorded}, unsampled {rekinded.unsampled}",
    check "each drift arm has a failing row of its own"
-    ([dropped, extra, dupe, malformed, unknownKind, rekinded].all (fun d =>
+    ([dropped, extra, dupe, registryDupe, malformed, unknownKind, rekinded].all (fun d =>
       !(failedNames (driftOutcomes "planted" d)).isEmpty))
     "a planted drift produced no failing row"]
 

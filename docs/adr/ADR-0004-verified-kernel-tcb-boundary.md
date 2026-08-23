@@ -405,7 +405,7 @@ here is a copy that drifts.
 - `proved` — the bucketed why the CLI calls agrees with the spec
 - `proved` — the fast cycle witnesses agree with the spec
 - `proved` — the fast readiness-deadlock witnesses agree with the spec
-- `proved` — the pre-hoisted view forms agree with the state-derived forms
+- `proved` — the hoisted parent edges give the same deadlock witnesses as the state-derived ones
 - `tested` — the canonical wire strings compare in the decoded stamp order
 - `observed` — the cycle certificate accepts Tarjan's partition, so the fast branch runs
 <!-- tl:cross-evidence end -->
@@ -429,6 +429,13 @@ how wide the id pool, how many sampled stamps — `seeds`, `genOps`, `idPool` an
 `sampleStamps` in `Tests/CrossTests.lean` — are named here and quantified there.
 A second copy of a count in prose is a copy that drifts, and this project has
 deleted enough of those to know which way it goes.
+
+They are pinned where they are quantified, by a row of the cross-check itself.
+Every sampled property reports the instances it *failed* on, so a corpus
+narrowed to nothing leaves all of them green while claiming the same things —
+the one shape of this contract that a green run would otherwise not distinguish
+from evidence. Changing a number means changing that row in the same edit, which
+is where the deliberateness this section asks for actually lands.
 
 The TCB is therefore: the Lean kernel (and its checker), the file/JSONL
 I/O, git, and the system clock. Nothing else is trusted.
