@@ -5,7 +5,7 @@
 
 ## Context
 
-ADR-0015 pins behaviors the pinned toolchain (Lean 4 v4.33.0) cannot express:
+ADR-0015 pins behaviors the pinned toolchain (Lean 4 v4.33.1) cannot express:
 
 - **fsync after append** (§2). `IO.FS.Handle.flush` drains the userspace
   buffer into the kernel, not the kernel to disk — so an acknowledged op can

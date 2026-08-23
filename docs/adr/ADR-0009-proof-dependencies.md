@@ -42,7 +42,7 @@ default.
 
 ### Mathlib adopted under the escape hatch, scoped
 
-Mathlib is a pinned dependency (`mathlib4 @ v4.33.0`, matching the
+Mathlib is a pinned dependency (`mathlib4 @ v4.33.1`, matching the
 toolchain), taken under the escape hatch above for a genuine need: the
 remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
 correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
