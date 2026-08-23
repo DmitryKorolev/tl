@@ -2899,6 +2899,25 @@ private def gitFixture (cwd : String) (args : List String) : IO Unit := do
           s!"fixture `git {String.intercalate " " args}` in {cwd} exited {output.exitCode}: {output.stderr.trimAscii}")
   | outcome =>
       throw (IO.userError s!"fixture git could not run: {outcome.failureMessage.getD "unknown"}")
+  -- A repository this call creates is one the *command under test* commits into
+  -- — `homebrew-publish` into a tap, `stamp --commit` into a checkout — and
+  -- those are the command's own git invocations, which read the host's global
+  -- configuration. `commit.gpgsign=true` with a key that needs a passphrase, or
+  -- one that is not there, turns those rows into a prompt or a failure about the
+  -- developer's machine. The flags above only reach the fixture's own commits,
+  -- so the setting is written into the new repository, where it overrides the
+  -- global for whoever commits there. Every `init` and `clone` here names the
+  -- path it creates last.
+  match args, args.getLast? with
+  | "init" :: _, some created | "clone" :: _, some created =>
+      match ← Release.run "git" #["-C", created, "config", "commit.gpgsign", "false"] with
+      | .completed output =>
+          unless output.exitCode == 0 do
+            throw (IO.userError
+              s!"fixture could not make {created} independent of the host's signing configuration: {output.stderr.trimAscii}")
+      | outcome =>
+          throw (IO.userError s!"fixture git could not run: {outcome.failureMessage.getD "unknown"}")
+  | _, _ => pure ()
 
 private def commitCount (checkout : String) : IO String := do
   match ← Release.succeeded "git" #["-C", checkout, "rev-list", "--count", "HEAD"] with
