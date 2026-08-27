@@ -10,6 +10,11 @@ file descriptions, entropy shape/freshness, the ownership check, and
 read-to-EOF on empty input. POSIX is the gating path (ADR-0015 §7); symlinks
 are created with `ln -s` (core Lean has no symlink API).
 
+The durability barrier is the exception to "a real syscall on a real file",
+because the branches worth covering are the ones no filesystem will produce on
+request. Its rows drive the shipped policy through a scripted-fault probe —
+see the section heading below for what that probe is and why it is bound here.
+
 The intermediate-symlink errno is platform-split — Linux reports `ELOOP`,
 Darwin `ENOTDIR` (the link, unfollowed, is not a directory) — both are the
 refusal; the policy layer maps either to `unsafe-path`.
@@ -35,6 +40,130 @@ private def symlink (target linkPath : String) : IO Unit := do
   unless out.exitCode == 0 do
     throw (IO.userError s!"ln -s failed: {out.stderr}")
 
+/-! ### The durability barrier (ADR-0015 §2, ADR-0019)
+
+The barrier's policy is driven through `tl_sys_sync_probe`, which runs the same
+`tl_sync_barrier` the product and release paths run but takes each attempt's
+result from a script instead of a syscall. That is the only way to cover the
+branches that matter most — an interrupted barrier, `EIO`, `ENOSPC` — since no
+filesystem produces them on request. The probe is bound *here* rather than in
+`Tl/`, so the product has no path to it at all.
+
+`hasFull` selects the platform shape rather than inheriting it, so the Darwin
+policy (a full barrier to fall back from) and the everywhere-else one (ordinary
+`fsync` already is the barrier) are both exercised on whichever host runs. -/
+
+/-- One scripted attempt result. The codes are the shim's, not errno values,
+    so a row means the same thing on every platform. -/
+private def scOk : UInt8 := 0
+private def scEINTR : UInt8 := 1
+private def scENOTSUP : UInt8 := 2
+private def scEINVAL : UInt8 := 3
+private def scENOTTY : UInt8 := 4
+private def scEOPNOTSUPP : UInt8 := 5
+private def scEIO : UInt8 := 6
+private def scENOSPC : UInt8 := 7
+private def scEACCES : UInt8 := 8
+private def scEBADF : UInt8 := 9
+
+@[extern "tl_sys_sync_probe"]
+private opaque syncProbeRaw (hasFull : UInt8) (script : @&ByteArray) : IO UInt8
+
+private def syncProbe (hasFull : Bool) (script : List UInt8) : IO Sys.SyncStrength := do
+  let raw ← syncProbeRaw (if hasFull then 1 else 0) ⟨script.toArray⟩
+  match Sys.strengthOfCode raw with
+  | .ok strength => return strength
+  | .error m => throw (IO.userError s!"tlsys:sync:ESTRENGTH: {m}")
+
+/-- A scripted run that must reach a barrier, and which one it must reach. -/
+private def probeReaches (name : String) (hasFull : Bool) (script : List UInt8)
+    (expected : Sys.SyncStrength) : IO Outcome := do
+  match ← (syncProbe hasFull script).toBaseIO with
+  | .ok got =>
+    return if got == expected then { name, passed := true }
+      else { name, passed := false, msg := s!"reached {repr got}, expected {repr expected}" }
+  | .error e => return { name, passed := false, msg := s!"expected {repr expected}, failed: {e}" }
+
+/-- A scripted run that must refuse, under the errno it was given. -/
+private def probeRefuses (name : String) (hasFull : Bool) (script : List UInt8)
+    (code : String) : IO Outcome := do
+  match ← (syncProbe hasFull script).toBaseIO with
+  | .error e =>
+    if Sys.errnoOf e == some code then return { name, passed := true }
+    else return { name, passed := false, msg := s!"expected {code}, got: {e}" }
+  | .ok got =>
+    return { name, passed := false, msg := s!"expected {code}, reached {repr got} instead" }
+
+private def barrierTests : IO (List Outcome) := do
+  return [
+    -- The full barrier, reached.
+    ← probeReaches "barrier: a full barrier that succeeds is reported full"
+        true [scOk] .fullBarrier,
+    -- The regression this policy exists for: a signal must not downgrade it.
+    -- The old code took any failure as "unsupported" and answered with a plain
+    -- fsync, so an interrupted barrier silently became an ordinary one.
+    ← probeReaches "barrier: an interrupted full barrier is retried, not downgraded"
+        true [scEINTR, scOk] .fullBarrier,
+    ← probeReaches "barrier: it is retried as often as it is interrupted"
+        true [scEINTR, scEINTR, scEINTR, scOk] .fullBarrier,
+    -- Each documented "this filesystem does not implement that" result, and
+    -- only these, may answer with the weaker flush.
+    ← probeReaches "barrier: ENOTSUP falls back to ordinary fsync"
+        true [scENOTSUP, scOk] .ordinaryFsync,
+    ← probeReaches "barrier: EINVAL falls back to ordinary fsync"
+        true [scEINVAL, scOk] .ordinaryFsync,
+    ← probeReaches "barrier: ENOTTY falls back to ordinary fsync"
+        true [scENOTTY, scOk] .ordinaryFsync,
+    ← probeReaches "barrier: EOPNOTSUPP falls back to ordinary fsync"
+        true [scEOPNOTSUPP, scOk] .ordinaryFsync,
+    -- The other regression: an operational failure is the write failing, and
+    -- must not be answered with a flush that would report a barrier that did
+    -- not happen. The scripts below would all have *succeeded* before, because
+    -- the fall-back fsync is scripted to succeed right after.
+    ← probeRefuses "barrier: EIO on the full barrier propagates, never falls back"
+        true [scEIO, scOk] "EIO",
+    ← probeRefuses "barrier: ENOSPC on the full barrier propagates"
+        true [scENOSPC, scOk] "ENOSPC",
+    ← probeRefuses "barrier: EACCES on the full barrier propagates"
+        true [scEACCES, scOk] "EACCES",
+    ← probeRefuses "barrier: EBADF on the full barrier propagates"
+        true [scEBADF, scOk] "EBADF",
+    -- The ordinary leg, after a legitimate fall-back.
+    ← probeReaches "barrier: an interrupted fall-back fsync is retried"
+        true [scENOTSUP, scEINTR, scOk] .ordinaryFsync,
+    ← probeRefuses "barrier: a failing fall-back fsync refuses"
+        true [scENOTSUP, scEIO] "EIO",
+    ← probeRefuses "barrier: a full disk under the fall-back refuses"
+        true [scENOTSUP, scENOSPC] "ENOSPC",
+    -- The platform whose ordinary fsync already is the barrier: no attempt is
+    -- made to fall back from, and success is a *full* barrier, not a weaker one.
+    ← probeReaches "barrier: where fsync is the barrier, success is full"
+        false [scOk] .fullBarrier,
+    ← probeReaches "barrier: where fsync is the barrier, EINTR is retried"
+        false [scEINTR, scOk] .fullBarrier,
+    ← probeRefuses "barrier: where fsync is the barrier, EIO refuses"
+        false [scEIO] "EIO",
+    ← probeRefuses "barrier: where fsync is the barrier, ENOSPC refuses"
+        false [scENOSPC] "ENOSPC",
+    -- An unsupported result there has nothing to fall back to, so it is a
+    -- refusal rather than a second attempt.
+    ← probeRefuses "barrier: where fsync is the barrier, ENOTSUP refuses"
+        false [scENOTSUP] "ENOTSUP",
+    -- The probe's own guard: a script that runs out ends the run under a name
+    -- of its own, so a mis-written row above fails visibly instead of looping.
+    ← probeRefuses "barrier: a script that runs out ends the run"
+        true [scEINTR] "ESCRIPT",
+    -- The strength wire, decoded. An unrecognized code is not a weaker barrier
+    -- to accept: it means this binding and the shim disagree.
+    checkOk "barrier: the full-barrier code decodes"
+      (Sys.strengthOfCode 0) .fullBarrier,
+    checkOk "barrier: the ordinary-fsync code decodes"
+      (Sys.strengthOfCode 1) .ordinaryFsync,
+    checkError "barrier: an unknown strength code is refused"
+      (Sys.strengthOfCode 2),
+    check "barrier: the two strengths are distinct"
+      (Sys.SyncStrength.fullBarrier != Sys.SyncStrength.ordinaryFsync)]
+
 def sysTests : IO (List Outcome) := do
   let dir ← IO.FS.createTempDir
   let base := dir.toString
@@ -45,12 +174,25 @@ def sysTests : IO (List Outcome) := do
   let payload := "hello\nshim\n".toUTF8
   let fd ← Sys.openNoFollow base "seg.jsonl" (flagCreateExcl ||| flagAppend)
   Sys.writeAll fd payload
-  Sys.sync fd
+  let strength ← Sys.sync fd
   Sys.close fd
   let back ← Sys.withFd base "seg.jsonl" 0 Sys.readAll
   outcomes := outcomes ++
     [check "create-excl + append + sync + readAll round-trip" (back == payload)
-      s!"got {back.size} bytes"]
+      s!"got {back.size} bytes",
+     -- The real syscall path, on a real file on whatever the host runs: a
+     -- temp dir is a local filesystem on both supported platforms, so the
+     -- barrier is the full one. The scripted rows below cover the branches a
+     -- real filesystem will not produce.
+     check "sync on a real local file reaches the full barrier"
+       (strength == .fullBarrier) s!"reached {repr strength}"]
+
+  -- The real production symbol's failure path, end to end: an fd that was
+  -- never opened is EBADF, which is not a "this filesystem cannot" answer and
+  -- so propagates rather than falling back to a plain fsync.
+  outcomes := outcomes ++
+    [← expectErrno "sync on an unopened fd refuses with EBADF" ["EBADF"]
+        (Sys.sync 999999)]
 
   -- a second append lands after the first (O_APPEND positioning)
   let fd2 ← Sys.openNoFollow base "seg.jsonl" flagAppend
@@ -133,6 +275,8 @@ def sysTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectErrno "missing path is ENOENT" ["ENOENT"]
         (Sys.openNoFollow base "no-such/file" 0)]
+
+  outcomes := outcomes ++ (← barrierTests)
 
   return outcomes
 

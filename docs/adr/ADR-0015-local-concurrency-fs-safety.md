@@ -53,6 +53,28 @@ tail) so a later append never fuses onto a partial record (ADR-0008). The writer
 fsyncs after appending — durability is best-effort; the durable publish is `git
 push` (ADR-0001).
 
+"Best-effort" is scoped, and the scope is which barrier the platform gave, not
+whether one was reached. The shim reports that (ADR-0019 `sync fd`), and the
+product's policy over it is: **accept either barrier, propagate every
+operational failure.** An ordinary `fsync` on a filesystem that answers that it
+does not implement the full barrier is the weaker guarantee this section already
+permits, and refusing the write would refuse it on a placement §8 supports — so
+that is accepted, and which barrier a working copy gets is a property of where
+`.tl` lives rather than of any one write. A device that reported `EIO`,
+`ENOSPC`, `EROFS` or `EDQUOT` gave no barrier at all; that is the write failing
+and it surfaces as an error naming the condition and the remedy, never as a
+weaker flush reported in place of the barrier that did not happen. The
+distinction matters here specifically because §1 persists the clock *after* this
+fsync: a barrier that silently did not happen is the ordering hazard §1 exists
+to prevent, wearing the appearance of success.
+
+Two things were deliberately left out. The product does not surface the achieved
+strength per write — it would fire on every write on such a placement, and §2
+already declares the guarantee — and it does not classify the filesystem to warn
+about it, which is the alternative this ADR rejects below. And a device failure
+keeps the `internal` error code: the ADR-0008 set has no storage code, and
+naming these conditions in a message is not a reason to widen a closed contract.
+
 ### 3. `sync` never rewrites its own segment
 The replica's own segment is append-only authority; `sync` only *reads* it.
 (The one pinned, not-yet-built exception is the explicit destructive

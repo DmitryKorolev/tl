@@ -64,7 +64,21 @@ existing because a specific ADR-pinned behavior requires it:
   own fds (§5 reads are `.tl` opens too, so they ride the same discipline).
 - `sync fd` — `fsync`; `F_FULLFSYNC` on Darwin (where plain `fsync` stops at
   the drive's cache — data is not guaranteed durable at return);
-  `FlushFileBuffers` as the Win32 equivalent (§2).
+  `FlushFileBuffers` as the Win32 equivalent (§2). It reports which barrier it
+  reached (`fullBarrier` / `ordinaryFsync`), because there are two and a caller
+  that cannot tell them apart cannot state its own guarantee. Both surfaces
+  flush through one mechanism, and that mechanism decides exactly three things:
+  an interrupted attempt is retried, so a signal cannot silently downgrade a
+  full barrier to an ordinary one; a *named* "this filesystem does not
+  implement that" result (`ENOTSUP`/`EOPNOTSUPP`, `EINVAL`, `ENOTTY`) falls back
+  to ordinary `fsync` and says so; every other errno — `EIO`, `ENOSPC`,
+  `EROFS`, `EDQUOT`, `EACCES`, `EBADF` — is the write failing and propagates,
+  because answering an operational failure with a weaker flush reports a
+  barrier that did not happen. Where ordinary `fsync` already is the platform's
+  barrier there is nothing to attempt first and nothing to fall back from, and
+  success is a *full* barrier. What to do with an `ordinaryFsync` result is
+  policy, and the two callers differ: see §2 of ADR-0015 for the product's and
+  ADR-0028 for release administration's.
 - `lock fd exclusive blocking` — `flock` on the shim fd (`LockFileEx` on
   Win32), giving §1's mutation lock on a §6-compliant open of
   `.tl/local/lock`; core's `Handle.lock` stays the right tool for any
@@ -99,6 +113,19 @@ shell code (AGENTS.md DoD: tests in the same change): symlink refusal at final
 and intermediate components, `O_EXCL` collision, append+sync round-trips, lock
 contention, every atomic-write phase, plus hostile public-command fixtures at
 the Store and release layers.
+
+The barrier is the one mechanism whose branches a filesystem will not produce
+on request — an interrupted attempt, `EIO`, `ENOSPC` are exactly the conditions
+that matter and exactly the ones a test cannot ask for. So its attempts are
+taken through function pointers, and a probe entry drives the same policy from
+a scripted sequence of results. The probe is bound only from `Tests/`: the
+symbol is linked into the product, but no `Tl.*` module names it, and it holds
+no capability — it is handed no descriptor and its scripted attempts reach no
+syscall, so it can neither flush nor observe anything. It also takes the
+platform shape as an argument instead of inheriting it, which is what makes the
+Darwin fall-back policy testable on Linux and the fsync-is-the-barrier policy
+testable on Darwin; without that, half of this decision would be covered on
+only half of the supported platforms.
 
 ### Build wiring (and its one-time cost)
 
@@ -162,7 +189,10 @@ for a core API does not couple product Store code to release administration.
   the actual guarantee. Durability remains best-effort by design (ADR-0015
   §2: the durable publish is `git push`) — the shim narrows the
   acknowledged-op loss window to the pinned mechanism's, and preserves the
-  fsync-before-clock-persist ordering §1 requires.
+  fsync-before-clock-persist ordering §1 requires. "Best-effort" is a statement
+  about *which barrier*, never about whether one happened: a write that returns
+  reached one of the two, and a device that could not flush is an error the
+  caller sees rather than a weaker flush standing in for it.
 - The build gains one in-repo C file compiled by the toolchain's own
   compiler — no external library, version pin, or supply-chain root; the
   ADR-0006 signing/reproducibility story adds only our own source. The

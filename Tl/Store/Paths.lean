@@ -120,6 +120,26 @@ def mapSysError (rel : String) (e : IO.Error) : Tl.Error :=
     { code := .unsafePath
       message := s!"refusing {rel}: a path component is not owned by you — chown the state directory (or point --dir at your own state)"
       context := [("path", .str rel), ("reason", .str "ownership")] }
+  -- The conditions a write or its durability barrier reports. None of them is
+  -- "unexpected", and each has a different thing for the reader to do; the code
+  -- stays `internal` because the closed set (ADR-0008) has no storage code and
+  -- widening it is a contract change, not a side effect of naming these.
+  | some "ENOSPC" =>
+    { code := .internal
+      message := s!"could not write {rel}: the filesystem is full — free space (or put the state directory on a volume with room, --dir / TL_DIR) and retry; this change was not written"
+      context := [("path", .str rel), ("reason", .str "no-space")] }
+  | some "EDQUOT" =>
+    { code := .internal
+      message := s!"could not write {rel}: you are over your filesystem quota — free space under your quota (or point --dir at storage you have room on) and retry; this change was not written"
+      context := [("path", .str rel), ("reason", .str "over-quota")] }
+  | some "EROFS" =>
+    { code := .internal
+      message := s!"could not write {rel}: the filesystem is mounted read-only — remount it read-write, or point --dir at a writable state directory, and retry"
+      context := [("path", .str rel), ("reason", .str "read-only")] }
+  | some "EIO" =>
+    { code := .internal
+      message := s!"could not write {rel}: the storage device reported an I/O error — check the disk before retrying; this change is not durably stored, and the tasks you have already pushed are safe in the git remote"
+      context := [("path", .str rel), ("reason", .str "device-error")] }
   | _ => .mk' .internal s!"unexpected I/O failure on {rel}: {e}"
 
 /-- Run a shim action, mapping `IO.Error`s to structured errors via `f`. -/

@@ -105,7 +105,7 @@ def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
         Sys.writeAll fd "\n".toUTF8
       for line in lines do
         Sys.writeAll fd (line ++ "\n").toUTF8
-      Sys.sync fd
+      Sys.syncBestEffort fd
     finally
       Sys.close fd
 

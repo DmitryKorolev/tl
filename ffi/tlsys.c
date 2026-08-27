@@ -55,6 +55,9 @@ LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean
 LEAN_EXPORT lean_obj_res tl_sys_sync(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("sync");
 }
+LEAN_EXPORT lean_obj_res tl_sys_sync_probe(uint8_t has_full, b_lean_obj_arg script, lean_obj_arg w) {
+    (void)has_full; (void)script; (void)w; return tl_sys_unsupported("sync");
+}
 LEAN_EXPORT lean_obj_res tl_sys_try_lock(uint32_t fd, uint8_t exclusive, lean_obj_arg w) {
     (void)fd; (void)exclusive; (void)w; return tl_sys_unsupported("try_lock");
 }
@@ -93,9 +96,12 @@ LEAN_EXPORT lean_obj_res tl_release_write_atomic(b_lean_obj_arg base, b_lean_obj
 
 /* Synthetic token for the ADR-0015 §6 ownership refusal (no errno fits). */
 #define TL_E_NOTOWNED (-9001)
+/* Synthetic token for a barrier probe whose script ran out (test-only, below). */
+#define TL_E_SCRIPT (-9002)
 
 static const char *tl_errno_name(int e) {
     if (e == TL_E_NOTOWNED) return "ENOTOWNED";
+    if (e == TL_E_SCRIPT) return "ESCRIPT";
     switch (e) {
     case ELOOP: return "ELOOP";
     case EEXIST: return "EEXIST";
@@ -114,14 +120,32 @@ static const char *tl_errno_name(int e) {
     case EMFILE: return "EMFILE";
     case EBADF: return "EBADF";
     case EIO: return "EIO";
+    /* The conditions a flush reports. A deferred write failure surfaces at the
+       barrier rather than at `write`, so these are the names a durability
+       refusal is read by; without them ENOSPC is indistinguishable from any
+       other unnamed errno. */
+    case ENOSPC: return "ENOSPC";
+    case EROFS: return "EROFS";
+    case ENXIO: return "ENXIO";
+    case ENODEV: return "ENODEV";
+    case ENOTSUP: return "ENOTSUP";
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+    case EOPNOTSUPP: return "EOPNOTSUPP";
+#endif
+    case ENOTTY: return "ENOTTY";
+#ifdef EDQUOT
+    case EDQUOT: return "EDQUOT";
+#endif
     default: return "EOTHER";
     }
 }
 
 static lean_obj_res tl_sys_err(const char *op, int e) {
     char buf[512];
-    const char *detail =
-        (e == TL_E_NOTOWNED) ? "path component not owned by the caller" : strerror(e);
+    const char *detail;
+    if (e == TL_E_NOTOWNED) detail = "path component not owned by the caller";
+    else if (e == TL_E_SCRIPT) detail = "barrier probe script exhausted";
+    else detail = strerror(e);
     snprintf(buf, sizeof buf, "tlsys:%s:%s: %s", op, tl_errno_name(e), detail);
     return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string(buf)));
 }
@@ -294,18 +318,144 @@ LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean
     return lean_io_result_mk_ok(lean_box(0));
 }
 
+/*
+ * The durability barrier, and the one policy decision inside it.
+ *
+ * Both surfaces flush through this — the product's `tl_sys_sync` and release
+ * administration's staging write (`tl_release_sync_file`). What differs is the
+ * policy *above* it: the product accepts an ordinary barrier as ADR-0015 §2's
+ * best-effort durability, release records the achieved strength in its evidence
+ * row. So the mechanism reports which barrier it reached and decides for
+ * neither caller.
+ *
+ * An interrupted attempt is retried, so a signal cannot quietly downgrade a
+ * full barrier to an ordinary one. Only a documented "this filesystem does not
+ * implement that" result falls back; EIO, ENOSPC and the rest are the write
+ * failing, and answering one of those with a weaker flush would report a
+ * barrier that did not happen.
+ *
+ * The two attempts arrive as function pointers so the policy can be driven with
+ * faults a filesystem will not produce on demand (`tl_sys_sync_probe`). A NULL
+ * `full` is a platform whose ordinary fsync already *is* the barrier: there is
+ * nothing to fall back from, and the result is a full barrier.
+ */
+typedef int (*tl_sync_attempt)(int fd, void *state);
+
+#define TL_SYNC_FULL 0u
+#define TL_SYNC_ORDINARY 1u
+
+/* The platform saying it does not implement the full barrier on this file —
+   the only reason a weaker flush is still an answer rather than a false one. */
+static int tl_sync_unsupported(int e) {
+    return e == ENOTSUP || e == EINVAL || e == ENOTTY
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+        || e == EOPNOTSUPP
+#endif
+        ;
+}
+
+static int tl_sync_barrier(int fd, tl_sync_attempt full, tl_sync_attempt plain,
+                           void *state, uint32_t *strength) {
+    *strength = TL_SYNC_FULL;
+    if (full) {
+        for (;;) {
+            int e = full(fd, state);
+            if (e == 0) return 0;
+            if (e == EINTR) continue;
+            if (!tl_sync_unsupported(e)) return e;
+            *strength = TL_SYNC_ORDINARY;
+            break;
+        }
+    }
+    for (;;) {
+        int e = plain(fd, state);
+        if (e == 0) return 0;
+        if (e != EINTR) return e;
+    }
+}
+
+#if defined(__APPLE__)
+/* Plain fsync on Darwin stops at the drive cache; F_FULLFSYNC is the actual
+   durability barrier (ADR-0019). */
+static int tl_sync_attempt_full(int fd, void *state) {
+    (void)state;
+    return fcntl(fd, F_FULLFSYNC) == 0 ? 0 : errno;
+}
+#define TL_SYNC_PLATFORM_FULL tl_sync_attempt_full
+#else
+/* Elsewhere fsync is the platform's barrier, so there is nothing to fall back
+   from and nothing to attempt first. */
+#define TL_SYNC_PLATFORM_FULL NULL
+#endif
+
+static int tl_sync_attempt_plain(int fd, void *state) {
+    (void)state;
+    return fsync(fd) == 0 ? 0 : errno;
+}
+
 LEAN_EXPORT lean_obj_res tl_sys_sync(uint32_t fd, lean_obj_arg w) {
     (void)w;
-#if defined(__APPLE__)
-    /* Plain fsync on Darwin stops at the drive cache; F_FULLFSYNC is the
-       actual durability barrier (ADR-0019). Fall back if the fs lacks it. */
-    if (fcntl((int)fd, F_FULLFSYNC) == 0)
-        return lean_io_result_mk_ok(lean_box(0));
+    uint32_t strength = TL_SYNC_FULL;
+    int e = tl_sync_barrier((int)fd, TL_SYNC_PLATFORM_FULL, tl_sync_attempt_plain,
+                            NULL, &strength);
+    if (e != 0) return tl_sys_err("sync", e);
+    return lean_io_result_mk_ok(lean_box(strength));
+}
+
+/*
+ * Drive the barrier policy against a scripted sequence of attempt results, so
+ * the branches a real filesystem will not produce on demand — an interrupted
+ * barrier, EIO, ENOSPC — are covered like every other one.
+ *
+ * Test-only by construction: no product or release Lean module binds this
+ * symbol, and it holds no capability — it is passed no descriptor (-1) and the
+ * scripted attempts never reach a syscall, so it can neither flush nor observe
+ * anything. `has_full` selects the platform shape rather than inheriting it, so
+ * the fall-back policy and the fsync-is-the-barrier policy are both exercised
+ * on either platform. Failures render through the production path, which is
+ * what makes the rendering itself covered.
+ *
+ * One symbolic code per attempt, consumed in call order. Running off the end of
+ * the script is the test's own bug rather than a condition to retry, so it ends
+ * the run under a name of its own instead of looping.
+ */
+#if defined(EOPNOTSUPP)
+#define TL_SYNC_EOPNOTSUPP EOPNOTSUPP
+#else
+#define TL_SYNC_EOPNOTSUPP ENOTSUP
 #endif
-    for (;;) {
-        if (fsync((int)fd) == 0) return lean_io_result_mk_ok(lean_box(0));
-        if (errno != EINTR) return tl_sys_err("sync", errno);
+
+struct tl_sync_script { const uint8_t *codes; size_t len; size_t next; };
+
+static int tl_sync_scripted(int fd, void *state) {
+    (void)fd;
+    struct tl_sync_script *s = (struct tl_sync_script *)state;
+    if (s->next >= s->len) return TL_E_SCRIPT;
+    switch (s->codes[s->next++]) {
+    case 0: return 0;
+    case 1: return EINTR;
+    case 2: return ENOTSUP;
+    case 3: return EINVAL;
+    case 4: return ENOTTY;
+    case 5: return TL_SYNC_EOPNOTSUPP;
+    case 6: return EIO;
+    case 7: return ENOSPC;
+    case 8: return EACCES;
+    case 9: return EBADF;
+    default: return TL_E_SCRIPT;
     }
+}
+
+LEAN_EXPORT lean_obj_res tl_sys_sync_probe(uint8_t has_full, b_lean_obj_arg script,
+                                           lean_obj_arg w) {
+    (void)w;
+    struct tl_sync_script s = { lean_sarray_cptr((lean_object *)script),
+                                lean_sarray_size((lean_object *)script), 0 };
+    uint32_t strength = TL_SYNC_FULL;
+    int e = tl_sync_barrier(-1, has_full ? tl_sync_scripted : NULL, tl_sync_scripted,
+                            &s, &strength);
+    if (e != 0) return tl_sys_err("sync", e);
+    return lean_io_result_mk_ok(lean_box(strength));
 }
 
 LEAN_EXPORT lean_obj_res tl_sys_try_lock(uint32_t fd, uint8_t exclusive, lean_obj_arg w) {
@@ -495,32 +645,15 @@ static lean_obj_res tl_release_failed(uint32_t phase, int e, int dirfd,
  * Flush the staging file's bytes. Returns 0 on success with *strength set, or
  * the errno to refuse with.
  *
- * On Darwin an interrupted F_FULLFSYNC is retried, and only a documented
- * "this filesystem does not do that" result falls back to ordinary fsync — an
- * EIO or ENOSPC surfacing here is the write failing, and answering it with a
- * weaker flush would report a barrier that did not happen. Elsewhere fsync is
- * the platform's barrier, so there is nothing to fall back from.
+ * The barrier and its fall-back policy are `tl_sync_barrier`'s, shared with the
+ * product's `tl_sys_sync`: retry an interrupted attempt, fall back only on a
+ * documented "this filesystem does not do that", propagate everything else.
+ * What release administration does with the answer is its own — the achieved
+ * strength becomes a field of the evidence row rather than being discarded.
  */
 static int tl_release_sync_file(int fd, uint32_t *strength) {
-#if defined(__APPLE__)
-    for (;;) {
-        if (fcntl(fd, F_FULLFSYNC) == 0) { *strength = 0; return 0; }
-        if (errno == EINTR) continue;
-        if (errno == ENOTSUP || errno == EINVAL || errno == ENOTTY
-#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
-            || errno == EOPNOTSUPP
-#endif
-        ) break;
-        return errno;
-    }
-    *strength = 1;
-#else
-    *strength = 0;
-#endif
-    for (;;) {
-        if (fsync(fd) == 0) return 0;
-        if (errno != EINTR) return errno;
-    }
+    return tl_sync_barrier(fd, TL_SYNC_PLATFORM_FULL, tl_sync_attempt_plain,
+                           NULL, strength);
 }
 
 LEAN_EXPORT lean_obj_res tl_release_write_atomic(b_lean_obj_arg base, b_lean_obj_arg components,

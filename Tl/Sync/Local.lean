@@ -91,7 +91,7 @@ def writeForeignSegment (d : Dirs) (replicaId : String) (bytes : ByteArray) : Tl
       (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate)
     try
       Sys.writeAll fd bytes
-      Sys.sync fd
+      Sys.syncBestEffort fd
     finally
       Sys.close fd
   liftSys (mapSysError rel) (IO.FS.rename (d.absOf tmpRel) (d.absOf rel))

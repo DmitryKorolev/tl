@@ -93,7 +93,7 @@ def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
       (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate)
     try
       Sys.writeAll fd content.toUTF8
-      Sys.sync fd
+      Sys.syncBestEffort fd
     finally
       Sys.close fd
   match ← (IO.FS.rename (d.absOf tmpRel) (d.absOf rel)).toBaseIO with

@@ -65,6 +65,42 @@ private def buildCreate (title : String) : TxContext → List Stamp →
   | [st] => .ok [.create (mintIssueId st) { title := some title }]
   | _ => .error (.mk' .internal "expected exactly one stamp")
 
+/-- How a storage condition reaching the Store renders. The shim names these
+    errnos (ADR-0019) so that this layer can say what to do about each; before
+    it did, a full disk arrived as "unexpected I/O failure". The code stays
+    `internal` — the ADR-0008 set has no storage code, and naming a condition in
+    a message is not a reason to widen a closed contract (ADR-0015 §2). -/
+private def storageErrorTests : List Outcome :=
+  let rel := ".tl/log/0123456789abc.jsonl"
+  let mapped (errno detail : String) : Tl.Error :=
+    mapSysError rel (IO.userError s!"tlsys:sync:{errno}: {detail}")
+  let teaches (name errno detail : String) (needles : List String) : List Outcome :=
+    let e := mapped errno detail
+    [check s!"storage: {name} keeps the internal code"
+       (e.code == .internal) s!"got {e.code.wire}",
+     check s!"storage: {name} names the path"
+       (e.message.splitOn rel |>.length |> (· == 2)) e.message,
+     check s!"storage: {name} says what to do"
+       (needles.all fun n => (e.message.splitOn n).length ≥ 2) e.message,
+     check s!"storage: {name} does not read as unexpected"
+       ((e.message.splitOn "unexpected").length == 1) e.message]
+  teaches "a full filesystem" "ENOSPC" "No space left on device"
+      ["full", "free space", "was not written"] ++
+  teaches "an exceeded quota" "EDQUOT" "Disc quota exceeded"
+      ["quota", "was not written"] ++
+  teaches "a read-only mount" "EROFS" "Read-only file system"
+      ["read-only", "writable"] ++
+  teaches "a device error" "EIO" "Input/output error"
+      ["I/O error", "check the disk"] ++
+  -- The conditions this layer has no advice for still fall through to the
+  -- generic branch, which is what keeps the four above meaningful.
+  [check "storage: an unnamed errno still falls through to the generic branch"
+     (((mapped "EOTHER" "something else").message.splitOn "unexpected").length == 2)
+     (mapped "EOTHER" "something else").message,
+   check "storage: a non-shim error falls through too"
+     (((mapSysError rel (IO.userError "not a shim error")).message.splitOn
+        "unexpected").length == 2) "expected the generic branch"]
+
 def storeDiscoveryTests : IO (List Outcome) := do
   let mut outcomes : List Outcome := []
   let (root, _) ← mkProject
@@ -191,7 +227,9 @@ def storeDiscoveryTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectCode "symlinked .tl is unsafe-path" .unsafePath
         (validate { base := lroot.toString, tlRel := ".tl" })]
+  outcomes := outcomes ++ storageErrorTests
   return outcomes
+
 
 def storeWriteTests : IO (List Outcome) := do
   let mut outcomes : List Outcome := []
