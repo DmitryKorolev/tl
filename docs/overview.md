@@ -741,7 +741,12 @@ on a placement that is actually fine, and only a filesystem that does this would
 reveal it. The real-syscall path is exercised on whatever filesystem CI's temp
 directory sits on, which on both supported platforms is a local one taking the
 full barrier; the fall-back leg's *real* syscall arm therefore has no CI
-coverage, only its policy does.
+coverage, only its policy does. For the same reason the Store layer's rendering
+of `ENOSPC`/`EDQUOT`/`EROFS`/`EIO` is covered at the mapping rather than end to
+end: producing a genuinely full disk or a failing device under a real `tl`
+command needs a fault-injecting filesystem, which is outside the seam the shim
+provides. What is covered end to end is that a shim failure reaching the Store
+is rendered and classified at all — through a real `EBADF`.
 
 The TCB is: the Lean kernel (+ its checker), the file/JSONL I/O, git, and the
 system clock. Nothing else.
