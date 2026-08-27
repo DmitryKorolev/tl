@@ -114,6 +114,10 @@ private def barrierTests : IO (List Outcome) := do
         true [scEINVAL, scOk] .ordinaryFsync,
     ← probeReaches "barrier: ENOTTY falls back to ordinary fsync"
         true [scENOTTY, scOk] .ordinaryFsync,
+    -- On both supported platforms EOPNOTSUPP and ENOTSUP are the same value, so
+    -- this row repeats the one above there rather than adding coverage. It is
+    -- kept because the shim spells both, and a platform that separates them is
+    -- exactly where that spelling would start to matter.
     ← probeReaches "barrier: EOPNOTSUPP falls back to ordinary fsync"
         true [scEOPNOTSUPP, scOk] .ordinaryFsync,
     -- The other regression: an operational failure is the write failing, and
