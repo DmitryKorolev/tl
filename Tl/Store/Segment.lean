@@ -91,7 +91,7 @@ def tornTail (bytes : ByteArray) : Bool :=
     mutation lock (the caller holds it): close a crash fragment if needed,
     one `O_APPEND` write per record (§2), fsync (§2; F_FULLFSYNC on Darwin). -/
 def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
-    (closeFragment : Bool) : TlM Unit := do
+    (closeFragment : Bool) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   -- create .tl/log through the no-follow shim mkdir (a planted
   -- `.tl/log -> /elsewhere` symlink is refused, never followed and created
   -- through — ADR-0015 §6; init makes only .tl/local, so the first write is
@@ -105,7 +105,7 @@ def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
         Sys.writeAll fd "\n".toUTF8
       for line in lines do
         Sys.writeAll fd (line ++ "\n").toUTF8
-      Sys.syncBestEffort fd
+      Sys.syncBestEffortWith syncMechanism fd
     finally
       Sys.close fd
 

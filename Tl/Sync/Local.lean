@@ -81,20 +81,29 @@ def segsEquiv (a b : List SegmentData) : Bool :=
     the log dir is created no-follow first, the temp open is no-follow, and the
     `rename` replaces the target name atomically (raw bytes, never a lossy
     String round-trip — a foreign segment may not be valid UTF-8). -/
-def writeForeignSegment (d : Dirs) (replicaId : String) (bytes : ByteArray) : TlM Unit := do
+def writeForeignSegment (d : Dirs) (replicaId : String) (bytes : ByteArray)
+    (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   liftSys (mapSysError d.relLog) (Sys.mkdirNoFollow d.base d.relLog)
   let entropy ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}") (Sys.entropy 8)
   let rel := d.relSegment replicaId
   let tmpRel := rel ++ "." ++ toCrockford (Sys.natOfBytesBE entropy) 13 ++ ".tmp"
-  liftSys (mapSysError tmpRel) do
-    let fd ← Sys.openNoFollow d.base tmpRel
-      (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate)
-    try
-      Sys.writeAll fd bytes
-      Sys.syncBestEffort fd
-    finally
-      Sys.close fd
-  liftSys (mapSysError rel) (IO.FS.rename (d.absOf tmpRel) (d.absOf rel))
+  let fd ← liftSys (mapSysError tmpRel) (Sys.openNoFollow d.base tmpRel
+    (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate))
+  try
+    liftSys (mapSysError tmpRel) do
+      try
+        Sys.writeAll fd bytes
+        Sys.syncBestEffortWith syncMechanism fd
+      finally
+        Sys.close fd
+  catch e =>
+    let _ ← (IO.FS.removeFile (d.absOf tmpRel)).toBaseIO
+    throw e
+  match ← (IO.FS.rename (d.absOf tmpRel) (d.absOf rel)).toBaseIO with
+  | .ok _ => return ()
+  | .error e =>
+    let _ ← (IO.FS.removeFile (d.absOf tmpRel)).toBaseIO
+    throw (mapSysError rel e)
 
 /-- Write every segment of `final` that is not this replica's own and whose
     on-disk copy differs into `.tl/log/`. Returns the (re)materialized ids. -/

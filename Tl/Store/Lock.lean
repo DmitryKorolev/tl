@@ -99,7 +99,8 @@ def mintStamps (replicaVal : Nat) (clock0 : Hlc) (now : Nat) (n : Nat) :
     appended records. -/
 def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
     (build : TxContext → List Stamp → Except Tl.Error (List WireOp))
-    (timeoutMs : Nat := defaultLockTimeoutMs) :
+    (timeoutMs : Nat := defaultLockTimeoutMs)
+    (syncMechanism : Sys.SyncMechanism := Sys.sync) :
     TlM (TxContext × List ParsedOp) := do
   let fd ← acquireLock d timeoutMs
   try
@@ -162,8 +163,8 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
       wireOps stamps
     unless parsed.isEmpty do
       let ownBytes := ((segs.find? (·.replicaId == replica.id)).map (·.bytes)).getD ByteArray.empty
-      appendOwn d replica.id (parsed.map renderLine) (tornTail ownBytes)
-      persistClock d clockN
+      appendOwn d replica.id (parsed.map renderLine) (tornTail ownBytes) syncMechanism
+      persistClock d clockN syncMechanism
     return (ctx, parsed)
   finally
     releaseLock fd

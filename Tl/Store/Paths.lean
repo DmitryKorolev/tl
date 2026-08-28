@@ -124,21 +124,27 @@ def mapSysError (rel : String) (e : IO.Error) : Tl.Error :=
   -- "unexpected", and each has a different thing for the reader to do; the code
   -- stays `internal` because the closed set (ADR-0008) has no storage code and
   -- widening it is a contract change, not a side effect of naming these.
+  -- This mapper is shared by reads, opens, writes, closes, and durability
+  -- barriers, so its messages cannot honestly claim which operation failed or
+  -- whether a mutation landed. In particular, a barrier or clock-file failure
+  -- can arrive after an own-segment record is already visible. The advice is
+  -- therefore neutral about the operation and explicitly tells a mutating
+  -- caller to inspect state before retrying a possibly non-idempotent command.
   | some "ENOSPC" =>
     { code := .internal
-      message := s!"could not write {rel}: the filesystem is full — free space (or put the state directory on a volume with room, --dir / TL_DIR) and retry; this change was not written"
+      message := s!"storage operation on {rel} failed because the filesystem is full — free space (or put the state directory on a volume with room, --dir / TL_DIR); if this command was changing state, its change may already be visible, so inspect current tl state before retrying"
       context := [("path", .str rel), ("reason", .str "no-space")] }
   | some "EDQUOT" =>
     { code := .internal
-      message := s!"could not write {rel}: you are over your filesystem quota — free space under your quota (or point --dir at storage you have room on) and retry; this change was not written"
+      message := s!"storage operation on {rel} failed because you are over your filesystem quota — free space under your quota (or point --dir at storage you have room on); if this command was changing state, its change may already be visible, so inspect current tl state before retrying"
       context := [("path", .str rel), ("reason", .str "over-quota")] }
   | some "EROFS" =>
     { code := .internal
-      message := s!"could not write {rel}: the filesystem is mounted read-only — remount it read-write, or point --dir at a writable state directory, and retry"
+      message := s!"storage operation on {rel} failed because the filesystem is mounted read-only — remount it read-write, or point --dir at a writable state directory; if this command was changing state, its change may already be visible, so inspect current tl state before retrying"
       context := [("path", .str rel), ("reason", .str "read-only")] }
   | some "EIO" =>
     { code := .internal
-      message := s!"could not write {rel}: the storage device reported an I/O error — check the disk before retrying; this change is not durably stored, and the tasks you have already pushed are safe in the git remote"
+      message := s!"storage operation on {rel} failed because the device reported an I/O error — check the disk; if this command was changing state, its change may already be visible, so inspect current tl state before retrying"
       context := [("path", .str rel), ("reason", .str "device-error")] }
   | _ => .mk' .internal s!"unexpected I/O failure on {rel}: {e}"
 

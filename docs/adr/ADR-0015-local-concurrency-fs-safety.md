@@ -61,12 +61,22 @@ does not implement the full barrier is the weaker guarantee this section already
 permits, and refusing the write would refuse it on a placement §8 supports — so
 that is accepted, and which barrier a working copy gets is a property of where
 `.tl` lives rather than of any one write. A device that reported `EIO`,
-`ENOSPC`, `EROFS` or `EDQUOT` gave no barrier at all; that is the write failing
-and it surfaces as an error naming the condition and the remedy, never as a
+`ENOSPC`, `EROFS` or `EDQUOT` gave no barrier at all; that is the durability
+operation failing and it surfaces as an error naming the condition and the remedy, never as a
 weaker flush reported in place of the barrier that did not happen. The
 distinction matters here specifically because §1 persists the clock *after* this
 fsync: a barrier that silently did not happen is the ordering hazard §1 exists
 to prevent, wearing the appearance of success.
+
+That error is not a transaction rollback. `write(2)` may already have appended
+the complete record before its barrier fails, and the clock-file barrier can
+fail after the segment append and barrier both succeeded. The command therefore
+does not claim that its mutation is absent: its teaching message tells the
+caller to inspect current state before retrying. On write, barrier, close, or
+rename failure the writer makes a best-effort attempt to remove an owned
+temporary sibling while preserving the original error, but an append cannot be
+undone safely and a successfully appended record remains available to later
+materialization even when the command reports the durability failure.
 
 Two things were deliberately left out. The product does not surface the achieved
 strength per write — it would fire on every write on such a placement, and §2

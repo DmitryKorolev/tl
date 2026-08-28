@@ -72,7 +72,7 @@ existing because a specific ADR-pinned behavior requires it:
   full barrier to an ordinary one; a *named* "this filesystem does not
   implement that" result (`ENOTSUP`/`EOPNOTSUPP`, `EINVAL`, `ENOTTY`) falls back
   to ordinary `fsync` and says so; every other errno — `EIO`, `ENOSPC`,
-  `EROFS`, `EDQUOT`, `EACCES`, `EBADF` — is the write failing and propagates,
+  `EROFS`, `EDQUOT`, `EACCES`, `EBADF` — is the barrier failing and propagates,
   because answering an operational failure with a weaker flush reports a
   barrier that did not happen. Where ordinary `fsync` already is the platform's
   barrier there is nothing to attempt first and nothing to fall back from, and
@@ -102,7 +102,7 @@ existing because a specific ADR-pinned behavior requires it:
   the write did not land. Operation and errno are data, not a formatted string
   contract. Its raw array-taking Lean extern is private to `release.Sys`; the
   public release mechanism accepts only ADR-0028's sealed directory and output
-  path values. The product's stronger durable-write policy remains separate.
+  path values. The product's durable-write policy remains separate.
 - `close fd`.
 
 The §6 *policy* — the `.tl` path discipline, what to refuse, the error codes
@@ -125,7 +125,15 @@ syscall, so it can neither flush nor observe anything. It also takes the
 platform shape as an argument instead of inheriting it, which is what makes the
 Darwin fall-back policy testable on Linux and the fsync-is-the-barrier policy
 testable on Darwin; without that, half of this decision would be covered on
-only half of the supported platforms.
+only half of the supported platforms. A second test observation reads the
+compiled platform shape through the same selector used by both production
+callers; a successful real-file sync cannot reveal this, because both shapes
+report `fullBarrier` when their selected barrier succeeds. The test-only Lean
+binding also decodes the probe through the shipped strength decoder and can be
+passed through the public Store write seams. Those rows cover an own-segment
+barrier failure, a later clock-file barrier failure after the segment is
+visible, and temporary-file cleanup without duplicating either policy in the
+test.
 
 ### Build wiring (and its one-time cost)
 
@@ -199,10 +207,12 @@ for a core API does not couple product Store code to release administration.
   lakefile migrates to the Lean DSL once, recorded above.
 - The policy line is on record before the first exception is tempted:
   library-shaped problems do not get C-library answers.
-- Tier-2 like the rest of the shell: the shim *relies on* carried
-  assumptions already recorded (working `O_APPEND` atomicity and advisory
-  locks, overview.md Trusted) and adds no new ones — it narrows how much
-  behavior rests on them.
+- Tier-2 like the rest of the shell: the shim *relies on* carried assumptions
+  recorded in overview.md Trusted, including working `O_APPEND` atomicity and
+  advisory locks and the two barrier residuals: the operating system's barrier
+  has its documented meaning, and the named unsupported-errno set is complete.
+  The scripted policy and Store-path tests narrow what rests on those
+  assumptions; they cannot discharge facts about a real device's flush.
 
 ## Alternatives considered
 

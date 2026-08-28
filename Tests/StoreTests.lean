@@ -18,9 +18,11 @@ contention (bounded `lock-busy`).
 `discover (override := …)`, which shares everything but the env read.
 -/
 import Tl.Store.Lock
+import Tl.Sync.Local
 import Tl.Cli.Init
 import Tl.Format.Ids
 import Tests.Harness
+import Tests.SyncBarrierProbe
 
 namespace Tl.Tests
 
@@ -82,16 +84,19 @@ private def storageErrorTests : List Outcome :=
        (e.message.splitOn rel |>.length |> (· == 2)) e.message,
      check s!"storage: {name} says what to do"
        (needles.all fun n => (e.message.splitOn n).length ≥ 2) e.message,
+     check s!"storage: {name} does not guess whether a mutation landed"
+       (["could not write", "was not written", "not durably stored", "git remote"].all
+         fun n => (e.message.splitOn n).length == 1) e.message,
      check s!"storage: {name} does not read as unexpected"
        ((e.message.splitOn "unexpected").length == 1) e.message]
   teaches "a full filesystem" "ENOSPC" "No space left on device"
-      ["full", "free space", "was not written"] ++
+      ["full", "free space", "may already be visible", "inspect current tl state"] ++
   teaches "an exceeded quota" "EDQUOT" "Disc quota exceeded"
-      ["quota", "was not written"] ++
+      ["quota", "may already be visible", "inspect current tl state"] ++
   teaches "a read-only mount" "EROFS" "Read-only file system"
-      ["read-only", "writable"] ++
+      ["read-only", "writable", "may already be visible", "inspect current tl state"] ++
   teaches "a device error" "EIO" "Input/output error"
-      ["I/O error", "check the disk"] ++
+      ["I/O error", "check the disk", "may already be visible", "inspect current tl state"] ++
   -- The conditions this layer has no advice for still fall through to the
   -- generic branch, which is what keeps the four above meaningful.
   [check "storage: an unnamed errno still falls through to the generic branch"
@@ -100,6 +105,12 @@ private def storageErrorTests : List Outcome :=
    check "storage: a non-shim error falls through too"
      (((mapSysError rel (IO.userError "not a shim error")).message.splitOn
         "unexpected").length == 2) "expected the generic branch"]
+
+private def tempNames (dir : System.FilePath) : IO (List String) := do
+  let entries ← dir.readDir
+  return entries.toList
+    |>.map (fun entry : IO.FS.DirEntry => entry.fileName)
+    |>.filter (·.endsWith ".tmp")
 
 def storeDiscoveryTests : IO (List Outcome) := do
   let mut outcomes : List Outcome := []
@@ -271,6 +282,135 @@ def storeWriteTests : IO (List Outcome) := do
   let clockAfter ← IO.FS.readFile (root / ".tl" / "local" / "clock")
   outcomes := outcomes ++
     [check "no-op leaves the clock file untouched" (clockBefore == clockAfter)]
+  return outcomes
+
+/-- The product policy and failure aftermath through public Store functions.
+
+    These rows pass the native scripted barrier to `transact` and
+    `writeForeignSegment`, rather than testing `mapSysError` beside the real
+    path. They pin the two states a caller must distinguish after a refusal:
+    an append-barrier failure may leave the record visible, and a clock-file
+    failure happens after the segment barrier already completed. In both cases
+    the message must teach inspection before retry, and transient siblings must
+    not accumulate. -/
+def storeSyncPolicyTests : IO (List Outcome) := do
+  let mut outcomes : List Outcome := []
+
+  -- The product accepts the explicitly weaker answer its ADR permits. Both the
+  -- own segment and clock replacement pass through `syncBestEffortWith`.
+  let (_, dOrdinary) ← mkProject
+  let ordinary : Sys.SyncMechanism := fun _ => pure .ordinaryFsync
+  let ordinaryResult ← runTl (transact dOrdinary none 1 (buildCreate "ordinary barrier")
+    (syncMechanism := ordinary))
+  let ordinaryState ← runTl (readState dOrdinary)
+  outcomes := outcomes ++
+    [check "storage sync: public transact accepts ordinary fsync"
+      (ordinaryResult.toOption.isSome) s!"result={ordinaryResult.toOption.isSome}",
+     check "storage sync: the ordinary-fsync transaction is visible"
+      (match ordinaryState with
+       | .ok loaded => loaded.state.presentIssues.length == 1
+       | .error _ => false)]
+
+  -- A barrier refusal follows writes that the process can already read back.
+  -- The command fails, but it must not claim absence or invite a blind retry.
+  let (rootSpace, dSpace) ← mkProject
+  let noSpace : Sys.SyncMechanism := fun _ =>
+    SyncBarrierProbe.run true [SyncBarrierProbe.enospc]
+  let spaceResult ← runTl (transact dSpace none 1 (buildCreate "full disk")
+    (syncMechanism := noSpace))
+  let spaceState ← runTl (readState dSpace)
+  let spaceClock ← IO.FS.readFile (rootSpace / ".tl" / "local" / "clock")
+  outcomes := outcomes ++
+    [check "storage sync: native ENOSPC reaches public Store as internal"
+      (match spaceResult with
+       | .error e => e.code == .internal
+         && e.message.contains "filesystem is full"
+         && e.message.contains "may already be visible"
+         && e.message.contains "inspect current tl state before retrying"
+       | .ok _ => false),
+     check "storage sync: a refused segment barrier may leave the record visible"
+      (match spaceState with
+       | .ok loaded => loaded.state.presentIssues.length == 1
+       | .error _ => false),
+     check "storage sync: a refused segment barrier does not persist the clock"
+      (spaceClock == "0000000000000000\n") spaceClock]
+
+  let (_, dIo) ← mkProject
+  let deviceError : Sys.SyncMechanism := fun _ =>
+    SyncBarrierProbe.run true [SyncBarrierProbe.eio]
+  let ioResult ← runTl (transact dIo none 1 (buildCreate "device error")
+    (syncMechanism := deviceError))
+  outcomes := outcomes ++
+    [check "storage sync: native EIO reaches public Store without inventing a remote"
+      (match ioResult with
+       | .error e => e.code == .internal
+         && e.message.contains "I/O error"
+         && e.message.contains "inspect current tl state before retrying"
+         && !e.message.contains "git remote"
+       | .ok _ => false)]
+
+  -- The second sync is the clock temp: the segment barrier already answered
+  -- full. Its refusal leaves the operation visible but must remove the temp.
+  let (rootClock, dClock) ← mkProject
+  let calls ← IO.mkRef 0
+  let clockFails : Sys.SyncMechanism := fun _ => do
+    let n ← (calls.modifyGet (fun n => (n, n + 1)) : IO Nat)
+    if n == 0 then pure .fullBarrier
+    else SyncBarrierProbe.run true [SyncBarrierProbe.enospc]
+  let clockResult ← runTl (transact dClock none 1 (buildCreate "clock refusal")
+    (syncMechanism := clockFails))
+  let clockState ← runTl (readState dClock)
+  let clockAfter ← IO.FS.readFile (rootClock / ".tl" / "local" / "clock")
+  let localTemps ← tempNames (rootClock / ".tl" / "local")
+  outcomes := outcomes ++
+    [check "storage sync: clock refusal reports an ambiguous mutation outcome"
+      (match clockResult with
+       | .error e => e.message.contains "may already be visible"
+         && e.message.contains "inspect current tl state before retrying"
+       | .ok _ => false),
+     check "storage sync: a clock refusal happens after the record is visible"
+      (match clockState with
+       | .ok loaded => loaded.state.presentIssues.length == 1
+       | .error _ => false),
+     check "storage sync: a clock refusal leaves the old clock target intact"
+      (clockAfter == "0000000000000000\n") clockAfter,
+     check "storage sync: a pre-rename clock refusal removes its temp file"
+      localTemps.isEmpty s!"temps={localTemps}"]
+
+  -- The lock-free foreign-segment path uses the same cleanup rule.
+  let (rootForeign, dForeign) ← mkProject
+  let foreignId := "1zzzzzzzzzzzz"
+  let foreignResult ← runTl (Tl.Sync.writeForeignSegment dForeign foreignId "bytes\n".toUTF8
+    deviceError)
+  let foreignTargetExists ← (rootForeign / ".tl" / "log" /
+    (foreignId ++ ".jsonl")).pathExists
+  let foreignTemps ← tempNames (rootForeign / ".tl" / "log")
+  outcomes := outcomes ++
+    [check "storage sync: foreign-segment EIO reaches the public Store path"
+      (match foreignResult with
+       | .error e => e.message.contains "I/O error"
+       | .ok _ => false),
+     check "storage sync: a refused foreign segment is not renamed into place"
+      !foreignTargetExists,
+     check "storage sync: a refused foreign-segment sync removes its temp file"
+      foreignTemps.isEmpty s!"temps={foreignTemps}"]
+
+  -- A directory at the target name makes the final rename fail after the temp
+  -- was fully written and synced. This is distinct from the barrier refusal
+  -- above and pins cleanup on the other post-open failure exit.
+  let (rootRename, dRename) ← mkProject
+  let renameId := "2zzzzzzzzzzzz"
+  let renameTarget := rootRename / ".tl" / "log" / (renameId ++ ".jsonl")
+  IO.FS.createDirAll renameTarget
+  let renameResult ← runTl (Tl.Sync.writeForeignSegment dRename renameId
+    "bytes\n".toUTF8 ordinary)
+  let renameTemps ← tempNames (rootRename / ".tl" / "log")
+  outcomes := outcomes ++
+    [check "storage sync: foreign-segment rename failure is propagated"
+      (match renameResult with | .error _ => true | .ok _ => false),
+     check "storage sync: a failed foreign-segment rename removes its temp file"
+      renameTemps.isEmpty s!"temps={renameTemps}"]
+
   return outcomes
 
 def storeAdversityTests : IO (List Outcome) := do
@@ -589,7 +729,8 @@ def storeJournalTests : List Outcome :=
 
 def storeTests : IO (List Outcome) := do
   return (← storeDiscoveryTests) ++ (← storeWriteTests)
-    ++ (← storeAdversityTests) ++ (← storeLockTests) ++ (← storeSkewTests)
+    ++ (← storeSyncPolicyTests) ++ (← storeAdversityTests)
+    ++ (← storeLockTests) ++ (← storeSkewTests)
     ++ storeTombstoneScopeTests ++ storeJournalTests
 
 end Tl.Tests

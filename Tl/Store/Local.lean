@@ -77,7 +77,8 @@ private def fileContents (d : Dirs) (rel : String) : TlM (Option String) := do
     microseconds earlier — a swapper would need mid-call write access to the
     already-validated tree. A `renameat`-based no-follow shim would close even that
     window (ADR-0015 §6); the residual is accepted as tiny. -/
-def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
+def writeLocalFile (d : Dirs) (rel : String) (content : String)
+    (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   -- a per-call CSPRNG temp suffix so concurrent lock-free writers never collide
   -- on one `.tmp` inode (the read-time `ref-mark` refresh writes here without
   -- the mutation lock — ADR-0016 §3); harmless for the under-lock callers
@@ -88,14 +89,22 @@ def writeLocalFile (d : Dirs) (rel : String) (content : String) : TlM Unit := do
   -- hold, no panic), so it is deliberately tolerated, not checked.
   let entropy ← liftSys (fun e => .mk' .internal s!"entropy unavailable: {e}") (Sys.entropy 8)
   let tmpRel := rel ++ "." ++ toCrockford (Sys.natOfBytesBE entropy) 13 ++ ".tmp"
-  liftSys (mapSysError tmpRel) do
-    let fd ← Sys.openNoFollow d.base tmpRel
-      (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate)
-    try
-      Sys.writeAll fd content.toUTF8
-      Sys.syncBestEffort fd
-    finally
-      Sys.close fd
+  let fd ← liftSys (mapSysError tmpRel) (Sys.openNoFollow d.base tmpRel
+    (Sys.flagCreate ||| Sys.flagWrite ||| Sys.flagTruncate))
+  try
+    liftSys (mapSysError tmpRel) do
+      try
+        Sys.writeAll fd content.toUTF8
+        Sys.syncBestEffortWith syncMechanism fd
+      finally
+        Sys.close fd
+  catch e =>
+    -- Once the open succeeded this invocation owns the transient sibling. A
+    -- write, barrier, or close failure is before this temp's rename, so remove
+    -- it before propagating; retrying ENOSPC must not consume still more space.
+    -- This says nothing about an earlier own-segment append in the transaction.
+    let _ ← (IO.FS.removeFile (d.absOf tmpRel)).toBaseIO
+    throw e
   match ← (IO.FS.rename (d.absOf tmpRel) (d.absOf rel)).toBaseIO with
   | .ok _ => return ()
   | .error e =>
@@ -152,8 +161,9 @@ def loadClock (d : Dirs) : TlM (Option Hlc) := do
 
 /-- Persist the clock (the *persist clock* step of the ADR-0015 §1 critical
     section — always after the appended records are fsynced). -/
-def persistClock (d : Dirs) (h : Hlc) : TlM Unit :=
-  writeLocalFile d d.relClock (h.toHex ++ "\n")
+def persistClock (d : Dirs) (h : Hlc)
+    (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit :=
+  writeLocalFile d d.relClock (h.toHex ++ "\n") syncMechanism
 
 /-- The ref-refresh marker (ADR-0016 §3): the `refs/tl/log` OID this working
     copy has already materialized siblings from. Absent (never refreshed) or

@@ -8,8 +8,9 @@ Policy — the `.tl` path discipline, error codes (`unsafe-path`, `lock-busy`),
 bounded lock waits — lives in the callers (`Tl/Store/*`), where every branch
 is testable. The one policy that lives *here* is the durable-write one
 (`syncBestEffort`), because it is the same decision at all three write sites
-and stating it three times is how they would come to differ. Swapping a shim function for a future core API never touches
-the Store: call sites reach the mechanism only through this module.
+and stating it three times is how they would come to differ. Swapping a shim
+function for a future core API never touches the Store: call sites reach the
+mechanism only through this module.
 
 Shim failures surface as `IO.Error` userErrors of the fixed shape
 `tlsys:<op>:<ERRNO-NAME>: <detail>`; `errnoOf` recovers the token so callers
@@ -94,11 +95,23 @@ theorem strengthOfCode_code (strength : SyncStrength) :
 @[extern "tl_sys_sync"]
 opaque syncRaw (fd : UInt32) : IO UInt8
 
-/-- `syncRaw` with the strength decoded. -/
-def sync (fd : UInt32) : IO SyncStrength := do
-  match strengthOfCode (← syncRaw fd) with
+/-- Decode a strength byte or fail in the shim's own error shape. Kept separate
+    from `sync` so the tests' scripted probe refuses through *this* function
+    rather than a copy of it — a second copy is how the covered refusal and the
+    shipped one come to differ. -/
+def strengthOrThrow (code : UInt8) : IO SyncStrength :=
+  match strengthOfCode code with
   | .ok strength => return strength
   | .error message => throw (IO.userError s!"tlsys:sync:ESTRENGTH: {message}")
+
+/-- `syncRaw` with the strength decoded. -/
+def sync (fd : UInt32) : IO SyncStrength := do strengthOrThrow (← syncRaw fd)
+
+/-- A durability mechanism with the same answer as the native barrier. Store
+    functions accept one explicitly at their test seams; production always uses
+    `sync`. Keeping the strength in the type ensures tests exercise the product
+    policy over both answers instead of bypassing it with an `IO Unit` stub. -/
+abbrev SyncMechanism := UInt32 → IO SyncStrength
 
 /-- The product's durable-write policy over the barrier that was reached.
 
@@ -115,8 +128,12 @@ def sync (fd : UInt32) : IO SyncStrength := do
     Release administration applies a different policy over the same mechanism
     (`release/Write.lean`): it carries the achieved strength into the evidence
     row, because an artifact's durability is a fact a release has to report. -/
-def syncBestEffort (fd : UInt32) : IO Unit := do
-  let _ ← sync fd
+def syncBestEffortWith (mechanism : SyncMechanism) (fd : UInt32) : IO Unit := do
+  let _ ← mechanism fd
+
+/-- Apply the product policy to the native durability mechanism. -/
+def syncBestEffort (fd : UInt32) : IO Unit :=
+  syncBestEffortWith sync fd
 
 /-- Non-blocking advisory lock attempt; `false` = held elsewhere. Bounded
     waiting is caller policy (`Tl/Store/Lock.lean`), not mechanism. -/

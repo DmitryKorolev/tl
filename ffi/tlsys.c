@@ -58,6 +58,9 @@ LEAN_EXPORT lean_obj_res tl_sys_sync(uint32_t fd, lean_obj_arg w) {
 LEAN_EXPORT lean_obj_res tl_sys_sync_probe(uint8_t has_full, b_lean_obj_arg script, lean_obj_arg w) {
     (void)has_full; (void)script; (void)w; return tl_sys_unsupported("sync");
 }
+LEAN_EXPORT lean_obj_res tl_sys_has_full_barrier(lean_obj_arg w) {
+    (void)w; return tl_sys_unsupported("sync");
+}
 LEAN_EXPORT lean_obj_res tl_sys_try_lock(uint32_t fd, uint8_t exclusive, lean_obj_arg w) {
     (void)fd; (void)exclusive; (void)w; return tl_sys_unsupported("try_lock");
 }
@@ -388,6 +391,14 @@ static int tl_sync_attempt_full(int fd, void *state) {
 #define TL_SYNC_PLATFORM_FULL NULL
 #endif
 
+/* One selector shared by both production callers and the test observation.
+   A real-file success reports TL_SYNC_FULL under either platform shape, so the
+   result alone cannot reveal that a Darwin build accidentally lost its
+   F_FULLFSYNC attempt. */
+static tl_sync_attempt tl_sync_platform_full(void) {
+    return TL_SYNC_PLATFORM_FULL;
+}
+
 static int tl_sync_attempt_plain(int fd, void *state) {
     (void)state;
     return fsync(fd) == 0 ? 0 : errno;
@@ -396,10 +407,26 @@ static int tl_sync_attempt_plain(int fd, void *state) {
 LEAN_EXPORT lean_obj_res tl_sys_sync(uint32_t fd, lean_obj_arg w) {
     (void)w;
     uint32_t strength = TL_SYNC_FULL;
-    int e = tl_sync_barrier((int)fd, TL_SYNC_PLATFORM_FULL, tl_sync_attempt_plain,
+    int e = tl_sync_barrier((int)fd, tl_sync_platform_full(), tl_sync_attempt_plain,
                             NULL, &strength);
     if (e != 0) return tl_sys_err("sync", e);
     return lean_io_result_mk_ok(lean_box(strength));
+}
+
+/*
+ * Which barrier shape this build compiled to: 1 = a full barrier is attempted
+ * before any fall-back, 0 = ordinary fsync already is the platform's barrier.
+ *
+ * A successful sync reports a full barrier either way, so a build that lost its
+ * Darwin `F_FULLFSYNC` attempt would still satisfy every strength assertion a
+ * test can make against a real file. This is what distinguishes the two, and it
+ * pins the platform selection through the same `tl_sync_platform_full` selector
+ * both production callers use.
+ */
+LEAN_EXPORT lean_obj_res tl_sys_has_full_barrier(lean_obj_arg w) {
+    (void)w;
+    tl_sync_attempt full = tl_sync_platform_full();
+    return lean_io_result_mk_ok(lean_box(full != NULL ? 1 : 0));
 }
 
 /*
@@ -442,6 +469,14 @@ static int tl_sync_scripted(int fd, void *state) {
     case 7: return ENOSPC;
     case 8: return EACCES;
     case 9: return EBADF;
+    case 10: return EROFS;
+#ifdef EDQUOT
+    case 11: return EDQUOT;
+#else
+    case 11: return TL_E_SCRIPT;
+#endif
+    case 12: return ENXIO;
+    case 13: return ENODEV;
     default: return TL_E_SCRIPT;
     }
 }
@@ -652,7 +687,7 @@ static lean_obj_res tl_release_failed(uint32_t phase, int e, int dirfd,
  * strength becomes a field of the evidence row rather than being discarded.
  */
 static int tl_release_sync_file(int fd, uint32_t *strength) {
-    return tl_sync_barrier(fd, TL_SYNC_PLATFORM_FULL, tl_sync_attempt_plain,
+    return tl_sync_barrier(fd, tl_sync_platform_full(), tl_sync_attempt_plain,
                            NULL, strength);
 }
 

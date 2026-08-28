@@ -21,6 +21,7 @@ refusal; the policy layer maps either to `unsafe-path`.
 -/
 import Tl.Store.Sys
 import Tests.Harness
+import Tests.SyncBarrierProbe
 
 namespace Tl.Tests
 
@@ -53,32 +54,10 @@ filesystem produces them on request. The probe is bound *here* rather than in
 policy (a full barrier to fall back from) and the everywhere-else one (ordinary
 `fsync` already is the barrier) are both exercised on whichever host runs. -/
 
-/-- One scripted attempt result. The codes are the shim's, not errno values,
-    so a row means the same thing on every platform. -/
-private def scOk : UInt8 := 0
-private def scEINTR : UInt8 := 1
-private def scENOTSUP : UInt8 := 2
-private def scEINVAL : UInt8 := 3
-private def scENOTTY : UInt8 := 4
-private def scEOPNOTSUPP : UInt8 := 5
-private def scEIO : UInt8 := 6
-private def scENOSPC : UInt8 := 7
-private def scEACCES : UInt8 := 8
-private def scEBADF : UInt8 := 9
-
-@[extern "tl_sys_sync_probe"]
-private opaque syncProbeRaw (hasFull : UInt8) (script : @&ByteArray) : IO UInt8
-
-private def syncProbe (hasFull : Bool) (script : List UInt8) : IO Sys.SyncStrength := do
-  let raw ← syncProbeRaw (if hasFull then 1 else 0) ⟨script.toArray⟩
-  match Sys.strengthOfCode raw with
-  | .ok strength => return strength
-  | .error m => throw (IO.userError s!"tlsys:sync:ESTRENGTH: {m}")
-
 /-- A scripted run that must reach a barrier, and which one it must reach. -/
 private def probeReaches (name : String) (hasFull : Bool) (script : List UInt8)
     (expected : Sys.SyncStrength) : IO Outcome := do
-  match ← (syncProbe hasFull script).toBaseIO with
+  match ← (SyncBarrierProbe.run hasFull script).toBaseIO with
   | .ok got =>
     return if got == expected then { name, passed := true }
       else { name, passed := false, msg := s!"reached {repr got}, expected {repr expected}" }
@@ -87,7 +66,7 @@ private def probeReaches (name : String) (hasFull : Bool) (script : List UInt8)
 /-- A scripted run that must refuse, under the errno it was given. -/
 private def probeRefuses (name : String) (hasFull : Bool) (script : List UInt8)
     (code : String) : IO Outcome := do
-  match ← (syncProbe hasFull script).toBaseIO with
+  match ← (SyncBarrierProbe.run hasFull script).toBaseIO with
   | .error e =>
     if Sys.errnoOf e == some code then return { name, passed := true }
     else return { name, passed := false, msg := s!"expected {code}, got: {e}" }
@@ -95,68 +74,107 @@ private def probeRefuses (name : String) (hasFull : Bool) (script : List UInt8)
     return { name, passed := false, msg := s!"expected {code}, reached {repr got} instead" }
 
 private def barrierTests : IO (List Outcome) := do
+  -- The shape production compiled to must be the one this platform calls for.
+  -- Without this row, a build that dropped Darwin's F_FULLFSYNC attempt would
+  -- still pass every assertion below and the real-file row above, because an
+  -- ordinary fsync reports a full barrier wherever it *is* the barrier.
+  let shape ← SyncBarrierProbe.hasFullBarrier
+  let expected : UInt8 := if System.Platform.isOSX then 1 else 0
   return [
+    check "barrier: production compiled to this platform's barrier shape"
+      (shape == expected)
+      s!"attempts-a-full-barrier={shape}, expected {expected} on this platform",
+    -- The refusal `sync` takes when the shim reports a strength this binding
+    -- does not know. Unreachable from the shim, which returns only 0 or 1, so
+    -- it is driven directly — through the shipped function.
+    ← (do match ← (Sys.strengthOrThrow 2).toBaseIO with
+          | .error e =>
+            return check "barrier: an unknown strength refuses in the shim's error shape"
+              (Sys.errnoOf e == some "ESTRENGTH") s!"got: {e}"
+          | .ok got =>
+            return { name := "barrier: an unknown strength refuses in the shim's error shape",
+                     passed := false, msg := s!"accepted it as {repr got}" }),
     -- The full barrier, reached.
     ← probeReaches "barrier: a full barrier that succeeds is reported full"
-        true [scOk] .fullBarrier,
+        true [SyncBarrierProbe.ok] .fullBarrier,
     -- The regression this policy exists for: a signal must not downgrade it.
     -- The old code took any failure as "unsupported" and answered with a plain
     -- fsync, so an interrupted barrier silently became an ordinary one.
     ← probeReaches "barrier: an interrupted full barrier is retried, not downgraded"
-        true [scEINTR, scOk] .fullBarrier,
+        true [SyncBarrierProbe.eintr, SyncBarrierProbe.ok] .fullBarrier,
     ← probeReaches "barrier: it is retried as often as it is interrupted"
-        true [scEINTR, scEINTR, scEINTR, scOk] .fullBarrier,
+        true [SyncBarrierProbe.eintr, SyncBarrierProbe.eintr,
+          SyncBarrierProbe.eintr, SyncBarrierProbe.ok] .fullBarrier,
     -- Each documented "this filesystem does not implement that" result, and
     -- only these, may answer with the weaker flush.
     ← probeReaches "barrier: ENOTSUP falls back to ordinary fsync"
-        true [scENOTSUP, scOk] .ordinaryFsync,
+        true [SyncBarrierProbe.enotsup, SyncBarrierProbe.ok] .ordinaryFsync,
     ← probeReaches "barrier: EINVAL falls back to ordinary fsync"
-        true [scEINVAL, scOk] .ordinaryFsync,
+        true [SyncBarrierProbe.einval, SyncBarrierProbe.ok] .ordinaryFsync,
     ← probeReaches "barrier: ENOTTY falls back to ordinary fsync"
-        true [scENOTTY, scOk] .ordinaryFsync,
-    -- On both supported platforms EOPNOTSUPP and ENOTSUP are the same value, so
-    -- this row repeats the one above there rather than adding coverage. It is
-    -- kept because the shim spells both, and a platform that separates them is
-    -- exactly where that spelling would start to matter.
+        true [SyncBarrierProbe.enotty, SyncBarrierProbe.ok] .ordinaryFsync,
+    -- Darwin separates these (ENOTSUP 45, EOPNOTSUPP 102), so this is a
+    -- distinct condition there; Linux aliases them to 95, where the row repeats
+    -- the one above. The shim spells both for the platform that separates them.
     ← probeReaches "barrier: EOPNOTSUPP falls back to ordinary fsync"
-        true [scEOPNOTSUPP, scOk] .ordinaryFsync,
-    -- The other regression: an operational failure is the write failing, and
-    -- must not be answered with a flush that would report a barrier that did
-    -- not happen. The scripts below would all have *succeeded* before, because
-    -- the fall-back fsync is scripted to succeed right after.
+        true [SyncBarrierProbe.eopnotsupp, SyncBarrierProbe.ok] .ordinaryFsync,
+    -- The other regression: an operational failure means no barrier was
+    -- reached, and must not be answered with a flush that reports one. The
+    -- scripts below would all have *succeeded* before, because the fall-back
+    -- fsync is scripted to succeed right after.
     ← probeRefuses "barrier: EIO on the full barrier propagates, never falls back"
-        true [scEIO, scOk] "EIO",
+        true [SyncBarrierProbe.eio, SyncBarrierProbe.ok] "EIO",
     ← probeRefuses "barrier: ENOSPC on the full barrier propagates"
-        true [scENOSPC, scOk] "ENOSPC",
+        true [SyncBarrierProbe.enospc, SyncBarrierProbe.ok] "ENOSPC",
     ← probeRefuses "barrier: EACCES on the full barrier propagates"
-        true [scEACCES, scOk] "EACCES",
+        true [SyncBarrierProbe.eacces, SyncBarrierProbe.ok] "EACCES",
     ← probeRefuses "barrier: EBADF on the full barrier propagates"
-        true [scEBADF, scOk] "EBADF",
+        true [SyncBarrierProbe.ebadf, SyncBarrierProbe.ok] "EBADF",
     -- The ordinary leg, after a legitimate fall-back.
     ← probeReaches "barrier: an interrupted fall-back fsync is retried"
-        true [scENOTSUP, scEINTR, scOk] .ordinaryFsync,
+        true [SyncBarrierProbe.enotsup, SyncBarrierProbe.eintr,
+          SyncBarrierProbe.ok] .ordinaryFsync,
     ← probeRefuses "barrier: a failing fall-back fsync refuses"
-        true [scENOTSUP, scEIO] "EIO",
+        true [SyncBarrierProbe.enotsup, SyncBarrierProbe.eio] "EIO",
     ← probeRefuses "barrier: a full disk under the fall-back refuses"
-        true [scENOTSUP, scENOSPC] "ENOSPC",
+        true [SyncBarrierProbe.enotsup, SyncBarrierProbe.enospc] "ENOSPC",
     -- The platform whose ordinary fsync already is the barrier: no attempt is
     -- made to fall back from, and success is a *full* barrier, not a weaker one.
     ← probeReaches "barrier: where fsync is the barrier, success is full"
-        false [scOk] .fullBarrier,
+        false [SyncBarrierProbe.ok] .fullBarrier,
     ← probeReaches "barrier: where fsync is the barrier, EINTR is retried"
-        false [scEINTR, scOk] .fullBarrier,
+        false [SyncBarrierProbe.eintr, SyncBarrierProbe.ok] .fullBarrier,
     ← probeRefuses "barrier: where fsync is the barrier, EIO refuses"
-        false [scEIO] "EIO",
+        false [SyncBarrierProbe.eio] "EIO",
     ← probeRefuses "barrier: where fsync is the barrier, ENOSPC refuses"
-        false [scENOSPC] "ENOSPC",
+        false [SyncBarrierProbe.enospc] "ENOSPC",
     -- An unsupported result there has nothing to fall back to, so it is a
     -- refusal rather than a second attempt.
     ← probeRefuses "barrier: where fsync is the barrier, ENOTSUP refuses"
-        false [scENOTSUP] "ENOTSUP",
+        false [SyncBarrierProbe.enotsup] "ENOTSUP",
+    -- The errno-name additions used by storage rendering are driven through C,
+    -- not only manufactured as strings at the Lean mapping layer.
+    ← probeRefuses "barrier: EINVAL on the ordinary leg is named"
+        false [SyncBarrierProbe.einval] "EINVAL",
+    ← probeRefuses "barrier: ENOTTY on the ordinary leg is named"
+        false [SyncBarrierProbe.enotty] "ENOTTY",
+    ← probeRefuses "barrier: EROFS is named"
+        false [SyncBarrierProbe.erofs] "EROFS",
+    ← probeRefuses "barrier: EDQUOT is named"
+        false [SyncBarrierProbe.edquot] "EDQUOT",
+    ← probeRefuses "barrier: ENXIO is named"
+        false [SyncBarrierProbe.enxio] "ENXIO",
+    ← probeRefuses "barrier: ENODEV is named"
+        false [SyncBarrierProbe.enodev] "ENODEV",
+    ← probeRefuses "barrier: EOPNOTSUPP is named under this platform's aliasing"
+        false [SyncBarrierProbe.eopnotsupp]
+          (if System.Platform.isOSX then "EOPNOTSUPP" else "ENOTSUP"),
     -- The probe's own guard: a script that runs out ends the run under a name
     -- of its own, so a mis-written row above fails visibly instead of looping.
     ← probeRefuses "barrier: a script that runs out ends the run"
-        true [scEINTR] "ESCRIPT",
+        true [SyncBarrierProbe.eintr] "ESCRIPT",
+    ← probeRefuses "barrier: an unknown script code is rejected visibly"
+        true [255] "ESCRIPT",
     -- The strength wire, decoded. An unrecognized code is not a weaker barrier
     -- to accept: it means this binding and the shim disagree.
     checkOk "barrier: the full-barrier code decodes"
@@ -184,12 +202,15 @@ def sysTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [check "create-excl + append + sync + readAll round-trip" (back == payload)
       s!"got {back.size} bytes",
-     -- The real syscall path, on a real file on whatever the host runs: a
-     -- temp dir is a local filesystem on both supported platforms, so the
-     -- barrier is the full one. The scripted rows below cover the branches a
-     -- real filesystem will not produce.
-     check "sync on a real local file reaches the full barrier"
-       (strength == .fullBarrier) s!"reached {repr strength}"]
+     -- The real syscall path, on a real file on whatever filesystem backs the
+     -- host's temp directory. Linux's selected fsync barrier reports full;
+     -- Darwin may legitimately report ordinary when that filesystem refuses
+     -- F_FULLFSYNC. The separate shape row below, not this result, detects a
+     -- Darwin build that accidentally omitted the full attempt entirely.
+     check "sync on a real file reports the selected platform's result"
+       (strength == .fullBarrier ||
+         (System.Platform.isOSX && strength == .ordinaryFsync))
+       s!"reached {repr strength}"]
 
   -- The real production symbol's failure path, end to end: an fd that was
   -- never opened is EBADF, which is not a "this filesystem cannot" answer and
