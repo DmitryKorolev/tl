@@ -214,14 +214,13 @@ comparison from a consumer that never existed, because it never looked at
 consumers. This reads the workflow as jobs and steps and binds each fact to the
 place that must carry it.
 
-What is deliberately *not* here: ADR-0028's end-state prefix, whose comparison
-is `releaseToolFileSetHash` against `hashFiles`, whose mismatch arm is the
-canonical `/usr/bin/false` step, and which a dedicated capability-free rehearsal
-consumer also instantiates. That lands with the workflow cutover, and it needs a
-real hosted run first — `hashFiles`' file-selection semantics are not something
-local parsing can establish. The model below is written over the migration
-shape and names the transition in one place, so the cutover edits a value rather
-than a scan. -/
+The canonical file-set prefix is shared by every consumer and the capability-free
+rehearsal. Its complete steps are pinned, including the first invocation, and
+mutation rows exercise each real consumer independently of the rehearsal. A
+hosted run established the upload/hash-expression behavior before the raw-digest
+handoff was removed; local parsing does not establish hosted file selection.
+The remaining arbitrary publication commands are outside this model and await
+ADR-0028's separate typed-policy cutover. -/
 
 /-- One step of a job, as much of it as this model reads. -/
 private structure Step where
@@ -485,102 +484,12 @@ private def hermeticRefuses (workflow needle : String) : Bool :=
   | .ok () => false
   | .error message => (message.splitOn needle).length > 1
 
-/-! ### The names this handoff is made of
+/-! ### The canonical one-file transport boundary -/
 
-Every literal the model matches on, in one place. The cutover replaces the
-digest transition below with the file-set hash and this list is where it is
-edited; a scan spread through the rows would be edited in six. -/
-
-/-- Where the gated binary is staged to, and therefore what is hashed and
-    uploaded. Non-hidden deliberately: `upload-artifact` excludes files below a
-    dot-directory, so uploading from `.lake/` found no file at all while the
-    build and the digest before it both succeeded. -/
-private def stagedToolPath : String := "release-tool/tlrelease"
-
-private def gatedToolPath : String := ".lake/build/bin/tlrelease"
-
-/-- The artifact the tool travels in. -/
-private def toolArtifactName : String := "release-tool"
-
-/-- Where a consumer receives it. Necessarily different from the staging path:
-    the producer stages into the workspace it built in, and the consumer
-    downloads into its own. -/
 private def consumerToolPath : String := "tool/tlrelease"
-
-/-- The job output carrying the expectation, and the step that produces it.
-
-    `releaseToolDigest` is a raw SHA-256 throughout the migration and keeps that
-    meaning until it is removed; ADR-0028's `releaseToolFileSetHash` is a
-    `hashFiles` result over a one-file set and is deliberately a *different*
-    name, because the two are not comparable values. -/
-private def toolDigestOutput : String := "releaseToolDigest"
-
-private def toolDigestProducer : String := "tool"
-
+private def toolArtifactName : String := "release-tool"
 private def uploadAction : String := "actions/upload-artifact@"
-
 private def downloadAction : String := "actions/download-artifact@"
-
-/-! ### The producer
-
-One job stages the gated binary, one step hashes exactly those bytes into one
-named output, and one pinned action uploads exactly that path under the artifact
-name every consumer downloads. -/
-
-private def producerFailures (jobs : List (String × List String)) : List String := Id.run do
-  let mut failures : List String := []
-  let some gates := jobs.lookup "gates"
-    | return ["the workflow has no `gates` job, which is where the release tool is built and handed off"]
-  let steps := stepsOf gates
-  -- Staged from the gated binary into the non-hidden artifact path, in code
-  -- rather than in a comment describing it. Counted over the job's command
-  -- lines rather than over the steps carrying them, so a second copy inside one
-  -- step is the same finding as a second step: what must be true is that one
-  -- command decides what the uploaded bytes are.
-  let staging := (steps.flatMap (·.code)).filter fun line =>
-    (line.splitOn s!"install -D -m 0755 {gatedToolPath} {stagedToolPath}").length > 1
-  if staging.length != 1 then
-    failures := failures ++
-      [s!"the gates job stages the release tool {staging.length} time(s); exactly one command must copy {gatedToolPath} to {stagedToolPath}, because that path is what is hashed and what is uploaded"]
-  -- Hashed, by the step whose id the job output names, over the staged path.
-  let producers := steps.filter fun step =>
-    step.mentions s!"id: {toolDigestProducer}" && step.runs s!"sha256sum {stagedToolPath}"
-  if producers.length != 1 then
-    failures := failures ++
-      [s!"the gates job has {producers.length} step(s) with `id: {toolDigestProducer}` hashing {stagedToolPath}; the expectation every consumer compares against must be produced once, from the bytes that were staged"]
-  -- Published as the job output the consumers read, from that step.
-  let mapping := toolDigestOutput ++ ": ${{ steps." ++ toolDigestProducer ++ ".outputs.digest }}"
-  if !gates.any fun line => (line.splitOn mapping).length > 1 then
-    failures := failures ++
-      ["the gates job does not map `" ++ toolDigestOutput ++ "` to the digest step's output; a consumer reading an output nothing produces gets the empty string, and an empty expectation must not pass for a matching one"]
-  -- Uploaded from that same path, under that name, by the pinned action.
-  let uploads := steps.filter fun step =>
-    (step.uses.getD "").startsWith uploadAction && step.mentions s!"name: {toolArtifactName}"
-  match uploads with
-  | [upload] =>
-      if !upload.mentions s!"path: {stagedToolPath}" then
-        failures := failures ++
-          [s!"the step uploading the `{toolArtifactName}` artifact does not upload {stagedToolPath}; it must upload exactly the bytes that were staged and hashed"]
-      if upload.mentions s!"path: {gatedToolPath}" then
-        failures := failures ++
-          [s!"the `{toolArtifactName}` artifact is uploaded from {gatedToolPath}, which is below a dot-directory — `upload-artifact` excludes those by default, so it would find no file while every step before it succeeded"]
-  | _ =>
-      failures := failures ++
-        [s!"the gates job has {uploads.length} step(s) uploading an artifact named `{toolArtifactName}`; exactly one must, or which bytes a consumer receives depends on upload order"]
-  return failures
-
-/-! ### The consumers, and the prefix each one instantiates
-
-A consumer is any job that downloads the tool artifact — found by what it does,
-so a fifth privileged job is covered the day it is written rather than the day
-somebody remembers to add it here. Each must instantiate the same prefix:
-
-    download the artifact → compare the received bytes → first use of the tool
-
-with *nothing* between the comparison and the first use. That contiguity is the
-point rather than a tidiness: a step admitted into the gap is a step that runs
-before the bytes have been established, and an exception for one class of step
-is a place for a later one to be added. -/
 
 /-- Whether a step runs the downloaded tool. -/
 private def Step.usesTool (step : Step) : Bool :=
@@ -593,128 +502,10 @@ private def Step.usesTool (step : Step) : Bool :=
 private def Step.downloadsTool (step : Step) : Bool :=
   (step.uses.getD "").startsWith downloadAction && step.mentions s!"name: {toolArtifactName}"
 
-/-- Whether a step is the comparison: it reads the published expectation, hashes
-    what arrived, and refuses an empty expectation as well as a mismatched one.
-
-    All three, because each alone is satisfiable without the others. A step that
-    hashes and never compares establishes nothing; one that compares against
-    `needs.gates.outputs.…` without refusing the empty string passes when the
-    producer did not run, since an unset output is `''` and `'' == ''`. -/
-private def Step.comparesTool (step : Step) : Bool :=
-  step.runs s!"needs.gates.outputs.{toolDigestOutput}"
-    && step.runs s!"sha256sum {consumerToolPath}"
-    && step.runs "-z" && step.runs "exit 1"
-
-private def consumerFailures (jobs : List (String × List String)) : List String := Id.run do
-  let consumers := jobs.filter fun (_, lines) => (stepsOf lines).any (·.downloadsTool)
-  if consumers.length < 2 then
-    return [s!"only {consumers.length} job(s) download the `{toolArtifactName}` artifact. This scan finds consumers by what they do, so too few of them means it stopped recognising the download rather than that the workflow has one consumer — and a guard that checks nothing reports the same clean result as a workflow that is correct."]
-  let mut failures : List String := []
-  for (job, lines) in consumers do
-    -- Only the capability-free rehearsal uses the new prefix during migration.
-    -- Its entire job and producer are pinned separately below; no publication
-    -- consumer can opt out of the raw-digest guard by changing its steps.
-    if job == "handoff-rehearsal" then continue
-    let steps := stepsOf lines
-    let indexed := steps.zipIdx
-    let downloadAt := (indexed.find? fun (step, _) => step.downloadsTool).map (·.2)
-    let compareAt := (indexed.find? fun (step, _) => step.comparesTool).map (·.2)
-    let firstUseAt := (indexed.find? fun (step, _) => step.usesTool).map (·.2)
-    match downloadAt, compareAt, firstUseAt with
-    | _, none, _ =>
-        failures := failures ++
-          [s!"the `{job}` job downloads the release tool and no step of it compares what arrived against `needs.gates.outputs.{toolDigestOutput}`, hashes {consumerToolPath}, and refuses an empty expectation. It is about to run that binary on the strength of the artifact store alone."]
-    | none, _, _ =>
-        failures := failures ++
-          [s!"the `{job}` job compares the release tool without a step that downloads it, which this scan cannot read as a handoff at all."]
-    | some download, some compare, use? =>
-        if compare < download then
-          failures := failures ++
-            [s!"the `{job}` job compares the release tool before downloading it, so the comparison is over whatever was there beforehand."]
-        match use? with
-        | none =>
-            failures := failures ++
-              [s!"the `{job}` job downloads and validates the release tool and never runs it. Either the job does not need the handoff, or the step that used it was removed and its download left behind."]
-        | some use =>
-            if use < compare then
-              failures := failures ++
-                [s!"the `{job}` job runs the release tool at step {use + 1} and validates it at step {compare + 1}. The bytes are used before they are established, which is the whole failure the comparison exists to prevent."]
-            else if use != compare + 1 then
-              let between := ((steps.drop (compare + 1)).take (use - compare - 1)).map fun step =>
-                if step.name.isEmpty then step.uses.getD "an unnamed step" else step.name
-              failures := failures ++
-                [s!"the `{job}` job has {use - compare - 1} step(s) between validating the release tool and first using it: {String.intercalate ", " between}. The prefix is contiguous by construction — a step admitted into that gap runs before the bytes have been established, and an exception for one is a place for the next to be added. Move it above the download."]
-  return failures
-
 /-- The jobs this scan reads as consumers, for a test that says which. -/
 def releaseToolConsumers (workflow : String) : List String :=
   (jobsOf workflow).filterMap fun (job, lines) =>
     if (stepsOf lines).any (·.downloadsTool) then some job else none
-
-/-- The whole handoff: one producer, and every consumer instantiating the same
-    prefix. -/
-def releaseToolHandoffShape (workflow : String) : Except String Unit :=
-  let jobs := jobsOf workflow
-  match producerFailures jobs ++ consumerFailures jobs with
-  | [] => .ok ()
-  | problems => .error (String.intercalate "\n" problems)
-
-/-! ### The guard's own fixtures
-
-A canonical workflow, and one mutation per way the handoff can be broken. Every
-row is a workflow this parser reads as jobs and steps, because the defect the
-old substring guard had was precisely that it never looked at either: its rows
-were four lines of text that no workflow shape could contradict. -/
-
-private def handoffConsumer (job : String) (steps : String) : String :=
-  s!"  {job}:\n    needs: [gates]\n    steps:\n" ++ steps
-
-private def canonicalPrefix : String :=
-  "      - name: download the release tool\n" ++
-  "        uses: actions/download-artifact@abc # v8\n" ++
-  "        with:\n" ++
-  "          name: release-tool\n" ++
-  "          path: tool\n" ++
-  "      - name: confirm the release tool landed unchanged\n" ++
-  "        run: |\n" ++
-  "          want='${{ needs.gates.outputs.releaseToolDigest }}'\n" ++
-  "          if [ -z \"$want\" ]; then exit 1; fi\n" ++
-  "          got_line=$(sha256sum tool/tlrelease)\n" ++
-  "          if [ \"$got_line\" != \"$want\" ]; then exit 1; fi\n" ++
-  "          chmod +x tool/tlrelease\n" ++
-  "      - name: use it\n" ++
-  "        run: ./tool/tlrelease manifest-verify --dist dist\n"
-
-private def canonicalGates : String :=
-  "  gates:\n" ++
-  "    outputs:\n" ++
-  "      releaseToolDigest: ${{ steps.tool.outputs.digest }}\n" ++
-  "    steps:\n" ++
-  "      - name: stage the release tool\n" ++
-  "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n" ++
-  "      - name: hash it\n" ++
-  "        id: tool\n" ++
-  "        run: |\n" ++
-  "          line=$(sha256sum release-tool/tlrelease)\n" ++
-  "          printf 'digest=%s\\n' \"${line%% *}\" >> \"$GITHUB_OUTPUT\"\n" ++
-  "      - name: upload it\n" ++
-  "        uses: actions/upload-artifact@def # v7\n" ++
-  "        with:\n" ++
-  "          name: release-tool\n" ++
-  "          path: release-tool/tlrelease\n"
-
-/-- The canonical workflow: one producer and two consumers. Two, because a
-    single-consumer fixture cannot distinguish a scan that checks every consumer
-    from one that checks the first. -/
-private def canonicalHandoff : String :=
-  "jobs:\n" ++ canonicalGates
-    ++ handoffConsumer "sign" canonicalPrefix
-    ++ handoffConsumer "publish-release" canonicalPrefix
-
-private def handoffRefuses (workflow : String) (needle : String) : Bool :=
-  match releaseToolHandoffShape workflow with
-  | .ok () => false
-  | .error message => (message.splitOn needle).length > 1
 
 /-- Replace every occurrence, for building one mutation out of the canonical
     workflow. -/
@@ -769,7 +560,7 @@ private def handoffOnlyInput : String :=
   "        type: boolean\n" ++
   "        default: false\n"
 
-private def fileSetRehearsalShape (workflow : String) (legacy : Bool := true) : Bool := Id.run do
+private def fileSetRehearsalShape (workflow : String) : Bool := Id.run do
   let jobs := jobsOf workflow
   let [(_, rehearsal)] := jobs.filter (fun (name, _) => name == "handoff-rehearsal")
     | return false
@@ -792,7 +583,7 @@ private def fileSetRehearsalShape (workflow : String) (legacy : Bool := true) : 
     && codeLines producer.lines == codeLines (fileSetProducer.splitOn "\n")
     && codeLines stage.lines == codeLines (fileSetStage.splitOn "\n")
     && (steps[stageAt + 1]?).map (fun step => codeLines step.lines) == some (codeLines producer.lines)
-    && uploadIndex == stageAt + (if legacy then 3 else 2)
+    && uploadIndex == stageAt + 2
     && outputLines.contains "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}"
     && (gates.filter (· == "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}")).length == 1
     && (workflow.splitOn handoffOnlyInput).length == 2
@@ -859,11 +650,11 @@ private def handoffInheritedExecution (workflow : String) : Bool :=
     This guard owns the producer and handoff, not the meaning of every shell
     command that follows. It keeps implicit success sequencing for the entire
     job and keeps the first domain command next to the uniform help entry. -/
-private def fileSetHandoffShape (workflow : String) : Except String Unit := do
+def releaseToolHandoffShape (workflow : String) : Except String Unit := do
   let jobs := jobsOf workflow
   if !handoffInheritedExecution workflow then
     throw "restore the inherited bash shell and build-only environment keys for the handoff"
-  if !fileSetRehearsalShape workflow false then
+  if !fileSetRehearsalShape workflow then
     throw "restore the canonical producer, output mapping, and capability-free rehearsal"
   if releaseToolConsumers workflow != fileSetConsumers then
     throw "restore every release-tool consumer, exactly once"
@@ -911,8 +702,8 @@ private def fileSetHandoffShape (workflow : String) : Except String Unit := do
         throw s!"keep the `{job}` job's first domain invocation unconditional, with inherited execution settings"
   pure ()
 
-/-- A six-consumer fixture exercises the entire final shape before switching
-    live consumers. Its publication effects are inert; its handoff is exact. -/
+/-- A six-consumer fixture exercises the entire handoff shape independently of
+    the live workflow. Its publication effects are inert; its handoff is exact. -/
 private def canonicalFileSetHandoff : String :=
   "on:\n" ++ handoffOnlyInput ++ fileSetDefaults ++ "jobs:\n" ++
   "  gates:\n    outputs:\n" ++
@@ -926,7 +717,7 @@ private def canonicalFileSetHandoff : String :=
     "      - name: verify the domain input\n        run: ./tool/tlrelease manifest-verify --dist dist\n")
 
 private def fileSetRefuses (workflow : String) : Bool :=
-  (fileSetHandoffShape workflow).toOption.isNone
+  (releaseToolHandoffShape workflow).toOption.isNone
 
 /-- Change one consumer without damaging the rehearsal oracle beside it. -/
 private def mutateFileSetJob (job before after : String) : String := Id.run do
@@ -942,10 +733,13 @@ private def mutateFileSetJob (job before after : String) : String := Id.run do
 def fileSetMutationTests : List Outcome :=
   let mutations : List (String × String × String) := [
     ("absent staging", fileSetStage, ""),
+    ("staging only in a comment", "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease", "        # install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n        run: true"),
     ("duplicate staging", fileSetStage, fileSetStage ++ fileSetStage),
     ("stage source drift", "install -D -m 0755 .lake/build/bin/tlrelease", "install -D -m 0755 other/tlrelease"),
     ("stage destination drift", "tlrelease release-tool/tlrelease", "tlrelease other/tlrelease"),
     ("duplicate producer", fileSetProducer, fileSetProducer ++ fileSetProducer),
+    ("no recognized producer id", "        id: tool_file_set_hash", "        id: other_hash"),
+    ("absent gates job", "  gates:\n", "  other-gates:\n"),
     ("hash before staging", fileSetStage ++ fileSetProducer, fileSetProducer ++ fileSetStage),
     ("upload before hashing", fileSetProducer ++ fileSetUpload, fileSetUpload ++ fileSetProducer),
     ("upload source drift", "path: release-tool/tlrelease", "path: .lake/build/bin/tlrelease"),
@@ -966,6 +760,7 @@ def fileSetMutationTests : List Outcome :=
     ("received multiple files", "hashFiles('tool/tlrelease')", "hashFiles('tool/*')"),
     ("mismatch ignored", "run: /usr/bin/false", "run: /usr/bin/true"),
     ("prefix truncated at chmod", "      - name: enter the validated release tool\n        run: ./tool/tlrelease --help\n", ""),
+    ("domain invocation removed", "      - name: verify the domain input\n        run: ./tool/tlrelease manifest-verify --dist dist", ""),
     ("step before entry", "      - name: enter the validated release tool", "      - run: cp replacement tool/tlrelease\n      - name: enter the validated release tool"),
     ("step before domain invocation", "      - name: verify the domain input", "      - run: cp replacement tool/tlrelease\n      - name: verify the domain input"),
     ("early tool execution", "      - name: download the release tool", "      - run: ./tool/tlrelease --help\n      - name: download the release tool"),
@@ -990,6 +785,7 @@ def fileSetMutationTests : List Outcome :=
     ("job shell startup file", "  sign:\n", "  sign:\n    env:\n      BASH_ENV: other\n"),
     ("another job uploads the tool", "  sign:\n", "  replacement:\n    steps:\n" ++ fileSetUpload ++ "  sign:\n"),
     ("missing real consumer", "  publish-npm:", "  unexpected:"),
+    ("unmodeled tool execution", "  sign:\n", "  extra-job:\n    steps:\n      - run: ./tool/tlrelease --help\n  sign:\n"),
     ("rehearsal permissions", "    permissions: {}", "    permissions: write-all"),
     ("rehearsal secrets", "    permissions: {}", "    permissions: {}\n    secrets: inherit"),
     ("rehearsal environment", "    permissions: {}", "    permissions: {}\n    environment: release"),
@@ -1001,11 +797,20 @@ def fileSetMutationTests : List Outcome :=
      "unequal values allowed", "received multiple files", "mismatch ignored",
      "prefix truncated at chmod", "step before entry", "step before domain invocation",
      "early tool execution", "handoff status override", "domain skipped",
-     "quoted domain skipped", "domain shell override", "domain working directory",
+     "quoted domain skipped", "domain invocation removed", "domain shell override", "domain working directory",
      "domain shell startup file", "folded step status override", "literal step status override"].contains name
-  [check "file-set model: accepts the complete six-consumer fixture"
-    (fileSetHandoffShape canonicalFileSetHandoff).toOption.isSome
-    (match fileSetHandoffShape canonicalFileSetHandoff with | .ok () => "" | .error message => message)] ++
+  let withoutRealConsumers :=
+    (canonicalFileSetHandoff.splitOn "jobs:\n").headD "" ++ "jobs:\n" ++
+    String.join ((jobsOf canonicalFileSetHandoff).map fun (job, lines) =>
+      s!"  {job}:\n" ++
+      (if job == "gates" || job == "handoff-rehearsal" then String.intercalate "\n" lines else
+        (if job == "stamp" then "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only\n" else "") ++
+        "    steps:\n      - run: true\n") ++ "\n")
+  [check "file-set model: zero real consumers cannot satisfy the guard"
+    (fileSetRehearsalShape withoutRealConsumers && fileSetRefuses withoutRealConsumers),
+   check "file-set model: accepts the complete six-consumer fixture"
+    (releaseToolHandoffShape canonicalFileSetHandoff).toOption.isSome
+    (match releaseToolHandoffShape canonicalFileSetHandoff with | .ok () => "" | .error message => message)] ++
   (mutations.map fun (name, before, after) =>
     let mutant := swap canonicalFileSetHandoff before after
     check s!"file-set model: refuses {name}"
@@ -1013,18 +818,18 @@ def fileSetMutationTests : List Outcome :=
   ((fileSetConsumers.drop 1).flatMap fun job => independent.map fun (name, before, after) =>
     let mutant := mutateFileSetJob job before after
     check s!"file-set model: independently refuses {name} in {job}"
-      (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant false && fileSetRefuses mutant)) ++
+      (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant && fileSetRefuses mutant)) ++
   (fileSetConsumers.drop 1).flatMap fun job =>
     let first := "        run: ./tool/tlrelease manifest-verify --dist dist"
     let later := fun condition => first ++ "\n      - name: later domain invocation\n" ++
       "        if: " ++ condition ++ "\n        run: ./tool/tlrelease --help\n"
     let ordinary := mutateFileSetJob job first (later ">-\n          !contains(github.ref_name, '-')")
     [check s!"file-set model: keeps ordinary later conditions in {job}"
-      (ordinary != canonicalFileSetHandoff && (fileSetHandoffShape ordinary).toOption.isSome)] ++
+      (ordinary != canonicalFileSetHandoff && (releaseToolHandoffShape ordinary).toOption.isSome)] ++
     ["always()", ">-\n          Always ()", "|\n          failure()", ">-\n          !cancelled()"].map fun condition =>
       let mutant := mutateFileSetJob job first (later condition)
       check s!"file-set model: refuses later {condition.trimAscii} in {job}"
-        (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant false && fileSetRefuses mutant)
+        (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant && fileSetRefuses mutant)
 
 /-! ## Native errors stay structured
 
@@ -1460,104 +1265,6 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
       (callsDirectly "  rc_skip_gate \"workflow lint\" \"actionlint is not on PATH\"" "rc_skip_gate"),
     check "release policy: going through the helper is not one"
       (!callsDirectly "rc_tool_gate \"workflow lint\" --tool actionlint -- actionlint" "rc_skip_gate"),
-    -- The canonical shape is accepted. Without this every refusal row below
-    -- would be satisfied by a guard that refuses everything.
-    check "release handoff: the canonical workflow is accepted"
-      (releaseToolHandoffShape canonicalHandoff).toOption.isSome
-      (match releaseToolHandoffShape canonicalHandoff with
-       | .ok () => ""
-       | .error message => message),
-    -- The producer.
-    check "release handoff: an unstaged upload is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n" "")
-        "stages the release tool 0 time(s)"),
-    check "release handoff: staging twice is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: stage the release tool\n"
-        "      - name: stage the release tool\n        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n")
-        "stages the release tool 2 time(s)"),
-    -- The mutation the old guard could not see at all: the canonical text
-    -- present, as a comment. Three of its four rows were satisfiable this way.
-    check "release handoff: the staging command in a comment does not satisfy the rule"
-      (handoffRefuses (swap canonicalHandoff
-        "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease"
-        "        # install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n        run: true")
-        "stages the release tool 0 time(s)"),
-    check "release handoff: hashing a path other than the staged one is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "sha256sum release-tool/tlrelease" "sha256sum .lake/build/bin/tlrelease")
-        "hashing release-tool/tlrelease"),
-    check "release handoff: a digest produced under another step id is refused"
-      (handoffRefuses (swap canonicalHandoff "        id: tool\n" "        id: hasher\n")
-        "with `id: tool`"),
-    check "release handoff: an output mapped from somewhere else is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "releaseToolDigest: ${{ steps.tool.outputs.digest }}"
-        "releaseToolDigest: ${{ steps.hasher.outputs.digest }}")
-        "does not map `releaseToolDigest`"),
-    check "release handoff: uploading a path other than the staged one is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "          path: release-tool/tlrelease" "          path: .lake/build/bin/tlrelease")
-        "below a dot-directory"),
-    check "release handoff: a second artifact under the same name is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: upload it\n"
-        "      - name: upload a decoy\n        uses: actions/upload-artifact@def # v7\n        with:\n          name: release-tool\n          path: decoy\n      - name: upload it\n")
-        "2 step(s) uploading"),
-    -- The consumers.
-    check "release handoff: a consumer that never validates what it downloaded is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: confirm the release tool landed unchanged\n        run: |\n          want='${{ needs.gates.outputs.releaseToolDigest }}'\n          if [ -z \"$want\" ]; then exit 1; fi\n          got_line=$(sha256sum tool/tlrelease)\n          if [ \"$got_line\" != \"$want\" ]; then exit 1; fi\n          chmod +x tool/tlrelease\n" "")
-        "no step of it compares"),
-    -- Its own half of the comparison, each removed separately: a step that
-    -- hashes and never compares establishes nothing, and one that compares
-    -- without refusing an empty expectation passes when the producer did not
-    -- run, since an unset output is '' and '' == ''.
-    check "release handoff: a comparison that does not refuse an empty expectation is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "          if [ -z \"$want\" ]; then exit 1; fi\n" "")
-        "no step of it compares"),
-    check "release handoff: a comparison that never hashes what arrived is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "          got_line=$(sha256sum tool/tlrelease)\n" "")
-        "no step of it compares"),
-    -- Domination, in both directions.
-    check "release handoff: a step inserted between validation and first use is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: use it\n"
-        "      - name: install cosign\n        uses: sigstore/cosign-installer@ghi\n      - name: use it\n")
-        "step(s) between validating the release tool and first using it"),
-    check "release handoff: the inserted step is named, so the fix is obvious"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: use it\n"
-        "      - name: install cosign\n        uses: sigstore/cosign-installer@ghi\n      - name: use it\n")
-        "install cosign"),
-    check "release handoff: using the tool before validating it is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: confirm the release tool landed unchanged\n"
-        "      - name: use it early\n        run: ./tool/tlrelease prereqs\n      - name: confirm the release tool landed unchanged\n")
-        "before they are established"),
-    check "release handoff: a consumer that validates and never runs the tool is refused"
-      (handoffRefuses (swap canonicalHandoff
-        "      - name: use it\n        run: ./tool/tlrelease manifest-verify --dist dist\n" "")
-        "never runs it"),
-    -- The mutation that only a per-consumer scan can see: one consumer correct,
-    -- the other not. A whole-file guard reports this as clean.
-    check "release handoff: a second consumer that skips validation is refused"
-      (handoffRefuses
-        ("jobs:\n" ++ canonicalGates ++ handoffConsumer "sign" canonicalPrefix
-          ++ handoffConsumer "publish-release"
-            ("      - name: download the release tool\n" ++
-             "        uses: actions/download-artifact@abc # v8\n" ++
-             "        with:\n          name: release-tool\n          path: tool\n" ++
-             "      - name: use it\n        run: ./tool/tlrelease manifest-verify --dist dist\n"))
-        "the `publish-release` job downloads the release tool and no step of it compares"),
-    -- Non-vacuity: the scan must be reading consumers at all.
-    check "release handoff: a workflow whose consumers this scan cannot find is refused"
-      (handoffRefuses ("jobs:\n" ++ canonicalGates) "download the `release-tool` artifact"),
-    check "release handoff: a workflow with no gates job is refused"
-      (handoffRefuses ("jobs:\n" ++ handoffConsumer "sign" canonicalPrefix) "no `gates` job"),
     -- The commands' own examples. `arguments` is the shape and `invocation` is
     -- an instance of it, and the second is what makes the first checkable.
     check "tlrelease: every command's canonical invocation is one it accepts"

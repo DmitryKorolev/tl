@@ -179,11 +179,13 @@ stage source and destination, upload source, and both hash patterns, requires
 each pattern to match exactly one file, and refuses an empty result. The value
 is never compared with a manifest digest, a `SHA256SUMS` entry, an artifact
 digest, or a build-metadata digest.
-The current `releaseToolDigest` remains a raw SHA-256 throughout migration.
-`releaseToolFileSetHash` is introduced alongside it for a capability-free hosted
-rehearsal while all five real consumers retain their old comparisons. After
-that rehearsal passes, one atomic cutover removes the old output and all five
-raw-digest comparisons. The existing name never changes meaning.
+The migration kept `releaseToolDigest` as a raw SHA-256 while introducing
+`releaseToolFileSetHash` alongside it for a capability-free hosted rehearsal.
+All five real consumers retained their old comparisons until
+[that rehearsal passed](https://github.com/DmitryKorolev/tl/actions/runs/34411221089)
+on 2026-09-09 at `f3ca7e06e8838978de562ce62e457a24bd8a407d`. The subsequent
+atomic cutover removed the old output and all five raw-digest comparisons.
+The existing name never changed meaning.
 
 The producer is an explicit runner step in the unprivileged gates job, not a
 `jobs.<job_id>.outputs` expression. A preceding unprivileged orchestration step
@@ -226,6 +228,11 @@ workflow's `handoff_only` dispatch input runs gates and the branch-only rehearsa
 without starting the stamp/build/publication descendants. The rehearsal job
 has `permissions: {}`, no checkout credentials, no secrets and no protected
 environment. This targeted rehearsal checks artifact transport, not a release.
+The first domain invocation remains adjacent to the common help entry and
+unconditional; adding a setup step there does not become safe merely because
+help has already run. The drift corpus mutates each real consumer independently
+while preserving the rehearsal, and includes inherited shell overrides and
+folded/literal status-function conditions on later invocations.
 The prefix includes the first invocation, rather than ending at `chmod`, because
 its structural purpose is domination: nothing may be inserted between validating
 the downloaded bytes and first using them. The rehearsal establishes the prefix

@@ -548,10 +548,14 @@ misconfigured or hostile *path*, not against a peer with the same authority.
 Distinct from ADR-0015 §6's product discipline, which anchors on `.tl` rather
 than on an operator-named directory.
 
-**The release workflow has never run.** `.github/workflows/release.yml` is
-gated, linted and drift-guarded, but no tagged push has ever executed it, so
-every claim about what it *does* — as opposed to what it says — is carried
-here. A local rehearsal covers the whole darwin-arm64 Supported leg on a
+**A tagged release has not run.** A capability-free
+[hosted handoff rehearsal](https://github.com/DmitryKorolev/tl/actions/runs/34411221089)
+passed on 2026-09-09, before the raw-digest handoff was removed. It executed
+gates, uploaded and downloaded the staged release tool, compared the one-file
+`hashFiles` values, restored executable permission, and entered the tool with
+`--help`. Stamping, the build matrix, signing and publication were skipped.
+This establishes same-run tool transport, not provenance or the behavior of
+privileged release effects. A local rehearsal covers the whole darwin-arm64 Supported leg on a
 developer machine: stamping a clean checkout, `lake build tl`, staging,
 ad-hoc codesigning, the provenance assertions and the real task round-trip in
 the smoke test, the link-time dependency audit, the build-metadata record, and
@@ -566,20 +570,21 @@ golden. That rehearsal is what
 found the audit reporting every third-party component as absent on both macOS
 legs, so it is not a formality. What it cannot reach stays untested rather than
 implied working: both Linux legs, which build inside the pinned glibc-floor
-container on the runner, and with them the glibc-floor assertion; `actions/checkout`;
-`upload-artifact`/`download-artifact` and therefore every cross-job handoff,
-including the stamp the build legs compare by digest, the binaries the sign job
-re-verifies, and the release tool that job downloads and executes to write the
-SBOM. That last one is compared against a digest the gates job publishes as an
-output, and the comparison is inline workflow shell like the stamp check above
-it: its three branches — no digest published, a digest that disagrees, and the
-handoff succeeding — are read and linted but never executed, so what the check
-would do is asserted rather than known; the OIDC token, the Sigstore certificate and every
+container on the runner, and with them the glibc-floor assertion; the remaining
+cross-job artifact handoffs, including the stamp the build legs compare by
+digest and the binaries the sign job re-verifies; the release tool's execution
+with signing authority to write the SBOM; the OIDC token, the Sigstore certificate and every
 `cosign` call against a real transparency log; `actions/attest-build-provenance`;
 the GitHub Release creation itself; and the `release` environment's approval
 gate. Each of those is exercised only by a real tagged run, and until one
 happens the pipeline's behaviour past the artifact boundary is asserted by
-review and by drift guards over YAML, not by execution.
+review and by drift guards over YAML, not by execution. The tool handoff's
+missing/mismatched-value refusal expression is pinned and mutation-tested;
+the hosted rehearsal exercised the matching-value path, not injected transport
+failures. The structural guard also pins the inherited shell, the contiguous
+prefix, and success-only sequencing through later invocations. Interpretation
+of arbitrary publication shell remains part of ADR-0028's separate typed-policy
+cutover, not a claim made by this handoff model.
 
 ADR-0028's accepted shell cutover carries one additional platform-scoped
 assumption once its lexical dependency-boundary gate is removed. The pinned

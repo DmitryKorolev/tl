@@ -76,11 +76,8 @@ jobs:
     outputs:
       npm: ${{ steps.plan.outputs.npm }}
       homebrew: ${{ steps.plan.outputs.homebrew }}
-      # The digest of the binary the signing job writes the SBOM with. Published
-      # as a job output rather than left to the artifact store alone: an
-      # artifact is writable by any job in the run, and the job that downloads
-      # this one holds the signing identity.
-      releaseToolDigest: ${{ steps.tool.outputs.digest }}
+      # Same-run transport equality, not a raw file digest or provenance.
+      # Every consumer hashes the downloaded one-file set before execution.
       releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -247,17 +244,6 @@ jobs:
           RELEASE_TOOL_FILE_SET_HASH: ${{ hashFiles('release-tool/tlrelease') }}
         run: printf '%s\n' "fileSetHash=$RELEASE_TOOL_FILE_SET_HASH" >> "$GITHUB_OUTPUT"
 
-      # Retained until the hosted file-set rehearsal has passed. This output
-      # remains the raw file SHA-256; the new output never reuses its name.
-      - name: publish the release tool's digest
-        id: tool
-        run: |
-          set -euo pipefail
-          # Not `sha256sum … | cut`: a pipeline reports its last stage, and
-          # `cut` succeeds over empty input, so a digest tool that could not run
-          # would publish the empty string as the digest.
-          line=$(sha256sum release-tool/tlrelease)
-          echo "digest=${line%% *}" >> "$GITHUB_OUTPUT"
 
       - name: upload the release tool for the signing job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -330,24 +316,13 @@ jobs:
         with:
           name: release-tool
           path: tool
-
-      - name: confirm the release tool landed unchanged
-        run: |
-          set -euo pipefail
-          want='${{ needs.gates.outputs.releaseToolDigest }}'
-          if [ -z "$want" ]; then
-            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
-            exit 1
-          fi
-          got_line=$(sha256sum tool/tlrelease)
-          got=${got_line%% *}
-          if [ "$got" != "$want" ]; then
-            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit. Nothing is stamped."
-            exit 1
-          fi
-          # An uploaded artifact does not carry its executable bit.
-          chmod +x tool/tlrelease
-          echo "the release tool is the one the gates job built (${got})"
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
 
       - name: stamp the tagged commit
         id: stamp
@@ -907,30 +882,13 @@ jobs:
         with:
           name: release-tool
           path: tool
-
-      # Against the digest the gates job published, not against the artifact
-      # store's word for it: this job is about to execute that binary while
-      # holding the signing identity.
-      - name: confirm the release tool landed unchanged
-        run: |
-          set -euo pipefail
-          want='${{ needs.gates.outputs.releaseToolDigest }}'
-          if [ -z "$want" ]; then
-            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
-            exit 1
-          fi
-          got_line=$(sha256sum tool/tlrelease)
-          got=${got_line%% *}
-          if [ "$got" != "$want" ]; then
-            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit, and this job holds the signing identity. Nothing is written."
-            exit 1
-          fi
-          # Here, not at the first use: an uploaded artifact downloads as 0644,
-          # so every step below that runs this binary would otherwise fail with
-          # "permission denied" — including the identity check, which is the
-          # first thing this job does with it.
-          chmod +x tool/tlrelease
-          echo "the release tool is the one the gates job built (${got})"
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
 
       # ADR-0006 requires the notice file, an SBOM and the link-time audit to
       # travel with every binary release, and until now none of them reached
@@ -1164,7 +1122,7 @@ jobs:
 
       # cosign, before the release tool is downloaded rather than after it is
       # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the digest comparison and the first
+      # tool/tlrelease, but a step between the file-set comparison and the first
       # use of the tool is a step the handoff prefix has to make an exception
       # for — and an exception is a place for a later step to be added. Hoisted
       # so the prefix is contiguous and the rule needs no exception at all.
@@ -1177,7 +1135,7 @@ jobs:
           name: tl-signed-release
 
       # The release tool this job reads the manifest with, checked against the
-      # digest the gates job published rather than taken from the artifact
+      # file-set expectation the gates job published rather than taken from the artifact
       # store on trust. This job is about to make an irreversible publication
       # on the strength of what this binary says.
       - name: download the release tool
@@ -1185,24 +1143,13 @@ jobs:
         with:
           name: release-tool
           path: tool
-
-      - name: confirm the release tool landed unchanged
-        run: |
-          set -euo pipefail
-          want='${{ needs.gates.outputs.releaseToolDigest }}'
-          if [ -z "$want" ]; then
-            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
-            exit 1
-          fi
-          got_line=$(sha256sum tool/tlrelease)
-          got=${got_line%% *}
-          if [ "$got" != "$want" ]; then
-            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit. Nothing is published."
-            exit 1
-          fi
-          # An uploaded artifact does not carry its executable bit.
-          chmod +x tool/tlrelease
-          echo "the release tool is the one the gates job built (${got})"
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
 
       - name: verify what arrived, before publishing it
         run: |
@@ -1287,7 +1234,7 @@ jobs:
 
       # cosign, before the release tool is downloaded rather than after it is
       # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the digest comparison and the first
+      # tool/tlrelease, but a step between the file-set comparison and the first
       # use of the tool is a step the handoff prefix has to make an exception
       # for — and an exception is a place for a later step to be added. Hoisted
       # so the prefix is contiguous and the rule needs no exception at all.
@@ -1300,7 +1247,7 @@ jobs:
           name: tl-signed-release
 
       # The release tool this job reads the manifest with, checked against the
-      # digest the gates job published rather than taken from the artifact
+      # file-set expectation the gates job published rather than taken from the artifact
       # store on trust. This job is about to make an irreversible publication
       # on the strength of what this binary says.
       - name: download the release tool
@@ -1308,24 +1255,13 @@ jobs:
         with:
           name: release-tool
           path: tool
-
-      - name: confirm the release tool landed unchanged
-        run: |
-          set -euo pipefail
-          want='${{ needs.gates.outputs.releaseToolDigest }}'
-          if [ -z "$want" ]; then
-            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
-            exit 1
-          fi
-          got_line=$(sha256sum tool/tlrelease)
-          got=${got_line%% *}
-          if [ "$got" != "$want" ]; then
-            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit. Nothing is published."
-            exit 1
-          fi
-          # An uploaded artifact does not carry its executable bit.
-          chmod +x tool/tlrelease
-          echo "the release tool is the one the gates job built (${got})"
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
 
       # Every digest the formula pins is copied out of SHA256SUMS on trust, so
       # that file's signature is checked first.
@@ -1453,7 +1389,7 @@ jobs:
 
       # cosign, before the release tool is downloaded rather than after it is
       # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the digest comparison and the first
+      # tool/tlrelease, but a step between the file-set comparison and the first
       # use of the tool is a step the handoff prefix has to make an exception
       # for — and an exception is a place for a later step to be added. Hoisted
       # so the prefix is contiguous and the rule needs no exception at all.
@@ -1492,7 +1428,7 @@ jobs:
       # user can compare an npm tarball's binary against the release asset and
       # verify that asset's Sigstore bundle.
       # The release tool this job reads the manifest with, checked against the
-      # digest the gates job published rather than taken from the artifact
+      # file-set expectation the gates job published rather than taken from the artifact
       # store on trust. This job is about to make an irreversible publication
       # on the strength of what this binary says.
       - name: download the release tool
@@ -1500,24 +1436,13 @@ jobs:
         with:
           name: release-tool
           path: tool
-
-      - name: confirm the release tool landed unchanged
-        run: |
-          set -euo pipefail
-          want='${{ needs.gates.outputs.releaseToolDigest }}'
-          if [ -z "$want" ]; then
-            echo "::error::the gates job published no digest for the release tool, so this job cannot tell whether it is about to run the binary that job built and gated. An empty expectation must not pass for a matching one."
-            exit 1
-          fi
-          got_line=$(sha256sum tool/tlrelease)
-          got=${got_line%% *}
-          if [ "$got" != "$want" ]; then
-            echo "::error::the downloaded release tool hashes to ${got}, but the gates job published ${want}. This is not the binary that was built and gated on this commit. Nothing is published."
-            exit 1
-          fi
-          # An uploaded artifact does not carry its executable bit.
-          chmod +x tool/tlrelease
-          echo "the release tool is the one the gates job built (${got})"
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
 
       # The other two consumers of tl-signed-release re-verify what they
       # received; so does this one. Re-establishing the invariant at each
