@@ -609,7 +609,8 @@ UNAME
   # The supported native arm64 build is the remedy for an Intel shell under
   # Rosetta. `sysctl` is the observable boundary, so a declared stub drives the
   # warning without needing an actual Darwin host.
-  selected_asset=tl-darwin-x64
+  selected_platform=darwin-x64
+  selected_asset="tl-$selected_platform"
   printf '#!/bin/sh\necho "selected darwin-x64"\n' > "$release/$selected_asset"
   chmod +x "$release/$selected_asset"
   ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
@@ -634,6 +635,60 @@ SYSCTL
   ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
       && sha256sum "$host_asset" > SHA256SUMS \
       || shasum -a 256 "$host_asset" > SHA256SUMS; } )
+
+  # Tool availability, not the observed OS, selects the independent installer
+  # digest fallback. Exercise it without sha256sum on PATH even on Linux, and
+  # record both the binary and notice reaching the declared shasum collaborator.
+  fallback_bin="$work/installer-shasum-bin"
+  fallback_release="$work/installer-shasum-release"
+  mkdir -p "$fallback_bin" "$fallback_release"
+  for tool in awk chmod cp curl dirname mkdir mktemp mv rm sh tr uname; do
+    tool_path=$(command -v "$tool") || {
+      echo "tl-install: --selftest needs $tool to build the isolated shasum fixture" >&2
+      exit 2
+    }
+    ln -s "$tool_path" "$fallback_bin/$tool"
+  done
+  cat > "$fallback_bin/shasum" <<SHASUM
+#!/bin/sh
+[ "\${1-}" = -a ] && [ "\${2-}" = 256 ] || exit 64
+shift 2
+printf '%s\n' "\${1##*/}" >> '$work/installer-shasum-reached'
+SHASUM
+  if digest_backend=$(command -v sha256sum); then
+    printf '%s\n' "exec '$digest_backend' \"\$@\"" >> "$fallback_bin/shasum"
+  elif digest_backend=$(command -v shasum); then
+    printf '%s\n' "exec '$digest_backend' -a 256 \"\$@\"" >> "$fallback_bin/shasum"
+  else
+    echo "tl-install: --selftest needs a real digest tool behind its shasum fixture" >&2
+    exit 2
+  fi
+  chmod +x "$fallback_bin/shasum"
+  cp "$release/$host_asset" "$fallback_release/$host_asset"
+  printf 'fallback notice\n' > "$fallback_release/THIRD-PARTY-LICENSES"
+  ( cd "$fallback_release" && "$fallback_bin/shasum" -a 256 "$host_asset" THIRD-PARTY-LICENSES > SHA256SUMS )
+  rm -f "$work/installer-shasum-reached"
+  note "$(PATH="$fallback_bin" command -v sha256sum >/dev/null 2>&1 && echo 1 || echo 0)" \
+    "the installer fallback runs with sha256sum absent from PATH"
+  got=0
+  ( PATH="$fallback_bin" TL_VERSION=v0.0.0-selftest TL_INSTALL_SKIP_SIGNATURE=1 \
+      TL_INSTALL_BASE_URL="file://$fallback_release" TL_INSTALL_DIR="$work/fallback-dest" \
+      TL_INSTALL_SHARE_DIR="$work/fallback-share" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 0 ] && [ -x "$work/fallback-dest/tl" ] \
+      && [ "$(cat "$work/fallback-share/THIRD-PARTY-LICENSES" 2>/dev/null)" = 'fallback notice' ] && echo 0 || echo 1)" \
+    "the shasum fallback installs the verified binary and notice"
+  note "$(grep -qx "$host_asset" "$work/installer-shasum-reached" \
+      && grep -qx THIRD-PARTY-LICENSES "$work/installer-shasum-reached" && echo 0 || echo 1)" \
+    "both installer digest paths reached the shasum fixture"
+  printf 'tampered\n' >> "$fallback_release/$host_asset"
+  rm -rf "$work/fallback-dest"
+  got=0
+  ( PATH="$fallback_bin" TL_VERSION=v0.0.0-selftest TL_INSTALL_SKIP_SIGNATURE=1 \
+      TL_INSTALL_BASE_URL="file://$fallback_release" TL_INSTALL_DIR="$work/fallback-dest" \
+      TL_INSTALL_SHARE_DIR="$work/fallback-share" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 1 ] && [ ! -e "$work/fallback-dest/tl" ] \
+      && grep -q "digest mismatch for $host_asset" "$work/err" && echo 0 || echo 1)" \
+    "the shasum fallback refuses a tampered binary before installation"
 
   # The per-asset signature check needs a case that reaches it: a stub failing
   # every call dies on SHA256SUMS first, so nothing would notice the second
