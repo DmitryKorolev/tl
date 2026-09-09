@@ -2955,6 +2955,8 @@ private def tapPublishTests : IO (List Outcome) := do
   gitFixture remotePath ["symbolic-ref", "HEAD", "refs/heads/main"]
   let checkout := (base / "tap").toString
   gitFixture base.toString ["clone", "--quiet", "--", remotePath, checkout]
+  -- Git 2.17 does not carry an empty remote's unborn HEAD through clone.
+  gitFixture checkout ["symbolic-ref", "HEAD", "refs/heads/main"]
   IO.FS.createDirAll (checkout ++ "/Formula")
   IO.FS.writeFile (checkout ++ "/README.md") "tap\n"
   gitFixture checkout ["add", "-A"]
@@ -3006,6 +3008,7 @@ private def tapPublishTests : IO (List Outcome) := do
   gitFixture secondRemote ["symbolic-ref", "HEAD", "refs/heads/main"]
   let stranded := (base / "stranded").toString
   gitFixture base.toString ["clone", "--quiet", "--", secondRemote, stranded]
+  gitFixture stranded ["symbolic-ref", "HEAD", "refs/heads/main"]
   IO.FS.createDirAll (stranded ++ "/Formula")
   IO.FS.writeFile (stranded ++ "/README.md") "tap\n"
   gitFixture stranded ["add", "-A"]
@@ -3038,6 +3041,7 @@ private def tapPublishTests : IO (List Outcome) := do
   gitFixture wrongRemote ["symbolic-ref", "HEAD", "refs/heads/main"]
   let wrongCheckout := (base / "wrong").toString
   gitFixture base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
+  gitFixture wrongCheckout ["symbolic-ref", "HEAD", "refs/heads/main"]
   IO.FS.createDirAll (wrongCheckout ++ "/Formula")
   let (wrongStatus, _, wrongErr) ← runCommand "homebrew-publish"
     ["--dist", dist.toString, "--manifest", manifestPath, "--tap", wrongCheckout]
@@ -3075,6 +3079,7 @@ private def tapPublishTests : IO (List Outcome) := do
     gitFixture remote ["symbolic-ref", "HEAD", "refs/heads/main"]
     let clone := (base / name).toString
     gitFixture base.toString ["clone", "--quiet", "--", remote, clone]
+    gitFixture clone ["symbolic-ref", "HEAD", "refs/heads/main"]
     IO.FS.createDirAll (clone ++ "/Formula")
     IO.FS.writeFile (clone ++ "/README.md") "tap\n"
     gitFixture clone ["add", "-A"]
@@ -5074,6 +5079,11 @@ private def stampTests : IO (List Outcome) := do
   -- account of the first.
   let (twiceStatus, _, _) ← runCommand "stamp" ["--root", repo, "--commit"]
   let twiceWritten ← IO.FS.readFile (repo ++ "/Tl/Build/Stamp.lean")
+  -- Excluding the generated output must not hide its untracked siblings.
+  IO.FS.writeFile (repo ++ "/Tl/Build/Extra.lean") "-- another build input\n"
+  let (siblingStatus, _, _) ← runCommand "stamp" ["--root", repo, "--commit"]
+  let siblingWritten ← IO.FS.readFile (repo ++ "/Tl/Build/Stamp.lean")
+  IO.FS.removeFile (repo ++ "/Tl/Build/Extra.lean")
   -- An untracked file changes what gets compiled, so it counts — including
   -- when the repository's own configuration tells git to hide it.
   gitFixture repo ["config", "status.showUntrackedFiles", "no"]
@@ -5135,6 +5145,9 @@ private def stampTests : IO (List Outcome) := do
     checkEq "stamp: stamping twice in one checkout still reports it clean" twiceStatus 0,
     check "stamp: the command's own output does not make the tree dirty"
       (contains twiceWritten "def stampDirty : Bool := false") twiceWritten,
+    checkEq "stamp: an untracked sibling of the output is inspected" siblingStatus 0,
+    check "stamp: excluding the output does not exclude its sibling"
+      (contains siblingWritten "def stampDirty : Bool := true") siblingWritten,
     checkEq "stamp: an untracked file is stamped as dirty" hiddenStatus 0,
     check "stamp: even under status.showUntrackedFiles=no"
       (contains hiddenWritten "def stampDirty : Bool := true") hiddenWritten,

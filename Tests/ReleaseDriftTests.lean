@@ -298,6 +298,25 @@ private def jobsOf (workflow : String) : List (String × List String) := Id.run 
   if let some (name, ls) := current then jobs := jobs ++ [(name, ls.reverse)]
   return jobs
 
+/-- The binary-only Git-floor job must receive every executable its suite runs.
+    Artifact downloads do not preserve executable permissions. -/
+private def gitFloorReleaseToolShape (workflow : String) : Bool := Id.run do
+  let jobs := jobsOf workflow
+  let some (_, buildLines) := jobs.find? (fun (name, _) => name == "build-and-test")
+    | return false
+  let some (_, floorLines) := jobs.find? (fun (name, _) => name == "git-floor")
+    | return false
+  let some upload := (stepsOf buildLines).find?
+      (fun step => step.name == "upload binaries for the git-floor job")
+    | return false
+  let some run := (stepsOf floorLines).find?
+      (fun step => step.name == "run the suite under git 2.17")
+    | return false
+  return (upload.code.map (fun line => line.trimAscii.toString)).contains
+      ".lake/build/bin/tlrelease"
+    && (run.code.map (fun line => line.trimAscii.toString)).contains
+      "chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker .lake/build/bin/tlrelease"
+
 /-! ## The nested hermetic release job
 
 The inner container is evidence only because the outer invocation gives it no
@@ -983,6 +1002,24 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
       (match releaseToolHandoffShape releaseWorkflow with
        | .ok () => ""
        | .error message => message),
+    check "git floor: the release command is uploaded and made executable"
+      (gitFloorReleaseToolShape ciWorkflow),
+    check "git floor: omitting the release command from the artifact is refused"
+      (!gitFloorReleaseToolShape
+        (swap ciWorkflow "            .lake/build/bin/tlrelease\n" "")),
+    check "git floor: omitting the release command's executable permission is refused"
+      (!gitFloorReleaseToolShape
+        (swap ciWorkflow "tltestWorker .lake/build/bin/tlrelease" "tltestWorker")),
+    check "git floor: a missing producer job cannot pass the handoff guard"
+      (!gitFloorReleaseToolShape (swap ciWorkflow "  build-and-test:" "  renamed-build:")),
+    check "git floor: a missing consumer job cannot pass the handoff guard"
+      (!gitFloorReleaseToolShape (swap ciWorkflow "  git-floor:" "  renamed-floor:")),
+    check "git floor: a missing upload step cannot pass the handoff guard"
+      (!gitFloorReleaseToolShape
+        (swap ciWorkflow "name: upload binaries for the git-floor job" "name: renamed upload")),
+    check "git floor: a missing test step cannot pass the handoff guard"
+      (!gitFloorReleaseToolShape
+        (swap ciWorkflow "name: run the suite under git 2.17" "name: renamed test")),
     -- Non-vacuity against the live file, which the fixtures cannot give: the
     -- scan finds consumers by what they do, so a parser that stopped reading
     -- the download step would report a clean workflow having checked one job.

@@ -675,6 +675,7 @@ jobs:
             .lake/build/bin/tl
             .lake/build/bin/tltest
             .lake/build/bin/tltestWorker
+            .lake/build/bin/tlrelease
           if-no-files-found: error
           retention-days: 1
 
@@ -808,7 +809,7 @@ jobs:
       # no opt-out variable, so no environment can fake that skip elsewhere.
       - name: run the suite under git 2.17
         run: |
-          chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker
+          chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker .lake/build/bin/tlrelease
           export PATH="$HOME/git-floor/bin:$PATH"
           v=$(git --version)
           if [ "$v" != "git version ${GIT_FLOOR_VERSION}" ]; then

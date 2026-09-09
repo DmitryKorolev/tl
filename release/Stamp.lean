@@ -195,9 +195,11 @@ private def gitProvenance (root : String) : Decision (String × Bool) := do
   -- pinned because a repository or user setting of
   -- `status.showUntrackedFiles=no` hides exactly the files this decision is
   -- about, and the command's own output is excluded because it is overwritten
-  -- a moment later and so cannot affect the build.
+  -- a moment later and so cannot affect the build. List every untracked file:
+  -- Git 2.17's normal mode can report the output's parent directory even when
+  -- the excluded output is the only file inside it.
   let status ← gitIn root
-    ["-c", "status.showUntrackedFiles=normal", "status", "--porcelain",
+    ["-c", "status.showUntrackedFiles=all", "status", "--porcelain",
      "--", ".", s!":(exclude){outputRelative}"]
   return (commit, !status.isEmpty)
 
