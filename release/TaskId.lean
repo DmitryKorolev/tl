@@ -277,7 +277,7 @@ private def lintArgs (options : Options) : Except String LintArgs := do
     miss nothing but would report on files no reader can fix. -/
 private def trackedEntries (root : String) : Decision (List Entry) := do
   let listing ← ofIO (do
-    match ← Release.succeeded "git" #["-C", root, "ls-files", "-s", "-z", "--"] with
+    match ← Release.succeededGit #["-C", root, "ls-files", "-s", "-z", "--"] with
     | .ok output => return .ok output.stdout
     | .error message =>
         return .error s!"could not list the tracked files under {root}: {message}. This gate reads its scope from git, so it must be run against a checkout.")

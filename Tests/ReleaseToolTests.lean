@@ -14,6 +14,7 @@ by its exit status and the text it teaches than by a process's output stream.
 harness's own `main`.
 -/
 import Tests.Harness
+import Tl.Sync.Ref
 import release.Cli
 
 namespace Tl.Tests
@@ -173,6 +174,18 @@ private def runCommand (name : String) (args : List String) : IO (UInt32 × Stri
       let status ← IO.withStdout (IO.FS.Stream.ofBuffer out) <|
         IO.withStderr (IO.FS.Stream.ofBuffer err) <| command.run args
       return (status, String.fromUTF8! (← out.get).data, String.fromUTF8! (← err.get).data)
+
+private abbrev CommandDriver := String → List String → IO (UInt32 × String × String)
+
+/-- Environment tests use the public executable: changing the test worker's
+    process-global environment would contaminate unrelated concurrent tests. -/
+private def commandWithEnv (env : Array (String × Option String)) : CommandDriver := fun name args => do
+  let executable := (← IO.currentDir) / ".lake/build/bin/tlrelease"
+  let output ← IO.Process.output {
+    cmd := executable.toString
+    args := (name :: args).toArray
+    env := env }
+  return (output.exitCode, output.stdout, output.stderr)
 
 /-! ## The typed model
 
@@ -2924,7 +2937,8 @@ private def commitCount (checkout : String) : IO String := do
   | .ok output => return output.stdout.trimAscii.toString
   | .error message => return message
 
-private def tapPublishTests : IO (List Outcome) := do
+private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Outcome) := do
+  let runCommand := drive
   let base ← IO.FS.createTempDir
   let manifestText := okOr "<the fixture stopped assembling>" (do render (← describedManifest))
   let prereleaseText := okOr "<the fixture stopped assembling>" (do render (← describedPrerelease))
@@ -5027,7 +5041,8 @@ private def stampFixture (base : System.FilePath) (name : String) : IO String :=
   IO.FS.writeFile (root ++ "/lake-manifest.json") "{\"version\": \"1.1.0\"}\n"
   return root
 
-private def stampTests : IO (List Outcome) := do
+private def stampTests (drive : CommandDriver := runCommand) : IO (List Outcome) := do
+  let runCommand := drive
   let base ← IO.FS.createTempDir
   -- The live repository first: what the command writes is what is tracked.
   -- This is the drift guard, and it is why the shell gate it replaced existed —
@@ -6950,7 +6965,8 @@ private def taskIdCheckout (base : System.FilePath) (name : String)
   gitFixture root ["add", "-A"]
   return root
 
-private def taskIdCommandTests : IO (List Outcome) := do
+private def taskIdCommandTests (drive : CommandDriver := runCommand) : IO (List Outcome) := do
+  let runCommand := drive
   let base ← IO.FS.createTempDir
   let short := taskToken "8wmb"
   let long := taskToken "f01vn6s6n79wmqa8"
@@ -7099,6 +7115,61 @@ private def taskIdCommandTests : IO (List Outcome) := do
       (cleanStatus == 0 && linkStatus == 0 && leakStatus == 1 && blobStatus == 1)
       s!"clean={cleanStatus} link={linkStatus} leak={leakStatus} blob={blobStatus}"]
 
+/-- Each public git caller is exercised against both accepting and refusing
+    fixtures under a real alternate repository, worktree and index. A clean
+    unrelated index is particularly dangerous: failure becomes false success. -/
+private def gitRoutingTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let decoy ← taskIdCheckout base "decoy"
+    [(Release.TaskId.registryRelative, s!"{taskToken "aaaa"}\n"),
+     ("Tests/Fixture.lean", "nothing to find\n")]
+  gitFixture decoy ["commit", "-q", "--no-verify", "-m", "unrelated repository"]
+  let decoyIndex ← IO.FS.readBinFile (decoy ++ "/.git/index")
+  let routing := [("GIT_DIR", decoy ++ "/.git"), ("GIT_WORK_TREE", decoy),
+    ("GIT_INDEX_FILE", decoy ++ "/.git/index")]
+  let mut rows := [checkEq "release git: the scrub matches ADR-0012's product boundary"
+    Release.scrubbedGitVars Tl.Sync.scrubbedGitVars]
+  for (name, value) in routing do
+    let drive := commandWithEnv #[(name, some value)]
+    let results := (← taskIdCommandTests drive) ++ (← stampTests drive) ++ (← tapPublishTests drive)
+    rows := rows ++ results.map (fun row => { row with name := s!"inherited {name}: {row.name}" })
+  -- Observe the whole bounded set at the actual subprocess boundary without
+  -- dumping the caller's environment (which may contain credentials).
+  let realGit ← IO.Process.output { cmd := "sh", args := #["-c", "command -v git"] }
+  unless realGit.exitCode == 0 do throw (IO.userError "git fixture cannot locate git")
+  let tools := base / "tools"
+  IO.FS.createDir tools
+  let log := base / "observed"
+  let checks := String.intercalate "\n" (Tl.Sync.scrubbedGitVars.map fun name =>
+    "if [ \"${" ++ name ++ "+present}\" = present ]; then printf '%s\\n' '" ++ name ++
+      "' >> \"$RELEASE_TEST_ENV_LOG\"; fi")
+  IO.FS.writeFile (tools / "git") ("#!/bin/sh\n" ++ checks ++
+    "\nif [ \"$SSH_AUTH_SOCK\" = preserved ]; then printf '%s\\n' preserved >> \"$RELEASE_TEST_ENV_LOG\"; fi\n" ++
+    "exec \"$RELEASE_TEST_REAL_GIT\" \"$@\"\n")
+  let mode ← IO.Process.output { cmd := "chmod", args := #["+x", (tools / "git").toString] }
+  unless mode.exitCode == 0 do throw (IO.userError "git fixture cannot set executable mode")
+  let path := (← IO.getEnv "PATH").getD ""
+  let hostile := (Tl.Sync.scrubbedGitVars.map (fun name => (name, some "hostile"))).toArray ++
+    #[("PATH", some (tools.toString ++ ":" ++ path)),
+      ("GIT_CONFIG_KEY_0", some "core.worktree"), ("GIT_CONFIG_VALUE_0", some decoy),
+      ("SSH_AUTH_SOCK", some "preserved"),
+      ("RELEASE_TEST_ENV_LOG", some log.toString),
+      ("RELEASE_TEST_REAL_GIT", some realGit.stdout.trimAscii.toString)]
+  let (status, _, stderr) ← commandWithEnv hostile "task-id-lint" ["--root", decoy]
+  let combined := (← stampTests (commandWithEnv hostile)) ++
+    (← tapPublishTests (commandWithEnv hostile))
+  rows := rows ++ combined.map (fun row => { row with name := s!"combined routing: {row.name}" })
+  let observed ← IO.FS.readFile log
+  let observations := (observed.splitOn "\n").filter (· != "")
+  rows := rows ++ [
+    checkEq "release git: combined hostile routing still inspects the explicit repository" status 0,
+    check "release git: every scrub entry is absent and authentication is preserved"
+      (observations.length > 10 && observations.all (· == "preserved")) (observed ++ stderr),
+    check "release git: no public command mutates the foreign index"
+      ((← IO.FS.readBinFile (decoy ++ "/.git/index")) == decoyIndex)]
+  IO.FS.removeDirAll base
+  return rows
+
 private def platformTests : IO (List Outcome) := do
   return platformPureTests ++ (← platformCommandTests) ++ (← installerCorpusTests)
 def releaseToolTests : IO (List Outcome) := do
@@ -7162,6 +7233,6 @@ def releaseToolTests : IO (List Outcome) := do
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
     ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
-    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
+    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← gitRoutingTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
 
 end Tl.Tests

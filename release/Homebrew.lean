@@ -819,7 +819,7 @@ private def publishArgs (options : Options) : Except String PublishArgs := do
     interpolated into that url, and that masking is what covers the passed-through
     case; it is a platform property rather than one this command establishes. -/
 private def gitRaw (tap : String) (args : List String) : Decision String := do
-  let output ← ofIO (succeeded "git" ((["-C", tap] ++ args).toArray))
+  let output ← ofIO (succeededGit ((["-C", tap] ++ args).toArray))
   return output.stdout
 
 private def gitIn (tap : String) (args : List String) : Decision String := do
@@ -834,7 +834,7 @@ private def gitIn (tap : String) (args : List String) : Decision String := do
     after a failed push has the commit already made and nothing staged. The
     decision is the remote comparison above it. -/
 private def somethingStaged (tap : String) : Decision Bool := do
-  let outcome ← ofIO (do return .ok (← Release.run "git"
+  let outcome ← ofIO (do return .ok (← Release.runGit
     #["-C", tap, "diff", "--cached", "--quiet", "--", tapFormulaRelative]))
   match outcome with
   | .completed output =>
@@ -855,7 +855,7 @@ private def somethingStaged (tap : String) : Decision Bool := do
     message is written here. -/
 private def currentBranch (tap : String) : Decision String := do
   let outcome ← ofIO (do
-    return .ok (← Release.run "git" #["-C", tap, "symbolic-ref", "--quiet", "--short", "HEAD"]))
+    return .ok (← Release.runGit #["-C", tap, "symbolic-ref", "--quiet", "--short", "HEAD"]))
   match outcome with
   | .completed output =>
       let name := output.stdout.trimAscii.toString

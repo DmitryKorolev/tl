@@ -31,10 +31,14 @@ Three properties every run gets, so no caller can forget one:
   the only other thing that would stop it, and a release that hangs in the
   signing step until GitHub kills it is a release with no diagnosis.
 
-Deliberately not modelled on `Tl/Sync/Ref.lean`'s environment scrub. That one
-exists because a `git` subprocess reads repository routing out of the
-environment; the programs here read none, and inheriting the environment is
-what lets a release job point at a tool it installed.
+Ordinary tools inherit their environment so a release job can point at tools
+it installed. Git is different: `runGit` and `succeededGit` unset the ADR-0012
+repository-routing and configuration-injection variables before spawning it.
+Stamping, tracked-file inventory, and tap publication must operate on the
+explicit checkout, not an index or repository inherited from a git hook.
+The bounded scrub mirrors `Tl/Sync/Ref.lean` without importing product code.
+HOME, PATH and authentication remain operator-controlled carried assumptions;
+this does not sandbox git or ignore the checkout's own configuration.
 -/
 
 namespace Release
@@ -115,11 +119,12 @@ private def looksUnexecutable (output : ProcessOutput) : Bool :=
     everything rather than nothing. It is raised to one step instead — the
     caller asked for "as little as possible", and that is what a single poll
     is. -/
-def run (command : String) (args : Array String)
+private def runWithEnv (command : String) (args : Array String)
+    (env : Array (String × Option String))
     (timeoutMs : Nat := defaultTimeoutMs) : IO RunOutcome := do
   let bound := if timeoutMs == 0 then pollStepMs else timeoutMs
   let spawned ← (IO.Process.spawn {
-    cmd := command, args := args,
+    cmd := command, args := args, env := env,
     stdin := .null, stdout := .piped, stderr := .piped }).toBaseIO
   match spawned with
   | .error error =>
@@ -169,6 +174,29 @@ def run (command : String) (args : Array String)
           child.kill
           return .timedOut command bound
 
+/-- Run an ordinary external tool with its inherited environment. -/
+def run (command : String) (args : Array String)
+    (timeoutMs : Nat := defaultTimeoutMs) : IO RunOutcome :=
+  runWithEnv command args #[] timeoutMs
+
+/-- ADR-0012's bounded environment scrub. Removing the config count disables
+    its indexed key/value family. HOME and PATH remain intact for credentials
+    and operator-selected tools; tests pin parity with the product's list. -/
+def scrubbedGitVars : List String :=
+  ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+   "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE",
+   "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+   "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"]
+
+private def gitEnv : Array (String × Option String) :=
+  (scrubbedGitVars.map (fun name => (name, (none : Option String)))).toArray
+
+/-- Git must use the explicit checkout rather than ambient repository routing.
+    Exit statuses remain data, including `diff --quiet`'s meaningful status 1. -/
+def runGit (args : Array String) (timeoutMs : Nat := defaultTimeoutMs) : IO RunOutcome :=
+  runWithEnv "git" args gitEnv timeoutMs
+
 /-- What to tell whoever has to fix a run that produced no answer.
 
     One wording for each case, here rather than at each call site: these are the
@@ -192,9 +220,10 @@ def RunOutcome.failureMessage : RunOutcome → Option String
     checked. A caller that genuinely needs to branch on a particular non-zero
     status — a `gh` call where "not found" is an answer — matches `run` directly
     and says so. -/
-def succeeded (command : String) (args : Array String)
+private def succeededWithEnv (command : String) (args : Array String)
+    (env : Array (String × Option String))
     (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) := do
-  let outcome ← run command args timeoutMs
+  let outcome ← runWithEnv command args env timeoutMs
   match outcome, outcome.failureMessage with
   | _, some message => return .error message
   | .completed output, none =>
@@ -208,5 +237,15 @@ def succeeded (command : String) (args : Array String)
   -- this executable's contract is that every path ends in a decision, and
   -- "the impossible happened" is a refusal like any other.
   | _, none => return .error s!"'{command}': the run produced neither an outcome nor a reason."
+
+/-- Require a successful ordinary-tool run without changing its environment. -/
+def succeeded (command : String) (args : Array String)
+    (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) :=
+  succeededWithEnv command args #[] timeoutMs
+
+/-- Require a successful git run with the same scrub as `runGit`. -/
+def succeededGit (args : Array String)
+    (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) :=
+  succeededWithEnv "git" args gitEnv timeoutMs
 
 end Release

@@ -167,7 +167,7 @@ def render (provenance : Provenance) : String :=
 /-! ## Reading the checkout -/
 
 private def gitIn (root : String) (args : List String) : Decision String := do
-  match ← ofIO (do return .ok (← Release.succeeded "git" ((["-C", root] ++ args).toArray))) with
+  match ← ofIO (do return .ok (← Release.succeededGit ((["-C", root] ++ args).toArray))) with
   | .ok output => return output.stdout.trimAscii.toString
   | .error message => decline message
 

@@ -467,6 +467,14 @@ doctor`'s `gitRouting` check reports both a push-URL rewrite (raw target vs
 global scope (`externalPushConfig`) — and it misplaces the log
 without losing it: the local segments survive and a later clean sync publishes
 them);
+release-command Git configuration: `runGit` and `succeededGit` in
+`release/Process.lean` apply the same bounded ADR-0012 scrub to stamping,
+tracked-file lint and tap publication. Real alternate-repository/worktree/index
+fixtures and subprocess observations cover that boundary. `HOME`, `PATH`,
+`GIT_EXEC_PATH`, credential/transport variables and repository configuration
+remain trusted; the scrub is not a sandbox against a redirected tool or a
+HOME-relative config rewrite. The product's `doctor` disclosure is not run
+by these release commands;
 fold-cache checksum adequacy (ADR-0022): cache validity concludes "the live
 segment still carries the cached prefix byte-for-byte" from core's
 non-crypto `ByteArray.hash`, and the cache file's own checksum line guards
