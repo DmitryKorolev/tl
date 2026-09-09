@@ -741,6 +741,11 @@ Ruby DSL and is not release administration.
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
+  Workflow.lean         --   shared structural source reader for drift and privilege
+                        --   guards: job blocks, direct step fields, run scalars,
+                        --   raw source and line positions; tested in WorkflowTests
+                        --   and each guard's adversarial mutation corpus; not a
+                        --   general YAML parser or the future publication verdict
   Write.lean            --   what a release-evidence write is, before anything
                         --   performs one: an operator-named output directory, a
                         --   sealed non-empty list of validated relative

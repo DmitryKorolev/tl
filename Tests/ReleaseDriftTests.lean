@@ -21,8 +21,10 @@ neither is part of the product. What they protect is the thing a reader of the
 documentation, or of one policy script, cannot check for themselves.
 -/
 import Tests.Harness
+import Tests.WorkflowTests
 import Verify.Environment
 import release.Cli
+import release.Workflow
 
 namespace Tl.Tests
 
@@ -222,80 +224,7 @@ handoff was removed; local parsing does not establish hosted file selection.
 The remaining arbitrary publication commands are outside this model and await
 ADR-0028's separate typed-policy cutover. -/
 
-/-- One step of a job, as much of it as this model reads. -/
-private structure Step where
-  /-- Its `name:`, or the empty string for a bare `uses:` step. -/
-  name : String
-  /-- The `uses:` reference, if it is an action step. -/
-  uses : Option String
-  /-- Every line of the step, so a `run:` body can be read as text. -/
-  lines : List String
-
-/-- Whether the step's body mentions the text — its `run:` script and `with:`
-    block included. -/
-private def Step.mentions (step : Step) (needle : String) : Bool :=
-  step.lines.any fun line => (line.splitOn needle).length > 1
-
-/-- The step's body with comment lines dropped.
-
-    The distinction the old guard could not make: a canonical string inside a
-    `#` comment describes the rule, and one in a command obeys it. A guard that
-    reads both alike can be satisfied by writing the sentence down. -/
-private def Step.code (step : Step) : List String :=
-  step.lines.filter fun line => !(line.trimAscii.toString.startsWith "#")
-
-private def Step.runs (step : Step) (needle : String) : Bool :=
-  step.code.any fun line => (line.splitOn needle).length > 1
-
-/-- Split one job's lines into its steps. A step begins at a `- name:` or
-    `- uses:` item under `steps:`; everything up to the next one is its body. -/
-private def stepsOf (jobLines : List String) : List Step := Id.run do
-  let mut steps : List Step := []
-  let mut current : Option Step := none
-  let mut inSteps := false
-  for line in jobLines do
-    let body := line.trimAscii.toString
-    if body == "steps:" then
-      inSteps := true
-      continue
-    if !inSteps then continue
-    if body.startsWith "- " then
-      if let some step := current then steps := steps ++ [{ step with lines := step.lines.reverse }]
-      let head := (body.drop 2).toString
-      let named := if head.startsWith "name:" then (head.drop 5).toString.trimAscii.toString else ""
-      let used := if head.startsWith "uses:" then some (head.drop 5).toString.trimAscii.toString
-                  else none
-      current := some { name := named, uses := used, lines := [line] }
-    else if let some step := current then
-      -- A `uses:` on its own line belongs to the step being read.
-      let used := if body.startsWith "uses:" then some (body.drop 5).toString.trimAscii.toString
-                  else step.uses
-      current := some { step with uses := used, lines := line :: step.lines }
-  if let some step := current then steps := steps ++ [{ step with lines := step.lines.reverse }]
-  return steps
-
-/-- The workflow's top-level jobs, each with its lines. -/
-private def jobsOf (workflow : String) : List (String × List String) := Id.run do
-  let mut jobs : List (String × List String) := []
-  let mut current : Option (String × List String) := none
-  let mut inJobs := false
-  for line in workflow.splitOn "\n" do
-    if !inJobs then
-      if line == "jobs:" then inJobs := true
-      continue
-    if line != "" && !line.startsWith " " && !line.startsWith "#" then break
-    let isHeader := line.startsWith "  " && !line.startsWith "   "
-      && (line.trimAscii.toString.splitOn ":").length > 1
-      && !line.trimAscii.toString.startsWith "#"
-      && !line.trimAscii.toString.startsWith "- "
-    if isHeader then
-      if let some (name, ls) := current then jobs := jobs ++ [(name, ls.reverse)]
-      let name := ((line.trimAscii.toString.splitOn ":").headD "")
-      current := some (name, [])
-    else if let some (name, ls) := current then
-      current := some (name, line :: ls)
-  if let some (name, ls) := current then jobs := jobs ++ [(name, ls.reverse)]
-  return jobs
+open Release.Workflow (Step stepsOf jobsOf)
 
 /-- The binary-only Git-floor job must receive every executable its suite runs.
     Artifact downloads do not preserve executable permissions. -/
@@ -492,20 +421,20 @@ private def uploadAction : String := "actions/upload-artifact@"
 private def downloadAction : String := "actions/download-artifact@"
 
 /-- Whether a step runs the downloaded tool. -/
-private def Step.usesTool (step : Step) : Bool :=
+private def stepUsesTool (step : Step) : Bool :=
   step.code.any fun line =>
     let text := line.trimAscii.toString
     (text.splitOn s!"./{consumerToolPath}").length > 1
       || (text.splitOn s!" {consumerToolPath} ").length > 1
 
 /-- Whether a step is the download of the tool artifact. -/
-private def Step.downloadsTool (step : Step) : Bool :=
-  (step.uses.getD "").startsWith downloadAction && step.mentions s!"name: {toolArtifactName}"
+private def stepDownloadsTool (step : Step) : Bool :=
+  (step.uses.getD "").startsWith downloadAction && step.hasInput "name" toolArtifactName
 
 /-- The jobs this scan reads as consumers, for a test that says which. -/
 def releaseToolConsumers (workflow : String) : List String :=
   (jobsOf workflow).filterMap fun (job, lines) =>
-    if (stepsOf lines).any (·.downloadsTool) then some job else none
+    if (stepsOf lines).any stepDownloadsTool then some job else none
 
 /-- Replace every occurrence, for building one mutation out of the canonical
     workflow. -/
@@ -566,14 +495,14 @@ private def fileSetRehearsalShape (workflow : String) : Bool := Id.run do
     | return false
   let [(_, gates)] := jobs.filter (fun (name, _) => name == "gates")
     | return false
-  let producers := (stepsOf gates).filter (fun step => step.mentions "id: tool_file_set_hash")
+  let producers := (stepsOf gates).filter (fun step => step.hasField "id" "tool_file_set_hash")
   let [producer] := producers | return false
   let steps := stepsOf gates
   let some staging := (steps.zipIdx).find? (fun (step, _) => step.name == "stage the release tool")
     | return false
   let (stage, stageAt) := staging
   let some uploadAt := (steps.zipIdx).find? (fun (step, _) =>
-    (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")
+    (step.uses.getD "").startsWith uploadAction && step.hasInput "name" "release-tool")
     | return false
   let (_, uploadIndex) := uploadAt
   let outputLines := ((codeLines gates).dropWhile (· != "    outputs:")).drop 1
@@ -658,15 +587,28 @@ def releaseToolHandoffShape (workflow : String) : Except String Unit := do
     throw "restore the canonical producer, output mapping, and capability-free rehearsal"
   if releaseToolConsumers workflow != fileSetConsumers then
     throw "restore every release-tool consumer, exactly once"
+  for (job, lines) in jobs do
+    let fields := Release.Workflow.fieldsOf lines 1 4
+    if !fields.readable || (fields.fields.any (·.key == "steps") && (stepsOf lines).isEmpty) then
+      throw s!"write the `{job}` job's fields and steps in readable block form so an upload cannot disappear from the scan"
+  if (jobs.flatMap (fun (_, lines) => stepsOf lines)).any (fun step => !step.readable) then
+    throw "write every step with readable direct fields so unsupported metadata cannot hide an artifact upload"
+  if (jobs.flatMap (fun (_, lines) => stepsOf lines)).any (fun step =>
+      step.fields.any (·.key == "uses") &&
+        ((step.scalar? "uses").bind Release.Workflow.plainScalar?).isNone) then
+    throw "write every action reference as one plain scalar so an artifact uploader cannot be hidden by YAML metadata"
+  if (jobs.flatMap (fun (_, lines) => stepsOf lines)).any (fun step =>
+      (step.uses.getD "").startsWith uploadAction && (step.input? "name").isNone) then
+    throw "give every artifact upload one readable plain name input so the release-tool uploader cannot be hidden"
   if ((jobs.flatMap (fun (_, lines) => stepsOf lines)).filter (fun step =>
-      (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")).length != 1 then
+      (step.uses.getD "").startsWith uploadAction && step.hasInput "name" "release-tool")).length != 1 then
     throw "only gates may upload the single release-tool artifact"
   let code := codeLines (workflow.splitOn "\n")
   if code.any (fun line => (line.splitOn "releaseToolDigest").length > 1) then
     throw "remove the obsolete raw-digest handoff atomically"
   for (job, lines) in jobs do
     if job != "gates" && !fileSetConsumers.contains job then
-      if (stepsOf lines).any (·.usesTool) then
+      if (stepsOf lines).any stepUsesTool then
         throw s!"the `{job}` job runs the tool without a modeled handoff; add its consumer explicitly"
       continue
     let header := (codeLines lines).takeWhile (· != "    steps:")
@@ -681,20 +623,20 @@ def releaseToolHandoffShape (workflow : String) : Except String Unit := do
         throw "end gates with exactly staging, file-set hashing, and the pinned single-file upload"
       if (steps.filter (fun step => step.runs "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease")).length != 1 then
         throw "stage the gated binary exactly once"
-      if (steps.filter (fun step => step.mentions "id: tool_file_set_hash")).length != 1 then
+      if (steps.filter (fun step => step.hasField "id" "tool_file_set_hash")).length != 1 then
         throw "produce the file-set hash exactly once"
-      if (steps.filter (fun step => (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")).length != 1 then
+      if (steps.filter (fun step => (step.uses.getD "").startsWith uploadAction && step.hasInput "name" "release-tool")).length != 1 then
         throw "upload the single release-tool artifact exactly once"
     else
-      let before := steps.takeWhile (! ·.downloadsTool)
+      let before := steps.takeWhile (fun step => !stepDownloadsTool step)
       let after := steps.drop before.length
-      if before.any (·.usesTool) then
+      if before.any stepUsesTool then
         throw s!"move the `{job}` job's early tool execution after its handoff"
       if codeLines ((after.take 4).flatMap (·.lines)) != codeLines (fileSetPrefix.splitOn "\n") then
         throw s!"restore the `{job}` job's exact contiguous download/refusal/chmod/entry prefix"
-      if (steps.filter (·.downloadsTool)).length != 1 then
+      if (steps.filter stepDownloadsTool).length != 1 then
         throw s!"download the `{job}` job's release tool exactly once"
-      if job != "handoff-rehearsal" && !(after[4]?).any (·.usesTool) then
+      if job != "handoff-rehearsal" && !(after[4]?).any stepUsesTool then
         throw s!"keep the `{job}` job's first domain invocation immediately after the validated entry"
       if job != "handoff-rehearsal" && (after[4]?).any (fun step =>
           (codeLines step.lines).any (fun line =>
@@ -752,6 +694,8 @@ def fileSetMutationTests : List Outcome :=
     ("absent output mapping", "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}\n", ""),
     ("mapping wrong parent", "    outputs:", "    env:"),
     ("download missing", "      - name: download the release tool\n", "      - name: download something else\n"),
+    ("nested download action", "uses: actions/download-artifact@", "uses: actions/checkout@decoy\n        with:\n          uses: actions/download-artifact@"),
+    ("nested producer id", "        id: tool_file_set_hash", "        env:\n          id: tool_file_set_hash"),
     ("download wildcard", "          name: release-tool\n          path: tool", "          pattern: release-*\n          path: tool"),
     ("download destination", "          path: tool", "          path: other"),
     ("empty expected value allowed", "needs.gates.outputs.releaseToolFileSetHash == '' || ", ""),
@@ -784,6 +728,14 @@ def fileSetMutationTests : List Outcome :=
     ("inherited shell startup file", fileSetDefaults, fileSetDefaults ++ "env:\n  BASH_ENV: other\n"),
     ("job shell startup file", "  sign:\n", "  sign:\n    env:\n      BASH_ENV: other\n"),
     ("another job uploads the tool", "  sign:\n", "  replacement:\n    steps:\n" ++ fileSetUpload ++ "  sign:\n"),
+    ("another upload uses wider input indentation", "  sign:\n", "  replacement:\n    steps:\n      - uses: actions/upload-artifact@v4\n        with:\n            name: release-tool\n            path: other\n  sign:\n"),
+    ("another upload uses a commented name", "  sign:\n", "  replacement:\n    steps:\n      - uses: actions/upload-artifact@v4\n        with:\n          name: release-tool # comment\n          path: other\n  sign:\n"),
+    ("another upload hides its name in flow syntax", "  sign:\n", "  replacement:\n    steps:\n      - uses: actions/upload-artifact@v4\n        with: {name: release-tool, path: other}\n  sign:\n"),
+    ("another upload has an unreadable field", "  sign:\n", "  replacement:\n    steps:\n      - uses: actions/upload-artifact@v4\n        'continue-on-error': false\n        with:\n          name: release-tool\n          path: other\n  sign:\n"),
+    ("another upload has a quoted steps key", "  sign:\n", "  replacement:\n    'steps':\n      - uses: actions/upload-artifact@v4\n        with:\n          name: release-tool\n          path: other\n  sign:\n"),
+    ("another upload has a quoted action", "  sign:\n", "  replacement:\n    steps:\n      - uses: 'actions/upload-artifact@v4'\n        with:\n          name: release-tool\n          path: other\n  sign:\n"),
+    ("another upload has an anchored action", "  sign:\n", "  replacement:\n    steps:\n      - uses: &upload actions/upload-artifact@v4\n        with:\n          name: release-tool\n          path: other\n  sign:\n"),
+    ("another upload follows duplicate steps", "  sign:\n", "  replacement:\n    steps:\n      - run: true\n    steps:\n      - uses: actions/upload-artifact@v4\n        with:\n          name: release-tool\n          path: other\n  sign:\n"),
     ("missing real consumer", "  publish-npm:", "  unexpected:"),
     ("unmodeled tool execution", "  sign:\n", "  extra-job:\n    steps:\n      - run: ./tool/tlrelease --help\n  sign:\n"),
     ("rehearsal permissions", "    permissions: {}", "    permissions: write-all"),
@@ -793,7 +745,7 @@ def fileSetMutationTests : List Outcome :=
     ("rehearsal trigger", "github.ref_type == 'branch'", "github.ref_type == 'tag'"),
     ("handoff-only bypass", "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only", "")]
   let independent := mutations.filter fun (name, _, _) =>
-    ["download destination", "empty expected value allowed", "empty received value allowed",
+    ["nested download action", "download destination", "empty expected value allowed", "empty received value allowed",
      "unequal values allowed", "received multiple files", "mismatch ignored",
      "prefix truncated at chmod", "step before entry", "step before domain invocation",
      "early tool execution", "handoff status override", "domain skipped",
@@ -1091,7 +1043,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
      check s!"hermetic release: step-level `{field}` is refused"
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: |\n"
          s!"        {field}\n        run: |\n")).toOption.isNone)]
-  return fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
+  return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
     ++ hygieneRows ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
     ++ hermeticInnerRows ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must

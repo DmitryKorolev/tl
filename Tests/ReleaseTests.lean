@@ -17,6 +17,7 @@ Tested release shell (ADR-0004); no Mathlib (ADR-0009).
 -/
 import Lean.Data.Json
 import Tests.Harness
+import release.Workflow
 import Tests.JsonUtil
 import Tl.Build.Provenance
 import Tl.Cli.Commands
@@ -328,67 +329,7 @@ private def grantsPrivilege (line : String) : Bool :=
       -- job's own YAML.
       || key == "environment"
 
-/-- A top-level job block: the job's name and the lines belonging to it. -/
-private structure JobBlock where
-  name : String
-  lines : List String
-
-/-- A top-level job header — indented exactly two spaces, a bare name, then
-    `:` and nothing but an optional comment. Tolerating the trailing comment
-    matters: without it such a header is not recognised, the job folds into the
-    preceding block, and it silently inherits that job's `if:` for the purposes
-    of every check below. -/
-private def jobHeader? (line : String) : Option String :=
-  if !(line.startsWith "  ") || line.startsWith "   " then none
-  else
-    let body := dropIndent line
-    if body.startsWith "#" then none
-    else
-      match body.splitOn ":" with
-      | name :: rest =>
-          let tail := dropIndent (String.intercalate ":" rest)
-          if isBareKey name && (tail.isEmpty || tail.startsWith "#") then some name
-          else none
-      | [] => none
-
-/-- A workflow's `jobs:` mapping, as this scan could read it. -/
-private structure JobScan where
-  jobs : List JobBlock
-  /-- Lines sitting exactly where a top-level job header does that this scan
-      cannot read as one. Reported rather than folded into the preceding job:
-      a header this parser skips silently attributes its job's permissions to
-      the job above and gives it that job's `if:`, so a privileged job could
-      join the file already covered by somebody else's guard. -/
-  unreadable : List String
-
-/-- Split a workflow file into its top-level job blocks: everything after the
-    column-zero `jobs:` key, up to the next column-zero key. -/
-private def jobScan (content : String) : JobScan := Id.run do
-  let mut inJobs := false
-  let mut blocks : List JobBlock := []
-  let mut unreadable : List String := []
-  let mut current : Option (String × List String) := none
-  for line in content.splitOn "\n" do
-    if !inJobs then
-      if line == "jobs:" then inJobs := true
-      continue
-    -- A column-zero key ends the `jobs:` mapping.
-    if line != "" && !line.startsWith " " && !line.startsWith "#" then
-      break
-    match jobHeader? line with
-    | some name =>
-        if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
-        current := some (name, [])
-    | none =>
-        -- Inside `jobs:`, a line indented exactly two spaces is a job header or
-        -- it is nothing; a job's own keys sit at four. One this parser cannot
-        -- read is therefore a header it must not pass over.
-        if line.startsWith "  " && !line.startsWith "   "
-            && !(withoutComment (dropIndent line)).isEmpty then
-          unreadable := unreadable ++ [line]
-        if let some (n, ls) := current then current := some (n, line :: ls)
-  if let some (n, ls) := current then blocks := blocks ++ [{ name := n, lines := ls.reverse }]
-  return { jobs := blocks, unreadable }
+open Release.Workflow (JobBlock JobScan jobScan)
 
 /-- The job's own `if:`, as one string — indented four spaces, so a step's `if:`
     is not it, and folded continuations (`if: >-` and the more-indented lines

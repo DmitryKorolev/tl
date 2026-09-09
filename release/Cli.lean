@@ -50,6 +50,7 @@ inventory.
 
 import release.Boundary
 import release.Certificate
+import release.Workflow
 import release.Consistency
 import release.Homebrew
 import release.Identity
