@@ -2951,7 +2951,8 @@ private def tapPublishTests : IO (List Outcome) := do
   let owner := base / "Owner"
   IO.FS.createDirAll owner
   let remotePath := (owner / "homebrew-tap.git").toString
-  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", remotePath]
+  gitFixture base.toString ["init", "--bare", "--", remotePath]
+  gitFixture remotePath ["symbolic-ref", "HEAD", "refs/heads/main"]
   let checkout := (base / "tap").toString
   gitFixture base.toString ["clone", "--quiet", "--", remotePath, checkout]
   IO.FS.createDirAll (checkout ++ "/Formula")
@@ -3001,7 +3002,8 @@ private def tapPublishTests : IO (List Outcome) := do
   let secondOwner := base / "second" / "Owner"
   IO.FS.createDirAll secondOwner
   let secondRemote := (secondOwner / "homebrew-tap.git").toString
-  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", secondRemote]
+  gitFixture base.toString ["init", "--bare", "--", secondRemote]
+  gitFixture secondRemote ["symbolic-ref", "HEAD", "refs/heads/main"]
   let stranded := (base / "stranded").toString
   gitFixture base.toString ["clone", "--quiet", "--", secondRemote, stranded]
   IO.FS.createDirAll (stranded ++ "/Formula")
@@ -3022,7 +3024,8 @@ private def tapPublishTests : IO (List Outcome) := do
   -- honours `remote.origin.pushurl`, so a checkout can read the tap and publish
   -- somewhere else entirely.
   let decoy := (base / "decoy.git").toString
-  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", decoy]
+  gitFixture base.toString ["init", "--bare", "--", decoy]
+  gitFixture decoy ["symbolic-ref", "HEAD", "refs/heads/main"]
   let diverted := (base / "diverted").toString
   gitFixture base.toString ["clone", "--quiet", "--", remotePath, diverted]
   gitFixture diverted ["config", "remote.origin.pushurl", decoy]
@@ -3031,7 +3034,8 @@ private def tapPublishTests : IO (List Outcome) := do
   let decoyGot ← Release.succeeded "git" #["-C", decoy, "show", "main:Formula/tl.rb"]
   -- A checkout of the wrong repository.
   let wrongRemote := (base / "elsewhere.git").toString
-  gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", wrongRemote]
+  gitFixture base.toString ["init", "--bare", "--", wrongRemote]
+  gitFixture wrongRemote ["symbolic-ref", "HEAD", "refs/heads/main"]
   let wrongCheckout := (base / "wrong").toString
   gitFixture base.toString ["clone", "--quiet", "--", wrongRemote, wrongCheckout]
   IO.FS.createDirAll (wrongCheckout ++ "/Formula")
@@ -3067,7 +3071,8 @@ private def tapPublishTests : IO (List Outcome) := do
     let owner := base / (name ++ "-origin") / "Owner"
     IO.FS.createDirAll owner
     let remote := (owner / "homebrew-tap.git").toString
-    gitFixture base.toString ["init", "--bare", "--initial-branch=main", "--", remote]
+    gitFixture base.toString ["init", "--bare", "--", remote]
+    gitFixture remote ["symbolic-ref", "HEAD", "refs/heads/main"]
     let clone := (base / name).toString
     gitFixture base.toString ["clone", "--quiet", "--", remote, clone]
     IO.FS.createDirAll (clone ++ "/Formula")
@@ -5055,7 +5060,8 @@ private def stampTests : IO (List Outcome) := do
   let plainWritten ← IO.FS.readFile (plain ++ "/Tl/Build/Stamp.lean")
   -- A checkout with a commit.
   let repo ← stampFixture base "repo"
-  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", repo]
+  gitFixture base.toString ["init", "--quiet", "--", repo]
+  gitFixture repo ["symbolic-ref", "HEAD", "refs/heads/main"]
   gitFixture repo ["add", "-A"]
   gitFixture repo ["commit", "-q", "--no-verify", "-m", "seed"]
   let head ← match ← Release.succeeded "git" #["-C", repo, "rev-parse", "HEAD"] with
@@ -5085,7 +5091,8 @@ private def stampTests : IO (List Outcome) := do
   -- A git that cannot report. A corrupt index is the usual cause, and it must
   -- not read as a clean tree.
   let broken ← stampFixture base "broken"
-  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", broken]
+  gitFixture base.toString ["init", "--quiet", "--", broken]
+  gitFixture broken ["symbolic-ref", "HEAD", "refs/heads/main"]
   gitFixture broken ["add", "-A"]
   gitFixture broken ["commit", "-q", "--no-verify", "-m", "seed"]
   IO.FS.writeFile (broken ++ "/.git/index") "garbage"
@@ -6925,7 +6932,8 @@ private def taskIdCheckout (base : System.FilePath) (name : String)
     | some parent => IO.FS.createDirAll parent
     | none => pure ()
     IO.FS.writeFile full contents
-  gitFixture base.toString ["init", "--quiet", "--initial-branch=main", "--", root]
+  gitFixture base.toString ["init", "--quiet", "--", root]
+  gitFixture root ["symbolic-ref", "HEAD", "refs/heads/main"]
   gitFixture root ["add", "-A"]
   return root
 
