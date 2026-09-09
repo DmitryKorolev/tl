@@ -436,6 +436,42 @@ selftest() {
   rc_note "$(! grep -q 'digest mismatch' "$RC_ERR" && echo 0 || echo 1)" \
     "the missing-tool refusal is not phrased as tampering"
 
+  # The macOS fallback is selected only when sha256sum is genuinely absent,
+  # not when a first PATH entry shadows it with a failing program. Give the
+  # verifier an isolated declared tool set with a shasum stub and no
+  # sha256sum, then prove the stub was reached. This runs on Linux as well as
+  # Darwin, so retiring the lexical dependency scan does not retire the only
+  # executable evidence for this branch.
+  d=$(fixture shasum-fallback)
+  shasum_bin="$work/shasum-bin"
+  mkdir -p "$shasum_bin"
+  for tool in awk dirname mktemp pwd rm tr wc; do
+    tool_path=$(command -v "$tool") || {
+      echo "verify-release-artifacts: --selftest needs $tool to build the isolated shasum fixture" >&2
+      exit 2
+    }
+    ln -s "$tool_path" "$shasum_bin/$tool"
+  done
+  cat > "$shasum_bin/shasum" <<SHASUM
+#!/bin/sh
+[ "\${1-}" = -a ] && [ "\${2-}" = 256 ] || exit 64
+shift 2
+printf 'reached\n' >> '$work/shasum-reached'
+SHASUM
+  if digest_backend=$(command -v sha256sum); then
+    printf '%s\n' "exec '$digest_backend' \"\$@\"" >> "$shasum_bin/shasum"
+  elif digest_backend=$(command -v shasum); then
+    printf '%s\n' "exec '$digest_backend' -a 256 \"\$@\"" >> "$shasum_bin/shasum"
+  else
+    echo "verify-release-artifacts: --selftest needs one real digest tool behind the declared shasum fixture" >&2
+    exit 2
+  fi
+  chmod +x "$shasum_bin/shasum"
+  rc_expect_status 0 "the declared shasum fallback verifies a good release" \
+    env PATH="$shasum_bin" TL_INSTALL_SKIP_SIGNATURE=1 "$self" "$d" tl-linux-x64
+  rc_note "$([ -s "$work/shasum-reached" ] && echo 0 || echo 1)" \
+    "the shasum fallback stub was reached"
+
   # A read-only asset directory is a legitimate place to verify from: immutable
   # media, a root-owned download. The verifier must not need to write there,
   # and must not lose its own message when it cannot.

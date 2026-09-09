@@ -582,6 +582,59 @@ UNAME
       "$1/$2 refuses and explains ($expect)"
   done
 
+  # Every supported platform-selection body, including the aliases the two
+  # operating systems report in practice. These are injected observations over
+  # the public installer, not calls to its helper functions, so a branch that
+  # selected the wrong asset would try to fetch a file that is not present.
+  for case_spec in "Darwin arm64 darwin-arm64" "Darwin x86_64 darwin-x64" \
+                   "Linux aarch64 linux-arm64" "Linux amd64 linux-x64"; do
+    set -- $case_spec
+    selected_asset="tl-$3"
+    printf '#!/bin/sh\necho "selected %s"\n' "$3" > "$release/$selected_asset"
+    chmod +x "$release/$selected_asset"
+    ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
+        && sha256sum "$selected_asset" > SHA256SUMS \
+        || shasum -a 256 "$selected_asset" > SHA256SUMS; } )
+    printf '{}\n' > "$release/${selected_asset}.sigstore.json"
+    d=$(stub_uname "$1" "$2")
+    rm -rf "$work/dest"
+    got=0
+    ( PATH="$d:$PATH" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
+        TL_INSTALL_DIR="$work/dest" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
+    installed=$("$work/dest/tl" 2>/dev/null || true)
+    note "$([ "$got" -eq 0 ] && [ "$installed" = "selected $3" ] && echo 0 || echo 1)" \
+      "$1/$2 selects tl-$3 through the public installer"
+  done
+
+  # The supported native arm64 build is the remedy for an Intel shell under
+  # Rosetta. `sysctl` is the observable boundary, so a declared stub drives the
+  # warning without needing an actual Darwin host.
+  selected_asset=tl-darwin-x64
+  printf '#!/bin/sh\necho "selected darwin-x64"\n' > "$release/$selected_asset"
+  chmod +x "$release/$selected_asset"
+  ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
+      && sha256sum "$selected_asset" > SHA256SUMS \
+      || shasum -a 256 "$selected_asset" > SHA256SUMS; } )
+  printf '{}\n' > "$release/${selected_asset}.sigstore.json"
+  d=$(stub_uname Darwin x86_64)
+  cat > "$d/sysctl" <<'SYSCTL'
+#!/bin/sh
+[ "${1-}" = -n ] && [ "${2-}" = sysctl.proc_translated ] || exit 64
+printf '1\n'
+SYSCTL
+  chmod +x "$d/sysctl"
+  rm -rf "$work/dest"
+  got=0
+  ( PATH="$d:$PATH" TL_VERSION=v0.0.0-selftest TL_INSTALL_BASE_URL="file://$release" \
+      TL_INSTALL_DIR="$work/dest" sh "$self" >"$work/out" 2>"$work/err" ) || got=$?
+  note "$([ "$got" -eq 0 ] && grep -q 'running under Rosetta' "$work/err" && echo 0 || echo 1)" \
+    "an Intel shell translated on Apple silicon installs and recommends the native arm64 build"
+
+  # Restore the host fixture the remaining verifier rows use.
+  ( cd "$release" && { command -v sha256sum >/dev/null 2>&1 \
+      && sha256sum "$host_asset" > SHA256SUMS \
+      || shasum -a 256 "$host_asset" > SHA256SUMS; } )
+
   # The per-asset signature check needs a case that reaches it: a stub failing
   # every call dies on SHA256SUMS first, so nothing would notice the second
   # call being deleted.
