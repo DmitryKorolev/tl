@@ -769,7 +769,7 @@ private def handoffOnlyInput : String :=
   "        type: boolean\n" ++
   "        default: false\n"
 
-private def fileSetRehearsalShape (workflow : String) : Bool := Id.run do
+private def fileSetRehearsalShape (workflow : String) (legacy : Bool := true) : Bool := Id.run do
   let jobs := jobsOf workflow
   let [(_, rehearsal)] := jobs.filter (fun (name, _) => name == "handoff-rehearsal")
     | return false
@@ -792,11 +792,239 @@ private def fileSetRehearsalShape (workflow : String) : Bool := Id.run do
     && codeLines producer.lines == codeLines (fileSetProducer.splitOn "\n")
     && codeLines stage.lines == codeLines (fileSetStage.splitOn "\n")
     && (steps[stageAt + 1]?).map (fun step => codeLines step.lines) == some (codeLines producer.lines)
-    && uploadIndex == stageAt + 3
+    && uploadIndex == stageAt + (if legacy then 3 else 2)
     && outputLines.contains "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}"
     && (gates.filter (· == "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}")).length == 1
     && (workflow.splitOn handoffOnlyInput).length == 2
     && (stamp.filter (· == "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only")).length == 1
+
+private def fileSetUpload : String :=
+  "      - name: upload the release tool for the signing job\n" ++
+  "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n" ++
+  "        with:\n" ++
+  "          name: release-tool\n" ++
+  "          path: release-tool/tlrelease\n" ++
+  "          if-no-files-found: error\n" ++
+  "          retention-days: 7\n"
+
+private def fileSetConsumers : List String :=
+  ["handoff-rehearsal", "stamp", "sign", "publish-release", "publish-homebrew", "publish-npm"]
+
+/-- Read a YAML control key, not a shell line in a block scalar. Quoting a
+    control key does not change what GitHub does with it. -/
+private def handoffControl (line : String) : String × String :=
+  let body := line.trimAscii.toString
+  let body := if body.startsWith "- " then (body.drop 2).toString else body
+  let parts := body.splitOn ":"
+  let key := (parts.headD "").trimAscii.toString
+  let key := key.replace "\"" "" |>.replace "'" ""
+  (key, String.intercalate ":" (parts.drop 1))
+
+/-- Conditions can be folded or literal YAML scalars. Read their complete
+    indented value, including a condition that is the first key of a step. -/
+private def handoffStatusOverride (lines : List String) : Bool := Id.run do
+  let mut active : Option Nat := none
+  let mut conditions : List String := []
+  for line in codeLines lines do
+    let width := (line.toList.takeWhile (· == ' ')).length
+    if active.any (width > ·) then
+      conditions := line :: conditions
+      continue
+    let (key, value) := handoffControl line
+    if key == "continue-on-error" then return true
+    if key == "if" then
+      let value := value.trimAscii.toString
+      if value.startsWith "*" || value.startsWith "&" then return true
+      active := some (width + if line.trimAscii.toString.startsWith "- " then 2 else 0)
+      conditions := value :: conditions
+    else active := none
+  let compact := (String.ofList ((String.intercalate " " conditions.reverse).toList.filter (! ·.isWhitespace))).toLower
+  return ["always(", "failure(", "cancelled(", "success("].any fun name =>
+    (compact.splitOn name).length > 1
+
+private def fileSetDefaults : String := "defaults:\n  run:\n    shell: bash\n"
+
+private def handoffInheritedExecution (workflow : String) : Bool :=
+  let header := codeLines ((workflow.splitOn "\n").takeWhile (· != "jobs:"))
+  let defaults := ((header.dropWhile (· != "defaults:")).drop 1).takeWhile (·.startsWith " ")
+  let env := ((header.dropWhile (· != "env:")).drop 1).takeWhile (·.startsWith " ")
+  defaults == ["  run:", "    shell: bash"]
+    && (header.filter (fun line => (handoffControl line).1 == "defaults")).length == 1
+    && (header.filter (fun line => (handoffControl line).1 == "env")).all (· == "env:")
+    && env.all (fun line => line.startsWith "  " && !line.startsWith "   " &&
+      ["GLIBC_FLOOR_IMAGE", "GLIBC_FLOOR", "ELAN_VERSION"].contains (handoffControl line).1)
+
+/-- Exact file-set transport shape, deliberately separate from the later
+    migration of arbitrary publication commands into the typed policy grammar.
+    This guard owns the producer and handoff, not the meaning of every shell
+    command that follows. It keeps implicit success sequencing for the entire
+    job and keeps the first domain command next to the uniform help entry. -/
+private def fileSetHandoffShape (workflow : String) : Except String Unit := do
+  let jobs := jobsOf workflow
+  if !handoffInheritedExecution workflow then
+    throw "restore the inherited bash shell and build-only environment keys for the handoff"
+  if !fileSetRehearsalShape workflow false then
+    throw "restore the canonical producer, output mapping, and capability-free rehearsal"
+  if releaseToolConsumers workflow != fileSetConsumers then
+    throw "restore every release-tool consumer, exactly once"
+  if ((jobs.flatMap (fun (_, lines) => stepsOf lines)).filter (fun step =>
+      (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")).length != 1 then
+    throw "only gates may upload the single release-tool artifact"
+  let code := codeLines (workflow.splitOn "\n")
+  if code.any (fun line => (line.splitOn "releaseToolDigest").length > 1) then
+    throw "remove the obsolete raw-digest handoff atomically"
+  for (job, lines) in jobs do
+    if job != "gates" && !fileSetConsumers.contains job then
+      if (stepsOf lines).any (·.usesTool) then
+        throw s!"the `{job}` job runs the tool without a modeled handoff; add its consumer explicitly"
+      continue
+    let header := (codeLines lines).takeWhile (· != "    steps:")
+    if header.any (fun line => ["defaults", "container", "env", "continue-on-error"].contains (handoffControl line).1) then
+      throw s!"remove the `{job}` job's handoff execution override"
+    if handoffStatusOverride lines then
+      throw s!"remove the `{job}` job's error or status override; handoff failure must stop later steps"
+    let steps := stepsOf lines
+    if job == "gates" then
+      let tail := steps.dropWhile (fun step => step.name != "stage the release tool")
+      if codeLines (tail.flatMap (·.lines)) != codeLines ((fileSetStage ++ fileSetProducer ++ fileSetUpload).splitOn "\n") then
+        throw "end gates with exactly staging, file-set hashing, and the pinned single-file upload"
+      if (steps.filter (fun step => step.runs "install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease")).length != 1 then
+        throw "stage the gated binary exactly once"
+      if (steps.filter (fun step => step.mentions "id: tool_file_set_hash")).length != 1 then
+        throw "produce the file-set hash exactly once"
+      if (steps.filter (fun step => (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")).length != 1 then
+        throw "upload the single release-tool artifact exactly once"
+    else
+      let before := steps.takeWhile (! ·.downloadsTool)
+      let after := steps.drop before.length
+      if before.any (·.usesTool) then
+        throw s!"move the `{job}` job's early tool execution after its handoff"
+      if codeLines ((after.take 4).flatMap (·.lines)) != codeLines (fileSetPrefix.splitOn "\n") then
+        throw s!"restore the `{job}` job's exact contiguous download/refusal/chmod/entry prefix"
+      if (steps.filter (·.downloadsTool)).length != 1 then
+        throw s!"download the `{job}` job's release tool exactly once"
+      if job != "handoff-rehearsal" && !(after[4]?).any (·.usesTool) then
+        throw s!"keep the `{job}` job's first domain invocation immediately after the validated entry"
+      if job != "handoff-rehearsal" && (after[4]?).any (fun step =>
+          (codeLines step.lines).any (fun line =>
+            ["if", "shell", "working-directory", "env"].contains (handoffControl line).1)) then
+        throw s!"keep the `{job}` job's first domain invocation unconditional, with inherited execution settings"
+  pure ()
+
+/-- A six-consumer fixture exercises the entire final shape before switching
+    live consumers. Its publication effects are inert; its handoff is exact. -/
+private def canonicalFileSetHandoff : String :=
+  "on:\n" ++ handoffOnlyInput ++ fileSetDefaults ++ "jobs:\n" ++
+  "  gates:\n    outputs:\n" ++
+  "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}\n" ++
+  "    steps:\n" ++ fileSetStage ++ fileSetProducer ++ fileSetUpload ++
+  "  handoff-rehearsal:\n" ++ fileSetRehearsal ++
+  String.join ((fileSetConsumers.drop 1).map fun job =>
+    s!"  {job}:\n" ++
+    (if job == "stamp" then "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only\n" else "") ++
+    "    needs: [gates]\n    steps:\n" ++ fileSetPrefix ++
+    "      - name: verify the domain input\n        run: ./tool/tlrelease manifest-verify --dist dist\n")
+
+private def fileSetRefuses (workflow : String) : Bool :=
+  (fileSetHandoffShape workflow).toOption.isNone
+
+/-- Change one consumer without damaging the rehearsal oracle beside it. -/
+private def mutateFileSetJob (job before after : String) : String := Id.run do
+  let jobs := jobsOf canonicalFileSetHandoff
+  let some lines := jobs.lookup job | return canonicalFileSetHandoff
+  let body := String.intercalate "\n" lines
+  let changed := swap body before after
+  if body == changed then return canonicalFileSetHandoff
+  return (canonicalFileSetHandoff.splitOn "jobs:\n").headD "" ++ "jobs:\n" ++
+    String.join (jobs.map fun (name, lines) =>
+      s!"  {name}:\n" ++ (if name == job then changed else String.intercalate "\n" lines) ++ "\n")
+
+def fileSetMutationTests : List Outcome :=
+  let mutations : List (String × String × String) := [
+    ("absent staging", fileSetStage, ""),
+    ("duplicate staging", fileSetStage, fileSetStage ++ fileSetStage),
+    ("stage source drift", "install -D -m 0755 .lake/build/bin/tlrelease", "install -D -m 0755 other/tlrelease"),
+    ("stage destination drift", "tlrelease release-tool/tlrelease", "tlrelease other/tlrelease"),
+    ("duplicate producer", fileSetProducer, fileSetProducer ++ fileSetProducer),
+    ("hash before staging", fileSetStage ++ fileSetProducer, fileSetProducer ++ fileSetStage),
+    ("upload before hashing", fileSetProducer ++ fileSetUpload, fileSetUpload ++ fileSetProducer),
+    ("upload source drift", "path: release-tool/tlrelease", "path: .lake/build/bin/tlrelease"),
+    ("duplicate upload", fileSetUpload, fileSetUpload ++ fileSetUpload),
+    ("post-upload overwrite", fileSetUpload, fileSetUpload ++ "      - run: cp other release-tool/tlrelease\n"),
+    ("producer empty set", "hashFiles('release-tool/tlrelease')", "hashFiles('absent')"),
+    ("producer multiple files", "hashFiles('release-tool/tlrelease')", "hashFiles('release-tool/*')"),
+    ("producer output key", "fileSetHash=$", "digest=$"),
+    ("producer output mapping", "steps.tool_file_set_hash.outputs.fileSetHash", "steps.other.outputs.fileSetHash"),
+    ("absent output mapping", "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}\n", ""),
+    ("mapping wrong parent", "    outputs:", "    env:"),
+    ("download missing", "      - name: download the release tool\n", "      - name: download something else\n"),
+    ("download wildcard", "          name: release-tool\n          path: tool", "          pattern: release-*\n          path: tool"),
+    ("download destination", "          path: tool", "          path: other"),
+    ("empty expected value allowed", "needs.gates.outputs.releaseToolFileSetHash == '' || ", ""),
+    ("empty received value allowed", "hashFiles('tool/tlrelease') == '' || ", ""),
+    ("unequal values allowed", " || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')", ""),
+    ("received multiple files", "hashFiles('tool/tlrelease')", "hashFiles('tool/*')"),
+    ("mismatch ignored", "run: /usr/bin/false", "run: /usr/bin/true"),
+    ("prefix truncated at chmod", "      - name: enter the validated release tool\n        run: ./tool/tlrelease --help\n", ""),
+    ("step before entry", "      - name: enter the validated release tool", "      - run: cp replacement tool/tlrelease\n      - name: enter the validated release tool"),
+    ("step before domain invocation", "      - name: verify the domain input", "      - run: cp replacement tool/tlrelease\n      - name: verify the domain input"),
+    ("early tool execution", "      - name: download the release tool", "      - run: ./tool/tlrelease --help\n      - name: download the release tool"),
+    ("handoff status override", "run: /bin/chmod 0755 tool/tlrelease", "run: /bin/chmod 0755 tool/tlrelease\n        if: always()"),
+    ("later status override", "      - name: verify the domain input", "      - name: verify the domain input\n        if: Always ()"),
+    ("later quoted status override", "      - name: verify the domain input", "      - name: verify the domain input\n        'if': failure()"),
+    ("later error override", "      - name: verify the domain input", "      - name: verify the domain input\n        continue-on-error: true"),
+    ("domain skipped", "      - name: verify the domain input", "      - name: verify the domain input\n        if: false"),
+    ("quoted domain skipped", "      - name: verify the domain input", "      - name: verify the domain input\n        'if': false"),
+    ("domain shell override", "      - name: verify the domain input", "      - name: verify the domain input\n        shell: bash -c 'true' {0}"),
+    ("domain working directory", "      - name: verify the domain input", "      - name: verify the domain input\n        working-directory: other"),
+    ("domain shell startup file", "      - name: verify the domain input", "      - name: verify the domain input\n        env:\n          BASH_ENV: other"),
+    ("folded step status override", "      - name: verify the domain input", "      - name: verify the domain input\n        if: >-\n          always()"),
+    ("literal step status override", "      - name: verify the domain input", "      - name: verify the domain input\n        if: |\n          failure()"),
+    ("folded job status override", "  sign:\n", "  sign:\n    if: >-\n      always()\n"),
+    ("literal job status override", "  sign:\n", "  sign:\n    if: |\n      failure()\n"),
+    ("job error override", "  sign:\n", "  sign:\n    continue-on-error: true\n"),
+    ("job shell override", "  sign:\n", "  sign:\n    defaults:\n      run:\n        shell: bash {0}\n"),
+    ("inherited shell override", "    shell: bash", "    shell: bash -c 'true' {0}"),
+    ("inherited working directory", "    shell: bash", "    shell: bash\n    working-directory: other"),
+    ("inherited shell startup file", fileSetDefaults, fileSetDefaults ++ "env:\n  BASH_ENV: other\n"),
+    ("job shell startup file", "  sign:\n", "  sign:\n    env:\n      BASH_ENV: other\n"),
+    ("another job uploads the tool", "  sign:\n", "  replacement:\n    steps:\n" ++ fileSetUpload ++ "  sign:\n"),
+    ("missing real consumer", "  publish-npm:", "  unexpected:"),
+    ("rehearsal permissions", "    permissions: {}", "    permissions: write-all"),
+    ("rehearsal secrets", "    permissions: {}", "    permissions: {}\n    secrets: inherit"),
+    ("rehearsal environment", "    permissions: {}", "    permissions: {}\n    environment: release"),
+    ("rehearsal credentials", "    permissions: {}", "    permissions: {}\n    env:\n      GH_TOKEN: ${{ github.token }}"),
+    ("rehearsal trigger", "github.ref_type == 'branch'", "github.ref_type == 'tag'"),
+    ("handoff-only bypass", "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only", "")]
+  let independent := mutations.filter fun (name, _, _) =>
+    ["download destination", "empty expected value allowed", "empty received value allowed",
+     "unequal values allowed", "received multiple files", "mismatch ignored",
+     "prefix truncated at chmod", "step before entry", "step before domain invocation",
+     "early tool execution", "handoff status override", "domain skipped",
+     "quoted domain skipped", "domain shell override", "domain working directory",
+     "domain shell startup file", "folded step status override", "literal step status override"].contains name
+  [check "file-set model: accepts the complete six-consumer fixture"
+    (fileSetHandoffShape canonicalFileSetHandoff).toOption.isSome
+    (match fileSetHandoffShape canonicalFileSetHandoff with | .ok () => "" | .error message => message)] ++
+  (mutations.map fun (name, before, after) =>
+    let mutant := swap canonicalFileSetHandoff before after
+    check s!"file-set model: refuses {name}"
+      (mutant != canonicalFileSetHandoff && fileSetRefuses mutant)) ++
+  ((fileSetConsumers.drop 1).flatMap fun job => independent.map fun (name, before, after) =>
+    let mutant := mutateFileSetJob job before after
+    check s!"file-set model: independently refuses {name} in {job}"
+      (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant false && fileSetRefuses mutant)) ++
+  (fileSetConsumers.drop 1).flatMap fun job =>
+    let first := "        run: ./tool/tlrelease manifest-verify --dist dist"
+    let later := fun condition => first ++ "\n      - name: later domain invocation\n" ++
+      "        if: " ++ condition ++ "\n        run: ./tool/tlrelease --help\n"
+    let ordinary := mutateFileSetJob job first (later ">-\n          !contains(github.ref_name, '-')")
+    [check s!"file-set model: keeps ordinary later conditions in {job}"
+      (ordinary != canonicalFileSetHandoff && (fileSetHandoffShape ordinary).toOption.isSome)] ++
+    ["always()", ">-\n          Always ()", "|\n          failure()", ">-\n          !cancelled()"].map fun condition =>
+      let mutant := mutateFileSetJob job first (later condition)
+      check s!"file-set model: refuses later {condition.trimAscii} in {job}"
+        (mutant != canonicalFileSetHandoff && fileSetRehearsalShape mutant false && fileSetRefuses mutant)
 
 /-! ## Native errors stay structured
 
@@ -1058,7 +1286,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
      check s!"hermetic release: step-level `{field}` is refused"
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: |\n"
          s!"        {field}\n        run: |\n")).toOption.isNone)]
-  return documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
+  return fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
     ++ hygieneRows ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
     ++ hermeticInnerRows ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
