@@ -611,6 +611,10 @@ private def consumerFailures (jobs : List (String × List String)) : List String
     return [s!"only {consumers.length} job(s) download the `{toolArtifactName}` artifact. This scan finds consumers by what they do, so too few of them means it stopped recognising the download rather than that the workflow has one consumer — and a guard that checks nothing reports the same clean result as a workflow that is correct."]
   let mut failures : List String := []
   for (job, lines) in consumers do
+    -- Only the capability-free rehearsal uses the new prefix during migration.
+    -- Its entire job and producer are pinned separately below; no publication
+    -- consumer can opt out of the raw-digest guard by changing its steps.
+    if job == "handoff-rehearsal" then continue
     let steps := stepsOf lines
     let indexed := steps.zipIdx
     let downloadAt := (indexed.find? fun (step, _) => step.downloadsTool).map (·.2)
@@ -716,6 +720,83 @@ private def handoffRefuses (workflow : String) (needle : String) : Bool :=
     workflow. -/
 private def swap (text : String) (before after : String) : String :=
   String.intercalate after (text.splitOn before)
+
+/-- The exact ADR-0028 prefix. Help is a real, side-effect-free first invocation
+    shared by the rehearsal and, after cutover, every publication consumer. -/
+private def fileSetPrefix : String :=
+  "      - name: download the release tool\n" ++
+  "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n" ++
+  "        with:\n" ++
+  "          name: release-tool\n" ++
+  "          path: tool\n" ++
+  "      - name: refuse a missing or changed release tool\n" ++
+  "        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')\n" ++
+  "        run: /usr/bin/false\n" ++
+  "      - name: make the validated release tool executable\n" ++
+  "        run: /bin/chmod 0755 tool/tlrelease\n" ++
+  "      - name: enter the validated release tool\n" ++
+  "        run: ./tool/tlrelease --help\n"
+
+private def fileSetProducer : String :=
+  "      - name: hash the staged release tool file set\n" ++
+  "        id: tool_file_set_hash\n" ++
+  "        env:\n" ++
+  "          RELEASE_TOOL_FILE_SET_HASH: ${{ hashFiles('release-tool/tlrelease') }}\n" ++
+  "        run: printf '%s\\n' \"fileSetHash=$RELEASE_TOOL_FILE_SET_HASH\" >> \"$GITHUB_OUTPUT\"\n"
+
+private def fileSetRehearsal : String :=
+  "    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'branch'\n" ++
+  "    needs: [gates]\n" ++
+  "    runs-on: ubuntu-latest\n" ++
+  "    timeout-minutes: 5\n" ++
+  "    permissions: {}\n" ++
+  "    steps:\n" ++ fileSetPrefix
+
+/-- Preserve indentation: trimming would let a property under the wrong YAML
+    parent impersonate the required one. Comments and blank lines are inert. -/
+private def codeLines (lines : List String) : List String :=
+  lines.filter (fun line => !line.trimAscii.isEmpty && !line.trimAscii.toString.startsWith "#")
+
+private def fileSetStage : String :=
+  "      - name: stage the release tool\n" ++
+  "        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease\n"
+
+private def handoffOnlyInput : String :=
+  "  workflow_dispatch:\n" ++
+  "    inputs:\n" ++
+  "      handoff_only:\n" ++
+  "        description: Run the gates and capability-free tool handoff without the release matrix\n" ++
+  "        type: boolean\n" ++
+  "        default: false\n"
+
+private def fileSetRehearsalShape (workflow : String) : Bool := Id.run do
+  let jobs := jobsOf workflow
+  let [(_, rehearsal)] := jobs.filter (fun (name, _) => name == "handoff-rehearsal")
+    | return false
+  let [(_, gates)] := jobs.filter (fun (name, _) => name == "gates")
+    | return false
+  let producers := (stepsOf gates).filter (fun step => step.mentions "id: tool_file_set_hash")
+  let [producer] := producers | return false
+  let steps := stepsOf gates
+  let some staging := (steps.zipIdx).find? (fun (step, _) => step.name == "stage the release tool")
+    | return false
+  let (stage, stageAt) := staging
+  let some uploadAt := (steps.zipIdx).find? (fun (step, _) =>
+    (step.uses.getD "").startsWith uploadAction && step.mentions "name: release-tool")
+    | return false
+  let (_, uploadIndex) := uploadAt
+  let outputLines := ((codeLines gates).dropWhile (· != "    outputs:")).drop 1
+    |>.takeWhile (·.startsWith "      ")
+  let some stamp := jobs.lookup "stamp" | return false
+  return codeLines rehearsal == codeLines (fileSetRehearsal.splitOn "\n")
+    && codeLines producer.lines == codeLines (fileSetProducer.splitOn "\n")
+    && codeLines stage.lines == codeLines (fileSetStage.splitOn "\n")
+    && (steps[stageAt + 1]?).map (fun step => codeLines step.lines) == some (codeLines producer.lines)
+    && uploadIndex == stageAt + 3
+    && outputLines.contains "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}"
+    && (gates.filter (· == "      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}")).length == 1
+    && (workflow.splitOn handoffOnlyInput).length == 2
+    && (stamp.filter (· == "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only")).length == 1
 
 /-! ## Native errors stay structured
 
@@ -1027,9 +1108,37 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
     -- and a sixth is a change to make deliberately. `stamp` joined when the
     -- build provenance moved into `tlrelease`: it runs the tool, so it
     -- validates the bytes it received like every other consumer.
-    checkEq "release workflow: the scan reads all five real consumers"
+    checkEq "release workflow: the scan reads all five real consumers and the rehearsal"
       (releaseToolConsumers releaseWorkflow)
-      ["stamp", "sign", "publish-release", "publish-homebrew", "publish-npm"],
+      ["handoff-rehearsal", "stamp", "sign", "publish-release", "publish-homebrew", "publish-npm"],
+    check "file-set handoff: the capability-free rehearsal and producer are pinned"
+      (fileSetRehearsalShape releaseWorkflow),
+    check "file-set handoff: a publication-capable rehearsal is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "    permissions: {}" "    permissions: write-all")),
+    check "file-set handoff: a producer reading a wildcard is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "hashFiles('release-tool/tlrelease')" "hashFiles('release-tool/*')")),
+    check "file-set handoff: changing the producer mapping is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "steps.tool_file_set_hash.outputs.fileSetHash" "steps.tool.outputs.digest")),
+    check "file-set handoff: an output mapping under env is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "    outputs:" "    env:")),
+    check "file-set handoff: hashing before staging is refused"
+      (!fileSetRehearsalShape (swap (swap releaseWorkflow fileSetProducer "") fileSetStage (fileSetProducer ++ fileSetStage))),
+    check "file-set handoff: a step inserted after staging is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow fileSetStage (fileSetStage ++ "      - run: true\n"))),
+    check "file-set handoff: removing the dispatch input is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow handoffOnlyInput "  workflow_dispatch:\n")),
+    check "file-set handoff: running the matrix on a handoff-only dispatch is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only" "")),
+    check "file-set handoff: skipping the empty expectation refusal is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "needs.gates.outputs.releaseToolFileSetHash == '' || " "")),
+    check "file-set handoff: skipping the empty download refusal is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "hashFiles('tool/tlrelease') == '' || " "")),
+    check "file-set handoff: swallowing a mismatch is refused"
+      (!fileSetRehearsalShape (swap releaseWorkflow "run: /usr/bin/false" "run: /usr/bin/true")),
+    check "file-set handoff: stopping at chmod is not a complete prefix"
+      (!fileSetRehearsalShape (swap releaseWorkflow "        run: ./tool/tlrelease --help" "        run: true")),
+    check "file-set handoff: a status override cannot enter the rehearsal"
+      (!fileSetRehearsalShape (swap releaseWorkflow "run: /bin/chmod 0755 tool/tlrelease" "run: /bin/chmod 0755 tool/tlrelease\n        if: always()")),
     -- Non-vacuity, both halves. A walk that found no documents, or no script
     -- under the rule, reports the same clean result as a repository that
     -- satisfies it.

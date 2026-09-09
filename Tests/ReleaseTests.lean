@@ -313,10 +313,10 @@ private def grantsPrivilege (line : String) : Bool :=
       -- A secret reaching the job by any route: `secrets.NAME`, the bracket
       -- form `secrets['NAME']`, or a `secrets:` key of its own.
       || has body "secrets." || has body "secrets[" || key == "secrets"
-      -- Flow style: `permissions: {contents: write}` on one line. Refused as a
-      -- grant whatever it contains, because this scan reads block style and a
-      -- form it cannot read must not pass for an absent one.
-      || (key == "permissions" && has value "{")
+      -- Only the exact empty mapping is a known absence of permissions.
+      -- Nonempty flow mappings remain conservative grants: this scan reads
+      -- block style and must not guess at an unfamiliar permission value.
+      || (key == "permissions" && has value "{" && value != "{}")
       -- An alias or anchor may stand for a permission mapping. The guard does
       -- not interpret YAML indirection; it treats taking one here as a grant,
       -- so an alias cannot make a privileged job look unprivileged.
@@ -841,7 +841,9 @@ private def workflowGuardTests : List Outcome :=
     ("inherited secrets are a grant",
       fabricated ("  publish:\n    uses: ./.github/workflows/other.yml\n    secrets: inherit\n"),
       some "privileged job 'publish'"),
-    ("a flow-style permissions block is a grant whatever it contains",
+    ("an exact empty permission mapping grants nothing",
+      fabricated (ungatedJob "    permissions: {}\n"), none),
+    ("a nonempty flow-style permissions block is conservatively a grant",
       fabricated (ungatedJob "    permissions: {contents: write}\n"),
       some "privileged job 'publish'"),
     ("a blanket write-all is a grant",

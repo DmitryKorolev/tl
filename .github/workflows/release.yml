@@ -29,6 +29,11 @@ on:
   # exercising the matrix before committing to a tag, and safe because a
   # non-tag run could not produce a certificate identity that verifies anyway.
   workflow_dispatch:
+    inputs:
+      handoff_only:
+        description: Run the gates and capability-free tool handoff without the release matrix
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -76,6 +81,7 @@ jobs:
       # artifact is writable by any job in the run, and the job that downloads
       # this one holds the signing identity.
       releaseToolDigest: ${{ steps.tool.outputs.digest }}
+      releaseToolFileSetHash: ${{ steps.tool_file_set_hash.outputs.fileSetHash }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -232,13 +238,21 @@ jobs:
       # dependency set would have to be provisioned in the one job that holds a
       # signing identity, to build an executable this job has already built and
       # gated on the same commit.
+      - name: stage the release tool
+        run: install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease
+
+      - name: hash the staged release tool file set
+        id: tool_file_set_hash
+        env:
+          RELEASE_TOOL_FILE_SET_HASH: ${{ hashFiles('release-tool/tlrelease') }}
+        run: printf '%s\n' "fileSetHash=$RELEASE_TOOL_FILE_SET_HASH" >> "$GITHUB_OUTPUT"
+
+      # Retained until the hosted file-set rehearsal has passed. This output
+      # remains the raw file SHA-256; the new output never reuses its name.
       - name: publish the release tool's digest
         id: tool
         run: |
           set -euo pipefail
-          # upload-artifact excludes paths under dot-directories unless opted
-          # in. Stage one ordinary path and hash exactly the bytes uploaded.
-          install -D -m 0755 .lake/build/bin/tlrelease release-tool/tlrelease
           # Not `sha256sum … | cut`: a pipeline reports its last stage, and
           # `cut` succeeds over empty input, so a digest tool that could not run
           # would publish the empty string as the digest.
@@ -253,6 +267,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  handoff-rehearsal:
+    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'branch'
+    needs: [gates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: download the release tool
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-tool
+          path: tool
+      - name: refuse a missing or changed release tool
+        if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
+        run: /usr/bin/false
+      - name: make the validated release tool executable
+        run: /bin/chmod 0755 tool/tlrelease
+      - name: enter the validated release tool
+        run: ./tool/tlrelease --help
+
   # ---------------------------------------------------------------------------
   # 2. One build stamp for the whole matrix.
   #
@@ -262,6 +296,7 @@ jobs:
   # agreeing.
   # ---------------------------------------------------------------------------
   stamp:
+    if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # The stamp is written by `tlrelease` now, so this job runs after the job

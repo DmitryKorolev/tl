@@ -7144,7 +7144,7 @@ private def gitRoutingTests : IO (List Outcome) := do
     "if [ \"${" ++ name ++ "+present}\" = present ]; then printf '%s\\n' '" ++ name ++
       "' >> \"$RELEASE_TEST_ENV_LOG\"; fi")
   IO.FS.writeFile (tools / "git") ("#!/bin/sh\n" ++ checks ++
-    "\nif [ \"$SSH_AUTH_SOCK\" = preserved ]; then printf '%s\\n' preserved >> \"$RELEASE_TEST_ENV_LOG\"; fi\n" ++
+    "\nif [ \"$SSH_AUTH_SOCK\" = preserved ]; then printf '%s\\n' preserved >> \"$RELEASE_TEST_ENV_LOG\"; else printf '%s\\n' auth-missing >> \"$RELEASE_TEST_ENV_LOG\"; fi\n" ++
     "exec \"$RELEASE_TEST_REAL_GIT\" \"$@\"\n")
   let mode ← IO.Process.output { cmd := "chmod", args := #["+x", (tools / "git").toString] }
   unless mode.exitCode == 0 do throw (IO.userError "git fixture cannot set executable mode")
