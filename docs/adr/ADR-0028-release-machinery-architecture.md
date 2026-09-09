@@ -602,10 +602,14 @@ directories without modifying checkout ownership. Implicit writable temporary
 mounts are disabled with `--read-only-tmpfs=false`. On macOS local reproduction
 uses a Podman Linux machine; ordinary builds and tests need neither engine.
 
-The maps are `--uidmap 0:0:1 --gidmap 0:0:1`: in rootless Podman, intermediate
-id 0 is the invoking user's host id. Only that id is admitted to the container.
-Using explicit single-id maps avoids the hosted runner's rejected `gid_map`
-from the earlier `keep-id` override to uid/gid 0.
+The namespace setting is `--userns host --user 0:0`. The preflight requires
+rootless Podman, so “host” here reuses Podman's existing rootless user namespace:
+container uid/gid 0 still map to the invoking host user/group, and nonzero image
+owners map to allocated subordinate ids. It does not mean host-root execution.
+The subordinate range is needed when unpacking a fresh image with nonzero
+owners; testing only with cached image layers can hide an invalid single-id
+mapping. Reusing this standard mapping also avoids the hosted runner's rejected
+`gid_map` from the earlier `keep-id` override to uid/gid 0.
 
 The inner image is defined by what it contains as well as what it excludes. Its
 closed, pinned input set includes a POSIX shell and the ordinary file utilities
