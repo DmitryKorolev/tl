@@ -189,6 +189,22 @@ CI gates (mirror these locally before declaring done):
   that the tool's own parser would reject — so an option that becomes mandatory breaks
   every stale example in the same build. In backticks, name a command or write
   an invocation that works; a fragment is what rots.
+- A `hermetic-release` job runs the strict GitHub-only release profile and the
+  installer, standalone-verifier, and npm-launcher public suites inside one
+  digest-pinned inner Linux container. Its checkout is read-only; scratch and
+  the injected libc-observation directory are separate writable mounts; the
+  network, container-engine socket, capabilities and privilege gain are absent; and the
+  numeric container user matches the scratch owner. The run checks both PATH
+  lookup and the image filesystem for `python`, `python3`, `ruby`, `brew`,
+  `node`, and `npm`, checks its declared positive tool manifest, proves the
+  curl/cosign/shasum fixtures are reached, and drives the exact npm-launcher
+  bytes through supported/refused platform and process cases. The arm64-only
+  and neither-loader observations still need a static test fixture, as recorded
+  in ADR-0028. The full
+  outer Podman argv and each evidence command are mutation-tested in
+  `Tests/ReleaseDriftTests.lean`. This job requires Podman and therefore cannot
+  be reproduced by a local validation run whose Linux machine is unavailable; in
+  that case, run every local gate and state that CI still owns this one.
 - A `homebrew-formula` job, which is the other required CI job the four gates
   above do not imply. It taps four generated formulae on macOS and runs
   `brew info --formula`, `brew style` and `brew audit` over each, plus a

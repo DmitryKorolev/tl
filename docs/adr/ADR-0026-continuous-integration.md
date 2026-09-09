@@ -27,9 +27,11 @@ pinned to full commit hashes.
 The graph is:
 
 1. `release-policy`, needing no toolchain;
-2. `homebrew-formula`, needing Homebrew rather than a Lean toolchain;
-3. `build-and-test` on Ubuntu and macOS;
-4. `git-floor`, after the build matrix, using the Ubuntu artifacts.
+2. `hermetic-release`, running the GitHub-only policy and retained adapters in
+   a runtime-stripped inner container;
+3. `homebrew-formula`, needing Homebrew rather than a Lean toolchain;
+4. `build-and-test` on Ubuntu and macOS;
+5. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
 Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
 of the build so a policy failure and a build failure are both visible from one
@@ -77,6 +79,32 @@ identically by both workflows is what stops the two definitions of "ready to
 release" from drifting again; `--strict` makes a gate whose tool is missing a
 failure rather than a quietly smaller policy, and a skipped gate is never
 counted as a passing one.
+
+`hermetic-release` is the dynamic half of ADR-0028's dependency budget. One
+outer Bash step downloads hash-pinned static ShellCheck and actionlint inputs,
+constructs only declared adapter fixtures, records their digests, and launches
+one digest-pinned `alpine/git` image. The complete Podman argv is guarded in
+`Tests/ReleaseDriftTests.lean`: no network, read-only image and checkout,
+capabilities dropped, no privilege gain, no container-engine socket, and separate
+writable scratch and libc-observation mounts. Rootless Podman maps the runner
+to container uid/gid 0 with `--userns keep-id:uid=0,gid=0 --user 0:0`;
+the inner run checks that this is the scratch owner. This permits reading the
+image inventory, including root-owned directories, without host root or a
+recursive ownership change to the checkout. `--read-only-tmpfs=false` disables
+Podman's otherwise implicit writable temporary mounts. Nothing
+from the outer job's environment or credentials is passed implicitly.
+
+The inner run checks both PATH lookup and the image filesystem for `python`,
+`python3`, `ruby`, `brew`, `node`, and `npm`; checks the declared positive tool
+inventory and the handoff manifest; then runs the strict release profile. That
+profile executes the installer and standalone-verifier public suites. The same
+outer step packs the npm package with scripts disabled and extracts its launcher;
+the inner run drives those exact post-pack bytes through supported and
+refused OS, architecture, libc, package-layout, mode, symlink, stream, exit,
+process-identity and signal cases. Its curl, cosign, uname, sysctl and shasum
+fixtures all record reachability. The real npm and Homebrew acceptance jobs stay
+outside this container because their channel-native runtimes are the thing
+those jobs are meant to exercise.
 
 The gates it holds are the release-machinery checks the Lean suite cannot
 express:

@@ -80,6 +80,395 @@ jobs:
       - name: the v0.1 release path under its runtime boundary
         run: ./scripts/check-release-runtimes.sh
 
+  # Dynamic dependency-budget evidence for the first-party GitHub-only release
+  # path. JavaScript actions stay in the outer job; one ordinary run step
+  # prepares digest-checked static tools and launches a nested container with
+  # no network, credentials, publication authority, or container-engine socket. The
+  # checkout is an input capability only (read-only); every output goes to the
+  # separately mounted scratch directory.
+  hermetic-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HERMETIC_IMAGE: docker.io/alpine/git@sha256:53a6239398162098fed2f49a46512f9cbba9e3f31b9f2cea4fa90129ee069a99
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+      SHELLCHECK_VERSION: "0.11.0"
+      SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+      HERMETIC_REQUIRED_TOOLS: "awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint"
+      HERMETIC_FORBIDDEN_RUNTIMES: "python python3 ruby brew node npm"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: runtime-stripped release policy and retained-adapter suites
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/hermetic-release"
+          rm -rf "$scratch"
+          mkdir -p "$scratch/tools" "$scratch/lib64" "$scratch/tmp" "$scratch/home"
+          [ "$(podman info --format '{{.Host.Security.Rootless}}')" = true ]
+
+          # Packing belongs to the outer packaging environment. Only the
+          # extracted launcher enters the runtime-stripped container.
+          mkdir -p "$scratch/packed" "$scratch/npm-cache"
+          touch "$scratch/npm-userconfig" "$scratch/npm-globalconfig"
+          npm --cache "$scratch/npm-cache" --userconfig "$scratch/npm-userconfig" --globalconfig "$scratch/npm-globalconfig" \
+            pack ./npm/tl --ignore-scripts --pack-destination "$scratch/packed"
+          tar -xzf "$scratch/packed/taskloop-tl-0.0.0.tgz" -C "$scratch/packed" package/bin/tl
+          cmp npm/tl/bin/tl "$scratch/packed/package/bin/tl"
+
+          curl -sSfL --retry 3 -o "$scratch/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $scratch/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$scratch/actionlint.tar.gz" -C "$scratch/tools" actionlint
+
+          curl -sSfL --retry 3 -o "$scratch/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  $scratch/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$scratch/shellcheck.tar.xz" -C "$scratch"
+          install -m 0755 "$scratch/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$scratch/tools/shellcheck"
+          chmod 0755 "$scratch/tools/actionlint"
+
+          # The installer suite needs a downloader but must not have a network.
+          # This declared fixture implements only its file:// reads and records
+          # reachability; every other scheme refuses.
+          cat > "$scratch/tools/curl" <<'CURL_STUB'
+          #!/bin/sh
+          set -eu
+          out=''
+          url=''
+          while [ "$#" -gt 0 ]; do
+            case $1 in
+              -o) out=$2; shift 2 ;;
+              -w) shift 2 ;;
+              --retry | --proto | --proto-redir) shift 2 ;;
+              -*) shift ;;
+              *) url=$1; shift ;;
+            esac
+          done
+          printf '%s\n' "$url" >> "${HERMETIC_CURL_LOG:?}"
+          case $url in
+            file://*) [ -n "$out" ] || exit 64; cp "${url#file://}" "$out" ;;
+            *) exit 22 ;;
+          esac
+          CURL_STUB
+          chmod 0755 "$scratch/tools/curl"
+
+          # This is generated workflow test code, not a fourth tracked shell
+          # program. It drives the exact launcher bytes copied into each
+          # installed-tree fixture; uname comes from a PATH collaborator and
+          # libc comes from the writable /lib64 observation mount.
+          cat > "$scratch/launcher-suite" <<'LAUNCHER_SUITE'
+          #!/bin/sh
+          set -eu
+          source_launcher=/scratch/packed/package/bin/tl
+          work=/scratch/launcher
+          failures=0
+
+          note() {
+            if [ "$1" -eq 0 ]; then
+              echo "  ok   $2"
+            else
+              echo "  FAIL $2" >&2
+              failures=$((failures + 1))
+            fi
+          }
+
+          prepare() {
+            name=$1
+            observed_os=$2
+            observed_arch=$3
+            observed_libc=$4
+            case_root="$work/$name"
+            rm -rf "$case_root"
+            mkdir -p "$case_root/tl/bin" "$case_root/observe"
+            cp "$source_launcher" "$case_root/tl/bin/tl"
+            chmod 0755 "$case_root/tl/bin/tl"
+            cat > "$case_root/observe/uname" <<UNAME_STUB
+          #!/bin/sh
+          printf '%s\n' "\${1-}" >> '$case_root/uname-calls'
+          case \${1-} in
+            -s) printf '%s\n' '$observed_os' ;;
+            -m) printf '%s\n' '$observed_arch' ;;
+            *) printf '%s\n' '$observed_os' ;;
+          esac
+          UNAME_STUB
+            chmod 0755 "$case_root/observe/uname"
+            case $observed_libc in
+              glibc) : > /lib64/ld-linux-x86-64.so.2 ;;
+              musl) rm -f /lib64/ld-linux-x86-64.so.2 ;;
+              *) echo "launcher suite: unknown libc observation '$observed_libc'" >&2; exit 2 ;;
+            esac
+          }
+
+          binary_path() {
+            target=$1
+            layout=$2
+            case $layout in
+              hoisted) printf '%s\n' "$case_root/tl-bin-$target/bin/tl" ;;
+              nested) printf '%s\n' "$case_root/tl/node_modules/@taskloop/tl-bin-$target/bin/tl" ;;
+              *) echo "launcher suite: unknown package layout '$layout'" >&2; exit 2 ;;
+            esac
+          }
+
+          plant() {
+            target=$1
+            layout=$2
+            mode=$3
+            candidate=$(binary_path "$target" "$layout")
+            mkdir -p "$(dirname -- "$candidate")"
+            printf '#!/bin/sh\nprintf "selected %s\\n" "$*"\n' "$target" > "$candidate"
+            chmod "$mode" "$candidate"
+          }
+
+          drive() {
+            run_status=0
+            run_out=$(PATH="$case_root/observe:$PATH" "$case_root/tl/bin/tl" "$@" 2>&1) || run_status=$?
+          }
+
+          selection() {
+            name=$1; observed_os=$2; observed_arch=$3; observed_libc=$4
+            target=$5; layout=$6
+            prepare "$name" "$observed_os" "$observed_arch" "$observed_libc"
+            plant "$target" "$layout" 0755
+            drive one "two three"
+            note "$([ "$run_status" -eq 0 ] && [ "$run_out" = "selected $target" ] && echo 0 || echo 1)" \
+              "$name selects $layout @taskloop/tl-bin-$target"
+          }
+
+          echo "npm launcher hermetic suite:"
+          rm -rf "$work"
+          mkdir -p "$work"
+          source_digest=$(sha256sum "$source_launcher" | cut -d' ' -f1)
+
+          selection darwin-arm64 Darwin arm64 musl darwin-arm64 hoisted
+          selection darwin-x64 Darwin x86_64 musl darwin-x64 hoisted
+          selection linux-arm64 Linux arm64 glibc linux-arm64 hoisted
+          selection linux-x64 Linux x86_64 glibc linux-x64 hoisted
+          selection linux-aarch64-alias Linux aarch64 glibc linux-arm64 hoisted
+          selection linux-amd64-alias Linux amd64 glibc linux-x64 hoisted
+          selection nested-layout Linux x86_64 glibc linux-x64 nested
+
+          prepare nested-after-unusable Linux x86_64 glibc
+          plant linux-x64 hoisted 0644
+          plant linux-x64 nested 0755
+          drive
+          note "$([ "$run_status" -eq 0 ] && [ "$run_out" = 'selected linux-x64' ] && echo 0 || echo 1)" \
+            "an unusable hoisted candidate does not hide an executable nested one"
+
+          prepare native-windows MINGW64_NT-10.0 x86_64 glibc
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q WSL2 && echo 0 || echo 1)" \
+            "native Windows refuses with WSL2 guidance"
+
+          prepare unsupported-os FreeBSD amd64 glibc
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q "unsupported operating system 'FreeBSD'" && echo 0 || echo 1)" \
+            "an unsupported operating system is named"
+
+          prepare unsupported-cpu Linux riscv64 glibc
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q "unsupported CPU architecture 'riscv64'" && echo 0 || echo 1)" \
+            "an unsupported CPU architecture is named"
+
+          prepare missing-package Linux x86_64 glibc
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q 'not installed' && printf '%s' "$run_out" | grep -q optional && echo 0 || echo 1)" \
+            "a missing platform package names the cause and repair"
+
+          prepare mismatched-package Darwin x86_64 musl
+          plant darwin-arm64 hoisted 0755
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q 'what is installed: tl-bin-darwin-arm64' && printf '%s' "$run_out" | grep -q Rosetta && echo 0 || echo 1)" \
+            "an installed package for another architecture explains npm selection"
+
+          prepare non-executable Linux x86_64 glibc
+          plant linux-x64 hoisted 0644
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q 'exists but is not executable' && printf '%s' "$run_out" | grep -q 'chmod +x' && echo 0 || echo 1)" \
+            "a present non-executable package names the mode repair"
+
+          musl_loader=''
+          for loader in /lib/ld-musl-*.so.1; do
+            [ -e "$loader" ] && musl_loader=$loader
+          done
+          note "$([ -n "$musl_loader" ] && echo 0 || echo 1)" \
+            "the musl rows have an observed musl loader"
+
+          prepare musl-missing Linux x86_64 musl
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q 'uses musl libc' && printf '%s' "$run_out" | grep -q 'was never installed' && echo 0 || echo 1)" \
+            "musl explains why npm omitted the package"
+
+          prepare musl-present Linux x86_64 musl
+          plant linux-x64 hoisted 0755
+          drive
+          note "$([ "$run_status" -eq 1 ] && printf '%s' "$run_out" | grep -q 'uses musl libc' && printf '%s' "$run_out" | grep -q 'glibc-based image' && echo 0 || echo 1)" \
+            "musl refuses a glibc binary even when a package manager installed it"
+
+          prepare relative-symlink Linux x86_64 glibc
+          plant linux-x64 hoisted 0755
+          mkdir -p "$case_root/.bin"
+          ln -s ../tl/bin/tl "$case_root/.bin/tl"
+          run_status=0
+          run_out=$(PATH="$case_root/observe:$PATH" "$case_root/.bin/tl" 2>&1) || run_status=$?
+          note "$([ "$run_status" -eq 0 ] && [ "$run_out" = 'selected linux-x64' ] && echo 0 || echo 1)" \
+            "a relative npm bin symlink resolves to the package"
+
+          prepare absolute-symlink Linux x86_64 glibc
+          plant linux-x64 hoisted 0755
+          mkdir -p "$case_root/.global"
+          ln -s "$case_root/tl/bin/tl" "$case_root/.global/tl"
+          run_status=0
+          run_out=$(PATH="$case_root/observe:$PATH" "$case_root/.global/tl" 2>&1) || run_status=$?
+          note "$([ "$run_status" -eq 0 ] && [ "$run_out" = 'selected linux-x64' ] && echo 0 || echo 1)" \
+            "an absolute global-style symlink resolves to the package"
+
+          prepare process-contract Linux x86_64 glibc
+          candidate=$(binary_path linux-x64 hoisted)
+          mkdir -p "$(dirname -- "$candidate")"
+          cat > "$candidate" <<'PROCESS_STUB'
+          #!/bin/sh
+          IFS= read -r line
+          printf 'stdin=%s\n' "$line"
+          printf '<%s>\n' "$@"
+          printf 'native stderr\n' >&2
+          exit 42
+          PROCESS_STUB
+          chmod 0755 "$candidate"
+          run_status=0
+          printf 'stream input\n' | PATH="$case_root/observe:$PATH" "$case_root/tl/bin/tl" one "two three" \
+            > "$case_root/stdout" 2> "$case_root/stderr" || run_status=$?
+          note "$([ "$run_status" -eq 42 ] && echo 0 || echo 1)" \
+            "the native binary's exit status passes through"
+          note "$(grep -qx 'stdin=stream input' "$case_root/stdout" && grep -qx '<one>' "$case_root/stdout" && grep -qx '<two three>' "$case_root/stdout" && echo 0 || echo 1)" \
+            "stdin and unsplit arguments reach the native binary"
+          note "$(grep -qx 'native stderr' "$case_root/stderr" && echo 0 || echo 1)" \
+            "stderr remains the native binary's stream"
+
+          prepare process-identity Linux x86_64 glibc
+          candidate=$(binary_path linux-x64 hoisted)
+          mkdir -p "$(dirname -- "$candidate")"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$$" > "%s"\n' "$case_root/native-pid" > "$candidate"
+          chmod 0755 "$candidate"
+          PATH="$case_root/observe:$PATH" "$case_root/tl/bin/tl" &
+          launcher_pid=$!
+          wait "$launcher_pid"
+          native_pid=$(cat "$case_root/native-pid")
+          note "$([ "$native_pid" = "$launcher_pid" ] && echo 0 || echo 1)" \
+            "exec gives the native binary the launcher's process identity"
+
+          prepare signal-contract Linux x86_64 glibc
+          candidate=$(binary_path linux-x64 hoisted)
+          mkdir -p "$(dirname -- "$candidate")"
+          cat > "$candidate" <<SIGNAL_STUB
+          #!/bin/sh
+          child=''
+          trap '[ -z "\$child" ] || kill "\$child" 2>/dev/null || true; exit 7' TERM
+          printf '%s\n' "\$\$" > '$case_root/native-ready'
+          sleep 30 &
+          child=\$!
+          wait "\$child"
+          SIGNAL_STUB
+          chmod 0755 "$candidate"
+          PATH="$case_root/observe:$PATH" "$case_root/tl/bin/tl" &
+          launcher_pid=$!
+          waited=0
+          while [ ! -s "$case_root/native-ready" ] && [ "$waited" -lt 100 ]; do
+            sleep 0.05
+            waited=$((waited + 1))
+          done
+          kill -TERM "$launcher_pid" 2>/dev/null || true
+          run_status=0
+          wait "$launcher_pid" || run_status=$?
+          note "$([ "$run_status" -eq 7 ] && echo 0 || echo 1)" \
+            "SIGTERM reaches the native binary rather than a forwarding wrapper"
+
+          copied_digest=$(sha256sum "$work/linux-x64/tl/bin/tl" | cut -d' ' -f1)
+          note "$([ "$source_digest" = "$copied_digest" ] && echo 0 || echo 1)" \
+            "the suite ran byte-identical launcher copies"
+          if [ "$failures" -ne 0 ]; then
+            echo "npm launcher hermetic suite: $failures broken case(s)" >&2
+            exit 1
+          fi
+          echo "npm launcher hermetic suite: passed"
+          LAUNCHER_SUITE
+          chmod 0755 "$scratch/launcher-suite"
+
+          {
+            sha256sum "$scratch/tools/actionlint"
+            sha256sum "$scratch/tools/shellcheck"
+            sha256sum "$scratch/tools/curl"
+            sha256sum "$scratch/launcher-suite"
+            sha256sum "$scratch/packed/package/bin/tl"
+          } | sed "s|$scratch|/scratch|" > "$scratch/positive-inputs.sha256"
+
+          podman run --rm \
+            --platform linux/amd64 \
+            --network none \
+            --read-only \
+            --read-only-tmpfs=false \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --userns keep-id:uid=0,gid=0 \
+            --user 0:0 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
+            --mount "type=bind,source=$scratch,target=/scratch" \
+            --mount "type=bind,source=$scratch/lib64,target=/lib64" \
+            --workdir /workspace \
+            --env HOME=/scratch/home \
+            --env TMPDIR=/scratch/tmp \
+            --env HERMETIC_CURL_LOG=/scratch/curl-reached \
+            --env "HERMETIC_REQUIRED_TOOLS=$HERMETIC_REQUIRED_TOOLS" \
+            --env "HERMETIC_FORBIDDEN_RUNTIMES=$HERMETIC_FORBIDDEN_RUNTIMES" \
+            --env PATH=/scratch/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --entrypoint /bin/sh \
+            "$HERMETIC_IMAGE" -eu -c '
+              [ "$(id -u)" = "$(stat -c %u /scratch)" ]
+              [ "$(id -g)" = "$(stat -c %g /scratch)" ]
+              : > /scratch/write-probe
+              if ( : > /workspace/.hermetic-write-probe ) 2>/dev/null; then
+                echo "hermetic release: the checkout mount is writable" >&2
+                exit 1
+              fi
+              [ ! -e /var/run/docker.sock ] || {
+                echo "hermetic release: a container-engine socket entered the inner container" >&2
+                exit 1
+              }
+              [ ! -e /run/podman/podman.sock ]
+              [ ! -e /run/user/0/podman/podman.sock ]
+              for runtime in $HERMETIC_FORBIDDEN_RUNTIMES; do
+                if command -v "$runtime" >/dev/null 2>&1; then
+                  echo "hermetic release: forbidden runtime $runtime is on PATH" >&2
+                  exit 1
+                fi
+                hits=$(find / -xdev \( -type f -o -type l \) \( -name "$runtime" -o -name "$runtime[0-9]*" -o -name nodejs \) -print)
+                [ -z "$hits" ] || {
+                  echo "hermetic release: forbidden runtime $runtime exists in the image: $hits" >&2
+                  exit 1
+                }
+              done
+              for tool in $HERMETIC_REQUIRED_TOOLS curl; do
+                command -v "$tool" >/dev/null 2>&1 || {
+                  echo "hermetic release: required input $tool is absent" >&2
+                  exit 1
+                }
+                printf "hermetic input: %s=%s\n" "$tool" "$(command -v "$tool")"
+              done
+              sha256sum -c /scratch/positive-inputs.sha256
+              git --version
+              shellcheck --version
+              actionlint -version
+              shellcheck -S warning -s sh /scratch/tools/curl /scratch/launcher-suite
+              ./scripts/check-release-policy.sh --profile release --strict
+              [ -s "$HERMETIC_CURL_LOG" ] || {
+                echo "hermetic release: the declared curl fixture was never reached" >&2
+                exit 1
+              }
+              /scratch/launcher-suite
+              echo "hermetic release: policy and all three retained-adapter suites passed"
+            '
+
   # The formula, judged by Homebrew rather than by us.
   #
   # `ruby -c` proves the file parses; it says nothing about whether Homebrew

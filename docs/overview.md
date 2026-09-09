@@ -587,6 +587,29 @@ run on Linux against reached-stub fixtures, and the real macOS `shasum` is an
 explicitly permitted digest tool despite being implemented in Perl. The
 criterion is actual Darwin-only reachability of a **forbidden** runtime, not
 whether an adapter also runs on macOS.
+
+The `hermetic-release` CI job is configured to collect that Linux evidence;
+the exact workflow step passed locally on 2026-09-09 using Podman 6.1.1 in a
+rootless Linux VM, executing the pinned linux/amd64 image. Hosted CI remains
+a separate check of runner integration. Its pinned
+inner image receives only a read-only checkout and separate writable scratch
+and libc-observation mounts, with no network, container-engine socket, ambient
+credentials, capabilities, or privilege gain. It proves the six forbidden
+runtimes fail PATH lookup and are absent from the image filesystem, validates
+the digest manifest and positive tool inventory, then runs the strict release
+profile and the three retained-adapter suites. The npm-launcher suite uses
+the launcher extracted from a real npm pack, checked against the tracked bytes,
+and injected uname and
+loader observations; the installer suite injects every supported platform
+selection and the Rosetta observation; and the standalone verifier proves its
+declared cosign and shasum collaborators were reached. The guarded Podman argv
+is the authority statement. The arm64-loader-only and neither-loader paths
+remain uncovered pending a static shell/utility fixture (ADR-0028); the
+image's dynamic programs cannot run with their actual musl loader hidden.
+The job is regression evidence over the paths it
+executes, not a sandbox against malicious protected-reviewed source.
+The verifier's mode-000 unreadable-file row runs in the ordinary non-root
+local suite; its existing uid-0 skip applies inside this mapped-root container.
 Injected-platform installer tests exercise its branch bodies and
 permitted-action contract, but after the lexical arm is retired, the claim that
 no unobserved Darwin-only installer branch invokes `/usr/bin/python3`,

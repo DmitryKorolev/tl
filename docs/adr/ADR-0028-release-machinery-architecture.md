@@ -586,13 +586,21 @@ Enforcement has four complementary layers:
 4. the complete first-party GitHub-only release policy and all three retained
    adapter suites run inside a pinned inner container launched by one outer
    `run:` step, with the checkout mounted read-only, a separate writable scratch
-   directory, no Docker socket, and no network. The drift guard pins the complete
-   outer `docker run` argv, including the image identity, read-only checkout
+   directory, no container-engine socket, and no network. The drift guard pins the complete
+   outer `podman run` argv, including the image identity, read-only checkout
    mount, writable scratch mount, disabled network, absent socket, and numeric
    `--user` matching the scratch owner; these flags are authority-bearing
    configuration, not incidental shell text. Before trusting the run, it checks
    both PATH and the container filesystem for Python, Ruby, Homebrew, Node, and
    npm.
+
+The container engine is rootless Podman; Docker is not a prerequisite. The
+runner maps to container uid/gid 0 explicitly, and the inner ownership probes
+check it against the scratch mount. Container root has no capabilities and is
+the unprivileged runner on the host; it can enumerate the root-owned image
+directories without modifying checkout ownership. Implicit writable temporary
+mounts are disabled with `--read-only-tmpfs=false`. On macOS local reproduction
+uses a Podman Linux machine; ordinary builds and tests need neither engine.
 
 The inner image is defined by what it contains as well as what it excludes. Its
 closed, pinned input set includes a POSIX shell and the ordinary file utilities
@@ -630,8 +638,13 @@ The residual criterion is whether a forbidden-runtime branch requires the
 actual Darwin host to become reachable. The standalone verifier has no such
 branch: its `sha256sum`/`shasum` choice depends only on PATH availability, so the
 isolated fixture above executes both arms, and `shasum` itself is permitted.
-The npm launcher likewise executes every platform/libc branch through injected
-observations and a planted native target.
+The npm launcher executes supported/refused platform cases and glibc-present
+and musl-present cases through injected observations and a planted native
+target. The arm64-loader-only and neither-loader file-existence paths are not
+yet exercised: hiding the image's real musl loader would also prevent its
+dynamic shell and utilities from running. Covering these remaining paths needs
+a declared static shell/utility fixture and a separate library observation
+mount, without changing launcher bytes or adding container capabilities.
 
 An actual macOS-only branch of `install.sh` is different. Hosted macOS contains
 `/usr/bin/python3` and `/usr/bin/ruby`, and the Linux container cannot execute a
@@ -718,8 +731,9 @@ Six workstreams may proceed in parallel while the old gates remain live:
   `tlrelease platform-classification` plus the installer corpus, and the
   library's uname reference functions are gone);
 - build the nested hermetic harness and the three retained-adapter suites while
-  the lexical and runtime arms still provide comparison evidence, moving every
-  self-reexecution and nested-shell probe out of the retained files;
+  the lexical and runtime arms still provide comparison evidence. The exact
+  three-program inventory work moves self-reexecution and nested-shell probes
+  out of retained files before tightening the adapter budgets at cutover;
 - replace release evidence writes with the directory-capability and typed-outcome
   native interface above. The common `--output-dir` option, component-list
   output path, workflow invocations, `Command.invocation`, and drift-guard

@@ -196,7 +196,13 @@ Tl/Error.lean           -- the structured error contract: the closed code enum,
 .github/workflows/      -- ci.yml mechanizes the correctness gates; release.yml
                         -- builds, signs, and publishes on a SemVer tag. The
                         -- release workflow's own path is part of the signing
-                        -- identity (ADR-0006), so moving it is a rotation
+                        -- identity (ADR-0006), so moving it is a rotation.
+                        -- ci.yml's hermetic-release job is the ADR-0028 dynamic
+                        -- dependency budget: one pinned inner alpine/git image,
+                        -- read-only checkout, separate scratch/libc mounts, no
+                        -- network/socket/capabilities, checked positive and
+                        -- forbidden-runtime inventories, then the release
+                        -- profile and all three retained-adapter suites
 scripts/                -- gates that need no toolchain, each with a --selftest
                         -- arm so a checker that stopped detecting cannot pass
                         -- unnoticed. Two of them are the release tool's now and
@@ -624,6 +630,11 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   are permanent: no release source may recover a
                         --   native error class by matching formatted text
                         --   (`:E…:`), since that makes a message a contract;
+                        --   the hermetic-release job has exactly one pinned
+                        --   checkout plus one run step, its complete Podman
+                        --   configuration argv is exact, and each positive,
+                        --   negative and adapter-suite evidence command is
+                        --   present; every pin and command has a mutation row;
                         --   and the release FFI registry — every extern in the
                         --   loaded release environment pinned by declaring
                         --   module, native symbol and full Lean signature, no
