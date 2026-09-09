@@ -602,6 +602,11 @@ directories without modifying checkout ownership. Implicit writable temporary
 mounts are disabled with `--read-only-tmpfs=false`. On macOS local reproduction
 uses a Podman Linux machine; ordinary builds and tests need neither engine.
 
+The maps are `--uidmap 0:0:1 --gidmap 0:0:1`: in rootless Podman, intermediate
+id 0 is the invoking user's host id. Only that id is admitted to the container.
+Using explicit single-id maps avoids the hosted runner's rejected `gid_map`
+from the earlier `keep-id` override to uid/gid 0.
+
 The inner image is defined by what it contains as well as what it excludes. Its
 closed, pinned input set includes a POSIX shell and the ordinary file utilities
 the adapter suites declare, Git, `sha256sum`, ShellCheck, actionlint, and either

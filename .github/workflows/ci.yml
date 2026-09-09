@@ -410,7 +410,8 @@ jobs:
             --read-only-tmpfs=false \
             --cap-drop ALL \
             --security-opt no-new-privileges \
-            --userns keep-id:uid=0,gid=0 \
+            --uidmap 0:0:1 \
+            --gidmap 0:0:1 \
             --user 0:0 \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
             --mount "type=bind,source=$scratch,target=/scratch" \

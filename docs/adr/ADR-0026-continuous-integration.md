@@ -87,7 +87,7 @@ one digest-pinned `alpine/git` image. The complete Podman argv is guarded in
 `Tests/ReleaseDriftTests.lean`: no network, read-only image and checkout,
 capabilities dropped, no privilege gain, no container-engine socket, and separate
 writable scratch and libc-observation mounts. Rootless Podman maps the runner
-to container uid/gid 0 with `--userns keep-id:uid=0,gid=0 --user 0:0`;
+to container uid/gid 0 with `--uidmap 0:0:1 --gidmap 0:0:1 --user 0:0`;
 the inner run checks that this is the scratch owner. This permits reading the
 image inventory, including root-owned directories, without host root or a
 recursive ownership change to the checkout. `--read-only-tmpfs=false` disables
