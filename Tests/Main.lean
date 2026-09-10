@@ -19,6 +19,7 @@ import Tests.DocGrammarTests
 import Tests.ReleaseTests
 import Tests.ReleaseToolTests
 import Tests.ShellInventoryTests
+import Tests.InstallerProcessTests
 import Tests.ReleaseDriftTests
 import Tests.WorkflowCommandTests
 import Tests.WorkflowPolicyTests
@@ -49,6 +50,8 @@ unsafe def main : IO UInt32 := do
   let releasePlan ← releasePlanTests
   let releaseTool ← releaseToolTests
   let shellInventory ← shellInventoryTests
+  let installerProcess ← installerProcessTests
+  let installerProcessMutations ← installerProcessMutationTests
   let releaseDrift ← releaseDriftTests
   let workflowCommands ← workflowCommandTests
   let workflowRelease ← workflowReleaseTests
@@ -89,6 +92,7 @@ unsafe def main : IO UInt32 := do
     ("Release plan: enabled channels, and the documents that state them", releasePlan),
     ("tlrelease: dispatch, usage, and the two refusals", releaseTool),
     ("Exact three-program shell inventory", shellInventory),
+    ("Installer public-process probes", installerProcess ++ installerProcessMutations),
     ("Release drift: documented invocations, and one decision about a missing tool", releaseDrift),
     ("Typed workflow output producers", workflowCommands),
     ("Typed release orchestration", workflowRelease),

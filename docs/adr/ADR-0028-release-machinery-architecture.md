@@ -567,6 +567,14 @@ root must be the checkout root, and a tracked regular file replaced by a
 directory or symlink refuses before reading. These are protected-source checks,
 not a race-resistant filesystem sandbox.
 
+The installer's redirect and inherited early-return-variable probes now live
+in `Tests/InstallerProcessTests.lean`. They run the unchanged public adapter
+with a declared curl fixture and check the installed bytes, resolved download
+URL, transport refusal, and collaborator reachability. Mutations cover early
+success, a guessed version, discarded transport failure, and weakened protocol
+arguments. The remaining adapter selftests still migrate before enforcement;
+this first move does not tighten the inventory or delete the migration guards.
+
 Per the threat model in Context, this check counts declared shell surfaces; it
 does not claim to discover a tracked data file that already-trusted shell code
 secretly passes to `sh`, or code hidden in a workflow scalar. The survivors may

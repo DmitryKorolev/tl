@@ -155,11 +155,9 @@ fetch() {
     || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets. Only https (and file:// for a local mirror) is accepted, including after a redirect."
 }
 
-# Turn the effective URL of /releases/latest into a tag, or refuse. Split out
-# from the fetch so the three outcomes are reachable without a network: the
-# selftest sources this file and calls it directly. The curl below stays
-# untested here — asserting that GitHub still redirects is not this script's
-# job, and doing it would make the suite depend on the network.
+# Turn the effective URL of /releases/latest into a tag, or refuse.
+# Tests/InstallerProcessTests.lean drives the unchanged installer through a
+# declared curl fixture, including transport failure and the redirect outcomes.
 version_from_effective_url() {
   effective=$1
   case $effective in
@@ -817,48 +815,6 @@ SHASUM
   note "$([ "$leftover" -eq 0 ] && echo 0 || echo 1)" \
     "no .tl.install.<pid> temporary survives a failed install (found $leftover)"
   rm -rf "$work/dest"
-
-  # `resolve_version` is the branch a bare `curl … | sh` takes, and its three
-  # outcomes sat behind a network call. The parsing half is driven here from a
-  # *copy* of this script with the dispatch stripped off, rather than through
-  # an environment variable that makes the shipped file return early: such a
-  # variable is readable by whatever environment the installer runs in, and
-  # under dash an inherited one made both a real install and this selftest
-  # exit 0 having done nothing. A test seam that can disable production from
-  # the ambient environment is worse than the coverage it buys.
-  probe="$work/probe.sh"
-  sed '/^case "${1-}" in$/,$d' "$self" > "$probe"
-  printf 'version_from_effective_url "$1"\n' >> "$probe"
-  note "$(grep -c 'version_from_effective_url' "$probe" | grep -qv '^0$' && echo 0 || echo 1)" \
-    "the probe carries the function under test (the dispatch strip still works)"
-
-  drive() { sh "$probe" "$1"; }
-
-  out=$(drive "https://github.com/${TL_REPO}/releases/tag/v1.2.3" 2>"$work/err") && got=0 || got=$?
-  note "$([ "$got" -eq 0 ] && [ "$out" = v1.2.3 ] && echo 0 || echo 1)" \
-    "version_from_effective_url reads the tag out of a release redirect (got '$out')"
-  out=$(drive "https://github.com/${TL_REPO}/releases/tag/v0.1.0-rc.1" 2>"$work/err") && got=0 || got=$?
-  note "$([ "$got" -eq 0 ] && [ "$out" = v0.1.0-rc.1 ] && echo 0 || echo 1)" \
-    "a prerelease tag survives intact (got '$out')"
-
-  got=0; drive "https://github.com/${TL_REPO}/releases" >"$work/out" 2>"$work/err" || got=$?
-  note "$([ "$got" -eq 1 ] && grep -q 'no stable release yet' "$work/err" && echo 0 || echo 1)" \
-    "a prerelease-only repository is reported as 'nothing stable yet', not as a broken redirect"
-
-  got=0; drive "https://github.com/${TL_REPO}/something/else" >"$work/out" 2>"$work/err" || got=$?
-  note "$([ "$got" -eq 1 ] && grep -q 'redirect changed shape' "$work/err" && echo 0 || echo 1)" \
-    "an unrecognised redirect target refuses instead of installing a guessed tag"
-
-  # The early-return hatch is gone and must stay gone: while it existed, any
-  # environment carrying its name turned this whole selftest into a no-op that
-  # the release-policy gate read as a pass. Checked behaviourally rather than
-  # by grepping for a name — a textual check matches its own comment, and what
-  # matters is that no inherited variable can stop the installer working.
-  rm -rf "$work/dest" "$work/share"
-  run 0 "a polluted environment does not stop the installer" \
-    TL_INSTALL_SOURCE_ONLY=1 TL_INSTALL_SELFTEST=1 TL_SOURCE_ONLY=1
-  note "$([ -x "$work/dest/tl" ] && echo 0 || echo 1)" \
-    "the binary is installed even with an early-return-shaped variable set"
 
   if [ "$failures" -ne 0 ]; then
     echo "tl-install: --selftest found $failures broken case(s). Do not publish this installer — a user piping it into a shell has no way to notice a check that stopped running." >&2
