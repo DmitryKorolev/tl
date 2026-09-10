@@ -33,15 +33,15 @@ Three decisions here can be wrong silently, and each carries a theorem:
 
 ## The oracle, and its lifetime
 
-While the shell policy is still authoritative, `policy-parity` requires the
-typed gate and profile lists to equal the names the shell scripts report. It is
-deleted with the shell policy, in the same change that makes this registry
-authoritative — ADR-0028 says so, and a checker that outlives what it compares
-against becomes a second definition of the thing.
+This registry is authoritative for both workflows. `policy-parity` compares
+the historical `legacyGates` snapshot with the surviving shell runner; the
+native additions are intentionally outside that migration oracle. The oracle
+and shell runner are deleted together after the exact shell inventory.
 -/
 import release.Command
 import release.Model
 import release.Process
+import release.WorkflowOutput
 
 namespace Release
 
@@ -89,8 +89,7 @@ inductive TagBehaviour where
 
       No gate carries it today: the last one that did — the checked-in build
       stamp against a fresh render — moved into `lake exe tltest` when the
-      generator became `tlrelease stamp`, because it needs the built tool and
-      the policy script runs in a job with no Lean toolchain by design. The
+      generator became `tlrelease stamp`. The
       constructor stays because the distinction is a real one a future gate may
       need, and `Tests/ReleaseToolTests.lean` pins that the two listings agree
       exactly while it is unpopulated — so the day a gate takes it, the tag
@@ -153,6 +152,8 @@ structure Gate where
   requires : List ToolRequirement
   invocation : Invocation
   summary : String
+  /-- A deferred channel's suite joins a release only when its plan enables it. -/
+  channel : Option Channel := none
   deriving Repr
 
 /-! ## The registry
@@ -164,14 +165,14 @@ compare by hand.
 
 Two gates still invoke a shell script's single-gate flag — the ShellCheck
 sweep and the formula parse — because their bodies have not been ported yet. Naming a real invocation rather than a placeholder is
-what lets this run before it is authoritative; each becomes a `tlrelease`
+what keeps these remaining adapters explicit; each becomes a `tlrelease`
 command as its own port lands, and the shell allowlist is what will say when
 none is left. -/
 
 private def shellcheckTool : ToolRequirement :=
   { tool := "shellcheck", lost := "shellcheck is not on PATH" }
 
-def gates : List Gate :=
+def legacyGates : List Gate :=
   [{ name := "shell static analysis"
      profiles := Profile.all, onTag := .always, requires := [shellcheckTool]
      invocation := .script "./scripts/check-release-policy.sh" ["--shellcheck-only"]
@@ -196,18 +197,39 @@ def gates : List Gate :=
      invocation := .tool "actionlint"
        ["-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
      summary := "A workflow cannot validate itself; actionlint parses both and shells out to ShellCheck." },
-   -- The deferred channels' one gate here. It invokes a runtime ADR-0026's
-   -- dependency budget forbids on the release path, which is the whole reason
-   -- the profiles differ at all. The npm half is not in this registry: it is
-   -- `tlrelease npm-selftest`, so it cannot run in the toolchain-free job that
-   -- runs this policy, and it runs from `check-channel-policy.sh --npm-only` in
-   -- the job that builds the tool — the move `tlrelease stamp`, the dependency
-   -- boundary and `task-id-lint` already made.
+   -- Deferred Homebrew stays exercised in CI and joins release validation
+   -- only when enabled by the plan. The native npm gate is added below.
    { name := "the rendered formulae parse"
      profiles := [.ci], onTag := .always
+     channel := some .homebrew
      requires := [{ tool := "ruby", lost := "ruby is not on PATH" }]
      invocation := .script "./scripts/check-channel-policy.sh" ["--ruby-only"]
      summary := "An early signal on the rendered formulae; real Homebrew is the acceptance authority." }]
+
+/-- The native registry extends the historical parity snapshot with the suite
+    that previously needed a separate toolchain-bearing CI step. -/
+def gates : List Gate := legacyGates ++ [
+  { name := "workflow authority and invocation policy", profiles := Profile.all, onTag := .always,
+    requires := [], invocation := .releaseCommand ["workflow-policy", "--root", "."],
+    summary := "Every capability and output edge has a closed reviewed schema." },
+  { name := "npm packaging selftest", profiles := [.ci], onTag := .always,
+    channel := some .npm, requires := [{ tool := "npm", lost := "npm is not on PATH" }],
+    invocation := .releaseCommand ["npm-selftest", "--root", "."],
+    summary := "Exercise the native package staging and publication boundary." }]
+
+def selectedFor (profile : Profile) (tagRun : Bool) (plan : ReleasePlan) (gate : Gate) : Bool :=
+  (gate.profiles.contains profile || (profile == .release && (gate.channel.any plan.enabled))) &&
+    (!tagRun || gate.onTag == .always)
+
+theorem selectedFor_iff (profile : Profile) (tagRun : Bool) (plan : ReleasePlan) (gate : Gate) :
+    selectedFor profile tagRun plan gate = true ↔
+      (profile ∈ gate.profiles ∨ (profile = .release ∧ ∃ channel, gate.channel = some channel ∧ plan.enabled channel = true)) ∧
+      (tagRun = false ∨ gate.onTag = .always) := by
+  simp only [selectedFor, Bool.and_eq_true, Bool.or_eq_true, List.contains_iff_mem,
+    beq_iff_eq, Option.any_eq_true, WorkflowOutput.negation_iff]
+
+def selectedGates (profile : Profile) (tagRun : Bool) (plan : ReleasePlan) : List Gate :=
+  gates.filter (selectedFor profile tagRun plan)
 
 /-- The gates of one profile, in registry order, out of a given registry.
 
@@ -508,13 +530,30 @@ def onPath (command : String) : IO Bool := do
     for a refusal and the wrong one for a five-minute gate's progress, and it is
     the one thing about this runner a reader of a CI log would notice at
     cutover. -/
-def spawnInvocation (invocation : Invocation) : IO (Except String Unit) := do
-  match ← succeeded invocation.command invocation.arguments.toArray with
+def spawnInvocationUsing (selfPath : String) (invocation : Invocation) : IO (Except String Unit) := do
+  let command ← match invocation with
+    | .releaseCommand _ => pure selfPath
+    | _ => pure invocation.command
+  let result ← if invocation == .releaseCommand ["npm-selftest", "--root", "."] then do
+    let scratch ← IO.FS.createTempDir
+    let blocker := scratch / "not-a-directory"
+    try
+      IO.FS.writeFile blocker ""
+      succeededWithEnv command invocation.arguments.toArray
+        #[("npm_config_cache", some (blocker / "cache").toString),
+          ("npm_config_userconfig", some (blocker / "npmrc").toString),
+          ("npm_config_globalconfig", some (blocker / "globalrc").toString)] 600000
+    finally IO.FS.removeDirAll scratch
+  else succeeded command invocation.arguments.toArray 600000
+  match result with
   | .error message => return .error message
   | .ok output =>
       if !output.stdout.isEmpty then IO.print output.stdout
       if !output.stderr.isEmpty then IO.eprint output.stderr
       return .ok ()
+
+def spawnInvocation (invocation : Invocation) : IO (Except String Unit) := do
+  spawnInvocationUsing (← IO.appPath).toString invocation
 
 def defaultRunner : Runner := { present := onPath, invoke := spawnInvocation }
 
@@ -536,9 +575,8 @@ def resolveTools (runner : Runner) (selected : List Gate) : IO (String → Bool)
     Deliberately not stopping at the first failure. The gates are independent,
     and a run that stopped would make an operator fix and re-run once per
     problem; the exit status at the end is what decides. -/
-def runGates (runner : Runner) (profile : Profile) (tagRun : Bool) :
+def runSelected (runner : Runner) (selected : List Gate) :
     IO (List (Gate × GateOutcome)) := do
-  let selected := gatesIn profile tagRun
   let present ← resolveTools runner selected
   let mut rows : Array (Gate × GateOutcome) := #[]
   for gate in selected do
@@ -552,6 +590,9 @@ def runGates (runner : Runner) (profile : Profile) (tagRun : Bool) :
         | .ok _ => rows := rows.push (gate, .passed)
         | .error message => rows := rows.push (gate, .failed message)
   return rows.toList
+
+def runGates (runner : Runner) (profile : Profile) (tagRun : Bool) : IO (List (Gate × GateOutcome)) :=
+  runSelected runner (gatesIn profile tagRun)
 
 /-- How many gates did what, for the line an operator reads first. -/
 def tally (rows : List (Gate × GateOutcome)) : Nat × Nat × Nat :=
@@ -586,9 +627,9 @@ def runRemedy (skipped : Nat) : String :=
 
 /-! ## The parity oracle
 
-Temporary, and deleted with the shell policy. Until then the shell is
-authoritative and this says the typed registry agrees with it: same gates, same
-order, same profile. The comparison is over the names the shell scripts report,
+Temporary, and deleted with the shell policy. This compares the historical
+snapshot: same gates, same order, same profile. The native registry additionally
+owns workflow authority and npm coverage. The comparison is over the names the shell scripts report,
 because that is the thing both a reader and a report use to say which gate is
 which.
 
@@ -659,9 +700,11 @@ private def listOptions : List OptionSpec :=
 open Policy in
 private def listDecision (arguments : Profile × Bool) : Decision String := do
   let (profile, tagRun) := arguments
-  for name in gateNames profile tagRun do
+  let plan ← readParsed "release/plan.json" ReleasePlan.parse
+  let names := (selectedGates profile tagRun plan).map (·.name)
+  for name in names do
     IO.println name
-  return s!"{(gateNames profile tagRun).length} gate(s) in the {profile.wire} profile{if tagRun then " on a tag run" else ""}"
+  return s!"{names.length} gate(s) in the {profile.wire} profile{if tagRun then " on a tag run" else ""}"
 
 open Policy in
 private def listArguments (options : Options) : Except String (Profile × Bool) := do
@@ -713,20 +756,20 @@ private def parityDecision (args : ParityArgs) : Decision String := do
         pure (listedNames text)
   let outer := listedNames observedText
   let observed := flattenShellNames outer channelNames
-  let typed := gateNames args.profile args.tagRun
+  let typed := (gatesFrom legacyGates args.profile args.tagRun).map (·.name)
   match groupingProblems outer args.channelPath.isSome ++ parityProblems args.profile typed observed with
   | [] =>
       return s!"the typed registry and the shell policy run the same {typed.length} gate(s) in the same order for the {args.profile.wire} profile"
   | problems =>
       decline ("the typed release policy registry and the shell policy disagree.\n"
         ++ String.join (problems.map fun problem => s!"  {problem}\n")
-        ++ "While both exist the shell is authoritative, so this is the registry to correct — and the correction lands before either workflow reads the registry instead.")
+        ++ "Restore agreement between the historical legacyGates snapshot and the surviving shell runner; native additions belong in gates.")
 
 open Policy in
 private def parityCommand : Command :=
   optionCommand "policy-parity"
     "--profile <ci|release> --observed <names-file> [--channel <names-file>] [--tag]"
-    "Refuse unless the typed gate registry names exactly what the shell policy runs, in order."
+    "Refuse unless the historical gate snapshot names exactly what the shell policy runs, in order."
     ["--profile", "ci", "--observed", "ci-gates.txt", "--channel", "channel-gates.txt"]
     parityOptions parityArgs parityDecision
 
@@ -751,7 +794,9 @@ private def runArgs (options : Options) : Except String RunArgs := do
 
 open Policy in
 private def runDecision (args : RunArgs) : Decision String := do
-  let rows ← attempt "running the release policy" (runGates defaultRunner args.profile args.tagRun)
+  let plan ← readParsed "release/plan.json" ReleasePlan.parse
+  let selected := selectedGates args.profile args.tagRun plan
+  let rows ← attempt "running the release policy" (runSelected defaultRunner selected)
   let (passed, failed, skipped) := tally rows
   match runFailures args.strict rows with
   | [] =>

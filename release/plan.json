@@ -13,14 +13,16 @@
     "has no defect.",
     "",
     "Read by tlrelease. The release workflow's publish jobs are derived from it",
-    "today: `tlrelease plan-channels` emits one channel=true|false line, the",
+    "today: the workflow-plan command writes framed channel decisions, the",
     "gates job publishes them as outputs, and each deferred channel's publish",
     "job gates on its own. The prerequisite audit derives from it too: a deferred",
     "channel's rows are reported as 'deferred', in their own class, and never",
-    "contribute to its verdict. The per-commit release policy deliberately does",
-    "not derive from it — every channel's generator runs on every commit so a",
+    "contribute to its verdict. The release profile selects enabled channel gates.",
+    "The ci profile exercises every channel on every commit so a",
     "channel that is switched off does not rot while it waits (ADR-0006).",
-    "Enabling a channel is one edit here plus the manual bootstrap its row names.",
+    "Enabling a channel also requires its manual bootstrap and separate runtime",
+    "evidence: the current stripped CI job exercises the GitHub-only plan and",
+    "cannot run enabled npm or Homebrew gates without changing that job's scope.",
     "",
     "`enabled` and `plannedFor` are exclusive by construction: an enabled channel",
     "is being published now and has no future version to name, and a disabled one",
@@ -60,7 +62,7 @@
       "channel": "homebrew",
       "enabled": false,
       "plannedFor": "0.2.0",
-      "note": "Deferred. Requires the DmitryKorolev/homebrew-tap repository to exist and a HOMEBREW_TAP_TOKEN secret granting write access to it. Formula/tl.rb stays in this repository as the source of truth and stays covered by the identity drift guard while the channel is off, so turning it on is a tap plus a credential rather than new code."
+      "note": "Deferred. Requires the DmitryKorolev/homebrew-tap repository to exist and a HOMEBREW_TAP_TOKEN secret in the protected release environment granting write access to it. Formula/tl.rb remains a generated placeholder checked against the native renderer while the channel is off, so turning it on is a tap plus a credential rather than new code."
     }
   ]
 }

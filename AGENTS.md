@@ -135,13 +135,11 @@ CI gates (mirror these locally before declaring done):
   toolchain and `check-release-policy.sh` does not carry it; the rule, the
   scope predicate and the registry lookup are covered in
   `Tests/ReleaseToolTests.lean`, over a corpus of the shapes a leak takes and
-  over planted checkouts through the command itself. The deferred npm channel's
-  gate moved for the same reason: `build-and-test` runs
-  `./scripts/check-channel-policy.sh --npm-only`, and the ci profile of the
-  policy no longer carries it.
-- `./scripts/check-release-policy.sh --strict` — the release policy, which is
+  over planted checkouts through the command itself. The native policy registry
+  now owns the deferred npm suite, including its poisoned configuration paths.
+- `lake exe tlrelease policy --profile ci --strict` — the release policy, which is
   its own required CI job and is *not* implied by the four gates above. One
-  script, two profiles, and `--list` names the gates of whichever you ask for.
+  registry, two profiles, and `tlrelease policy-list --profile ci` names its CI gates.
   It runs every release script's `--selftest` (each proves it can still refuse
   before its silence is believed), shellcheck over every tracked shell file,
   actionlint over the workflows, and the generators for the installer, the
@@ -154,18 +152,17 @@ CI gates (mirror these locally before declaring done):
   `npm/`, `Formula/`, `install.sh` or `.github/workflows/` means running it.
 - The profiles differ in one thing, and it is the ADR-0026 v0.1 dependency
   boundary: no path the GitHub-only release reaches may invoke `python`,
-  `python3`, `ruby`, `brew`, `node` or `npm`. `--profile ci` (the default, what
-  `ci.yml` runs) additionally runs `scripts/check-channel-policy.sh`, whose
-  Homebrew gate invokes exactly those for the deferred channel;
-  `--profile release` (what the release workflow runs) does not have it —
+  `python3`, `ruby`, `brew`, `node` or `npm`. `--profile ci` (what
+  `ci.yml` runs) always includes Homebrew and npm validation;
+  `--profile release` selects those gates only when enabled by the plan. For
+  the current GitHub-only plan they are
   absent rather than skipped, because a skip is a report about this run and
   absence is a statement about the release. The boundary itself is enforced
   twice: `tlrelease dependency-boundary --root . --plan release/plan.json`
-  reads what the reachable scripts *say*, and `scripts/check-release-runtimes.sh`
-  runs the release profile with all six shimmed to fail on `PATH` to observe what
-  they
-  *execute* — proving each shim fires first, since a shim that was never on
-  `PATH` would make every run look clean. Deferred-channel files are excluded
+  reads what the reachable scripts *say*, and the hermetic job runs the native
+  release profile with all six runtimes absent. The old PATH-shim selftest and
+  shell parity snapshot remain migration evidence until shell deletion.
+  Deferred-channel files are excluded
   from the first by name and by channel, never by directory. The lexical arm
   reads a `#!` line with the syntax a shebang has rather than as shell —
   `#! /usr/bin/python3` executes, and read as shell it is a command named `#!`
@@ -180,7 +177,9 @@ CI gates (mirror these locally before declaring done):
   without the interpreter. The spellings it must keep understanding are a corpus
   in `Tests/ReleaseToolTests.lean`, each row asserted through the parser *and*
   through the public command over a planted checkout.
-- A gate whose *tool* may be absent goes through `rc_tool_gate` in
+- The native registry owns missing-tool and strict-mode verdicts, with pinned
+  characterization theorems and subprocess tests. In the remaining shell,
+  a gate whose *tool* may be absent goes through `rc_tool_gate` in
   `scripts/lib/release-common.sh`, the one place entitled to `command -v` or
   `rc_skip_gate`: it crosses tool-present/absent × strict/not × passed/failed,
   and `scripts/check-release-runtimes.sh --selftest` exercises the crossing.

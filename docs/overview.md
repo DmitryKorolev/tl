@@ -583,8 +583,11 @@ missing/mismatched-value refusal expression is pinned and mutation-tested;
 the hosted rehearsal exercised the matching-value path, not injected transport
 failures. The structural guard also pins the inherited shell, the contiguous
 prefix, and success-only sequencing through later invocations. Interpretation
-of arbitrary publication shell remains part of ADR-0028's separate typed-policy
-cutover, not a claim made by this handoff model.
+of publication commands is now guarded separately by the typed workflow policy:
+closed privileged step schemas and explicit argv, pinned producer/output/consumer
+bindings, and rejection of unregistered secret consumers and output writers.
+Its parser and subprocess seams are tested locally; that evidence does not
+claim execution of hosted OIDC or publication.
 
 ADR-0028's accepted shell cutover carries one additional platform-scoped
 assumption once its lexical dependency-boundary gate is removed. The pinned

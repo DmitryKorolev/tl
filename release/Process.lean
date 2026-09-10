@@ -220,7 +220,7 @@ def RunOutcome.failureMessage : RunOutcome → Option String
     checked. A caller that genuinely needs to branch on a particular non-zero
     status — a `gh` call where "not found" is an answer — matches `run` directly
     and says so. -/
-private def succeededWithEnv (command : String) (args : Array String)
+def succeededWithEnv (command : String) (args : Array String)
     (env : Array (String × Option String))
     (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) := do
   let outcome ← runWithEnv command args env timeoutMs

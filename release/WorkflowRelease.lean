@@ -189,6 +189,36 @@ def publish (runner : Runner) (dist identityPath : String) (tag : Version) (comm
     "--verify-tag", "--title", description.tag, "--notes", notes] ++
     prereleaseArgs description.version ++ publicationFiles dist names⟩]
 
+def verifyContext (runner : Runner) (dist : String) (tag : Version) (commit : Commit) : Decision ManifestDescription := do
+  let description ← verify runner dist
+  if !releaseMatches description tag commit then
+    decline "the signed manifest belongs to another tag or commit; download the signed set from this release run"
+  return description
+
+def homebrewPublication (push : Bool) (dist output tap : String) : List Action :=
+  if push then [
+    ⟨.gh, ["auth", "setup-git", "--hostname", "github.com"]⟩,
+    ⟨.gh, ["repo", "clone", tap, output ++ "/tap", "--", "--depth", "1"]⟩,
+    ⟨.releaseTool, ["homebrew-publish", "--dist", dist, "--manifest", dist ++ "/" ++ manifestName,
+      "--tap", output ++ "/tap"]⟩]
+  else []
+
+theorem homebrewPublication_nonempty_iff (push : Bool) (dist output tap : String) :
+    homebrewPublication push dist output tap ≠ [] ↔ push = true := by
+  cases push <;> simp only [homebrewPublication, Bool.false_eq_true, ↓reduceIte,
+    ne_eq, not_true_eq_false, List.cons_ne_nil, not_false_eq_true]
+
+def homebrew (runner : Runner) (dist output : String) (tag : Version) (commit : Commit)
+    (credential : Option String) : Decision Unit := do
+  let description ← verifyContext runner dist tag commit
+  if description.homebrew.push && (credential.getD "").isEmpty then
+    decline "the stable Homebrew release needs GH_TOKEN; configure HOMEBREW_TAP_TOKEN for the protected release environment or defer the channel in release/plan.json"
+  let _ ← ofExcept (Write.OutputDirectory.parse "--output-dir" output)
+  attempt "creating the formula output directory; choose a writable --output-dir" (IO.FS.createDirAll output)
+  execute runner [⟨.releaseTool, ["homebrew-render", "--dist", dist,
+    "--manifest", dist ++ "/" ++ manifestName, "--output", "tl.rb", "--output-dir", output]⟩]
+  execute runner (homebrewPublication description.homebrew.push dist output description.homebrew.tap)
+
 private def valueOption (name : String) : OptionSpec := { name, takesValue := true }
 
 def commands : List Command := [
@@ -216,10 +246,22 @@ def commands : List Command := [
     ["--dist", "dist", "--output", "github-output"] (["dist", "output"].map valueOption)
     (fun options => do return (← options.required "dist", ← options.required "output"))
     (fun (dist, output) => do sign defaultRunner dist output; return "signed the exact release set"),
-  optionCommand "workflow-verify" "--dist <dir>"
+  optionCommand "workflow-verify" "--dist <dir> --tag <tag> --commit <sha>"
     "Authenticate the received set before checking its manifest."
-    ["--dist", "dist"] [valueOption "dist"] (fun options => options.required "dist")
-    (fun dist => do let _ ← verify defaultRunner dist; return "authenticated the received release set"),
+    ["--dist", "dist", "--tag", "v0.1.0", "--commit", String.ofList (List.replicate 40 'a')]
+    (["dist", "tag", "commit"].map valueOption)
+    (fun options => do return (← options.required "dist", ← Version.parseTag "--tag" (← options.required "tag"),
+      ← Commit.parse "--commit" (← options.required "commit")))
+    (fun (dist, tag, commit) => do let _ ← verifyContext defaultRunner dist tag commit; return "authenticated the received release set"),
+  optionCommand "workflow-homebrew" "--dist <dir> --output-dir <dir> --tag <tag> --commit <sha>"
+    "Authenticate and render the formula; publish only when the signed manifest requests it."
+    ["--dist", "dist", "--output-dir", "out", "--tag", "v0.1.0", "--commit", String.ofList (List.replicate 40 'a')]
+    (["dist", "output-dir", "tag", "commit"].map valueOption)
+    (fun options => do return (← options.required "dist", ← options.required "output-dir",
+      ← Version.parseTag "--tag" (← options.required "tag"), ← Commit.parse "--commit" (← options.required "commit")))
+    (fun (dist, output, tag, commit) => do
+      homebrew defaultRunner dist output tag commit (← IO.getEnv "GH_TOKEN")
+      return "rendered the authenticated formula and completed its declared publication effects"),
   optionCommand "workflow-publish" "--dist <dir> --identity <identity.json> --tag <tag> --commit <sha>"
     "Authenticate, recheck source identity, and publish exactly the signed set to GitHub."
     ["--dist", "dist", "--identity", "release/identity.json", "--tag", "v0.1.0", "--commit", String.ofList (List.replicate 40 'a')]

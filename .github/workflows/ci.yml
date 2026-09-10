@@ -23,9 +23,8 @@ defaults:
     shell: bash
 
 jobs:
-  # Release-machinery gates. They need no toolchain, so they fail in seconds
-  # rather than after the build matrix, and they are a separate job so a
-  # release-policy failure and a build failure are both visible from one run.
+  # Build the separately scoped release tool and run its typed CI registry.
+  # This job remains independent of the product build matrix.
   release-policy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -34,7 +33,7 @@ jobs:
 
       # actionlint is the one gate in the policy that needs a tool the runner
       # does not ship. Installed here, hash-pinned like every other downloaded
-      # tool in this repository, and then found on PATH by the policy script —
+      # tool in this repository, and then found on PATH by the typed policy —
       # which refuses to skip it under --strict, so a broken download is a
       # failed job rather than a quietly smaller policy.
       - name: install actionlint
@@ -57,28 +56,26 @@ jobs:
           # change from a quietly smaller policy into a failed step.
           shellcheck --version
 
-      # The whole policy, from the one place that defines it. The release
-      # workflow runs the same script against the tagged commit; keeping the
-      # list in a script rather than in two `steps:` blocks is what stops the
-      # two definitions of "ready to release" from drifting apart, which is
-      # exactly what they had already done.
-      #
-      # The default ci profile, which additionally runs the deferred Homebrew
-      # channel's gate: Homebrew and npm are not published by a v0.1 release,
-      # but their machinery is exercised on every commit so it does not rot
-      # while it waits (ADR-0006). That gate invokes ruby, which is exactly why
-      # the release workflow runs a profile without it. The npm half of the same
-      # file needs the built tool and runs in build-and-test instead.
-      - name: release policy
-        run: ./scripts/check-release-policy.sh --strict
+      # Both workflows read release/Policy.lean. CI always exercises deferred
+      # Homebrew and npm; the release profile selects channels from the plan.
+      - name: install the pinned Lean toolchain
+        uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0
+        with:
+          auto-config: "false"
+          build: "false"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "false"
+          use-github-cache: "false"
 
-      # And the same release path the release workflow runs, under failing
-      # shims for python, python3, ruby, brew, node and npm. Here on every
-      # commit rather than only on a tag: the point of the boundary is to find
-      # a reach for an interpreter while it is still a commit to fix, not after
-      # a tag exists.
-      - name: the v0.1 release path under its runtime boundary
-        run: ./scripts/check-release-runtimes.sh
+      - name: build the typed release policy
+        run: lake build tlrelease --wfail
+
+      - name: release policy
+        run: ./.lake/build/bin/tlrelease policy --profile ci --strict
+
+      # The hermetic job executes the typed release profile without the
+      # forbidden runtimes on every commit, before a tag exists.
 
   # Dynamic dependency-budget evidence for the first-party GitHub-only release
   # path. JavaScript actions stay in the outer job; one ordinary run step
@@ -95,10 +92,23 @@ jobs:
       ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
       SHELLCHECK_VERSION: "0.11.0"
       SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
-      HERMETIC_REQUIRED_TOOLS: "awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint"
+      HERMETIC_REQUIRED_TOOLS: "awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint tlrelease"
       HERMETIC_FORBIDDEN_RUNTIMES: "python python3 ruby brew node npm"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: install the pinned Lean toolchain
+        uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0
+        with:
+          auto-config: "false"
+          build: "false"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "false"
+          use-github-cache: "false"
+
+      - name: build the static release tool for the stripped container
+        run: lake build tlreleaseStatic --wfail
 
       - name: runtime-stripped release policy and retained-adapter suites
         run: |
@@ -128,6 +138,7 @@ jobs:
           tar -xJf "$scratch/shellcheck.tar.xz" -C "$scratch"
           install -m 0755 "$scratch/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$scratch/tools/shellcheck"
           chmod 0755 "$scratch/tools/actionlint"
+          install -m 0755 .lake/build/bin/tlrelease-static "$scratch/tools/tlrelease"
 
           # The installer suite needs a downloader but must not have a network.
           # This declared fixture implements only its file:// reads and records
@@ -396,6 +407,7 @@ jobs:
           chmod 0755 "$scratch/launcher-suite"
 
           {
+            sha256sum "$scratch/tools/tlrelease"
             sha256sum "$scratch/tools/actionlint"
             sha256sum "$scratch/tools/shellcheck"
             sha256sum "$scratch/tools/curl"
@@ -460,7 +472,7 @@ jobs:
               shellcheck --version
               actionlint -version
               shellcheck -S warning -s sh /scratch/tools/curl /scratch/launcher-suite
-              ./scripts/check-release-policy.sh --profile release --strict
+              tlrelease policy --profile release --strict
               [ -s "$HERMETIC_CURL_LOG" ] || {
                 echo "hermetic release: the declared curl fixture was never reached" >&2
                 exit 1
@@ -614,9 +626,8 @@ jobs:
 
       # The lexical half of ADR-0026's v0.1 dependency boundary: every script
       # the release path reaches, read for an invocation of python, python3,
-      # ruby, brew, node or npm. It runs here rather than in the release-policy
-      # job because it is a Lean binary and that job has no toolchain by design;
-      # the other half — the same paths under PATH shims — is a policy gate.
+      # ruby, brew, node or npm. This migration gate stays beside the full
+      # build; the stripped job independently executes the native policy.
       - name: build the release tool warning-free
         run: lake build tlrelease --wfail
       - name: the v0.1 dependency boundary
@@ -629,16 +640,6 @@ jobs:
       # move the dependency boundary and the build stamp already made.
       - name: no tracker id in a tracked artifact
         run: ./.lake/build/bin/tlrelease task-id-lint --root .
-
-      # The deferred npm channel's gate, for the same reason and by the same
-      # move: it is `tlrelease npm-selftest`, so the release-policy job — which
-      # has no toolchain, by design — cannot run it. It stays a step of the
-      # channel-policy script rather than a bare `run:` block because the
-      # ambient npm configuration it is run against is what the gate is for.
-      # On every commit, whether or not release/plan.json publishes through npm:
-      # a deferred channel that stopped being exercised would rot (ADR-0006).
-      - name: npm packaging over the real client
-        run: ./scripts/check-channel-policy.sh --npm-only
 
       # Exact source/module inventory, transitive axiom inspection, direct
       # dependency policy, and independent kernel replay of the safe, total

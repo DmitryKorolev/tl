@@ -61,9 +61,6 @@ env:
   ELAN_VERSION: "v4.2.3"
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1. The correctness gates, on the exact commit being released.
-  # ---------------------------------------------------------------------------
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -95,33 +92,10 @@ jobs:
           tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
           install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
 
-      # The same script ci.yml runs, against the commit actually being
-      # released, plus the tag-agreement check that only makes sense here. This
-      # job used to run four of the policy's gates and describe itself as
-      # running them all, so the installer, the artifact verifier, the npm
-      # packages and the formula were never exercised on the tagged commit —
-      # the one commit where a stale gate becomes a published artifact.
-      #
-      # --profile release is the one difference from ci.yml, and it removes
-      # rather than skips: the deferred channels' gates invoke npm, python3 and
-      # ruby, which ADR-0026's v0.1 dependency boundary forbids anywhere this
-      # workflow reaches. They still run on every commit, in ci.yml, so nothing
-      # about them rots while the channels wait.
-      #
-      # --strict: in CI a missing tool is a broken job, not a smaller policy.
-      # Through check-release-runtimes.sh rather than directly: it puts a
-      # failing shim for each of the six forbidden runtimes first on PATH,
-      # proves each one fires, and then runs the release profile under them. So
-      # this job's evidence is not that the policy passed on a runner that
-      # happened to have python — it is that the release path did not reach for
-      # any of them, on the commit being released and on a rehearsal alike.
-      - name: release policy under the v0.1 runtime boundary, on the tagged commit
-        run: ./scripts/check-release-runtimes.sh --tag "${GITHUB_REF_NAME}"
-        if: github.ref_type == 'tag'
-      - name: release policy under the v0.1 runtime boundary
-        run: ./scripts/check-release-runtimes.sh
-        if: github.ref_type != 'tag'
-
+      # Both workflows use the typed registry. This profile selects enabled
+      # channels from the release plan; CI exercises deferred channels too.
+      # --strict makes a missing tool a failed gate. CI's stripped container
+      # independently executes this profile without the forbidden runtimes.
       # Restore-only. ci.yml's policy is that only protected main saves the
       # shared caches; a tag build consumes them and saves nothing.
       - name: restore mathlib olean archives
@@ -146,19 +120,22 @@ jobs:
       - name: build the release tool warning-free
         run: lake build tlrelease --wfail
 
-      # One version everywhere, and against the tag when there is one. Both of
-      # these were shell gates in check-release-policy.sh until they moved into
-      # the release tool; that script runs in a job with no Lean toolchain by
-      # design, so they run here, where the binary exists, and still before the
-      # build matrix.
+      - name: typed release policy
+        if: github.ref_type != 'tag'
+        run: ./.lake/build/bin/tlrelease policy --profile release --strict
+      - name: typed release policy on a tag
+        if: github.ref_type == 'tag'
+        run: ./.lake/build/bin/tlrelease policy --profile release --strict --tag
+
+      # One version everywhere, and against the tag when there is one, before
+      # the build matrix consumes the stamp.
       - name: one version across every copy of it
-        run: |
-          set -euo pipefail
-          if [ "${{ github.ref_type }}" = tag ]; then
-            ./.lake/build/bin/tlrelease version-consistency --root . --tag "${GITHUB_REF_NAME}"
-          else
-            ./.lake/build/bin/tlrelease version-consistency --root .
-          fi
+        run: ./.lake/build/bin/tlrelease version-consistency --root .
+      - name: the release tag agrees with the product version
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./.lake/build/bin/tlrelease version-consistency --root . --tag "$RELEASE_TAG"
 
       - name: the shipped uname mappings match the typed platform authority
         run: ./.lake/build/bin/tlrelease platform-classification --root . --targets release/targets.json
@@ -191,9 +168,7 @@ jobs:
       # supposed to publish.
       - name: which channels this release publishes through
         id: plan
-        run: |
-          set -euo pipefail
-          ./.lake/build/bin/tlrelease plan-channels release/plan.json | tee -a "$GITHUB_OUTPUT"
+        run: ./.lake/build/bin/tlrelease workflow-plan --plan release/plan.json --output "$GITHUB_OUTPUT"
 
       # A deferral has to point forwards. `plannedFor` parsing as a version
       # makes it a commitment; this is what stops the commitment expiring
@@ -224,11 +199,9 @@ jobs:
       # not a restatement of the pin.
       - name: the tag is one the signing identity will accept
         if: github.ref_type == 'tag'
-        run: |
-          set -euo pipefail
-          ./.lake/build/bin/tlrelease identity-accepts \
-            --identity release/identity.json \
-            --san "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+        env:
+          CERTIFICATE_SAN: https://github.com/${{ github.workflow_ref }}
+        run: ./.lake/build/bin/tlrelease identity-accepts --identity release/identity.json --san "$CERTIFICATE_SAN"
 
       # The signing job writes the SBOM with this binary. It travels as an
       # artifact rather than being rebuilt there: a Lean toolchain and the whole
@@ -285,93 +258,43 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || !inputs.handoff_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The stamp is written by `tlrelease` now, so this job runs after the job
-    # that builds and gates it: gates -> stamp -> build. It is therefore a
-    # consumer of the release-tool handoff and validates the bytes it received
-    # before running them, exactly as the four publication jobs do.
     needs: [gates]
     outputs:
       version: ${{ steps.stamp.outputs.version }}
       commit: ${{ steps.stamp.outputs.commit }}
-      # The digest of the exact bytes each leg must compile. Tl/Build/Stamp.lean
-      # is ordinary Lean source that ends up inside every released binary, and
-      # each leg used to admit it after finding one substring — so a file
-      # carrying the right stampCommit line plus any number of further
-      # declarations was accepted verbatim and compiled four times over.
       stampDigest: ${{ steps.stamp.outputs.stampDigest }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # A dispatch run against a tag ref would otherwise satisfy every
-      # `ref_type == 'tag'` guard below and perform a real release, which is
-      # not what the rehearsal path advertises.
       - name: a rehearsal is not a release
         if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
-        run: |
-          echo "::error::this workflow was dispatched against the tag ${GITHUB_REF_NAME}. A dispatch run is a build-only rehearsal; dispatching a tag ref would sign and publish for real. Push the tag to release, or dispatch against a branch to rehearse."
-          exit 1
+        run: /usr/bin/false
 
       - name: download the release tool
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-tool
           path: tool
+
       - name: refuse a missing or changed release tool
         if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
         run: /usr/bin/false
+
       - name: make the validated release tool executable
         run: /bin/chmod 0755 tool/tlrelease
+
       - name: enter the validated release tool
         run: ./tool/tlrelease --help
 
+      - name: validate the release identity
+        run: ./tool/tlrelease identity-check --identity release/identity.json
+
       - name: stamp the tagged commit
         id: stamp
-        run: |
-          set -euo pipefail
-          # The product version the binary will report, from the one place that
-          # defines it.
-          version=$(sed -n 's/^def productVersion : String := "\(.*\)"$/\1/p' Tl/Cli/Commands.lean)
-          if [ -z "$version" ]; then
-            echo "::error::could not read productVersion from Tl/Cli/Commands.lean — the definition moved or changed shape. Update this step to match it; the tag-vs-version check below depends on it."
-            exit 1
-          fi
-
-          # On a tag, the tag and the compiled version must agree. They are
-          # edited in different commits by different hands, and a mismatch
-          # would ship a binary whose self-reported version contradicts the
-          # release it is published under.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            if [ "$tag_version" != "$version" ]; then
-              echo "::error::tag ${GITHUB_REF_NAME} does not match productVersion '${version}' in Tl/Cli/Commands.lean. Bump productVersion (and the lakefile package version) to ${tag_version} and re-tag, or tag v${version} instead."
-              exit 1
-            fi
-          fi
-
-          ./tool/tlrelease stamp --root . --commit
-
-          commit=$(git rev-parse HEAD)
-          # A fresh checkout is clean; a dirty stamp means something wrote into
-          # the tree before this step, and the artifacts would not correspond
-          # to the tagged source.
-          if grep -q 'stampDirty : Bool := true' Tl/Build/Stamp.lean; then
-            echo "::error::the stamped checkout is dirty — something modified the working tree before stamping. Release artifacts must correspond exactly to the tagged commit; find and remove the step that writes into the checkout."
-            exit 1
-          fi
-          if ! grep -q "stampCommit : String := \"${commit}\"" Tl/Build/Stamp.lean; then
-            echo "::error::the generated stamp does not carry HEAD (${commit}) — 'tlrelease stamp' did not stamp what this job checked out."
-            exit 1
-          fi
-
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          # Not `sha256sum … | cut`: a pipeline reports its last stage, and
-          # `cut` succeeds over empty input, so a digest tool that could not run
-          # would publish the empty string as the digest every leg then matched
-          # against — which matches nothing, but only after four builds.
-          stamp_line=$(sha256sum Tl/Build/Stamp.lean)
-          echo "stampDigest=${stamp_line%% *}" >> "$GITHUB_OUTPUT"
-          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
-          cat Tl/Build/Stamp.lean
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: ./tool/tlrelease workflow-stamp --root . --ref-type "$RELEASE_REF_TYPE" --ref-name "$RELEASE_REF_NAME" --output "$GITHUB_OUTPUT"
 
       - name: upload the stamp
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -381,12 +304,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ---------------------------------------------------------------------------
-  # 3. The four native artifacts.
-  #
-  # Native per target: Lean cross-compiles poorly, so each artifact is built on
-  # its own architecture and operating system (ADR-0006 "Build approach").
-  # ---------------------------------------------------------------------------
   build:
     needs: [gates, stamp]
     strategy:
@@ -554,7 +471,6 @@ jobs:
           mkdir -p dist
           cp .lake/build/bin/tl "dist/tl-${{ matrix.target }}"
           chmod +x "dist/tl-${{ matrix.target }}"
-          echo "asset=tl-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
       # An unsigned macOS download is quarantined by Gatekeeper. An ad-hoc
       # signature does not clear quarantine on its own, but it does keep the
@@ -566,8 +482,8 @@ jobs:
         if: ${{ !matrix.container }}
         run: |
           set -euo pipefail
-          codesign --force --sign - --timestamp=none "dist/${{ steps.stage.outputs.asset }}"
-          codesign --verify --verbose "dist/${{ steps.stage.outputs.asset }}"
+          codesign --force --sign - --timestamp=none "dist/tl-${{ matrix.target }}"
+          codesign --verify --verbose "dist/tl-${{ matrix.target }}"
 
       # The floor is a property of the produced binary, so it is asserted on
       # the binary rather than inferred from the base image: a base-image bump
@@ -576,7 +492,7 @@ jobs:
         if: matrix.container
         run: |
           set -euo pipefail
-          asset="dist/${{ steps.stage.outputs.asset }}"
+          asset="dist/tl-${{ matrix.target }}"
           # `|| true`: with no GLIBC_ symbols, grep exits 1 and pipefail would
           # abort the whole step here — skipping the explanation below, which
           # is the case a reader most needs it for.
@@ -597,7 +513,7 @@ jobs:
       # with the release instead of asserted (ADR-0006 "Build approach").
       - name: record the macOS minimum version
         if: ${{ !matrix.container }}
-        run: otool -l "dist/${{ steps.stage.outputs.asset }}" | grep -A4 LC_BUILD_VERSION || true
+        run: otool -l "dist/tl-${{ matrix.target }}" | grep -A4 LC_BUILD_VERSION || true
 
       # Smoke test: the artifact must run, report the provenance this release
       # claims, and complete a real task round-trip. `tl version` alone would
@@ -611,7 +527,7 @@ jobs:
       - name: smoke-test the artifact
         run: |
           set -euo pipefail
-          asset="$PWD/dist/${{ steps.stage.outputs.asset }}"
+          asset="$PWD/dist/tl-${{ matrix.target }}"
           "$asset" version
           "$asset" version --json > version.json
           cat version.json
@@ -648,7 +564,7 @@ jobs:
       - name: audit what this binary links against
         run: |
           set -euo pipefail
-          asset="dist/${{ steps.stage.outputs.asset }}"
+          asset="dist/tl-${{ matrix.target }}"
           audit="dist/link-audit-${{ matrix.target }}.txt"
 
           # The symbol table first, into a file, with `nm`'s own status checked.
@@ -700,7 +616,7 @@ jobs:
 
           {
             echo "link-time dependency audit for ${{ matrix.target }}"
-            echo "binary:    ${{ steps.stage.outputs.asset }}"
+            echo "binary:    tl-${{ matrix.target }}"
             echo "sha256:    $(sha256sum "$asset" | cut -d' ' -f1)"
             echo "toolchain: $(cat lean-toolchain)"
             echo
@@ -754,7 +670,7 @@ jobs:
           # anything is written.
           ./.lake/build/bin/tlrelease build-metadata \
             --target "${{ matrix.target }}" \
-            --binary "dist/${{ steps.stage.outputs.asset }}" \
+            --binary "dist/tl-${{ matrix.target }}" \
             --commit "${{ needs.stamp.outputs.commit }}" \
             --tier "${{ matrix.best_effort && 'best-effort' || 'supported' }}" \
             --runner "${{ matrix.runs-on }}" \
@@ -777,7 +693,7 @@ jobs:
         with:
           name: release-candidate-${{ matrix.target }}
           path: |
-            dist/${{ steps.stage.outputs.asset }}
+            dist/tl-${{ matrix.target }}
             dist/build-metadata-${{ matrix.target }}.json
             dist/link-audit-${{ matrix.target }}.txt
           if-no-files-found: error
@@ -805,70 +721,22 @@ jobs:
   # yet — which is the property a rehearsal needs before it is worth running.
   # ---------------------------------------------------------------------------
   sign:
-    # `gates` is already a transitive prerequisite through `build`; it is named
-    # here because this job downloads the release tool that job produced, and a
-    # dependency on an artifact should be visible where the artifact is used.
     needs: [gates, stamp, build]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # A named environment so the signing identity is not simply whatever a tag
-    # push claims. Pushing a tag is not by itself authorization to sign: this
-    # workflow will produce a certificate that every verifier accepts, for
-    # whatever commit the tag points at. Configure required reviewers and a
-    # `v*` deployment-branch/tag rule on this environment, and protect `v*`
-    # tags with a repository ruleset — the ancestry check below is a backstop,
-    # not a substitute, because it only sees what the tag points at and not who
-    # pushed it.
     environment: release
     permissions:
-      # Only what this job does: mint the OIDC token and record attestations.
-      # Deliberately *not* contents: write — creating the release is a separate
-      # job below, so the step that can mint a signing identity every verifier
-      # trusts cannot also publish, and the step that can publish cannot sign.
       contents: read
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # The ancestry check below needs history, not just the tagged commit.
           fetch-depth: 0
 
-      # A tag can be pushed at any commit, including one that never passed
-      # review. Releases come from the protected branch; anything else is
-      # either a mistake or someone routing around review.
-      - name: the tagged commit is on main
-        run: |
-          set -euo pipefail
-          commit="${{ needs.stamp.outputs.commit }}"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          if ! git merge-base --is-ancestor "$commit" origin/main; then
-            echo "::error::${commit} is not an ancestor of origin/main, so this tag points at a commit that is not on the protected branch. Release from main: merge the work first, then tag the merged commit. If this is deliberate, say so explicitly by changing this check rather than by deleting it."
-            exit 1
-          fi
-          echo "${commit} is on origin/main"
-
-      # The tag must still point where the build thought it did. A tag that is
-      # deleted mid-run makes `gh release create` invent one from the default
-      # branch; a tag that is moved would publish artifacts built from a
-      # different commit than the release names.
-      - name: the tag still points at the built commit
-        run: |
-          set -euo pipefail
-          expected="${{ needs.stamp.outputs.commit }}"
-          # ^{} peels an annotated tag to the commit it wraps.
-          actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
-                     "refs/tags/${GITHUB_REF_NAME}^{}" | cut -f1)
-          if [ -z "$actual" ]; then
-            actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
-                       "refs/tags/${GITHUB_REF_NAME}" | cut -f1)
-          fi
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} now points at '${actual:-<deleted>}' but these artifacts were built from ${expected}. The tag moved or was deleted during the build. Nothing is published; re-tag deliberately and re-run, so the release cannot name a commit it does not contain."
-            exit 1
-          fi
-          echo "tag ${GITHUB_REF_NAME} still points at ${expected}"
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: download the release candidates
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -882,250 +750,81 @@ jobs:
         with:
           name: release-tool
           path: tool
+
       - name: refuse a missing or changed release tool
         if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
         run: /usr/bin/false
+
       - name: make the validated release tool executable
         run: /bin/chmod 0755 tool/tlrelease
+
       - name: enter the validated release tool
         run: ./tool/tlrelease --help
 
-      # ADR-0006 requires the notice file, an SBOM and the link-time audit to
-      # travel with every binary release, and until now none of them reached
-      # the GitHub or Homebrew channels: only npm bundled the notice, because
-      # npm packages happen to have a place to put it. They are published as
-      # companion assets, listed in SHA256SUMS and signed like everything else,
-      # rather than by wrapping each binary in an archive — the download stays
-      # one unpacked file, and the manifest below is what gives the release a
-      # single identity across channels.
-      # Before anything is signed: does the identity this job will actually
-      # present match the one every verifier is pinned to? GITHUB_WORKFLOW_REF
-      # is what Fulcio puts in the certificate's SAN, prefixed with the GitHub
-      # URL. A mismatch here means the artifacts would be unverifiable — which
-      # is worse than not shipping them, because a signature nobody can check
-      # still looks like one.
-      # Before anything is signed: does the identity this job will actually
-      # present match the one every verifier is pinned to? GITHUB_WORKFLOW_REF
-      # is what Fulcio puts in the certificate's SAN, prefixed with the GitHub
-      # URL. A mismatch means the artifacts would be unverifiable — which is
-      # worse than not shipping them, because a signature nobody can check
-      # still looks like one.
-      - name: this job's identity matches the pin
-        run: |
-          set -euo pipefail
-          san="https://github.com/${GITHUB_WORKFLOW_REF}"
-          echo "certificate identity this job will present: ${san}"
-          ./tool/tlrelease identity-accepts --identity release/identity.json --san "$san"
-          # And the pin it was compared against is still the canonical one that
-          # discriminates, checked here as well as in the gates job: this is the
-          # job that holds the signing identity, and a pin widened between the
-          # two would be widened exactly where it matters.
-          ./tool/tlrelease identity-check --identity release/identity.json
+      - name: validate the release identity
+        run: ./tool/tlrelease identity-check --identity release/identity.json
 
-      # The external state this pipeline depends on, audited before anything is
-      # signed: the five npm packages must exist (trusted publishing is
-      # configured per package and only for one that already does, so the first
-      # release cannot authenticate otherwise), the `release` environment must
-      # carry protection rules, and the tap must exist. None of that is created
-      # by declaring it in this file, and until now none of it was checked —
-      # the first tag would have published GitHub assets and then failed at
-      # npm, with the artifacts already public.
-      #
-      # Rows the runner's token cannot read are reported as unchecked rather
-      # than passed, and carried as assumptions in docs/overview.md.
+      - name: the checkout, protected main and tag agree
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
+        run: ./tool/tlrelease workflow-source --identity release/identity.json --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+
+      - name: this job's identity matches the pin
+        env:
+          CERTIFICATE_SAN: https://github.com/${{ github.workflow_ref }}
+        run: ./tool/tlrelease identity-accepts --identity release/identity.json --san "$CERTIFICATE_SAN"
+
+      - name: the signing pin remains canonical
+        run: ./tool/tlrelease identity-check --identity release/identity.json
+
       - name: the external prerequisites are in place
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./tool/tlrelease prereqs --identity release/identity.json --plan release/plan.json
 
-      - name: install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: assemble and describe the release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
+          RELEASE_WORKFLOW: ${{ github.workflow_ref }}
+          RELEASE_RUN: ${{ github.run_id }}
+        run: ./tool/tlrelease workflow-prepare --dist dist --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --workflow-ref "$RELEASE_WORKFLOW" --run-id "$RELEASE_RUN"
 
-      # The best-effort leg is allowed to fail, so this job cannot assume four
-      # artifacts. It can and does insist on the Supported three: a release
-      # missing one of those is a broken release, whereas a release missing the
-      # best-effort binary is the policy working. Either way the outcome is
-      # stated rather than inferred from what happens to be in the directory.
-      - name: check which targets produced an artifact
-        run: |
-          set -euo pipefail
-          # Target names, not asset names: the asset name is built from the
-          # target below. Spelling `tl-<target>` out here would read as a task
-          # id to the AGENTS.md lint, which cannot tell the two apart.
-          required="linux-x64 linux-arm64 darwin-arm64"
-          optional="darwin-x64"
-          missing=""
-          for target in $required; do
-            [ -f "dist/tl-$target" ] || missing="$missing tl-$target"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::these Supported-tier artifacts are missing:${missing}. They are release-blocking (ADR-0006) — fix the failing build leg and re-run; do not publish a partial release."
-            exit 1
-          fi
-          for target in $optional; do
-            if [ ! -f "dist/tl-$target" ]; then
-              echo "::warning::tl-${target} is absent — its build leg failed. macOS x86-64 is Best-effort (ADR-0006), so the release proceeds without it; users on that platform get no binary from this release."
-            fi
-          done
-          ls -l dist
-
-      - name: assemble the compliance set
-        run: |
-          set -euo pipefail
-          cp LICENSE THIRD-PARTY-LICENSES REBUILDING.md dist/
-          # The two files that fix the build, named at the call site: the SBOM
-          # is a function of them, so which ones it read is not a detail to
-          # discover by reading the generator.
-          ./tool/tlrelease sbom \
-            --version "${GITHUB_REF_NAME#v}" \
-            --toolchain lean-toolchain \
-            --lake-manifest lake-manifest.json \
-            --output-dir dist \
-            --output "tl-${GITHUB_REF_NAME#v}.spdx.json"
-          ls -l dist
-
-      # The canonical description of this release, written once and signed with
-      # everything else. It also performs the build-boundary check: each
-      # binary's digest must equal what its own build leg recorded, so `sign`
-      # signs the bytes that were smoke-tested rather than whatever the
-      # artifact store returned.
-      - name: describe the release
-        run: |
-          set -euo pipefail
-          # --workflow-ref and --run-id are what every leg's record is held to.
-          # There is no default for them: passing neither is a usage error, and
-          # --outside-workflow is the explicit alternative for a local
-          # rehearsal. An absent run identity used to disable the comparison
-          # rather than fail it, which left legs agreeing with each other as the
-          # only thing still being checked — and four artifacts carried in from
-          # one earlier run agree with each other perfectly.
-          ./tool/tlrelease manifest \
-            --dist dist \
-            --tag "${GITHUB_REF_NAME}" \
-            --commit "${{ needs.stamp.outputs.commit }}" \
-            --toolchain lean-toolchain \
-            --lake-manifest lake-manifest.json \
-            --targets release/targets.json \
-            --identity release/identity.json \
-            --workflow-ref "${GITHUB_WORKFLOW_REF}" \
-            --run-id "${GITHUB_RUN_ID}" \
-            --output-dir dist \
-            --output release-manifest.json
-          cat dist/release-manifest.json
-
-      - name: build SHA256SUMS
-        working-directory: dist
-        run: |
-          set -euo pipefail
-          # Every published file, not only the binaries: the notice, the SBOM,
-          # the per-target link audits, the build metadata and the manifest are
-          # all part of what this release conveys, and an asset outside
-          # SHA256SUMS is an asset no verifier checks.
-          #
-          # Sorted by name so the file is byte-stable across runs regardless of
-          # the order artifacts happened to download in.
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name '*.sigstore.json' -printf '%f\n' \
-            | sort > ../asset-names
-          if [ ! -s ../asset-names ]; then
-            echo "::error::no candidate assets were downloaded — the build matrix produced nothing to sign. Check the upload-artifact steps in the build job."
-            exit 1
-          fi
-          xargs sha256sum < ../asset-names > SHA256SUMS
-          cat SHA256SUMS
-
-      # The sums file and every asset get their own bundle: signature,
-      # certificate, and Rekor inclusion proof in one file. A verifier needs
-      # the proof *in* the bundle — repairing a missing one with a live log
-      # lookup would rebind the artifact to whatever the log says now.
-      - name: sign the sums file and every asset
-        working-directory: dist
-        run: |
-          set -euo pipefail
-          cosign sign-blob --yes SHA256SUMS --bundle SHA256SUMS.sigstore.json
-          while read -r asset; do
-            cosign sign-blob --yes "$asset" --bundle "${asset}.sigstore.json"
-          done < ../asset-names
-
-      # GitHub's own attestation, binding each artifact to this workflow, the
-      # source commit, and the build. Complementary to the Sigstore bundles
-      # rather than a substitute: it is verified with `gh attestation verify`
-      # against the repository, whereas the bundles are verified offline
-      # against a pinned certificate identity by users who may have neither
-      # `gh` nor a GitHub account.
-      # Driven from asset-names, not from `dist/tl-*`: by this point the
-      # directory also holds `tl-<target>.sigstore.json`, and a glob would
-      # attest the bundles alongside the binaries.
-      - name: list the binaries to attest
+      - name: sign the exact set and emit attestation subjects
         id: subjects
-        run: |
-          set -euo pipefail
-          {
-            echo 'paths<<SUBJECTS'
-            sed 's|^|dist/|' asset-names
-            echo 'SUBJECTS'
-          } >> "$GITHUB_OUTPUT"
+        run: ./tool/tlrelease workflow-sign --dist dist --output "$GITHUB_OUTPUT"
 
       - name: attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.subjects.outputs.paths }}
 
-      # The published procedure, run against the candidates, before anyone can
-      # download them. If VERIFYING.md's instructions would reject these files,
-      # they do not get released.
-      - name: verify every candidate the way VERIFYING.md tells users to
-        run: |
-          set -euo pipefail
-          ./scripts/verify-release-artifacts.sh --selftest
-          # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
-          # …and then the manifest, which is what this job reads instead of
-          # re-deriving which targets and assets the release consists of. The
-          # signature check comes first: the manifest is evidence about a set
-          # of bytes, not evidence that they are the bytes we signed.
-          ./tool/tlrelease manifest-verify --dist dist --manifest dist/release-manifest.json
+      - name: verify every candidate before handing it off
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
+        run: ./tool/tlrelease workflow-verify --dist dist --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
-      # The signed set travels to the publishing job as one artifact, so the
-      # job that creates the release never holds an OIDC token and cannot mint
-      # a signature of its own.
       - name: upload the signed release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tl-signed-release
-          path: |
-            dist
-            asset-names
+          path: dist
           if-no-files-found: error
           retention-days: 7
 
-  # ---------------------------------------------------------------------------
-  # 4b. Publish the GitHub Release.
-  #
-  # Split from signing for least privilege: this job writes to the repository
-  # but has no OIDC token, so it cannot produce a certificate any verifier
-  # would accept. It re-runs the published verification procedure on what it
-  # received, because "the previous job checked it" is an assumption, and the
-  # artifact boundary is exactly where an assumption should be re-established.
-  # ---------------------------------------------------------------------------
   publish-release:
     needs: [gates, stamp, sign]
-    # Pushed tags only, for the reason spelled out on `sign`: a job holding
-    # `contents: write` should be unreachable from a dispatch, not merely
-    # downstream of one that is.
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: release
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # cosign, before the release tool is downloaded rather than after it is
-      # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the file-set comparison and the first
-      # use of the tool is a step the handoff prefix has to make an exception
-      # for — and an exception is a place for a later step to be added. Hoisted
-      # so the prefix is contiguous and the rule needs no exception at all.
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -1133,111 +832,47 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: tl-signed-release
+          path: dist
 
-      # The release tool this job reads the manifest with, checked against the
-      # file-set expectation the gates job published rather than taken from the artifact
-      # store on trust. This job is about to make an irreversible publication
-      # on the strength of what this binary says.
       - name: download the release tool
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-tool
           path: tool
+
       - name: refuse a missing or changed release tool
         if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
         run: /usr/bin/false
+
       - name: make the validated release tool executable
         run: /bin/chmod 0755 tool/tlrelease
+
       - name: enter the validated release tool
         run: ./tool/tlrelease --help
 
-      - name: verify what arrived, before publishing it
-        run: |
-          set -euo pipefail
-          ./scripts/verify-release-artifacts.sh --selftest
-          # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
-          # …and then the manifest, which is what this job reads instead of
-          # re-deriving which targets and assets the release consists of. The
-          # signature check comes first: the manifest is evidence about a set
-          # of bytes, not evidence that they are the bytes we signed.
-          ./tool/tlrelease manifest-verify --dist dist --manifest dist/release-manifest.json
+      - name: validate the release identity
+        run: ./tool/tlrelease identity-check --identity release/identity.json
 
-      - name: the tag still points at the built commit
-        run: |
-          set -euo pipefail
-          expected="${{ needs.stamp.outputs.commit }}"
-          actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
-                     "refs/tags/${GITHUB_REF_NAME}^{}" | cut -f1)
-          if [ -z "$actual" ]; then
-            actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
-                       "refs/tags/${GITHUB_REF_NAME}" | cut -f1)
-          fi
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} now points at '${actual:-<deleted>}' but these artifacts were built from ${expected}. The tag moved or was deleted. Nothing is published; re-tag deliberately and re-run."
-            exit 1
-          fi
-
-      - name: publish the release
+      - name: authenticate, recheck source, and publish the release
         env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          notes=$(mktemp)
-          {
-            echo "Built from \`${{ needs.stamp.outputs.commit }}\` with \`$(cat lean-toolchain)\`."
-            echo
-            echo "Verify before running — see [VERIFYING.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/VERIFYING.md)."
-            echo "Every asset has a Sigstore bundle; \`SHA256SUMS\` is signed as well, and is what the digests are checked against."
-          } > "$notes"
-          # --verify-tag: without it, gh creates a tag from the default branch
-          # when the named one is missing, quietly turning "the tag vanished"
-          # into "a release exists for a commit nobody tagged".
-          # An explicit array rather than an unquoted command substitution.
-          # actionlint runs every `run:` block through shellcheck, and the
-          # inline `$(if …)` form was the one place in this file that tripped
-          # SC2046 without a disable directive — so the workflow lint would
-          # have failed on the commit that introduced it.
-          prerelease=()
-          case "${GITHUB_REF_NAME}" in
-            *-*) prerelease=(--prerelease) ;;
-          esac
-          gh release create "${GITHUB_REF_NAME}" \
-            --verify-tag \
-            --title "${GITHUB_REF_NAME}" \
-            --notes-file "$notes" \
-            "${prerelease[@]}" \
-            dist/*
+        run: ./tool/tlrelease workflow-publish --dist dist --identity release/identity.json --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
-  # ---------------------------------------------------------------------------
-  # 4c. Homebrew.
-  #
-  # The formula pins each asset's SHA-256, so it can only be written once the
-  # release exists and its sums file has been verified. It is pushed to the tap
-  # repository, which is the distribution point; the source of truth stays here,
-  # beside release/identity.json, so the identity drift guard can see it.
-  # ---------------------------------------------------------------------------
   publish-homebrew:
     needs: [gates, stamp, publish-release]
-    # Pushed tags only, and only when release/plan.json enables this channel.
-    # A deferred channel has no job to skip: it does not run, so it cannot fail
-    # for a credential this release deliberately does not have.
     if: >-
       github.event_name == 'push' && github.ref_type == 'tag'
       && needs.gates.outputs.homebrew == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # cosign, before the release tool is downloaded rather than after it is
-      # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the file-set comparison and the first
-      # use of the tool is a step the handoff prefix has to make an exception
-      # for — and an exception is a place for a later step to be added. Hoisted
-      # so the prefix is contiguous and the rule needs no exception at all.
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -1245,77 +880,33 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: tl-signed-release
+          path: dist
 
-      # The release tool this job reads the manifest with, checked against the
-      # file-set expectation the gates job published rather than taken from the artifact
-      # store on trust. This job is about to make an irreversible publication
-      # on the strength of what this binary says.
       - name: download the release tool
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-tool
           path: tool
+
       - name: refuse a missing or changed release tool
         if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
         run: /usr/bin/false
+
       - name: make the validated release tool executable
         run: /bin/chmod 0755 tool/tlrelease
+
       - name: enter the validated release tool
         run: ./tool/tlrelease --help
 
-      # Every digest the formula pins is copied out of SHA256SUMS on trust, so
-      # that file's signature is checked first.
-      - name: verify the sums file before copying digests out of it
-        run: |
-          set -euo pipefail
-          # The selftest first, like every other consumer of the signed set: a
-          # verifier that has stopped refusing would otherwise be trusted here
-          # on the strength of having exited zero.
-          ./scripts/verify-release-artifacts.sh --selftest
-          # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
-          # …and then the manifest, which is what this job reads instead of
-          # re-deriving which targets and assets the release consists of. The
-          # signature check comes first: the manifest is evidence about a set
-          # of bytes, not evidence that they are the bytes we signed.
-          ./tool/tlrelease manifest-verify --dist dist --manifest dist/release-manifest.json
+      - name: validate the release identity
+        run: ./tool/tlrelease identity-check --identity release/identity.json
 
-      # A stable tag must not reach this job without somewhere to push. The
-      # token is checked *before* the formula is generated, so a missing
-      # credential fails while nothing has been produced that a maintainer
-      # might mistake for a published one. `secrets` is not available in a step
-      # `if:`, so the token is read into the environment and the step decides.
-      #
-      # This used to warn and exit 0 further down, which meant a green stable
-      # release did not imply the Homebrew channel it promises had been
-      # updated. A channel this pipeline advertises is either updated or the
-      # release says it failed; "published, except for the part nobody
-      # noticed" is not an outcome worth having.
-      - name: a stable release must be able to reach the tap
-        if: ${{ !contains(github.ref_name, '-') }}
+      - name: authenticate, render, and publish the formula
         env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN is not configured, so this stable release cannot update DmitryKorolev/homebrew-tap — and release/plan.json enables the Homebrew channel, which is why this job is running at all. Store it as a *repository* secret: this job declares no environment, so an environment secret resolves to the empty string here. To release without the Homebrew channel deliberately, defer it in release/plan.json rather than letting the push fail quietly."
-            exit 1
-          fi
-          echo "the tap credential is present"
-
-      # Rendered from the verified manifest, into its own directory. The
-      # checkout's Formula/tl.rb is the tracked placeholder and stays that way:
-      # the previous shape overwrote it, so an upload that ran on an earlier
-      # failure attached a formula pinning v0.0.0 under the name a good one
-      # uses, with `if-no-files-found: error` satisfied.
-      - name: make somewhere to render into
-        run: mkdir out
-
-      - name: render the formula
-        run: ./tool/tlrelease homebrew-render --dist dist --manifest dist/release-manifest.json --output tl.rb --output-dir out
-
-      - name: show the formula this release renders
-        run: cat out/tl.rb
+        run: ./tool/tlrelease workflow-homebrew --dist dist --output-dir out --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
       - name: upload the rendered formula
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1324,62 +915,13 @@ jobs:
           path: out/tl.rb
           if-no-files-found: error
 
-      # The tap is cloned here — transport, with the credential in an env
-      # binding — and updated by `tlrelease homebrew-publish`, which owns every
-      # decision about it: whether this release pushes at all (a tap carries one
-      # formula, so a prerelease does not), whether the checkout is the tap the
-      # signed manifest names, and whether the formula it already holds is this
-      # one. It renders the formula itself rather than taking the file above, so
-      # the bytes it pushes are a function of the manifest it reports them as
-      # and not of which path this step happened to name. Running it twice is a
-      # no-op, so a job retried after a successful push does not add a second
-      # commit saying the same thing.
-      - name: clone the tap
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          TAP_REMOTE: https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/DmitryKorolev/homebrew-tap.git
-        run: git clone --depth 1 "$TAP_REMOTE" tap
-
-      - name: publish the formula to the tap
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: ./tool/tlrelease homebrew-publish --dist dist --manifest dist/release-manifest.json --tap tap
-
-  # ---------------------------------------------------------------------------
-  # 5. npm.
-  #
-  # After the GitHub Release, not before: the release is the source of truth
-  # for artifacts, and npm is a veneer over it (ADR-0006). Publishing npm first
-  # would let a failure between the two leave a version on the registry with no
-  # signed artifacts to check it against — and npm versions cannot be reused.
-  #
-  # Trusted publishing (OIDC), so there is no long-lived npm token in this
-  # repository. Each of the five packages must have this workflow registered as
-  # its trusted publisher on npmjs.com; a package that does not will fail here
-  # with npm's own error rather than fall back to a token.
-  # ---------------------------------------------------------------------------
   publish-npm:
     needs: [gates, stamp, publish-release]
-    # Pushed tags only, and only when release/plan.json enables this channel.
-    # This job mints an OIDC token npm accepts as a publisher, and npm versions
-    # are immutable — so a channel that is off must be unable to run at all,
-    # not merely expected not to.
     if: >-
       github.event_name == 'push' && github.ref_type == 'tag'
       && needs.gates.outputs.npm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # The same environment the signing job uses, and not decoration: npm treats
-    # the environment as part of a trusted publisher's configuration, and
-    # GitHub only puts an environment into the OIDC subject for a job that
-    # references one. docs/release-prerequisites.md tells the operator to
-    # register `release` against each package, so without this line the token
-    # this job presents would not match what they configured and every publish
-    # would fail to authenticate — after the GitHub Release is already public.
-    #
-    # It also narrows the capability. This job holds `id-token: write` and
-    # shares one `job_workflow_ref` with the signing job, so a certificate
-    # minted here already satisfies the release pin; putting it behind the same
-    # protected environment means the same approval gates both.
     environment: release
     permissions:
       contents: read
@@ -1387,104 +929,50 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # cosign, before the release tool is downloaded rather than after it is
-      # validated. It installs a different binary and never touches
-      # tool/tlrelease, but a step between the file-set comparison and the first
-      # use of the tool is a step the handoff prefix has to make an exception
-      # for — and an exception is a place for a later step to be added. Hoisted
-      # so the prefix is contiguous and the rule needs no exception at all.
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Trusted publishing needs npm >= 11.5.1 and Node >= 22.14.
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # A pinned version, and no lifecycle scripts. This job holds
-      # `id-token: write`, and every job defined inline in this file shares one
-      # `job_workflow_ref`, so a certificate minted here would satisfy the
-      # release pin — an unpinned `npm@latest` would be arbitrary code running
-      # next to that capability. Bumped deliberately, like ELAN_VERSION.
       - name: install the pinned npm CLI
-        env:
-          NPM_VERSION: "11.5.1"
-        run: |
-          set -euo pipefail
-          npm install -g --ignore-scripts "npm@${NPM_VERSION}"
-          npm --version
+        run: npm install -g --ignore-scripts npm@11.5.1
 
-      # The verified set, not the raw candidates: the npm tarballs must carry
-      # the exact bytes the release signed, so that comparing an npm binary
-      # against the release asset is a meaningful check.
       - name: download the signed assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: tl-signed-release
+          path: dist
 
-      # The npm packages must carry the binaries the release signed, not a
-      # rebuild. These are the same artifacts sign-and-publish attested, so a
-      # user can compare an npm tarball's binary against the release asset and
-      # verify that asset's Sigstore bundle.
-      # The release tool this job reads the manifest with, checked against the
-      # file-set expectation the gates job published rather than taken from the artifact
-      # store on trust. This job is about to make an irreversible publication
-      # on the strength of what this binary says.
       - name: download the release tool
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-tool
           path: tool
+
       - name: refuse a missing or changed release tool
         if: needs.gates.outputs.releaseToolFileSetHash == '' || hashFiles('tool/tlrelease') == '' || needs.gates.outputs.releaseToolFileSetHash != hashFiles('tool/tlrelease')
         run: /usr/bin/false
+
       - name: make the validated release tool executable
         run: /bin/chmod 0755 tool/tlrelease
+
       - name: enter the validated release tool
         run: ./tool/tlrelease --help
 
-      # The other two consumers of tl-signed-release re-verify what they
-      # received; so does this one. Re-establishing the invariant at each
-      # artifact boundary is cheap, and "an earlier job checked it" is an
-      # assumption rather than a check.
-      - name: verify what arrived, before packaging it
-        run: |
-          set -euo pipefail
-          ./scripts/verify-release-artifacts.sh --selftest
-          # shellcheck disable=SC2046
-          ./scripts/verify-release-artifacts.sh --require-signature dist $(cat asset-names)
-          # …and then the manifest, which is what this job reads instead of
-          # re-deriving which targets and assets the release consists of. The
-          # signature check comes first: the manifest is evidence about a set
-          # of bytes, not evidence that they are the bytes we signed.
-          ./tool/tlrelease manifest-verify --dist dist --manifest dist/release-manifest.json
+      - name: validate the release identity
+        run: ./tool/tlrelease identity-check --identity release/identity.json
 
-      # Built from the signed manifest, not from this checkout: the package
-      # metadata that decides where npm installs a package, and the exact
-      # versions the launcher pins, follow from the release rather than from a
-      # file somebody remembered to edit. Every staged binary is compared
-      # against the digest the manifest pins before anything is packed.
+      - name: authenticate the received release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
+        run: ./tool/tlrelease workflow-verify --dist dist --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+
       - name: stage the npm packages around the signed binaries
-        run: |
-          set -euo pipefail
-          ./tool/tlrelease npm-stage --root . --dist dist \
-            --manifest dist/release-manifest.json --staging npm-staging
+        run: ./tool/tlrelease npm-stage --root . --dist dist --manifest dist/release-manifest.json --staging npm-staging
 
-      # npm versions are immutable, so a loop of `npm publish` that dies half
-      # way through strands the version permanently: what went out cannot be
-      # replaced, the launcher that publishes last never went out at all, and a
-      # re-run dies on E403 for the first package. This asks the registry what
-      # is already there, publishes what is missing, accepts what matches
-      # path-for-path, and stops on a version whose contents differ — so
-      # re-running this job is always safe and always converges.
-      #
-      # The dist-tag is the manifest's, not this job's: it is a function of the
-      # version, and the manifest is signed alongside SHA256SUMS. A prerelease
-      # published as `latest` is what `npm install @taskloop/tl` resolves to
-      # for everyone, and it cannot be withdrawn.
       - name: publish
-        run: |
-          set -euo pipefail
-          ./tool/tlrelease npm-publish --staging npm-staging \
-            --manifest dist/release-manifest.json
+        run: ./tool/tlrelease npm-publish --staging npm-staging --manifest dist/release-manifest.json

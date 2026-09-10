@@ -764,6 +764,12 @@ private def pinnedReleaseVerdictTheorems : Unit :=
   let _ := @Release.WorkflowRelease.sourceAgrees_iff
   let _ := @Release.WorkflowRelease.assetSetAllowed_iff
   let _ := @Release.WorkflowRelease.releaseMatches_iff
+  let _ := @Release.WorkflowRelease.homebrewPublication_nonempty_iff
+  let _ := @Release.Policy.selectedFor_iff
+  let _ := @Release.WorkflowPolicy.invocation_eq_iff
+  let _ := @Release.WorkflowPolicy.stepAccepts_iff
+  let _ := @Release.WorkflowPolicy.accepts_iff
+  let _ := @Release.WorkflowPolicy.jobChecks_valid
   let _ := @Release.WorkflowRelease.prereleaseArgs_nonempty_iff
   let _ := @Release.Check.allHeld_iff_noFailures
   let _ := @Release.metadataAccepts_iff
@@ -3549,15 +3555,15 @@ private def policyTests : List Outcome :=
     -- toolchain. What is left here is the one deferred-channel gate a shell can
     -- run, and it is still the profiles' only difference.
     checkEq "policy: the release profile is the ci profile without the deferred channels"
-      (ciNames.filter fun name => name != "the rendered formulae parse")
+      (ciNames.filter fun name => name != "the rendered formulae parse" && name != "npm packaging selftest")
       releaseNames,
     check "policy: the deferred-channel gate is in ci and not in release"
       (ciNames.contains "the rendered formulae parse"
         && !releaseNames.contains "the rendered formulae parse")
       s!"{ciNames}",
-    check "policy: and the gate that needs the built tool is in neither"
-      (!ciNames.contains "npm packaging over the real client"
-        && !releaseNames.contains "npm packaging over the real client")
+    check "policy: npm joins ci while deferred from release"
+      (ciNames.contains "npm packaging selftest"
+        && !releaseNames.contains "npm packaging selftest")
       s!"{ciNames}",
     -- Every gate in the release profile runs on a tag, because no gate is
     -- working-tree-only any more: the last one that was — the checked-in build
@@ -5314,6 +5320,11 @@ private def prerequisiteIoTests : IO (List Outcome) := do
     -- Applicability, end to end rather than over the kind list alone.
     checkEq "audit: a GitHub-only release collects five rows" healthy.length 5,
     checkEq "audit: enabling both channels collects four more" withChannels.length 9,
+    check "audit: Homebrew token guidance names the protected environment"
+      (withChannels.any fun row => row.kind == .homebrewToken &&
+        match row.outcome with
+        | .carried text => (text.splitOn "protected release environment").length > 1
+        | _ => false),
     check "audit: the deferred channels are named, not silently dropped"
       (match planWith false false with
        | .ok plan => (deferredNotes plan).length == 2

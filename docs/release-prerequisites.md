@@ -144,7 +144,7 @@ necessity, not by choice.
 
 ### 2. Create and protect the `release` environment
 
-The `sign` and `publish-npm` jobs both declare `environment: release`. That
+The `sign`, `publish-release`, `publish-homebrew` and `publish-npm` jobs declare `environment: release`. That
 declaration is inert until the environment exists and carries protection rules.
 Without them, anyone who can create a tag can cause this workflow to sign —
 with an identity every verifier accepts — whatever commit that tag points at.
@@ -180,16 +180,20 @@ single `deferred` row for this section rather than auditing the tap.
 if this secret is missing, rather than warning and exiting zero — a green
 release that quietly did not update a promised channel is worse than a red one.
 
-Store it as a **repository** secret, not an environment one. `release` is the
-only environment this document names, so an environment secret is the natural
-reading — but `publish-homebrew` declares no `environment:`, so
-`secrets.HOMEBREW_TAP_TOKEN` would resolve there to the empty string and the
-job would refuse for a secret that exists. Putting that job behind the `release`
-environment instead would gate it with the same approval as signing, at the
-cost of a third manual approval per release; that is a deliberate trade to make
-when the channel is enabled, not a detail to discover mid-release.
+Store it in the protected **release environment**. `publish-homebrew` now names
+that environment, as do signing and both other publication jobs. Its approval
+and tag restrictions therefore apply before the credential becomes available.
+A prerelease renders its preview formula without cloning or pushing the tap;
+a stable release refuses a missing credential before either effect.
 
 ## Before every release
+
+When enabling npm or Homebrew, also split the hermetic policy evidence by
+channel: the current stripped job runs the complete GitHub-only release profile
+and deliberately lacks npm and Ruby. The native release profile adds an enabled
+channel's validation gates, so changing the plan alone will make that strict
+job refuse. Keep GitHub-only evidence in the stripped image and exercise each
+new channel in its required packaging environment before enabling it.
 
 - The tag is a SemVer `v` tag whose version matches every copy
   (`tlrelease version-consistency --root . --tag <tag>` —

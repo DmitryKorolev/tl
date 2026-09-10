@@ -139,15 +139,20 @@ evidence is published before the failing command or collected by a separate
 unprivileged diagnostics job from artifacts already handed off. Diagnostics do
 not gain an `always()` exception inside an authority-bearing job.
 
-`Tests/ReleaseTests.lean` reads the YAML structure, computes effective
-permissions and authority-bearing output reachability, and refuses a privileged
-job, authority-output producer, action input, or policy step outside those
-forms. YAML quotes around control keys are normalized once. Authority edges
+`release/WorkflowPolicy.lean` reads the shared YAML structure and checks the
+reviewed schemas in `release/WorkflowContracts.lean`. It pins the complete
+workflow and job headers and every output edge, including unprivileged
+intermediaries, so inherited authority cannot escape through a new job. The
+privileged jobs have closed step order, command argv, env and action-input
+schemas. `JobValid` and `Valid` characterize these checks independently of
+their reporting list and their theorems are pinned. YAML quotes around control
+keys are normalized once. Authority edges
 have one accepted spelling, `needs.<job>.outputs.<name>` in lowercase dot form;
 bracket/case variants and anchors or aliases standing in for failure-control
 values, whole steps, or output mappings are refusals, not edges the reachability
-closure silently omits. Its
-planted fixtures include workflow-level permission inheritance, a secret-only
+closure silently omits. Whole-context reads and wildcard access cannot evade
+the reference inventory. `Tests/WorkflowPolicyTests.lean` and the existing
+handoff drift suites carry planted fixtures including workflow-level permission inheritance, a secret-only
 job, a `needs` output produced by inline shell, direct expression interpolation,
 quoted keys, aliases, case-varied status functions, privileged job- and
 step-level status-function overrides, a handoff pattern matching zero or
@@ -724,10 +729,11 @@ the survival of every registered theorem.
 
 ### Migration is explicit
 
-Until the cutover lands, ADR-0026's existing policy scripts, dependency-boundary
-scan, PATH-shim runner, and channel selftests remain required gates. They are
-deleted only after the corresponding public `tlrelease` commands and tests are
-live in both workflows.
+Both workflows now use the typed policy and workflow command layer. The
+dependency-boundary scan, runtime-shim selftest, shell single-gate adapters and
+historical parity snapshot remain migration evidence. The full dynamic policy
+runs as a static native executable in the stripped container. Obsolete shell
+is deleted only in the subsequent atomic inventory/deletion change.
 
 The cutover and a capability-free GitHub rehearsal both precede the v0.1.0 tag.
 The four formerly active GitHub-only defects retired in

@@ -263,7 +263,7 @@ private def hermeticEnvironment : List String :=
    "ACTIONLINT_SHA256: \"8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8\"",
    "SHELLCHECK_VERSION: \"0.11.0\"",
    "SHELLCHECK_SHA256: \"8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198\"",
-   "HERMETIC_REQUIRED_TOOLS: \"awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint\"",
+   "HERMETIC_REQUIRED_TOOLS: \"awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint tlrelease\"",
    "HERMETIC_FORBIDDEN_RUNTIMES: \"python python3 ruby brew node npm\""]
 
 /-- The complete Podman configuration argv, through the start of the one
@@ -299,6 +299,8 @@ private def hermeticBodyFragments : List String :=
    "cmp npm/tl/bin/tl \"$scratch/packed/package/bin/tl\"",
    "source_launcher=/scratch/packed/package/bin/tl",
    "sha256sum \"$scratch/packed/package/bin/tl\"",
+   "install -m 0755 .lake/build/bin/tlrelease-static \"$scratch/tools/tlrelease\"",
+   "sha256sum \"$scratch/tools/tlrelease\"",
    "echo \"${ACTIONLINT_SHA256}  $scratch/actionlint.tar.gz\" | sha256sum -c -",
    "echo \"${SHELLCHECK_SHA256}  $scratch/shellcheck.tar.xz\" | sha256sum -c -"]
 
@@ -342,7 +344,7 @@ private def hermeticInnerBody : List String :=
    "shellcheck --version",
    "actionlint -version",
    "shellcheck -S warning -s sh /scratch/tools/curl /scratch/launcher-suite",
-   "./scripts/check-release-policy.sh --profile release --strict",
+   "tlrelease policy --profile release --strict",
    "[ -s \"$HERMETIC_CURL_LOG\" ] || {",
    "echo \"hermetic release: the declared curl fixture was never reached\" >&2",
    "exit 1",
@@ -371,12 +373,17 @@ def hermeticReleaseShape (workflow : String) : Except String Unit := do
     if !normalized.contains expected then
       throw s!"the hermetic-release job does not pin `{expected}`"
   let steps := stepsOf jobLines
-  if steps.length != 2 then
-    throw s!"the hermetic-release job has {steps.length} steps; it must be one pinned checkout action and one ordinary run step"
+  if steps.length != 4 then
+    throw s!"the hermetic-release job has {steps.length} steps; restore checkout, toolchain setup, static build and the ordinary container run step"
   let checkoutSteps := steps.filter fun step =>
     step.uses.any (· == "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0")
   if checkoutSteps.length != 1 then
     throw "the hermetic-release job does not have exactly one pinned checkout action"
+  if (steps.filter fun step => step.uses.any (· == "leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0")).length != 1 then
+    throw "the hermetic-release job must install the pinned Lean toolchain"
+  if (steps.filter fun step => step.runLines.map (·.trimAscii.toString) ==
+      ["lake build tlreleaseStatic --wfail"]).length != 1 then
+    throw "the hermetic-release job must build the static native policy tool"
   let runSteps := steps.filter fun step => step.runs "podman run --rm"
   let [step] := runSteps
     | throw s!"the hermetic-release job has {runSteps.length} steps launching Podman; exactly one ordinary run step must own the complete invocation"
@@ -404,6 +411,8 @@ private def canonicalHermeticWorkflow : String :=
   String.join (hermeticEnvironment.map fun line => s!"      {line}\n") ++
   "    steps:\n" ++
   "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n" ++
+  "      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0\n" ++
+  "      - run: lake build tlreleaseStatic --wfail\n" ++
   "      - name: runtime-stripped release policy and retained-adapter suites\n" ++
   "        run: |\n" ++
   String.join ((hermeticBodyFragments ++ hermeticPodmanPrefix ++ hermeticInnerBody ++ ["'"]).map fun line => s!"          {line}\n")
@@ -936,6 +945,44 @@ private def linkObjectLines (lakefile : String) : List String :=
 
 private def occurrences (text needle : String) : Nat := (text.splitOn needle).length - 1
 
+private def staticReleaseRecipe : String := r#"pkg : System.FilePath := do
+  let some exe := pkg.findLeanExe? `tlrelease
+    | error "Restore the tlrelease executable before building its static package."
+  let infoJob ← exe.root.linkInfoNoExport.fetch
+  infoJob.mapM fun info => do
+    let lean ← getLeanInstall
+    let objects ← mkLinkArgs info.objs info.libs (linkDeps := true)
+    let flags := lean.linkStaticFlags.map fun flag =>
+      if flag == "-Wl,-Bdynamic" then "-Wl,-Bstatic" else flag
+    let args := objects ++ exe.exeOnlyLinkArgs ++ info.args ++
+      #["-static", "-L", lean.leanLibDir.toString, "-L", lean.systemLibDir.toString] ++ flags
+    addLeanTrace
+    addPlatformTrace
+    addPureTrace args "static release linker arguments"
+    let output := pkg.buildDir / "bin" / "tlrelease-static"
+    let artifact ← buildArtifactUnlessUpToDate output (exe := true) do
+      compileExe output args "gcc"
+    return artifact.path"#
+
+private def staticReleaseRecipeAllowed (lakefile : String) : Bool :=
+  match lakefile.splitOn "\ntarget tlreleaseStatic " with
+  | [_, suffix] => ((suffix.splitOn "\n/--").headD "").trimAsciiEnd.toString == staticReleaseRecipe
+  | _ => false
+
+private def staticReleaseRecipeRows (lakefile : String) : List Outcome :=
+  [check "static release: the complete packaging recipe is pinned" (staticReleaseRecipeAllowed lakefile)] ++
+  [ ("wrong executable", "pkg.findLeanExe? `tlrelease", "pkg.findLeanExe? `tl"),
+    ("missing native graph", "mkLinkArgs info.objs info.libs", "mkLinkArgs #[] info.libs"),
+    ("dynamic runtime", "then \"-Wl,-Bstatic\"", "then \"-Wl,-Bdynamic\""),
+    ("bundled compiler sysroot", "lean.linkStaticFlags.map", "lean.ccLinkStaticFlags.map"),
+    ("dynamic executable", "#[\"-static\", \"-L\"", "#[\"-L\""),
+    ("bundled library path", "lean.systemLibDir.toString", "\"/tmp/unreviewed\""),
+    ("untraced recipe", "addPureTrace args", "addPureTrace (#[] : Array String)"),
+    ("wrong compiler", "compileExe output args \"gcc\"", "compileExe output args \"clang\"") ].flatMap fun (label, before, after) =>
+      let mutated := lakefile.replace before after
+      [check s!"static release: {label} mutation is real" (mutated != lakefile),
+       check s!"static release: {label} is refused" (!staticReleaseRecipeAllowed mutated)]
+
 private def nativeBuildRows (lakefile : String) : List Outcome :=
   let objects := linkObjectLines lakefile
   [ -- Every executable that links a native object links the same one, and it is
@@ -949,9 +996,10 @@ private def nativeBuildRows (lakefile : String) : List Outcome :=
     check "release natives: the shim is compiled from exactly ffi/tlsys.c"
       (occurrences lakefile "inputTextFile <| pkg.dir / \"ffi\" / \"tlsys.c\"" == 1)
       "the tlsys.o recipe must read exactly one source, and it is ffi/tlsys.c",
-    check "release natives: there is one custom native target"
-      (occurrences lakefile "\ntarget " == 1)
-      "a second custom target is a second native input; pin it here and amend ADR-0019",
+    check "release natives: only the shim and static packaging targets exist"
+      (occurrences lakefile "\ntarget " == 2 &&
+        occurrences lakefile "\ntarget tlreleaseStatic pkg : System.FilePath := do" == 1)
+      "pin every custom target; static packaging must reuse the existing object graph",
     check "release natives: and it is tlsys.o"
       (occurrences lakefile "\ntarget tlsys.o pkg : System.FilePath := do" == 1)
       "the custom target's name and shape are part of what the release links",
@@ -1043,7 +1091,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
      check s!"hermetic release: step-level `{field}` is refused"
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: |\n"
          s!"        {field}\n        run: |\n")).toOption.isNone)]
-  return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile
+  return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile ++ staticReleaseRecipeRows lakefile
     ++ hygieneRows ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
     ++ hermeticInnerRows ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
@@ -1151,7 +1199,15 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
       (hermeticRefuses (swap canonicalHermeticWorkflow
         "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" "actions/checkout@main")
         "pinned checkout"),
-    check "hermetic release: a noncanonical run header is refused"
+    check "hermetic release: a different toolchain action is refused"
+      (hermeticRefuses (swap canonicalHermeticWorkflow
+        "leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9" "leanprover/lean-action@main")
+        "pinned Lean toolchain"),
+    check "hermetic release: a dynamic tool build is refused"
+      (hermeticRefuses (swap canonicalHermeticWorkflow
+        "lake build tlreleaseStatic --wfail" "lake build tlrelease --wfail")
+        "static native policy tool"),
+    check "hermetic release: a noncanonical Podman header is refused"
       (hermeticRefuses (swap canonicalHermeticWorkflow
         "podman run --rm" "podman run --rm --quiet") "canonical Podman invocation"),
     check "hermetic release: an argument inserted before the image is refused"

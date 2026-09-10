@@ -553,7 +553,7 @@ private def uncheckedRow (kind : PrerequisiteKind) (summary : String)
 private def carriedTokenRow : Row :=
   { kind := .homebrewToken,
     summary := "HOMEBREW_TAP_TOKEN grants write access to the tap",
-    outcome := .carried "A secret's scope is not readable from a workflow, so this is recorded rather than checked. Confirm it by running the release once, or by testing the token by hand. Store it where publish-homebrew reads it — a repository secret, since that job declares no environment." }
+    outcome := .carried "A secret's scope is not readable from a workflow, so this is recorded rather than checked. Confirm it by running the release once, or by testing the token by hand. Store it in the protected release environment, which publish-homebrew declares." }
 
 /-- Collect the tag-ruleset row.
 

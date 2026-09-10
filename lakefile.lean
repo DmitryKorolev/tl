@@ -82,7 +82,7 @@ lean_lib Tooling where
     escape hatch. -/
 lean_lib ReleaseCore where
   roots := #[`release.Check, `release.Command, `release.Json, `release.Model,
-    `release.Boundary, `release.Workflow, `release.WorkflowOutput, `release.WorkflowRelease, `release.Write, `release.Sys,
+    `release.Boundary, `release.Workflow, `release.WorkflowPolicy, `release.WorkflowContracts, `release.WorkflowOutput, `release.WorkflowRelease, `release.Write, `release.Sys,
     `release.Certificate, `release.Consistency, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
     `release.Homebrew, `release.Npm, `release.Platform, `release.Policy, `release.Stamp,
@@ -96,6 +96,28 @@ lean_lib ReleaseCore where
   root := `release.Main
   needs := #[ReleaseCore]
   moreLinkObjs := #[`@/tlsys.o]
+
+/-- Linux-only packaging for the stripped CI container. Reuse the executable's
+    complete object graph and the pinned toolchain's bundled libraries, but
+    keep every linker library group static. Ordinary builds are unchanged. -/
+target tlreleaseStatic pkg : System.FilePath := do
+  let some exe := pkg.findLeanExe? `tlrelease
+    | error "Restore the tlrelease executable before building its static package."
+  let infoJob ← exe.root.linkInfoNoExport.fetch
+  infoJob.mapM fun info => do
+    let lean ← getLeanInstall
+    let objects ← mkLinkArgs info.objs info.libs (linkDeps := true)
+    let flags := lean.linkStaticFlags.map fun flag =>
+      if flag == "-Wl,-Bdynamic" then "-Wl,-Bstatic" else flag
+    let args := objects ++ exe.exeOnlyLinkArgs ++ info.args ++
+      #["-static", "-L", lean.leanLibDir.toString, "-L", lean.systemLibDir.toString] ++ flags
+    addLeanTrace
+    addPlatformTrace
+    addPureTrace args "static release linker arguments"
+    let output := pkg.buildDir / "bin" / "tlrelease-static"
+    let artifact ← buildArtifactUnlessUpToDate output (exe := true) do
+      compileExe output args "gcc"
+    return artifact.path
 
 /-- Minimal test supervisor: status zero is insufficient unless the worker
     reaches the assertion harness's final completion marker. -/

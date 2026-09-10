@@ -340,7 +340,7 @@ def workflowReleaseTests : IO (List Outcome) := do
   let binary ← IO.FS.realPath ".lake/build/bin/tlrelease"
   let publicVerify ← IO.Process.output {
     cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist] }
+    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
   let observed ← IO.FS.readFile (publicRoot / "verifier-calls")
   rows := rows ++ [
     checkEq "public verification: real manifest checker rejects invented fixture digests" publicVerify.exitCode 1,
@@ -350,11 +350,11 @@ def workflowReleaseTests : IO (List Outcome) := do
   IO.FS.writeFile verifier "#!/bin/sh\nexit 17\n"
   let publicFailure ← IO.Process.output {
     cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist] }
+    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
   IO.FS.removeFile verifier
   let publicMissing ← IO.Process.output {
     cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist] }
+    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
   rows := rows ++ [checkEq "public verification: child refusal propagates" publicFailure.exitCode 1,
     checkEq "public verification: missing verifier refuses" publicMissing.exitCode 1]
   let recorded ← IO.mkRef ([] : List WorkflowRelease.Action)
@@ -404,6 +404,45 @@ def workflowReleaseTests : IO (List Outcome) := do
     let result ← (WorkflowRelease.publish passing dist identityPath tag manifest.commit).run
     rows := rows ++ [check s!"publication: {label} identity refuses" result.toOption.isNone,
       checkEq s!"publication: {label} identity never reaches remote effects" (← recorded.get) expectedVerify]
+  let formulaDir := (staging / "formula").toString
+  let renderFormula : WorkflowRelease.Action := ⟨.releaseTool,
+    ["homebrew-render", "--dist", dist, "--manifest", dist ++ "/release-manifest.json",
+      "--output", "tl.rb", "--output-dir", formulaDir]⟩
+  let expectedBrew := expectedVerify ++ [renderFormula,
+    ⟨.gh, ["auth", "setup-git", "--hostname", "github.com"]⟩,
+    ⟨.gh, ["repo", "clone", "Owner/homebrew-tap", formulaDir ++ "/tap", "--", "--depth", "1"]⟩,
+    ⟨.releaseTool, ["homebrew-publish", "--dist", dist, "--manifest", dist ++ "/release-manifest.json", "--tap", formulaDir ++ "/tap"]⟩]
+  for failure in List.range 9 do
+    recorded.set []
+    let runner : WorkflowRelease.Runner := ⟨fun action => do
+      let seen ← recorded.get
+      recorded.set (seen ++ [action])
+      return if seen.length == failure then .error "injected refusal"
+        else .ok { exitCode := 0, stdout := "", stderr := "" }⟩
+    let result ← (WorkflowRelease.homebrew runner dist formulaDir tag manifest.commit (some "fixture-token")).run
+    rows := rows ++ [checkEq s!"Homebrew orchestration: failure {failure} stops" result.toOption.isSome (failure == 8),
+      checkEq s!"Homebrew orchestration: exact argv through {failure}" (← recorded.get) (expectedBrew.take (failure + 1))]
+  for credential in [none, some ""] do
+    recorded.set []
+    let result ← (WorkflowRelease.homebrew passing dist formulaDir tag manifest.commit credential).run
+    rows := rows ++ [check "Homebrew orchestration: stable needs credential" result.toOption.isNone,
+      checkEq "Homebrew orchestration: missing credential cannot render or publish" (← recorded.get) expectedVerify]
+  recorded.set []
+  let badContext ← (WorkflowRelease.homebrew passing dist formulaDir wrongTag manifest.commit (some "fixture")).run
+  rows := rows ++ [check "Homebrew orchestration: wrong signed tag refuses" badContext.toOption.isNone,
+    checkEq "Homebrew orchestration: wrong context cannot render or publish" (← recorded.get) expectedVerify]
+  recorded.set []
+  let badDirectory ← (WorkflowRelease.homebrew passing dist badStaging.toString tag manifest.commit (some "fixture")).run
+  rows := rows ++ [check "Homebrew orchestration: output directory failure refuses" badDirectory.toOption.isNone,
+    checkEq "Homebrew orchestration: output failure cannot render or publish" (← recorded.get) expectedVerify]
+  let prereleaseText := text.replace "\"1.2.3\"" "\"1.2.3-rc.1\"" |>.replace "v1.2.3" "v1.2.3-rc.1"
+    |>.replace "\"latest\"" "\"next\"" |>.replace "\"push\": true" "\"push\": false"
+  let _ ← fixtureValue (ManifestDescription.parse "prerelease fixture" prereleaseText)
+  IO.FS.writeFile (base / "release-manifest.json") prereleaseText
+  recorded.set []
+  let prereleaseResult ← (WorkflowRelease.homebrew passing dist formulaDir prerelease manifest.commit none).run
+  rows := rows ++ [check "Homebrew orchestration: prerelease renders without credentials" prereleaseResult.toOption.isSome,
+    checkEq "Homebrew orchestration: prerelease has no publication effects" (← recorded.get) (expectedVerify ++ [renderFormula])]
   return rows
 
 end Tl.Tests

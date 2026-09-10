@@ -20,6 +20,7 @@ import Tests.ReleaseTests
 import Tests.ReleaseToolTests
 import Tests.ReleaseDriftTests
 import Tests.WorkflowCommandTests
+import Tests.WorkflowPolicyTests
 import Tests.SyncTests
 import Tests.CacheTests
 import Tests.PerfTests
@@ -49,6 +50,7 @@ unsafe def main : IO UInt32 := do
   let releaseDrift ← releaseDriftTests
   let workflowCommands ← workflowCommandTests
   let workflowRelease ← workflowReleaseTests
+  let workflowPolicy ← workflowPolicyTests
   let releaseWorkflowPrivilege ← releaseWorkflowPrivilegeTests
   let buildProvenance ← buildProvenanceTests
   let sync ← syncTests
@@ -87,6 +89,7 @@ unsafe def main : IO UInt32 := do
     ("Release drift: documented invocations, and one decision about a missing tool", releaseDrift),
     ("Typed workflow output producers", workflowCommands),
     ("Typed release orchestration", workflowRelease),
+    ("Workflow authority and invocation mutations", workflowPolicy),
     ("Release workflow: privileged jobs need a pushed tag", releaseWorkflowPrivilege),
     ("Build provenance: tl version kinds, renderings, and stamp drift", buildProvenance),
     ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),

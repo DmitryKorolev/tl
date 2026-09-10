@@ -26,16 +26,16 @@ pinned to full commit hashes.
 
 The graph is:
 
-1. `release-policy`, needing no toolchain;
+1. `release-policy`, building the separately scoped `tlrelease` executable;
 2. `hermetic-release`, running the GitHub-only policy and retained adapters in
    a runtime-stripped inner container;
 3. `homebrew-formula`, needing Homebrew rather than a Lean toolchain;
 4. `build-and-test` on Ubuntu and macOS;
 5. `git-floor`, after the build matrix, using the Ubuntu artifacts.
 
-Only `git-floor` carries a `needs:`. The toolchain-free jobs run independently
-of the build so a policy failure and a build failure are both visible from one
-run, and they fail in seconds rather than after the matrix. The lexical task-ID
+Only `git-floor` carries a `needs:`. The policy jobs run independently
+of the product build so a policy failure and a build failure are both visible
+from one run. The lexical task-ID
 gate was a fifth job on the same reasoning until it became `tlrelease
 task-id-lint`; a Lean binary cannot run in a job with no Lean, so it is a step
 of `build-and-test` now, beside the dependency boundary that moved for the same
@@ -64,24 +64,23 @@ pattern must match exactly one file, and the consumer compares its post-download
 `hashFiles('tool/tlrelease')` result
 with the producer value before running `/bin/chmod 0755 tool/tlrelease`. This
 proves only same-run transport equality and is never compared with a raw
-SHA-256 digest. Until that port lands, the independent
-shell-based `stamp` job described here remains the current graph. The port must
-update this graph, the authority-flow guard, and its handoff evidence in the
-same change rather than silently serializing jobs.
+SHA-256 digest. This is now the active graph. The typed workflow-stamp command
+owns the clean-source/version checks, stamp write and framed output batch.
 
-`release-policy` runs `scripts/check-release-policy.sh --strict` and then
-`scripts/check-release-runtimes.sh`, and those two scripts *are* the gate list. It was previously a `steps:` block, and
-`release.yml`'s own `gates` job was a second, shorter one that described itself
-as running the same policy: four gates against the tagged commit where CI ran
-nine, so the installer, the artifact verifier, the npm packages and the formula
-were never exercised on the commit actually being released. One script called
-identically by both workflows is what stops the two definitions of "ready to
-release" from drifting again; `--strict` makes a gate whose tool is missing a
-failure rather than a quietly smaller policy, and a skipped gate is never
-counted as a passing one.
+`release-policy` runs `tlrelease policy --profile ci --strict`; the release
+workflow runs the release profile. `release/Policy.lean` owns the ordered
+registry and both execution and listing use its plan-aware selection function.
+`--strict` makes a missing tool a failure, and a skipped gate is never counted
+as passing. The historical shell runner and parity snapshot remain temporarily
+for the subsequent atomic shell deletion; neither workflow uses that runner
+as its full policy. Its ShellCheck and formula single-gate adapters remain
+explicit registry entries until that deletion.
 
 `hermetic-release` is the dynamic half of ADR-0028's dependency budget. One
-outer Bash step downloads hash-pinned static ShellCheck and actionlint inputs,
+outer job builds `tlrelease` with `lake build tlreleaseStatic --wfail`, reusing
+the executable's object graph and Lean's bundled libraries with GCC and fully
+static linker groups.
+Its Bash step downloads hash-pinned static ShellCheck and actionlint inputs,
 constructs only declared adapter fixtures, records their digests, and launches
 one digest-pinned `alpine/git` image. The complete Podman argv is guarded in
 `Tests/ReleaseDriftTests.lean`: no network, read-only image and checkout,
@@ -234,43 +233,21 @@ planted inputs — the same evidence, from outside the thing it tests.
 
 ### The policy has two profiles, because it gates two different things
 
-`check-release-policy.sh --profile release` is the release gate: exactly the
+`tlrelease policy --profile release --strict` is the release gate: exactly the
 checks standing between a defect and a *published* artifact through the channels
 `release/plan.json` enables — the GitHub Release, the installer, and the
 artifact verifier. It is what `release.yml` runs on the tagged commit and what a
 rehearsal runs.
 
-`--profile ci`, the default, is repository hygiene: everything above plus the
-gates for channels that are built but switched off, which live in
-`scripts/check-channel-policy.sh` — `ruby -c` over the tracked formula and the
-rendered fixtures beside it. `ci.yml` runs it on every commit, so a deferred
-channel cannot rot while it waits.
-
-The npm half of that file is not in the profile. It is `tlrelease npm-selftest`,
-so the toolchain-free job that runs the policy cannot run it; `build-and-test`
-invokes it as `check-channel-policy.sh --npm-only`, which keeps it on every
-commit and keeps the ambient npm configuration the gate is run against in the
-script rather than in a workflow's `run:` block. Same move as `tlrelease stamp`,
-the dependency boundary and the task-ID lint, and the same reason. The profiles
-still differ by the deferred channels, because the gate a shell alone can run —
-`ruby -c` — is still ci-only.
-
-**This gate has no owner, and that is a recorded gap.** Every other gate here is
-in `release/Policy.lean`, which the parity check compares against the shell's own
-listing, so a gate that stopped being run fails a build. This one is not: it is
-neither in a profile nor in the registry, and the only thing that runs it is a
-step in `ci.yml`. Deleting that step, or misrouting the flag that reaches it,
-breaks nothing that CI would notice.
-
-A guard was written for it and removed. It read the workflow and the script as
-text, and six successive readings of it — a commented-out step, a command named
-in another field, a key of the same name nested under a step, a `- ` line inside
-a heredoc, an arm bound from an unrelated `case`, a gate function with an empty
-body — each reported the gate as running when nothing ran it. A guard that
-answers "clean" on that many workflows is worse than a recorded absence, because
-an absence can be seen. What replaces it is a shared workflow model and a
-black-box test that drives `--npm-only` against a stub, which is a different
-instrument and its own change.
+`tlrelease policy --profile ci --strict` is repository hygiene: it includes
+Homebrew formula parsing and the native npm suite even while their channels are
+disabled. The registry invokes npm validation with cache, userconfig and
+globalconfig paths beneath a regular-file blocker; subprocess tests observe
+all three poisoned inputs and cleanup. This closes the former unowned npm
+workflow-step gap. Tests cover all four npm/Homebrew enablement combinations
+through the public policy listing as well as the shared selection function.
+The surviving shell single-gate selector remains separately tested until its
+atomic deletion.
 
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
@@ -283,9 +260,13 @@ generators have since moved into `tlrelease`.
 
 A gate for a disabled channel is *absent* from the release profile rather than
 skipped-as-passing, because a skip is a report about this run and absence is a
-statement about the release. Absence is structural, not conditional: the
-deferred gates are in a file the release profile never names, so there is no
-flag that could turn them back on there.
+statement about the release. Selection is a typed decision from the plan:
+enabling a channel adds its gate to the release profile. Both execution and
+listing use that same decision, whose characterization theorem is pinned.
+The current hermetic job targets the GitHub-only plan. Enabling npm or Homebrew
+also requires separating that runtime-stripped evidence from the enabled
+channel's packaging environment; adding those runtimes to the stripped image
+would erase the dependency-boundary claim it exists to test.
 
 A gate whose *tool* is absent is a different decision, and it is made in one
 place. `rc_tool_gate` in `scripts/lib/release-common.sh` crosses the three

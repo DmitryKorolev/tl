@@ -245,17 +245,11 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- mappings install.sh and the npm launcher each carry
                         -- inline to release/Platform.lean, cross-checked
                         -- against release/targets.json),
-                        -- check-release-policy.sh (all of the above as one
-                        -- command, in two profiles: `ci` adds
-                        -- check-channel-policy.sh, whose gate invokes ruby for
-                        -- the deferred Homebrew channel — its npm gate needs
-                        -- the built tool and runs from --npm-only in
-                        -- build-and-test instead, and
-                        -- `release` — what the release workflow runs against
-                        -- the tagged commit — does not have them),
-                        -- check-release-runtimes.sh (the release profile again,
-                        -- with python, python3, ruby, brew, node and npm
-                        -- shimmed to fail, each shim proved to fire first)
+                        -- check-release-policy.sh (historical parity oracle
+                        -- and ShellCheck single-gate adapter; both workflows
+                        -- now run the native Policy registry),
+                        -- check-release-runtimes.sh (migration PATH-shim
+                        -- evidence; its selftest remains in the native policy)
 
 scripts/lib/            -- shared by the release scripts
   release-common.sh     --   digests, the SHA256SUMS lookup, the file-mode
@@ -272,12 +266,11 @@ release/                -- what a release is, machine-readable; ADR-0028 owns
   plan.json             --   which channels this release actually publishes.
                         --   ADR-0006 describes how each channel works; this
                         --   says which are switched on. The publish jobs
-                        --   (via `tlrelease plan-channels`) and the external
-                        --   prerequisite audit (via `rc_channel_state`,
-                        --   which is why that helper is channel-only) are
+                        --   (via the workflow-plan command) and the native
+                        --   external prerequisite audit are
                         --   both derived from it: a deferred channel has no
                         --   job to run and no prerequisite to be missing. The
-                        --   per-commit gate list in check-release-policy.sh is
+                        --   per-commit CI gate list in Policy.lean is
                         --   NOT derived from it — those gates are hermetic and
                         --   run over every channel's generator on every commit,
                         --   which is what keeps a deferred channel from
@@ -745,7 +738,16 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   guards: job blocks, direct step fields, run scalars,
                         --   raw source and line positions; tested in WorkflowTests
                         --   and each guard's adversarial mutation corpus; not a
-                        --   general YAML parser or the future publication verdict
+                        --   general YAML parser
+  WorkflowPolicy.lean   --   closed authority/output and argv checks with pinned
+                        --   JobValid/Valid characterization; every job header
+                        --   and output edge, privileged step order and inputs
+  WorkflowContracts.lean --  reviewed schemas for both workflows; workflow-policy
+                        --   command, checked by mutation tests and native policy
+  WorkflowOutput.lean   --   validated, framed GitHub output batches
+  WorkflowRelease.lean  --   source binding, authenticated manifest verification,
+                        --   preparation, signing and publication orchestration;
+                        --   explicit subprocess argv and tested failure seams
   Write.lean            --   what a release-evidence write is, before anything
                         --   performs one: an operator-named output directory, a
                         --   sealed non-empty list of validated relative
