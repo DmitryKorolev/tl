@@ -759,6 +759,12 @@ private def documentTests : IO (List Outcome) := do
     every public contract here makes retiring one a compile error rather than a
     silent deletion. -/
 private def pinnedReleaseVerdictTheorems : Unit :=
+  let _ := @Release.WorkflowOutput.rowAllowed_iff
+  let _ := @Release.Stamp.workflowStampAllowed_iff
+  let _ := @Release.WorkflowRelease.sourceAgrees_iff
+  let _ := @Release.WorkflowRelease.assetSetAllowed_iff
+  let _ := @Release.WorkflowRelease.releaseMatches_iff
+  let _ := @Release.WorkflowRelease.prereleaseArgs_nonempty_iff
   let _ := @Release.Check.allHeld_iff_noFailures
   let _ := @Release.metadataAccepts_iff
   let _ := @Release.metadataFailures_isEmpty_iff

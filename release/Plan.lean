@@ -22,6 +22,7 @@ silently disable a channel that was supposed to publish.
 -/
 import release.Command
 import release.Model
+import release.WorkflowOutput
 
 namespace Release
 
@@ -73,6 +74,20 @@ private def channelsCommand : Command :=
                 return 0
     | _ => wrongArity
 
+private def workflowChannelsCommand : Command :=
+  optionCommand "workflow-plan" "--plan <plan.json> --output <runner-output-file>"
+    "Write every channel decision directly to the runner's output file."
+    ["--plan", "release/plan.json", "--output", "github-output"]
+    [{ name := "plan", takesValue := true }, { name := "output", takesValue := true }]
+    (fun options => do return (← options.required "plan", ← options.required "output"))
+    (fun (planPath, outputPath) => do
+      let text ← ofIO (readTextFile planPath)
+      let plan ← ofExcept (ReleasePlan.parse planPath text)
+      let rows := (channelDecisions plan).map fun (channel, enabled) =>
+        (channel.wire, if enabled then "true" else "false")
+      ofIO (WorkflowOutput.write outputPath rows)
+      return "wrote every channel decision to the runner output file")
+
 /-- The release being cut, however the caller spells it: a tag (`v0.1.0`) or a
     bare version (`0.1.0`). Both are refused if malformed rather than one being
     silently read as the other — `v0.1.0` passed to the bare parser would fail
@@ -109,6 +124,6 @@ private def deferralsCommand : Command :=
                     return 1
     | _ => wrongArity
 
-def planCommands : List Command := [channelsCommand, deferralsCommand]
+def planCommands : List Command := [channelsCommand, workflowChannelsCommand, deferralsCommand]
 
 end Release

@@ -27,6 +27,8 @@ this command writes — which is what makes it possible for the gates job to
 build this tool before the stamp step runs.
 -/
 import release.Manifest
+import release.Consistency
+import release.WorkflowOutput
 
 namespace Release
 
@@ -178,7 +180,7 @@ private def gitIn (root : String) (args : List String) : Decision String := do
     merely sitting *inside* an unrelated checkout would otherwise be stamped
     with that checkout's commit — a `clean` claim naming a commit that does not
     contain this source at all. -/
-private def gitProvenance (root : String) : Decision (String × Bool) := do
+private def gitProvenance (root : String) (excluded : List String := []) : Decision (String × Bool) := do
   let commit ← gitIn root ["rev-parse", "HEAD"]
   let toplevel ← gitIn root ["rev-parse", "--show-toplevel"]
   let resolved ← ofIO (do
@@ -199,8 +201,8 @@ private def gitProvenance (root : String) : Decision (String × Bool) := do
   -- Git 2.17's normal mode can report the output's parent directory even when
   -- the excluded output is the only file inside it.
   let status ← gitIn root
-    ["-c", "status.showUntrackedFiles=all", "status", "--porcelain",
-     "--", ".", s!":(exclude){outputRelative}"]
+    (["-c", "status.showUntrackedFiles=all", "status", "--porcelain",
+     "--", ".", s!":(exclude){outputRelative}"] ++ excluded.map (":(exclude)" ++ ·))
   return (commit, !status.isEmpty)
 
 private def stampOptions : List OptionSpec :=
@@ -244,7 +246,80 @@ private def stampCommand : Command :=
     ["--root", ".", "--commit"]
     stampOptions stampArgs stampDecision
 
-def stampCommands : List Command := [stampCommand]
+structure WorkflowArgs where
+  root : String
+  directory : Write.OutputDirectory
+  refType : String
+  refName : String
+  output : String
+
+/-- The workflow stamp is evidence only for a clean checkout and the version
+    named by its tag. Branch rehearsals have no tag-version comparison. -/
+def workflowStampAllowed (dirty : Bool) (version : Version) (refType refName : String) : Bool :=
+  !dirty && (refType == "branch" || (refType == "tag" && refName == version.tag))
+
+theorem workflowStampAllowed_iff (dirty : Bool) (version : Version) (refType refName : String) :
+    workflowStampAllowed dirty version refType refName = true ↔
+      dirty = false ∧ (refType = "branch" ∨ (refType = "tag" ∧ refName = version.tag)) := by
+  cases dirty with
+  | false =>
+    simp only [workflowStampAllowed, Bool.not_false, Bool.true_and, Bool.or_eq_true,
+      Bool.and_eq_true, beq_iff_eq, true_and]
+  | true =>
+    simp only [workflowStampAllowed, Bool.not_true, Bool.false_and, Bool.false_eq_true,
+      Bool.true_eq_false, false_and]
+
+def workflowArgs (options : Options) : Except String WorkflowArgs := do
+  let root ← options.required "root"
+  let refType ← options.required "ref-type"
+  if refType != "tag" && refType != "branch" then
+    throw "--ref-type must be tag or branch; pass the workflow's GITHUB_REF_TYPE"
+  return {
+    root, directory := ← Write.OutputDirectory.parse "--root" root
+    refType, refName := ← options.required "ref-name", output := ← options.required "output" }
+
+/-- A workflow stamp may exclude only its own already-validated tool file.
+    The handoff contract fixes that path and checks it before this command. -/
+def workflowDecision (args : WorkflowArgs) : Decision String := do
+  let tool ← attempt "resolving the workflow release tool" (IO.FS.realPath (args.root ++ "/tool/tlrelease"))
+  let running ← attempt "resolving this executable" (do IO.FS.realPath (← IO.appPath))
+  if tool != running then
+    decline "workflow-stamp must run from the validated tool/tlrelease handoff; restore the canonical download and comparison prefix"
+  let (commit, dirty) ← gitProvenance args.root ["tool/tlrelease"]
+  let _ ← ofExcept (Commit.parse "the stamped commit" commit)
+  let commandsPath := args.root ++ "/Tl/Cli/Commands.lean"
+  let commandsText ← ofIO (readTextFile commandsPath)
+  let product ← ofExcept (oneLiteral commandsPath "productVersion" commandsText
+    "def productVersion : String := \"" "\"")
+  let version ← ofExcept (Version.parse "productVersion" product)
+  if !workflowStampAllowed dirty version args.refType args.refName then
+    decline s!"a workflow stamp requires a clean checkout and a branch rehearsal or tag {version.tag}; remove writes before stamping and tag the matching product version"
+  let toolchainText ← ofIO (readTextFile (args.root ++ "/lean-toolchain"))
+  let digester ← ofIO Digester.resolve
+  let manifestDigest ← ofIO (digester.digest (args.root ++ "/lake-manifest.json"))
+  let provenance : Provenance := {
+    commit, dirty := false
+    toolchain := toolchainText.trimAscii.toString, manifestDigest := manifestDigest.hex }
+  let problems := unstampable provenance
+  if !problems.isEmpty then
+    decline (String.intercalate "\n" problems ++ "; restore valid lean-toolchain and lake-manifest.json inputs before stamping")
+  let path ← ofExcept (Write.OutputPath.parse "the workflow stamp" outputRelative)
+  let disclosure ← ofIO (writeEvidence args.directory path (render provenance))
+  let digest ← ofIO (digester.digest (args.root ++ "/" ++ outputRelative))
+  ofIO (WorkflowOutput.write args.output
+    [("version", product), ("commit", commit), ("stampDigest", digest.hex)])
+  return disclosing s!"stamped clean commit {commit} and wrote its workflow outputs" disclosure
+
+private def workflowCommand : Command :=
+  optionCommand "workflow-stamp"
+    "--root <dir> --ref-type <tag|branch> --ref-name <name> --output <runner-output-file>"
+    "Stamp the clean release checkout and write version, commit and stamp digest directly to the runner."
+    ["--root", ".", "--ref-type", "tag", "--ref-name", "v0.1.0", "--output", "github-output"]
+    [{ name := "root", takesValue := true }, { name := "ref-type", takesValue := true },
+     { name := "ref-name", takesValue := true }, { name := "output", takesValue := true }]
+    workflowArgs workflowDecision
+
+def stampCommands : List Command := [stampCommand, workflowCommand]
 
 end Stamp
 
