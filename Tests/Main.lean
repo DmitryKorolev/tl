@@ -18,6 +18,7 @@ import Tests.GrammarTests
 import Tests.DocGrammarTests
 import Tests.ReleaseTests
 import Tests.ReleaseToolTests
+import Tests.ShellInventoryTests
 import Tests.ReleaseDriftTests
 import Tests.WorkflowCommandTests
 import Tests.WorkflowPolicyTests
@@ -47,6 +48,7 @@ unsafe def main : IO UInt32 := do
   let releaseIdentity ← releaseIdentityTests
   let releasePlan ← releasePlanTests
   let releaseTool ← releaseToolTests
+  let shellInventory ← shellInventoryTests
   let releaseDrift ← releaseDriftTests
   let workflowCommands ← workflowCommandTests
   let workflowRelease ← workflowReleaseTests
@@ -86,6 +88,7 @@ unsafe def main : IO UInt32 := do
     ("Release identity: repository/workflow/npm pins do not drift", releaseIdentity),
     ("Release plan: enabled channels, and the documents that state them", releasePlan),
     ("tlrelease: dispatch, usage, and the two refusals", releaseTool),
+    ("Exact three-program shell inventory", shellInventory),
     ("Release drift: documented invocations, and one decision about a missing tool", releaseDrift),
     ("Typed workflow output producers", workflowCommands),
     ("Typed release orchestration", workflowRelease),

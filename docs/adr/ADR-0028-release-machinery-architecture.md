@@ -555,6 +555,18 @@ protected change. Workflow YAML, the Homebrew Ruby DSL, generated data, and the
 npm launcher's final dynamic `exec` are governed by their own typed grammar,
 action budget, and process tests rather than being classified as shell programs.
 
+The standalone `tlrelease shell-inventory --root .` command implements this
+check before enforcement is installed at atomic deletion. Its planted-checkout
+suite is `Tests/ShellInventoryTests.lean`; its acceptance characterization is
+`Release.ShellInventory.accepts_iff`. The first-line vocabulary is `sh`, `bash`,
+`dash`, `ash`, `ksh`, `ksh93`, `mksh`, `pdksh`, `zsh`, `csh`, `tcsh`, and `fish`,
+directly or through `env` with an optional `-S`. This is literal whitespace
+splitting, with no shell quoting or operand interpretation. A shebang longer
+than 4096 bytes refuses; ordinary binary data is not decoded as UTF-8. The
+root must be the checkout root, and a tracked regular file replaced by a
+directory or symlink refuses before reading. These are protected-source checks,
+not a race-resistant filesystem sandbox.
+
 Per the threat model in Context, this check counts declared shell surfaces; it
 does not claim to discover a tracked data file that already-trusted shell code
 secretly passes to `sh`, or code hidden in a workflow scalar. The survivors may
