@@ -619,10 +619,8 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   native error class by matching formatted text
                         --   (`:E…:`), since that makes a message a contract;
                         --   the hermetic-release job has exactly one pinned
-                        --   checkout plus one run step, its complete Podman
-                        --   configuration argv is exact, and each positive,
-                        --   negative and adapter-suite evidence command is
-                        --   present; every pin and command has a mutation row;
+                        --   checkout, toolchain setup, native build and shared
+                        --   hermetic command; altered or additional steps refuse;
                         --   and the release FFI registry — every extern in the
                         --   loaded release environment pinned by declaring
                         --   module, native symbol and full Lean signature, no
@@ -729,6 +727,15 @@ Ruby DSL and is not release administration.
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
+  HermeticPlan.lean     --   pinned preparation inputs, builder and restricted
+                        --   evidence argv; completed_iff characterizes the
+                        --   exit-status plus final-marker predicate, pinned
+                        --   by HermeticTests (no product landmark)
+  Hermetic.lean         --   shared local/CI preparation and inner worker;
+                        --   bounded processes, per-command retained logs,
+                        --   digest checks, inventories and container cleanup
+  HermeticFixture.lean  --   migrated launcher public-process corpus, generated
+                        --   only in scratch; byte preservation pinned in tests
   Policy.lean           --   one registry for listing and execution, CI/release
                         --   profile membership and missing-tool verdicts;
                         --   direct ShellCheck and native Homebrew syntax gate

@@ -15,16 +15,21 @@ open Lake DSL
 package tl where
   version := v!"0.1.0"
 
-require batteries from git
-  "https://github.com/leanprover-community/batteries" @
-  -- v4.33.0, the rev mathlib's own v4.33.1 manifest pins
-  "4488d40d070b9700d4d5a6aa342f0d40c31b2a2d"
+-- The standalone release tool imports only Lean core. Its isolated Linux
+-- build uses -KreleaseOnly=true to avoid fetching unrelated proof dependencies.
+-- Ordinary product builds and trust verification retain both pinned requires.
+meta if (get_config? releaseOnly) != some "true" then
+  require batteries from git
+    "https://github.com/leanprover-community/batteries" @
+    -- v4.33.0, the rev mathlib's own v4.33.1 manifest pins
+    "4488d40d070b9700d4d5a6aa342f0d40c31b2a2d"
 
-require mathlib from git
-  "https://github.com/leanprover-community/mathlib4" @
-  -- v4.33.1 (matching the toolchain); ADR-0009 escape hatch, scoped to the
-  -- finite-graph lemmas for thms 5/6/10 + rollup fuel-adequacy
-  "0df444a360eaa60ab8c11dca51a86af692955474"
+meta if (get_config? releaseOnly) != some "true" then
+  require mathlib from git
+    "https://github.com/leanprover-community/mathlib4" @
+    -- v4.33.1 (matching the toolchain); ADR-0009 escape hatch, scoped to the
+    -- finite-graph lemmas for thms 5/6/10 + rollup fuel-adequacy
+    "0df444a360eaa60ab8c11dca51a86af692955474"
 
 @[default_target] lean_lib Tl
 
@@ -87,7 +92,7 @@ lean_lib ReleaseCore where
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
     `release.Homebrew, `release.Npm, `release.Platform, `release.Policy, `release.Stamp,
     `release.TaskId, `release.ShellInventory, `release.InstallerSuite, `release.VerifierSuite, `release.AdapterFixture,
-    `release.Cli]
+    `release.HermeticPlan, `release.HermeticFixture, `release.Hermetic, `release.Cli]
 
 /-- A default target so `lake build --wfail` holds the release tool to the same
     warning-free standard as everything else. `release.Main` is a three-line

@@ -169,207 +169,40 @@ private def gitFloorReleaseToolShape (workflow : String) : Bool := Id.run do
     && (run.code.map (fun line => line.trimAscii.toString)).contains
       "chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker .lake/build/bin/tlrelease"
 
-/-! ## The nested hermetic release job
-
-The inner container is evidence only because the outer invocation gives it no
-authority. Its image, mounts, identity, network, capabilities, entry point and
-environment are therefore one exact argv rather than individually interesting
-substrings. The command body has a smaller structural contract: it must prove
-the negative and positive inventories before running the release profile and
-all retained-adapter suites. -/
-
-private def hermeticImage : String :=
-  "docker.io/alpine/git@sha256:53a6239398162098fed2f49a46512f9cbba9e3f31b9f2cea4fa90129ee069a99"
-
-private def hermeticEnvironment : List String :=
-  [s!"HERMETIC_IMAGE: {hermeticImage}",
-   "BUSYBOX_STATIC_VERSION: \"1.37.0-r20\"",
-   "BUSYBOX_STATIC_SHA256: \"488ad6efd04b5a722719e79f8e0dcc2c24afd6758867af3ce41b04839e60c74b\"",
-   "ACTIONLINT_VERSION: \"1.7.12\"",
-   "ACTIONLINT_SHA256: \"8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8\"",
-   "SHELLCHECK_VERSION: \"0.11.0\"",
-   "SHELLCHECK_SHA256: \"8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198\"",
-   "HERMETIC_REQUIRED_TOOLS: \"awk basename cat chmod cp cut dirname env find git grep head id ln ls mkdir mktemp mv pwd readlink rm sed sha256sum sh shellcheck sleep sort stat tail tar touch tr uname wc actionlint tlrelease\"",
-   "HERMETIC_FORBIDDEN_RUNTIMES: \"python python3 ruby brew node npm\""]
-
-/-- The complete Podman configuration argv, through the start of the one
-    inner command argument. An insertion anywhere before the image changes
-    this list; after the image, words belong to `/bin/sh`, not Podman. -/
-private def hermeticPodmanPrefix : List String :=
-  ["podman run --rm \\",
-   "--platform linux/amd64 \\",
-   "--network none \\",
-   "--read-only \\",
-   "--read-only-tmpfs=false \\",
-   "--cap-drop ALL \\",
-   "--security-opt no-new-privileges \\",
-   "--userns host \\",
-   "--user 0:0 \\",
-   "--mount \"type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly\" \\",
-   "--mount \"type=bind,source=$scratch,target=/scratch\" \\",
-   "--mount \"type=bind,source=$scratch/static/bin/busybox.static,target=/bin/busybox,readonly\" \\",
-   "--mount \"type=bind,source=$scratch/lib,target=/lib\" \\",
-   "--mount \"type=bind,source=$scratch/lib64,target=/lib64\" \\",
-   "--workdir /workspace \\",
-   "--env HOME=/scratch/home \\",
-   "--env TMPDIR=/scratch/tmp \\",
-   "--env \"HERMETIC_REQUIRED_TOOLS=$HERMETIC_REQUIRED_TOOLS\" \\",
-   "--env \"HERMETIC_FORBIDDEN_RUNTIMES=$HERMETIC_FORBIDDEN_RUNTIMES\" \\",
-   "--env PATH=/scratch/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \\",
-   "--entrypoint /bin/sh \\",
-   "\"$HERMETIC_IMAGE\" -eu -c '"]
-
-private def hermeticBodyFragments : List String :=
-  ["[ \"$(podman info --format '{{.Host.Security.Rootless}}')\" = true ]",
-   "pack ./npm/tl --ignore-scripts --pack-destination \"$scratch/packed\"",
-   "tar -xzf \"$scratch/packed/taskloop-tl-0.0.0.tgz\" -C \"$scratch/packed\" package/bin/tl",
-   "cmp npm/tl/bin/tl \"$scratch/packed/package/bin/tl\"",
-   "source_launcher=/scratch/packed/package/bin/tl",
-   "sha256sum \"$scratch/packed/package/bin/tl\"",
-   "install -m 0755 .lake/build/bin/tlrelease-static \"$scratch/tools/tlrelease\"",
-   "sha256sum \"$scratch/tools/tlrelease\"",
-   "echo \"${ACTIONLINT_SHA256}  $scratch/actionlint.tar.gz\" | sha256sum -c -",
-   "echo \"${SHELLCHECK_SHA256}  $scratch/shellcheck.tar.xz\" | sha256sum -c -",
-   "curl -sSfL --retry 3 -o \"$scratch/busybox-static.apk\" \\",
-   "\"https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/busybox-static-${BUSYBOX_STATIC_VERSION}.apk\"",
-   "echo \"${BUSYBOX_STATIC_SHA256}  $scratch/busybox-static.apk\" | sha256sum -c -",
-   "tar -xzf \"$scratch/busybox-static.apk\" -C \"$scratch/static\" bin/busybox.static",
-   "chmod 0755 \"$scratch/static/bin/busybox.static\"",
-   "library_source=$(podman create --platform linux/amd64 \"$HERMETIC_IMAGE\")",
-   "trap 'podman rm -f \"$library_source\" >/dev/null' EXIT",
-   "podman cp \"$library_source:/lib/.\" \"$scratch/lib\"",
-   "podman rm \"$library_source\" >/dev/null",
-   "rm -f /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-aarch64.so.1 /lib/ld-musl-*.so.1",
-   "glibc) : > /lib64/ld-linux-x86-64.so.2; : > /lib/ld-musl-test.so.1 ;;",
-   "arm64-only) : > /lib/ld-linux-aarch64.so.1 ;;",
-   "arm64-with-musl) : > /lib/ld-linux-aarch64.so.1; : > /lib/ld-musl-test.so.1 ;;",
-   "musl) : > /lib/ld-musl-test.so.1 ;;",
-   "neither) : ;;",
-   "note \"$([ /bin/sh -ef /scratch/static/bin/busybox.static ] && echo 0 || echo 1)\" \\",
-   "for observation in arm64-only arm64-with-musl neither; do",
-   "selection \"$observation-present\" Linux aarch64 \"$observation\" linux-arm64 hoisted",
-   "prepare \"$observation-missing\" Linux aarch64 \"$observation\"",
-   "note \"$([ \"$run_status\" -eq 1 ] && printf '%s' \"$run_out\" | grep -q 'not installed' && ! printf '%s' \"$run_out\" | grep -q 'uses musl libc' && echo 0 || echo 1)\" \\",
-   "for variant in present missing; do",
-   "observed_case=\"$work/$observation-$variant\"",
-   "note \"$(grep -qx -- -s \"$observed_case/uname-calls\" && grep -qx -- -m \"$observed_case/uname-calls\" && echo 0 || echo 1)\" \\",
-   "observed_digest=$(sha256sum \"$observed_case/tl/bin/tl\" | cut -d' ' -f1)",
-   "note \"$([ \"$source_digest\" = \"$observed_digest\" ] && echo 0 || echo 1)\" \\",
-   "sha256sum \"$scratch/static/bin/busybox.static\""]
-
-/-- The complete inner program, including each refusal and final invocation.
-    Exact lines and ordering prevent a lint argument or a swallowed failure
-    from standing in for execution. -/
-private def hermeticInnerBody : List String :=
-  ["[ \"$(id -u)\" = \"$(stat -c %u /scratch)\" ]",
-   "[ \"$(id -g)\" = \"$(stat -c %g /scratch)\" ]",
-   ": > /scratch/write-probe",
-   "if ( : > /workspace/.hermetic-write-probe ) 2>/dev/null; then",
-   "echo \"hermetic release: the checkout mount is writable\" >&2",
-   "exit 1",
-   "fi",
-   "[ ! -e /var/run/docker.sock ] || {",
-   "echo \"hermetic release: a container-engine socket entered the inner container\" >&2",
-   "exit 1",
-   "}",
-   "[ ! -e /run/podman/podman.sock ]",
-   "[ ! -e /run/user/0/podman/podman.sock ]",
-   "for runtime in $HERMETIC_FORBIDDEN_RUNTIMES; do",
-   "if command -v \"$runtime\" >/dev/null 2>&1; then",
-   "echo \"hermetic release: forbidden runtime $runtime is on PATH\" >&2",
-   "exit 1",
-   "fi",
-   "hits=$(find / -xdev \\( -type f -o -type l \\) \\( -name \"$runtime\" -o -name \"$runtime[0-9]*\" -o -name nodejs \\) -print)",
-   "[ -z \"$hits\" ] || {",
-   "echo \"hermetic release: forbidden runtime $runtime exists in the image: $hits\" >&2",
-   "exit 1",
-   "}",
-   "done",
-   "for tool in $HERMETIC_REQUIRED_TOOLS; do",
-   "command -v \"$tool\" >/dev/null 2>&1 || {",
-   "echo \"hermetic release: required input $tool is absent\" >&2",
-   "exit 1",
-   "}",
-   "printf \"hermetic input: %s=%s\\n\" \"$tool\" \"$(command -v \"$tool\")\"",
-   "done",
-   "sha256sum -c /scratch/positive-inputs.sha256",
-   "git --version",
-   "shellcheck --version",
-   "actionlint -version",
-   "shellcheck -S warning -s sh /scratch/launcher-suite",
-   "tlrelease policy --profile release --strict",
-   "/scratch/launcher-suite",
-   "echo \"hermetic release: policy and all three retained-adapter suites passed\""]
-
-private def suffixAt (needle : String) : List String → Option (List String)
-  | [] => none
-  | line :: rest => if line == needle then some (line :: rest) else suffixAt needle rest
-
-private def hermeticOccurrences (text needle : String) : Nat :=
-  (text.splitOn needle).length - 1
-
-def hermeticReleaseShape (workflow : String) : Except String Unit := do
-  let jobs := jobsOf workflow
-  let matching := jobs.filter fun (name, _) => name == "hermetic-release"
-  if matching.length != 1 then
-    throw s!"the workflow has {matching.length} hermetic-release jobs; exactly one owns the dependency-budget evidence"
-  let (_, jobLines) := matching.head!
-  let normalized := jobLines.map (·.trimAscii.toString)
-  for forbidden in ["if:", "continue-on-error:", "container:", "environment:"] do
-    if normalized.any (·.startsWith forbidden) then
-      throw s!"the hermetic-release job must not override execution with `{forbidden}`"
-  for expected in ["runs-on: ubuntu-latest", "timeout-minutes: 20"] ++ hermeticEnvironment do
-    if !normalized.contains expected then
-      throw s!"the hermetic-release job does not pin `{expected}`"
-  let steps := stepsOf jobLines
-  if steps.length != 4 then
-    throw s!"the hermetic-release job has {steps.length} steps; restore checkout, toolchain setup, static build and the ordinary container run step"
-  let checkoutSteps := steps.filter fun step =>
-    step.uses.any (· == "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0")
-  if checkoutSteps.length != 1 then
-    throw "the hermetic-release job does not have exactly one pinned checkout action"
-  if (steps.filter fun step => step.uses.any (· == "leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0")).length != 1 then
-    throw "the hermetic-release job must install the pinned Lean toolchain"
-  if (steps.filter fun step => step.runLines.map (·.trimAscii.toString) ==
-      ["lake build tlreleaseStatic --wfail"]).length != 1 then
-    throw "the hermetic-release job must build the static native policy tool"
-  let runSteps := steps.filter fun step => step.runs "podman run --rm"
-  let [step] := runSteps
-    | throw s!"the hermetic-release job has {runSteps.length} steps launching Podman; exactly one ordinary run step must own the complete invocation"
-  if hermeticOccurrences (String.intercalate "\n" step.code) "podman run" != 1 then
-    throw "the hermetic-release run step launches Podman more than once"
-  let code := step.code.map (·.trimAscii.toString)
-  let some suffix := suffixAt hermeticPodmanPrefix.head! code
-    | throw "the hermetic-release run step has no canonical Podman invocation"
-  let actual := suffix.take hermeticPodmanPrefix.length
-  if actual != hermeticPodmanPrefix then
-    throw s!"the hermetic Podman argv drifted; expected {hermeticPodmanPrefix}, got {actual}"
-  for fragment in hermeticBodyFragments do
-    if !code.contains fragment then
-      throw s!"the hermetic-release run step no longer executes `{fragment}`"
-  if (suffix.drop hermeticPodmanPrefix.length).filter (· != "") != hermeticInnerBody ++ ["'"] then
-    throw "the hermetic-release inner evidence program drifted; preserve its checks, refusal arms and suite invocations in order"
-  pure ()
+/-! ## The shared native hermetic invocation
+The complete job shape is pinned here. Process arguments and evidence branches
+are now exercised in HermeticTests, where the executable owns them. -/
 
 private def canonicalHermeticWorkflow : String :=
   "jobs:\n" ++
   "  hermetic-release:\n" ++
   "    runs-on: ubuntu-latest\n" ++
   "    timeout-minutes: 20\n" ++
-  "    env:\n" ++
-  String.join (hermeticEnvironment.map fun line => s!"      {line}\n") ++
   "    steps:\n" ++
   "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n" ++
-  "      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0\n" ++
-  "      - run: lake build tlreleaseStatic --wfail\n" ++
+  "      - name: install the pinned Lean toolchain\n" ++
+  "        uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9 # v1.5.0\n" ++
+  "        with:\n" ++
+  "          auto-config: \"false\"\n" ++
+  "          build: \"false\"\n" ++
+  "          test: \"false\"\n" ++
+  "          lint: \"false\"\n" ++
+  "          use-mathlib-cache: \"false\"\n" ++
+  "          use-github-cache: \"false\"\n" ++
+  "      - name: build the native hermetic runner\n" ++
+  "        run: lake build tlrelease --wfail\n" ++
   "      - name: runtime-stripped release policy and retained-adapter suites\n" ++
-  "        run: |\n" ++
-  String.join ((hermeticBodyFragments ++ hermeticPodmanPrefix ++ hermeticInnerBody ++ ["'"]).map fun line => s!"          {line}\n")
+  "        run: ./.lake/build/bin/tlrelease hermetic --root .\n"
 
-private def hermeticRefuses (workflow needle : String) : Bool :=
-  match hermeticReleaseShape workflow with
-  | .ok () => false
-  | .error message => (message.splitOn needle).length > 1
+def hermeticReleaseShape (workflow : String) : Except String Unit := do
+  let jobs := (jobsOf workflow).filter (fun (name, _) => name == "hermetic-release")
+  let [(_, lines)] := jobs | throw "Restore exactly one hermetic-release job."
+  let expected := ((jobsOf canonicalHermeticWorkflow).head!).2
+  let code (ls : List String) := ls.filter (fun l =>
+    !l.trimAscii.isEmpty && !l.trimAscii.toString.startsWith "#")
+  if code lines != code expected then
+    throw "Restore the pinned checkout, toolchain, native build and shared hermetic invocation."
+  pure ()
 
 /-! ### The canonical one-file transport boundary -/
 
@@ -998,37 +831,15 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
   let releaseWorkflow ← IO.FS.readFile ".github/workflows/release.yml"
   let ciWorkflow ← IO.FS.readFile ".github/workflows/ci.yml"
   let lakefile ← IO.FS.readFile "lakefile.lean"
-  let hermeticMutationRows := hermeticPodmanPrefix.map fun line =>
-    check s!"hermetic release: removing `{line}` changes the pinned Podman argv"
-      ((hermeticReleaseShape (swap canonicalHermeticWorkflow s!"          {line}\n" "")).toOption.isNone)
-      s!"the mutated workflow still accepted a Podman argv without `{line}`"
-  let hermeticEnvironmentRows := hermeticEnvironment.map fun line =>
-    check s!"hermetic release: removing the input pin `{line}` is refused"
-      ((hermeticReleaseShape (swap canonicalHermeticWorkflow s!"      {line}\n" "")).toOption.isNone)
-      s!"the mutated workflow still accepted an environment without `{line}`"
-  let hermeticBodyRows := hermeticBodyFragments.map fun line =>
-    check s!"hermetic release: removing the evidence command `{line}` is refused"
-      ((hermeticReleaseShape (swap canonicalHermeticWorkflow s!"          {line}\n" "")).toOption.isNone)
-      s!"the mutated workflow still accepted a body without `{line}`"
-  let hermeticInnerRows := hermeticInnerBody.flatMap fun line =>
-    [check s!"hermetic release: deleting inner line `{line}` is refused"
-       ((hermeticReleaseShape (String.intercalate "\n"
-         ((ciWorkflow.splitOn "\n").filter fun actual => actual.trimAscii.toString != line))).toOption.isNone)
-       "the live workflow accepted removal of required evidence",
-     check s!"hermetic release: weakening inner line `{line}` is refused"
-       ((hermeticReleaseShape (swap canonicalHermeticWorkflow
-         s!"          {line}\n" s!"          {line} || true\n")).toOption.isNone)
-       "the evidence program accepted a swallowed status"]
   let hermeticExecutionRows := ["if: false", "continue-on-error: true", "container: alpine", "environment: release"].flatMap fun field =>
     [check s!"hermetic release: job-level `{field}` is refused"
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "    timeout-minutes: 20\n"
          s!"    timeout-minutes: 20\n    {field}\n")).toOption.isNone),
      check s!"hermetic release: step-level `{field}` is refused"
-       ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: |\n"
-         s!"        {field}\n        run: |\n")).toOption.isNone)]
+       ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: ./.lake/build/bin/tlrelease hermetic"
+         s!"        {field}\n        run: ./.lake/build/bin/tlrelease hermetic")).toOption.isNone)]
   return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile ++ staticReleaseRecipeRows lakefile
-    ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
-    ++ hermeticInnerRows ++ hermeticExecutionRows ++ [
+    ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
     -- leave alone. Without these a detector that matched nothing would report
     -- the same clean result as a release layer that classifies nothing.
@@ -1123,39 +934,26 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
        | .ok () => ""
        | .error message => message),
     check "hermetic release: a missing job is refused"
-      (hermeticRefuses "jobs:\n" "exactly one"),
+      (hermeticReleaseShape "jobs:\n").toOption.isNone,
     check "hermetic release: duplicate jobs are refused"
-      (hermeticRefuses (canonicalHermeticWorkflow ++ "  hermetic-release:\n") "exactly one"),
-    check "hermetic release: a different checkout action is refused"
-      (hermeticRefuses (swap canonicalHermeticWorkflow
-        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" "actions/checkout@main")
-        "pinned checkout"),
-    check "hermetic release: a different toolchain action is refused"
-      (hermeticRefuses (swap canonicalHermeticWorkflow
-        "leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9" "leanprover/lean-action@main")
-        "pinned Lean toolchain"),
-    check "hermetic release: a dynamic tool build is refused"
-      (hermeticRefuses (swap canonicalHermeticWorkflow
-        "lake build tlreleaseStatic --wfail" "lake build tlrelease --wfail")
-        "static native policy tool"),
-    check "hermetic release: a noncanonical Podman header is refused"
-      (hermeticRefuses (swap canonicalHermeticWorkflow
-        "podman run --rm" "podman run --rm --quiet") "canonical Podman invocation"),
-    check "hermetic release: an argument inserted before the image is refused"
-      (hermeticRefuses
-        (swap canonicalHermeticWorkflow
-          "          \"$HERMETIC_IMAGE\" -eu -c '\n"
-          "          --privileged \\\n          \"$HERMETIC_IMAGE\" -eu -c '\n")
-        "Podman argv drifted"),
-    check "hermetic release: a second Podman launch is refused"
-      (hermeticRefuses
-        (swap canonicalHermeticWorkflow
-          "          podman run --rm \\\n"
-          "          podman run --rm \\\n          podman run --rm \\\n")
-        "more than once"),
+      (hermeticReleaseShape (canonicalHermeticWorkflow ++ "  hermetic-release:\n")).toOption.isNone,
+    check "hermetic release: an unpinned checkout is refused"
+      (hermeticReleaseShape (swap canonicalHermeticWorkflow
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" "actions/checkout@main")).toOption.isNone,
+    check "hermetic release: an unpinned toolchain action is refused"
+      (hermeticReleaseShape (swap canonicalHermeticWorkflow
+        "leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9" "leanprover/lean-action@main")).toOption.isNone,
+    check "hermetic release: no-op build is refused"
+      (hermeticReleaseShape (swap canonicalHermeticWorkflow "lake build tlrelease --wfail" "true")).toOption.isNone,
+    check "hermetic release: no-op runner is refused"
+      (hermeticReleaseShape (swap canonicalHermeticWorkflow
+        "./.lake/build/bin/tlrelease hermetic --root ." "true")).toOption.isNone,
+    check "hermetic release: swallowed failure is refused"
+      (hermeticReleaseShape (swap canonicalHermeticWorkflow
+        "hermetic --root ." "hermetic --root . || true")).toOption.isNone,
     check "hermetic release: a second outer step is refused"
-      ((hermeticReleaseShape (canonicalHermeticWorkflow ++
-        "      - name: after the boundary\n        run: true\n")).toOption.isNone),
+      (hermeticReleaseShape (canonicalHermeticWorkflow ++
+        "      - name: after the boundary\n        run: true\n")).toOption.isNone,
     -- The checker itself, on the drift it exists to catch and on the shapes it
     -- must leave alone. Without these rows a guard that accepted everything
     -- would report the same clean result as the repository being clean.

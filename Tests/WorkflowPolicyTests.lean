@@ -28,8 +28,8 @@ def workflowPolicyTests : IO (List Outcome) := do
     check "workflow schema: quoted control keys normalize once"
       (accepts (release.replace "    permissions:" "    \"permissions\":"
         |>.replace "        run:" "        'run':") releaseContract)]
-  rows := rows ++ refusal "static hermetic tool build is required" ci
-    (ci.replace "lake build tlreleaseStatic --wfail" "lake build tlrelease --wfail") ciContract
+  rows := rows ++ refusal "native hermetic runner is required" ci
+    (ci.replace "./.lake/build/bin/tlrelease hermetic --root ." "true") ciContract
   for (label, before, after) in [
       ("inherited write permission", "permissions:\n  contents: read", "permissions:\n  contents: write"),
       ("plan producer shell", "./.lake/build/bin/tlrelease workflow-plan", "echo plan; ./.lake/build/bin/tlrelease workflow-plan"),

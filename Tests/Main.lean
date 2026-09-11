@@ -19,6 +19,7 @@ import Tests.DocGrammarTests
 import Tests.ReleaseTests
 import Tests.ReleaseToolTests
 import Tests.ShellInventoryTests
+import Tests.HermeticTests
 import Tests.InstallerProcessTests
 import Tests.VerifierProcessTests
 import Tests.ReleaseDriftTests
@@ -51,6 +52,7 @@ unsafe def main : IO UInt32 := do
   let releasePlan ← releasePlanTests
   let releaseTool ← releaseToolTests
   let shellInventory ← shellInventoryTests
+  let hermetic ← hermeticTests
   let verifierBranches ← verifierProcessTests
   let verifierMutations ← verifierProcessMutationTests
   let verifierCommands ← verifierSuiteCommandTests
@@ -74,6 +76,7 @@ unsafe def main : IO UInt32 := do
   let verify ← verifyTests
   let verifyLoaded ← verifyLoadedTests
   let status ← runAll [
+    ("Native local/CI hermetic validation", hermetic),
     ("Root module imports every Tl/ source (AGENTS.md)", imports),
     ("Lean-native trust verification: policy, inventory, kernel replay", verify),
     ("Lean-native trust verification: loaded environment selection", verifyLoaded),

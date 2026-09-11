@@ -183,8 +183,13 @@ CI gates (mirror these locally before declaring done):
   static BusyBox fixture and a separate `/lib` observation mount cover the
   arm64-only, glibc-alongside-musl, and neither-loader cases with both present
   and missing packages, as recorded in ADR-0028. The full
-  outer Podman argv and each evidence command are mutation-tested in
-  `Tests/ReleaseDriftTests.lean`. This job requires Podman and therefore cannot
+  outer Podman argv and each evidence stage are covered in
+  `Tests/HermeticTests.lean`; `Tests/ReleaseDriftTests.lean` pins CI's shared
+  native invocation. Reproduce it locally with `lake exe tlrelease hermetic --root .`.
+  Preparation downloads pinned inputs, uses the real Lake configuration in a
+  Linux builder with `-KreleaseOnly=true`, and retains logs under `.lake/hermetic/`. It requires rootless
+  Podman, npm for the actual pack, curl, tar, and a SHA-256 tool; Python and Ruby
+  are not orchestration dependencies. This job requires Podman and therefore cannot
   be reproduced by a local validation run whose Linux machine is unavailable; in
   that case, run every local gate and state that CI still owns this one.
 - A `homebrew-formula` job, which is the other required CI job the four gates

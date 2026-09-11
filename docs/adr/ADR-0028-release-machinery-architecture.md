@@ -642,7 +642,7 @@ Enforcement has four complementary layers:
 4. the complete first-party GitHub-only release policy and all three retained
    adapter suites run inside a pinned inner container launched by one outer
    `run:` step, with the checkout mounted read-only, a separate writable scratch
-   directory, no container-engine socket, and no network. The drift guard pins the complete
+   directory, no container-engine socket, and no network. Native runner tests pin the complete
    outer `podman run` argv, including the image identity, read-only checkout
    mount, writable scratch mount, disabled network, absent socket, and numeric
    `--user` matching the scratch owner; these flags are authority-bearing
@@ -657,6 +657,24 @@ the unprivileged runner on the host; it can enumerate the root-owned image
 directories without modifying checkout ownership. Implicit writable temporary
 mounts are disabled with `--read-only-tmpfs=false`. On macOS local reproduction
 uses a Podman Linux machine; ordinary builds and tests need neither engine.
+
+Local and CI orchestration share `tlrelease hermetic --root .`, implemented in
+`release/Hermetic.lean` with reviewed inputs and arguments in
+`release/HermeticPlan.lean`. A separate digest-pinned Ubuntu preparation
+container installs build prerequisites and builds the static tool from the
+actual checkout's Lake configuration and toolchain pin. The supported
+`-KreleaseOnly=true` Lake option omits the unrelated proof-library dependencies
+for this standalone tool; ordinary builds retain them. This stage may use the
+network; the later evidence container cannot. The builder's package repository
+and the normal Lean toolchain download remain build-input assumptions, not a
+claim of bit-for-bit reproducibility. Neither stage receives host credentials.
+Real npm packing stays in the outer environment, with isolated npm configuration.
+No YAML extraction, temporary Lake-file rewrite, Python or Ruby orchestration
+is required. The command reports its scratch location and retains command
+arguments, output and failures there; temporary containers are removed even
+when a build or test refuses. The worker must emit its final completion verdict
+as well as exit successfully. This detects accidental early exits, not a worker
+deliberately forging its own verdict.
 
 The namespace setting is `--userns host --user 0:0`. The preflight requires
 rootless Podman, so “host” here reuses Podman's existing rootless user namespace:
@@ -718,7 +736,10 @@ new case checks that both uname collaborators ran and its launcher copy matches
 the extracted npm package. The suite checks that `/bin/sh` is the mounted static fixture;
 the input manifest checks the fixture bytes. The input version/digest, library
 copy, read-only static mount, writable observation mounts, case invocations and
-assertions are mutation-pinned in `Tests/ReleaseDriftTests.lean`. Launcher bytes,
+assertions are retained in `release/HermeticFixture.lean`, with their migrated
+bytes pinned by a digest test. `Tests/HermeticTests.lean` owns process, inventory,
+mount, digest, completion and failure-path coverage; `Tests/ReleaseDriftTests.lean`
+pins the CI command that invokes the shared runner. Launcher bytes,
 container capabilities, and the read-only image/checkout boundary are unchanged.
 
 An actual macOS-only branch of `install.sh` is different. Hosted macOS contains

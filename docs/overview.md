@@ -611,8 +611,14 @@ explicitly permitted digest tool despite being implemented in Perl. The
 criterion is actual Darwin-only reachability of a **forbidden** runtime, not
 whether an adapter also runs on macOS.
 
-The `hermetic-release` CI job is configured to collect that Linux evidence;
-the exact workflow step passed locally on 2026-09-10 using Podman 6.1.1 in a
+The `hermetic-release` CI job is configured to collect that Linux evidence.
+Local and CI runs now share `tlrelease hermetic --root .`, whose native runner
+owns preparation, the restricted Podman argv, and supervised completion.
+Preparation uses a separate pinned Ubuntu builder with the actual Lake
+configuration. Its configured package repositories and Lean toolchain download
+remain trusted build inputs; this is not a reproducible-build claim. The
+evidence container remains network-free. The shared native command passed
+end to end locally on 2026-09-10 using Podman 6.1.1 in a
 rootless Linux VM, executing the pinned linux/amd64 image. Hosted CI remains
 a separate check of runner integration. Its pinned
 inner image receives only a read-only checkout and separate writable scratch

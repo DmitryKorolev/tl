@@ -77,13 +77,17 @@ ShellCheck directly, and checks formula syntax through the native Homebrew
 command.
 
 `hermetic-release` is the dynamic half of ADR-0028's dependency budget. One
-outer job builds `tlrelease` with `lake build tlreleaseStatic --wfail`, reusing
-the executable's object graph and Lean's bundled libraries with GCC and fully
-static linker groups.
-Its Bash step downloads hash-pinned static ShellCheck and actionlint inputs,
-constructs only declared adapter fixtures, records their digests, and launches
-one digest-pinned `alpine/git` image. The complete Podman argv is guarded in
-`Tests/ReleaseDriftTests.lean`: no network, read-only image and checkout,
+outer job builds the native runner and invokes `tlrelease hermetic --root .`,
+the same public command used locally on Linux and macOS. Lean prepares the
+inputs and runs `lake -KreleaseOnly=true build tlreleaseStatic --wfail` in a
+digest-pinned Ubuntu builder, using the checkout's actual Lake configuration.
+The explicit release-only mode omits unrelated proof-library downloads; normal
+product builds and the trust verifier keep both pinned dependencies.
+That preparation container may fetch the toolchain and dependencies; it has
+no publication credentials. The runner downloads hash-pinned static tools,
+constructs the declared adapter fixtures, records their digests, and launches
+one digest-pinned `alpine/git` evidence container. The complete Podman argv is
+pinned in `Tests/HermeticTests.lean`: no network, read-only image and checkout,
 capabilities dropped, no privilege gain, no container-engine socket, and separate
 writable scratch and libc-observation mounts. Rootless Podman maps the runner
 to container uid/gid 0 with `--userns host --user 0:0`;
@@ -92,6 +96,12 @@ image inventory, including root-owned directories, without host root or a
 recursive ownership change to the checkout. `--read-only-tmpfs=false` disables
 Podman's otherwise implicit writable temporary mounts. Nothing
 from the outer job's environment or credentials is passed implicitly.
+Per-command arguments, output and failures remain under `.lake/hermetic/`.
+Temporary containers are removed on success and failure. A zero status without
+the worker's final completion verdict refuses. The native completion predicate
+has a characterization theorem; preparation, evidence collection and cleanup
+are tested I/O. `Tests/ReleaseDriftTests.lean` pins CI's invocation of this
+shared runner, rather than reconstructing its process policy from shell text.
 
 The inner run checks both PATH lookup and the image filesystem for `python`,
 `python3`, `ruby`, `brew`, `node`, and `npm`; checks the declared positive tool

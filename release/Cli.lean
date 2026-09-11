@@ -68,6 +68,7 @@ import release.TaskId
 import release.ShellInventory
 import release.InstallerSuite
 import release.VerifierSuite
+import release.Hermetic
 
 namespace Release
 
@@ -78,7 +79,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  certificateCommands ++ consistencyCommands ++ homebrewCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ npmCommands ++ planCommands ++ platformCommands ++ policyCommands ++ prerequisiteCommands ++ sbomCommands ++ stampCommands ++ taskIdCommands ++ WorkflowRelease.commands ++ [WorkflowPolicy.command, ShellInventory.command, InstallerSuite.command, VerifierSuite.command]
+  certificateCommands ++ consistencyCommands ++ homebrewCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ npmCommands ++ planCommands ++ platformCommands ++ policyCommands ++ prerequisiteCommands ++ sbomCommands ++ stampCommands ++ taskIdCommands ++ WorkflowRelease.commands ++ [WorkflowPolicy.command, ShellInventory.command, InstallerSuite.command, VerifierSuite.command, Hermetic.command, Hermetic.workerCommand]
 
 def usage : String :=
   let header :=
