@@ -571,6 +571,9 @@ def runRemedy (skipped : Nat) : String :=
   else
     s!"{skipped} gate(s) did not run, so this was a smaller policy than the one being reported on — install the tools they name above and run it again."
 
+def successSummary (passed : Nat) (profile : Profile) : String :=
+  s!"{passed} gate(s) passed in the {profile.wire} profile"
+
 end Policy
 
 /-! ## The commands -/
@@ -625,7 +628,7 @@ private def runDecision (args : RunArgs) : Decision String := do
   let (passed, failed, skipped) := tally rows
   match runFailures args.strict rows with
   | [] =>
-      return s!"{passed} gate(s) passed in the {args.profile.wire} profile"
+      return successSummary passed args.profile
         ++ (if skipped == 0 then "" else s!", {skipped} skipped for a tool this machine does not have")
   | problems =>
       decline (s!"the {args.profile.wire} profile did not pass: {failed} failed, {skipped} skipped, {passed} passed.\n"

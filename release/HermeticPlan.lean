@@ -43,15 +43,16 @@ def positiveFiles : List String :=
 
 /-- Complete argv: mount paths remain arguments, never shell fragments.
 Rootless UID 0 maps to the caller and is checked against scratch ownership. -/
-def containerArgs (root scratch : String) : Array String := #[
-  "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only",
+def containerArgs (name root scratch : String) (gitMounts : List String := []) : Array String := #[
+  "create", "--name", name, "--platform", "linux/amd64", "--network", "none", "--read-only",
   "--read-only-tmpfs=false", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
   "--userns", "host", "--user", "0:0",
   "--mount", s!"type=bind,source={root},target=/workspace,readonly",
   "--mount", s!"type=bind,source={scratch},target=/scratch",
   "--mount", s!"type=bind,source={scratch}/static/bin/busybox.static,target=/bin/busybox,readonly",
   "--mount", s!"type=bind,source={scratch}/lib,target=/lib",
-  "--mount", s!"type=bind,source={scratch}/lib64,target=/lib64",
+  "--mount", s!"type=bind,source={scratch}/lib64,target=/lib64"] ++
+  (gitMounts.flatMap fun path => ["--mount", s!"type=bind,source={path},target={path},readonly"]).toArray ++ #[
   "--workdir", "/workspace", "--env", "HOME=/scratch/home", "--env", "TMPDIR=/scratch/tmp",
   "--env", "PATH=/scratch/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
   "--entrypoint", "/scratch/tools/tlrelease", image,
@@ -91,7 +92,6 @@ def evidenceCalls : List Call := [
   { tool := "git", args := #["--version"] },
   { tool := "shellcheck", args := #["--version"] },
   { tool := "actionlint", args := #["-version"] },
-  { tool := "shellcheck", args := #["-S", "warning", "-s", "sh", "/scratch/launcher-suite"] },
-  { tool := "/scratch/tools/tlrelease", args := #["policy", "--profile", "release", "--strict"], timeoutMs := 600000 }]
+  { tool := "shellcheck", args := #["-S", "warning", "-s", "sh", "/scratch/launcher-suite"] }]
 
 end Release.Hermetic

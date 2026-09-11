@@ -8,16 +8,26 @@ import release.HermeticPlan
 
 namespace Release.Hermetic
 
-abbrev Executor := Call → IO (Except String ProcessOutput)
+structure Captured extends ProcessOutput where
+  logFailure : Option String := none
+  deriving Repr
 
-def execute (call : Call) : IO (Except String ProcessOutput) :=
-  succeeded call.tool call.args call.timeoutMs
+abbrev Executor := Call → IO (Except String Captured)
+
+def execute (call : Call) : IO (Except String Captured) := do
+  match ← Release.run call.tool call.args call.timeoutMs with
+  | .completed output => return .ok { toProcessOutput := output }
+  | outcome => return .error (outcome.failureMessage.getD "The process produced no result. Repair the tool and retry.")
+
+def acceptCapture (call : Call) (result : Captured) : Decision ProcessOutput := do
+  if let some message := result.logFailure then decline message
+  if result.exitCode != 0 then
+    decline s!"{call.tool} failed ({result.exitCode}): {result.stderr}{result.stdout}\nFix the reported tool failure and retry."
+  return result.toProcessOutput
 
 def checked (exec : Executor) (call : Call) : Decision ProcessOutput := do
   let result ← ofIO (exec call)
-  if result.exitCode != 0 then
-    decline s!"{call.tool} failed ({result.exitCode}). Fix the reported tool failure and retry."
-  return result
+  acceptCapture call result
 
 def steps (exec : Executor) (calls : List Call) : Decision Unit := do
   for call in calls do
@@ -32,12 +42,26 @@ def checkedCompletion (exec : Executor) (call : Call) (verdict : String) : Decis
 Removal failure cannot turn a successful body into a successful overall run. -/
 def withContainer (exec : Executor) (name : String) (create : Call)
     (body : Decision Unit) : Decision Unit := do
-  let _ ← checked exec create
-  let outcome ← attempt "run container stages" body.run.toBaseIO
+  let created ← ofIO (exec create)
+  if created.exitCode != 0 then
+    let _ ← acceptCapture create created
+    return ()
+  -- The process created the container even if recording its output failed.
+  -- Refuse that log failure inside the cleanup scope rather than leaking it.
+  let guardedBody : Decision Unit := do
+    let _ ← acceptCapture create created
+    body
+  let outcome ← attempt "run container stages" guardedBody.run.toBaseIO
   let result := match outcome with
     | .ok result => result
     | .error error => .error s!"{error}. Repair the failed container stage and retry."
-  let cleanup ← attempt "remove temporary container" (exec { tool := "podman", args := #["rm", "--force", name] })
+  let cleanupOutcome ← attempt "remove temporary container" (exec { tool := "podman", args := #["rm", "--force", name] }).toBaseIO
+  let cleanup : Except String Captured := match cleanupOutcome with
+    | .ok (.ok output) => match output.logFailure with
+      | some message => .error message
+      | none => .ok output
+    | .ok (.error message) => .error message
+    | .error error => .error s!"{error}"
   match result, cleanup with
   | .error error, .error removal => decline s!"{error}\nContainer {name} cleanup also failed: {removal}. Remove it with Podman."
   | .error error, .ok output =>
@@ -94,15 +118,24 @@ def loggedExecutor (scratch : String) : IO Executor := do
   return fun call => do
     let number ← sequence.modifyGet fun n => (n + 1, n + 1)
     let logBase := s!"{scratch}/{number}"
-    IO.println s!"hermetic: {call.tool} {String.intercalate " " call.args.toList}"
-    (← IO.getStdout).flush
-    IO.FS.writeFile (logBase ++ ".argv") (reprStr (call.tool, call.args))
+    let started ← (do
+      IO.println s!"hermetic: {call.tool} {String.intercalate " " call.args.toList}"
+      (← IO.getStdout).flush
+      IO.FS.writeFile (logBase ++ ".argv") (reprStr (call.tool, call.args))).toBaseIO
+    if let .error error := started then
+      return .error s!"Could not open {logBase}.argv: {error}. Repair the log directory permissions and retry."
     let result ← execute call
-    match result with
-    | .ok output =>
+    let recorded ← (match result with
+    | .ok output => do
         IO.FS.writeFile (logBase ++ ".stdout") output.stdout
         IO.FS.writeFile (logBase ++ ".stderr") output.stderr
-    | .error message => IO.FS.writeFile (logBase ++ ".error") message
+        IO.FS.writeFile (logBase ++ ".status") (toString output.exitCode)
+    | .error message => IO.FS.writeFile (logBase ++ ".error") message).toBaseIO
+    if let .error error := recorded then
+      let message := s!"Could not record {logBase}: {error}. Repair the log directory permissions and retry."
+      return match result with
+        | .ok output => .ok { output with logFailure := some message }
+        | .error failure => .error s!"{failure}\n{message}"
     return result
 
 def preflight (exec : Executor) : Decision Unit := do
@@ -114,13 +147,33 @@ def preflight (exec : Executor) : Decision Unit := do
   if info.stdout.trimAscii.toString != "true" then
     decline "Start a rootless Podman machine or connection before running hermetic validation."
 
+/-- Git prints a terminating newline; spaces in a filesystem path are data. -/
+def gitPathText (text : String) : String :=
+  if text.endsWith "\n" then (text.dropEnd 1).toString else text
+
+/-- Linked worktrees keep their gitfile targets outside the checkout mount.
+Mount only their metadata, at the paths that those gitfiles already name. -/
+def gitMetadataMounts (root : System.FilePath) : Decision (List String) := do
+  if ← attempt "inspect Git metadata; repair checkout" (root / ".git").isDir then return []
+  let mut paths : List String := []
+  for flag in ["--absolute-git-dir", "--git-common-dir"] do
+    let result ← ofIO (succeededGit #["-C", root.toString, "rev-parse", flag])
+    let raw := System.FilePath.mk (gitPathText result.stdout)
+    let path ← attempt "resolve Git metadata; repair checkout" (IO.FS.realPath (if raw.isAbsolute then raw else root / raw))
+    let path := path.toString
+    if path.contains ',' || path.contains '\n' then
+      decline "Git metadata mount paths cannot contain commas or newlines. Move the repository metadata and retry."
+    if !paths.contains path then paths := paths ++ [path]
+  return paths.filter fun path => !paths.any (fun parent => parent != path && path.startsWith (parent ++ "/"))
+
 def run (root : String) : Decision String := do
   let root ← attempt "resolve checkout; retry with an existing --root" (IO.FS.realPath root)
   if root.toString.contains ',' || root.toString.contains '\n' then
     decline "Podman mount paths cannot contain commas or newlines. Move the checkout to a path without them and retry."
   let top ← ofIO (succeededGit #["-C", root.toString, "rev-parse", "--show-toplevel"])
-  let top ← attempt "resolve Git root; repair checkout" (IO.FS.realPath top.stdout.trimAscii.toString)
+  let top ← attempt "resolve Git root; repair checkout" (IO.FS.realPath (gitPathText top.stdout))
   if top != root then decline "Pass the checkout root to --root, rather than a subdirectory."
+  let gitMounts ← gitMetadataMounts root
   preflight execute
   let token ← attempt "allocate unique scratch name; check temporary directory" IO.FS.createTempDir
   let scratch := root / ".lake" / "hermetic" / token.fileName.getD "run"
@@ -131,7 +184,10 @@ def run (root : String) : Decision String := do
   let exec ← attempt "open hermetic log" (loggedExecutor scratch.toString)
   let digester ← ofIO Digester.resolve
   prepare exec root.toString scratch.toString digester.digest
-  checkedCompletion exec { tool := "podman", args := containerArgs root.toString scratch.toString, timeoutMs := 1200000 } ("tlrelease hermetic-worker: " ++ completion)
+  let name := "hermetic-" ++ scratch.fileName.getD "evidence"
+  withContainer exec name { tool := "podman", args := containerArgs name root.toString scratch.toString gitMounts }
+    (checkedCompletion exec { tool := "podman", args := #["start", "--attach", name], timeoutMs := 1200000 }
+      ("tlrelease hermetic-worker: " ++ completion))
   return s!"{completion}\nLogs: {scratch}"
 
 /-- The same worker logic is driven against planted observations in tests.
@@ -156,9 +212,13 @@ def workerWith (world : World) (root scratch : String) : Decision String := do
   if root != "/workspace" || scratch != "/scratch" then
     decline "The worker must run inside the isolated container. Use hermetic --root at the checkout root."
   let mounts ← ofIO (world.read "/proc/mounts")
-  for path in ["/workspace", "/scratch", "/lib", "/lib64", "/bin/busybox"] do
-    if !(mounts.splitOn "\n").any (fun line => (line.splitOn " ")[1]? == some path) then
-      decline s!"Missing isolated {path} mount. Run the public hermetic command to construct the container."
+  for (path, mode) in [("/workspace", "ro"), ("/scratch", "rw"), ("/lib", "rw"), ("/lib64", "rw"), ("/bin/busybox", "ro")] do
+    let entries := (mounts.splitOn "\n").filter (fun line => (line.splitOn " ")[1]? == some path)
+    let [entry] := entries
+      | decline s!"Missing or ambiguous isolated {path} mount. Run the public hermetic command to construct the container."
+    let flags := ((entry.splitOn " ")[3]?.getD "").splitOn ","
+    if !flags.contains mode || flags.contains (if mode == "ro" then "rw" else "ro") then
+      decline s!"Mount {path} must be {mode}. Restore the reviewed Podman mount options and retry."
   let writable ← attempt "test checkout mount" (world.write "/workspace/.hermetic-write-probe" "")
   if writable.isOk then decline "The checkout mount is writable. Restore the read-only Podman mount."
   let scratchWrite ← attempt "test scratch mount" (world.write "/scratch/write-probe" "")
@@ -180,6 +240,11 @@ def workerWith (world : World) (root scratch : String) : Decision String := do
     if !(← attempt "check required tool" (world.present tool)) then
       decline s!"Missing hermetic input {tool}. Rerun preparation to restore the complete tool set."
   steps world.exec evidenceCalls
+  let planText ← ofIO (world.read "/workspace/release/plan.json")
+  let plan ← ofExcept (ReleasePlan.parse "release/plan.json" planText)
+  let expected := (Policy.selectedGates .release false plan).length
+  checkedCompletion world.exec { tool := "/scratch/tools/tlrelease", args := #["policy", "--profile", "release", "--strict"], timeoutMs := 600000 }
+    ("tlrelease policy: " ++ Policy.successSummary expected .release)
   checkedCompletion world.exec { tool := "/scratch/launcher-suite", args := #[], timeoutMs := 600000 } launcherCompletion
   return completion
 

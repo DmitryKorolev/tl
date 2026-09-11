@@ -4,13 +4,16 @@ import release.Hermetic
 namespace Tl.Tests
 open Release Release.Hermetic
 
-private def answer (text : String := "") : Except String ProcessOutput :=
+private def answer (text : String := "") : Except String Captured :=
   .ok { exitCode := 0, stdout := text, stderr := "" }
 
 private def refused {α : Type} (result : Except String α) (needle : String := "") : Bool :=
   match result with
   | .error text => (text.splitOn needle).length > 1 || needle.isEmpty
   | .ok _ => false
+
+private def planFixture : String :=
+  "{\"channels\":[{\"channel\":\"github-release\",\"enabled\":true},{\"channel\":\"installer\",\"enabled\":true},{\"channel\":\"npm\",\"enabled\":false,\"plannedFor\":\"0.2.0\"},{\"channel\":\"homebrew\",\"enabled\":false,\"plannedFor\":\"0.2.0\"}]}"
 
 private def workerFixture (trace : IO.Ref (List Call)) (fault : String := "") : World := {
   exec := fun call => do
@@ -23,10 +26,21 @@ private def workerFixture (trace : IO.Ref (List Call)) (fault : String := "") : 
       return answer (if fault == "file:" ++ call.args[11]! then "/usr/bin/forbidden\n" else "")
     if call.tool == "/scratch/launcher-suite" then
       return answer (if fault == "completion" then "" else launcherCompletion ++ "\n")
+    if call.tool == "/scratch/tools/tlrelease" then
+      return answer (if fault == "policy-empty" then "" else if fault == "policy-count" then
+        "tlrelease policy: 0 gate(s) passed in the release profile\n" else
+        "tlrelease policy: 6 gate(s) passed in the release profile\n" ++ (if fault == "policy-tail" then "later\n" else ""))
     return answer,
-  read := fun _ => pure <| if fault == "mount-read" then .error "unreadable mounts" else .ok <|
+  read := fun path => pure <| if path.endsWith "plan.json" then
+    if fault == "plan-read" then .error "unreadable plan" else .ok (if fault == "plan-malformed" then "{}" else planFixture)
+    else if fault == "mount-read" then .error "unreadable mounts" else .ok <|
     String.join (["/workspace", "/scratch", "/lib", "/lib64", "/bin/busybox"].filterMap fun path =>
-      if fault == "mount:" ++ path then none else some s!"source {path} filesystem rw 0 0\n"),
+      if fault == "mount:" ++ path then none else
+        let mode := if path == "/workspace" || path == "/bin/busybox" then "ro" else "rw"
+        let actual := if fault == "mode:" ++ path then (if mode == "ro" then "rw" else "ro") else mode
+        let actual := if fault == "flags:" ++ path then "ro,rw" else actual
+        let line := s!"source {path} filesystem {actual} 0 0\n"
+        some (if fault == "duplicate:" ++ path then line ++ line else line)),
   write := fun path _ => pure <|
     if path.startsWith "/workspace" then
       if fault == "writable" then .ok () else .error "read-only"
@@ -41,8 +55,10 @@ private def workerRows : IO (List Outcome) := do
   let good ← (workerWith (workerFixture trace) "/workspace" "/scratch").run
   let calls ← trace.get
   let mut rows := [checkOk "hermetic worker: complete evidence reaches the verdict" good completion]
-  let faults := ["mount-read", "writable", "scratch", "owner:%u", "owner:%g", "completion"] ++
+  let faults := ["mount-read", "writable", "scratch", "owner:%u", "owner:%g", "completion",
+      "policy-empty", "policy-count", "policy-tail", "plan-read", "plan-malformed"] ++
     (["/workspace", "/scratch", "/lib", "/lib64", "/bin/busybox"].map ("mount:" ++ ·)) ++
+    (["/workspace", "/scratch", "/lib", "/lib64", "/bin/busybox"].flatMap fun path => ["mode:" ++ path, "flags:" ++ path, "duplicate:" ++ path]) ++
     (["/var/run/docker.sock", "/run/podman/podman.sock", "/run/user/0/podman/podman.sock"].map ("socket:" ++ ·)) ++
     (forbiddenRuntimes.map ("path:" ++ ·)) ++ (forbiddenRuntimes.map ("file:" ++ ·)) ++
     (requiredTools.map ("missing:" ++ ·)) ++
@@ -106,7 +122,69 @@ private def cleanupRows : IO (List Outcome) := do
     let result ← (withContainer exec "fixture" { tool := "podman", args := #["create"] }
       (if bodyFailure then decline "body sentinel" else pure ())).run
     rows := rows ++ [check "hermetic cleanup: nonzero removal never passes" (refused result "cleanup failed")]
+  for fault in ["create-status", "create-log", "cleanup-log", "cleanup-throw", "start-timeout", "start-status", "start-empty"] do
+    let trace ← IO.mkRef ([] : List String)
+    let exec : Executor := fun call => do
+      let stage := call.args[0]?.getD ""
+      trace.modify (· ++ [stage])
+      if stage == "rm" && fault == "cleanup-throw" then throw (IO.userError "cleanup sentinel")
+      if stage == "start" && fault == "start-timeout" then return .error "timeout sentinel"
+      let nonzero := (stage == "create" && fault == "create-status") || (stage == "start" && fault == "start-status")
+      let logFailed := (stage == "create" && fault == "create-log") || (stage == "rm" && fault == "cleanup-log")
+      let code : UInt32 := if nonzero then 42 else 0
+      let out := if stage == "start" && fault != "start-empty" then "fixture verdict\n" else ""
+      let logError := if logFailed then some "log sentinel" else none
+      return .ok { exitCode := code, stdout := out, stderr := "", logFailure := logError }
+    let result ← (withContainer exec "fixture" { tool := "podman", args := #["create"] }
+      (checkedCompletion exec { tool := "podman", args := #["start", "--attach", "fixture"] } "fixture verdict")).run
+    let expected := if fault == "create-status" then ["create"] else if fault == "create-log" then ["create", "rm"] else ["create", "start", "rm"]
+    rows := rows ++ [check s!"hermetic cleanup: {fault} refuses and retains ownership" (refused result && (← trace.get) == expected)]
+  let throwingRemoval : Executor := fun call => do
+    if call.args[0]? == some "rm" then throw (IO.userError "cleanup sentinel")
+    return answer
+  let both ← (withContainer throwingRemoval "fixture" { tool := "podman", args := #["create"] }
+    (decline "body sentinel")).run
+  rows := rows ++ [check "hermetic cleanup: thrown removal preserves the primary diagnosis"
+    (refused both "body sentinel" && refused both "cleanup sentinel")]
   return rows
+
+private def gitMountRows : IO (List Outcome) := do
+  let base ← IO.FS.realPath (← IO.FS.createTempDir)
+  try
+    let git (args : Array String) := do
+      let result ← IO.Process.output { cmd := "git", args }
+      if result.exitCode != 0 then throw (IO.userError result.stderr)
+    let root := base / "main checkout "
+    git #["init", "-q", root.toString]
+    git #["-C", root.toString, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]
+    let normal ← (gitMetadataMounts root).run
+    let linked := base / "linked checkout "
+    git #["-C", root.toString, "worktree", "add", "--detach", linked.toString, "HEAD"]
+    let linkedResult ← (gitMetadataMounts linked).run
+    let separate := base / "separate checkout"
+    let metadata := base / "separate metadata "
+    git #["init", "-q", "--separate-git-dir", metadata.toString, separate.toString]
+    let separateResult ← (gitMetadataMounts separate).run
+    let bad := base / "bad checkout"
+    git #["init", "-q", "--separate-git-dir", (base / "bad,metadata").toString, bad.toString]
+    let badResult ← (gitMetadataMounts bad).run
+    let absentResult ← (gitMetadataMounts (base / "absent")).run
+    let corrupt := base / "corrupt"
+    IO.FS.createDirAll corrupt
+    IO.FS.writeFile (corrupt / ".git") "gitdir: missing\n"
+    let corruptResult ← (gitMetadataMounts corrupt).run
+    let args := containerArgs "fixture" linked.toString "/scratch" [(root / ".git").toString]
+    return [checkOk "hermetic Git: ordinary checkout needs no additional mounts" normal [],
+      checkOk "hermetic Git: linked worktree mounts only common metadata" linkedResult [(root / ".git").toString],
+      checkOk "hermetic Git: separate gitdir is mounted once" separateResult [metadata.toString],
+      check "hermetic Git: invalid mount path refuses" (refused badResult "commas"),
+      check "hermetic Git: absent checkout refuses" (refused absentResult),
+      check "hermetic Git: broken gitfile refuses" (refused corruptResult),
+      check "hermetic Git: metadata retains its path and is read-only"
+        (args.contains s!"type=bind,source={root}/.git,target={root}/.git,readonly"),
+      checkEq "hermetic Git: trailing spaces survive line framing" (gitPathText "path \n") "path ",
+      checkEq "hermetic Git: unterminated path survives" (gitPathText "path ") "path "]
+  finally IO.FS.removeDirAll base
 
 private def preparationRows : IO (List Outcome) := do
   let base ← IO.FS.createTempDir
@@ -185,8 +263,8 @@ private def processRows : IO (List Outcome) := do
     rows := rows ++ [check "hermetic processes: timeout refuses" (refused timeout "did not finish"),
       check "hermetic processes: missing tool refuses" (refused absent "could not be run")]
     let brokenLog ← loggedExecutor (base / "missing-logs").toString
-    let logFailure ← (brokenLog { tool := "true", args := #[] }).toBaseIO
-    rows := rows ++ [check "hermetic logs: unwritable log refuses before process execution" (!logFailure.isOk)]
+    let logFailure ← brokenLog { tool := "true", args := #[] }
+    rows := rows ++ [check "hermetic logs: unwritable log refuses before process execution" (refused logFailure)]
     let tool := ((← IO.currentDir) / ".lake/build/bin/tlrelease").toString
     IO.FS.createDirAll (base / "comma,path")
     for (args, expected) in [
@@ -202,9 +280,21 @@ private def processRows : IO (List Outcome) := do
     let exec ← loggedExecutor base.toString
     let _ ← exec { tool := "sh", args := #["-c", "printf out; printf err >&2"] }
     let _ ← exec { tool := (base / "absent").toString, args := #[] }
+    let failed ← exec { tool := "sh", args := #["-c", "printf 'partial output'; printf 'failure reason' >&2; exit 42"] }
     rows := rows ++ [checkEq "hermetic logs: stdout retained" (← IO.FS.readFile (base / "1.stdout")) "out",
       checkEq "hermetic logs: stderr retained" (← IO.FS.readFile (base / "1.stderr")) "err",
-      check "hermetic logs: failure retained" (!(← IO.FS.readFile (base / "2.error")).isEmpty)]
+      check "hermetic logs: failure retained" (!(← IO.FS.readFile (base / "2.error")).isEmpty),
+      checkEq "hermetic logs: failed stdout retained" (← IO.FS.readFile (base / "3.stdout")) "partial output",
+      checkEq "hermetic logs: failed stderr retained" (← IO.FS.readFile (base / "3.stderr")) "failure reason",
+      checkEq "hermetic logs: failed status retained" (← IO.FS.readFile (base / "3.status")) "42",
+      check "hermetic logs: retained nonzero status still refuses" (refused (← (do let output ← ofExcept failed; acceptCapture {tool := "fixture", args := #[]} output).run))]
+    let blockedOutput ← exec { tool := "sh", args := #["-c", "mkdir \"$1\"", "fixture", (base / "4.stdout").toString] }
+    rows := rows ++ [check "hermetic logs: post-process log failure preserves successful creation"
+      (match blockedOutput with | .ok output => output.exitCode == 0 && output.logFailure.isSome | .error _ => false)]
+    IO.FS.createDirAll (base / "5.error")
+    let blockedError ← exec { tool := (base / "absent").toString, args := #[] }
+    rows := rows ++ [check "hermetic logs: failed-process log error preserves both diagnoses"
+      (refused blockedError "could not be run" && refused blockedError "Could not record")]
     let digester ← Digester.resolve
     if let .ok hash := digester then
       IO.FS.writeFile (base / "launcher-suite") launcherFixture
@@ -225,7 +315,7 @@ private def processRows : IO (List Outcome) := do
 
 def hermeticTests : IO (List Outcome) := do
   let _ := @Release.Hermetic.completed_iff
-  let expected := #["run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only",
+  let expected := #["create", "--name", "fixture", "--platform", "linux/amd64", "--network", "none", "--read-only",
     "--read-only-tmpfs=false", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--userns", "host", "--user", "0:0",
     "--mount", "type=bind,source=/repo with spaces,target=/workspace,readonly",
@@ -239,7 +329,7 @@ def hermeticTests : IO (List Outcome) := do
     "docker.io/alpine/git@sha256:53a6239398162098fed2f49a46512f9cbba9e3f31b9f2cea4fa90129ee069a99",
     "hermetic-worker", "--root", "/workspace", "--scratch", "/scratch"]
   return [checkEq "hermetic container: exact restricted argv with unsplit paths"
-    (containerArgs "/repo with spaces" "/scratch with spaces") expected] ++
-    (← preflightRows) ++ (← workerRows) ++ (← cleanupRows) ++ (← preparationRows) ++ (← processRows)
+    (containerArgs "fixture" "/repo with spaces" "/scratch with spaces") expected] ++
+    (← preflightRows) ++ (← workerRows) ++ (← cleanupRows) ++ (← gitMountRows) ++ (← preparationRows) ++ (← processRows)
 
 end Tl.Tests

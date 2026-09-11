@@ -671,8 +671,16 @@ claim of bit-for-bit reproducibility. Neither stage receives host credentials.
 Real npm packing stays in the outer environment, with isolated npm configuration.
 No YAML extraction, temporary Lake-file rewrite, Python or Ruby orchestration
 is required. The command reports its scratch location and retains command
-arguments, output and failures there; temporary containers are removed even
-when a build or test refuses. The worker must emit its final completion verdict
+arguments, both output streams and exit status there, including nonzero exits.
+Both build and evidence containers use named creation and explicit removal,
+including after a stage times out or recording a completed command's output
+fails. Abrupt termination of the outer runner itself cannot guarantee cleanup;
+the printed container name permits manual removal. Linked worktrees and
+separate Git directories receive only the required Git metadata mounts,
+read-only at the paths named by their gitfiles. The worker checks the kernel's
+mount flags as well as attempting a write: a permission failure alone does not
+establish a read-only mount. Its policy subprocess must end with the successful
+summary for every selected release gate. The worker must emit its final completion verdict
 as well as exit successfully. This detects accidental early exits, not a worker
 deliberately forging its own verdict.
 
