@@ -140,8 +140,9 @@ CI gates (mirror these locally before declaring done):
 - `lake exe tlrelease policy --profile ci --strict` — the release policy, which is
   its own required CI job and is *not* implied by the four gates above. One
   registry, two profiles, and `tlrelease policy-list --profile ci` names its CI gates.
-  It runs every release script's `--selftest` (each proves it can still refuse
-  before its silence is believed), shellcheck over every tracked shell file,
+  It runs the native installer and standalone verifier public-process corpora,
+  remaining migration scripts' `--selftest` modes (each proves it can still
+  refuse before its silence is believed), shellcheck over every tracked shell file,
   actionlint over the workflows, and the generators for the installer, the
   artifact verifier, the npm packages and the Homebrew formula. Every channel's
   generator runs on every commit whether or not `release/plan.json` publishes

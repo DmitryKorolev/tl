@@ -179,7 +179,7 @@ def legacyGates : List Gate :=
      summary := "ShellCheck over every tracked shell file, found by shebang and extension." },
    { name := "artifact verifier selftest"
      profiles := Profile.all, onTag := .always, requires := []
-     invocation := .script "./scripts/verify-release-artifacts.sh" ["--selftest"]
+     invocation := .releaseCommand ["artifact-verifier-selftest", "--root", "."]
      summary := "The code path behind VERIFYING.md, driven through every refusal it has." },
    { name := "release runtime boundary selftest"
      profiles := Profile.all, onTag := .always, requires := []
@@ -187,7 +187,7 @@ def legacyGates : List Gate :=
      summary := "The PATH shims that observe the dependency budget prove they still fire." },
    { name := "installer selftest"
      profiles := Profile.all, onTag := .always, requires := []
-     invocation := .tool "sh" ["install.sh", "--selftest"]
+     invocation := .releaseCommand ["installer-selftest", "--root", "."]
      summary := "The script users pipe into a shell, driven through every branch it has." },
    { name := "workflow lint"
      profiles := Profile.all, onTag := .always

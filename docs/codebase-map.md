@@ -212,7 +212,7 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- tracker ids in tracked artifacts). What is left here:
                         -- verify-release-artifacts.sh (the VERIFYING.md
                         -- procedure as code, run by the release workflow's
-                        -- pre-publish check and by its own selftest, so the
+                        -- pre-publish check and by the native public corpus, so the
                         -- documented steps are the executed ones;
                         -- --require-signature is the gate mode, where the
                         -- TL_INSTALL_SKIP_SIGNATURE escape is refused rather
@@ -220,7 +220,8 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- from curl it has no checkout — and carries its own
                         -- copy of the pin and the shared helpers; the pin is
                         -- guarded by Tests/ReleaseTests.lean and the helpers by
-                        -- the installer corpus in Tests/ReleaseToolTests.lean,
+                        -- the public adapter corpora in release/InstallerSuite.lean
+                        -- and release/VerifierSuite.lean,
                         -- which runs the script over a planted release),
                         -- tlrelease homebrew-render / homebrew-placeholder /
                         -- homebrew-publish (the whole formula rendered from the
@@ -275,6 +276,14 @@ release/                -- what a release is, machine-readable; ADR-0028 owns
                         --   run over every channel's generator on every commit,
                         --   which is what keeps a deferred channel from
                         --   rotting while it is off
+
+release/AdapterFixture.lean -- shared strict cosign and digest collaborators
+release/VerifierSuite.lean -- standalone verifier public-process corpus, with
+                        -- mutation and command tests in Tests/VerifierProcessTests.lean
+release/InstallerSuite.lean -- public installer corpus behind the policy's
+                        -- installer-selftest command; isolated collaborators,
+                        -- branch effects and cleanup, with mutation tests in
+                        -- Tests/InstallerProcessTests.lean
 
 install.sh              -- the curl-pipe installer; embeds its own copy of the
                         -- signing pin because it has no checkout to read

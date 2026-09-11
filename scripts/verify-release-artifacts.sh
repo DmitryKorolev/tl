@@ -3,21 +3,20 @@
 # to, against the identity pinned in release/identity.json.
 #
 #   scripts/verify-release-artifacts.sh [--require-signature] <dir> <asset>...
-#   scripts/verify-release-artifacts.sh --selftest
 #
 # <dir> must contain, for each <asset>: the asset itself, `SHA256SUMS`,
 # `SHA256SUMS.sigstore.json`, and `<asset>.sigstore.json`.
 #
 # Two callers: the release workflow runs it over the candidate artifacts before
 # publishing them, so nothing is released that the published procedure would
-# reject; and `--selftest` runs it against fabricated failures on every commit.
+# reject; and the native public-process corpus drives fabricated failures on every commit.
 # A procedure documented but never executed is a procedure nobody has tested.
 #
 # `install.sh` performs the same checks but does not call this script — it is
 # piped into a shell with no checkout to read, so it carries its own copy of
 # the pinned issuer and expression. `Tests/ReleaseTests.lean` fails if that
 # copy drifts from `release/identity.json`. The digest and reporting helpers it
-# uses are sourced from `scripts/lib/release-common.sh` rather than copied.
+# uses are defined here and tested through its public process interface.
 #
 # Order matters and is not an accident. The signature on `SHA256SUMS` is
 # checked *first*, because every digest comparison afterwards trusts that file;
@@ -39,16 +38,71 @@
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-RC_LIB_SELF="$script_dir/lib/release-common.sh"
-if [ ! -f "$RC_LIB_SELF" ]; then
-  echo "verify-release-artifacts: scripts/lib/release-common.sh not found next to this script (looked at $RC_LIB_SELF) — it holds the digest and reporting helpers this verifier shares with the rest of the release machinery. Run it from a checkout." >&2
-  exit 2
-fi
-# shellcheck source=lib/release-common.sh
-. "$RC_LIB_SELF"
+# Complete local digest helpers: the standalone verification procedure must
+# not source tracked release administration code. The public native corpus
+# tests these through this script's ordinary argv.
+verifier_lower() {
+  printf '%s' "$1" | tr 'ABCDEF' 'abcdef'
+}
+
+# SHA-256 of a file, lowercase hex. coreutils ships sha256sum; macOS ships
+# shasum. Both print "<hex>  <name>", so the first field is the digest.
+#
+# Deliberately not `sha256sum "$1" | cut -d' ' -f1`. A pipeline's status is its
+# *last* command's, so `cut` returning 0 masked a digest tool that was present
+# on PATH but broken — the caller got an empty string and a success status, and
+# reported it downstream as "the file hashes to  but SHA256SUMS says …", which
+# is a tampering verdict for a broken toolchain. Substitution first, status
+# checked, field taken afterwards.
+verifier_sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    verifier__digest_out=$(sha256sum "$1") || verifier__digest_out=''
+  elif command -v shasum >/dev/null 2>&1; then
+    verifier__digest_out=$(shasum -a 256 "$1") || verifier__digest_out=''
+  else
+    echo "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)." >&2
+    return 1
+  fi
+  if [ -z "$verifier__digest_out" ]; then
+    echo "the digest tool on PATH produced no output for '$1' — it is present but not working. The digest check is mandatory and cannot be skipped; repair the installation of coreutils or shasum." >&2
+    return 1
+  fi
+  printf '%s' "${verifier__digest_out%% *}"
+}
+
+# Pull one asset's digest out of a sums file by exact name, and prove it is a
+# digest before anybody compares against it.
+#
+# Not `sha256sum -c`, which checks every line and so fails on assets for other
+# platforms that were never downloaded. The `*name` form is accepted because
+# that is what `sha256sum` writes in binary mode.
+#
+# Prints the lowercase digest on success. On failure prints a teaching message
+# to stderr and returns non-zero; the caller decides whether that is fatal.
+verifier_sums_digest() {
+  verifier__sums=$1
+  verifier__name=$2
+  if ! verifier__digest=$(awk -v want="$verifier__name" \
+      '$2 == want || $2 == "*" want { print $1; found = 1 } END { exit !found }' "$verifier__sums"); then
+    echo "$verifier__sums has no entry named '$verifier__name'. Either the asset was renamed after signing, or this is a different release's sums file." >&2
+    return 1
+  fi
+  case $verifier__digest in
+    *[!0-9a-fA-F]* | '')
+      echo "the $verifier__sums entry for '$verifier__name' is not a hex digest ('$verifier__digest') — the file is malformed or truncated; re-download it." >&2
+      return 1
+      ;;
+  esac
+  if [ "${#verifier__digest}" -ne 64 ]; then
+    echo "the $verifier__sums entry for '$verifier__name' is ${#verifier__digest} characters, not the 64 of a SHA-256 digest — the file is malformed or truncated; re-download it." >&2
+    return 1
+  fi
+  verifier_lower "$verifier__digest"
+}
+
 
 usage() {
-  echo "usage: $0 [--require-signature] <dir> <asset>... | $0 --selftest" >&2
+  echo "usage: $0 [--require-signature] <dir> <asset>..." >&2
   exit 2
 }
 
@@ -212,7 +266,7 @@ verify_dir() {
     *) fail "the pinned certificateIdentityRegexp is not anchored at \$ ('${identity}'). cosign matches unanchored, so an expression without a tail anchor accepts any certificate identity that merely *begins* with this one — a tag name may contain '/', so trailing content is reachable. Repair release/identity.json." ;;
   esac
 
-  scratch=$(mktemp -d) || fail "could not create a temporary directory for this run's scratch files."
+  scratch=$(mktemp -d) || fail "could not create a temporary directory for this run's scratch files. Set TMPDIR to a writable directory and retry."
   trap 'rm -rf "$scratch"' EXIT INT TERM
 
   sums="$dir/SHA256SUMS"
@@ -245,27 +299,27 @@ verify_dir() {
     [ -f "$path" ] || fail "$path not found — the asset name must match the one in SHA256SUMS exactly."
 
     # Pull this asset's line out of the sums file by exact name, and prove it
-    # is a digest. Shared with the installer through the library, because the
-    # two copies of this had already diverged on what they accepted.
+    # is a digest. Both adapters have independent local helpers, exercised
+    # through the native public-process corpora.
     # The scratch file goes in a temp directory, not beside the assets. Written
     # into $dir it fails on read-only media — an immutable artifact mount, a
     # root-owned download directory — and the refusal that followed was a bare
     # "verify-release-artifacts: " with no message at all, for a release that
     # was perfectly good. This file exists to keep a broken checker from
     # reading as a bad artifact; that applies to its own scratch space too.
-    expected=$(rc_sums_digest "$sums" "$asset" 2>"$scratch/sums-err") || {
+    expected=$(verifier_sums_digest "$sums" "$asset" 2>"$scratch/sums-err") || {
       fail "$(cat "$scratch/sums-err")"
     }
 
-    # Two statements, not one. Nested, `$(rc_lower "$(rc_sha256_of …)")`
-    # captures rc_lower's status — which succeeds on empty input — so a host
+    # Two statements, not one. Nested, `$(verifier_lower "$(verifier_sha256_of …)")`
+    # captures verifier_lower's status — which succeeds on empty input — so a host
     # with neither sha256sum nor shasum produced an empty digest, skipped the
     # "digest check is mandatory" refusal entirely, and reported a missing tool
     # as "digest mismatch … hashes to  but SHA256SUMS says …". That is the one
     # verdict this file must never get wrong, and the nesting hid it.
-    actual=$(rc_sha256_of "$path") \
+    actual=$(verifier_sha256_of "$path") \
       || fail "no sha256sum or shasum on PATH — the digest check is mandatory and cannot be skipped. Install coreutils (Linux) or use the system shasum (macOS)."
-    actual=$(rc_lower "$actual")
+    actual=$(verifier_lower "$actual")
     if [ "$actual" != "$expected" ]; then
       fail "digest mismatch for '$asset': the file hashes to $actual but SHA256SUMS says $expected. Delete the download and fetch it again; if it still differs, do not run it."
     fi
@@ -282,396 +336,10 @@ verify_dir() {
   echo "verify-release-artifacts: verified $# asset(s) in $dir"
 }
 
-# ---------------------------------------------------------------------------
-# Selftest. Every refusal path above, in throwaway directories.
-#
-# The Sigstore arms are exercised against the shared stub `cosign` placed first
-# on PATH. That is deliberate: the stub covers *this script's* branching on a
-# verifier verdict, which is what could regress here. Whether real cosign
-# checks a Rekor inclusion proof correctly is cosign's own business, and the
-# release workflow runs the real thing over real artifacts before publishing.
-# ---------------------------------------------------------------------------
-selftest() {
-  work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
-  self=$script_dir/$(basename -- "$0")
-
-  rc_selftest_begin "verify-release-artifacts" "$work"
-
-  rc_write_stub_cosign "$work/bin" "$pin_file" "$work"
-
-  # A release directory that verifies cleanly.
-  fixture() {
-    d="$work/$1"
-    mkdir -p "$d"
-    printf 'binary contents\n' > "$d/tl-linux-x64"
-    digest=$(rc_sha256_of "$d/tl-linux-x64")
-    printf '%s  tl-linux-x64\n' "$digest" > "$d/SHA256SUMS"
-    printf '{}\n' > "$d/SHA256SUMS.sigstore.json"
-    printf '{}\n' > "$d/tl-linux-x64.sigstore.json"
-    echo "$d"
-  }
-
-  # Run the verifier with the stub first on PATH.
-  verify() {
-    PATH="$work/bin:$PATH" "$self" "$@"
-  }
-  # A PATH with cosign genuinely absent, built by dropping every directory that
-  # holds one rather than by naming two that usually do not. `PATH=/usr/bin:/bin`
-  # is only cosign-free where cosign is not packaged there: on Fedora, Arch and
-  # Alpine it is, so the two rows that model "cosign is absent" instead drove
-  # the *real* cosign against fixture bundles containing `{}` — failing there
-  # and nowhere else, inside a gate documented as hermetic.
-  path_without_cosign() {
-    pwc__out=''
-    pwc__rest=$PATH
-    while [ -n "$pwc__rest" ]; do
-      case $pwc__rest in
-        *:*) pwc__dir=${pwc__rest%%:*}; pwc__rest=${pwc__rest#*:} ;;
-        *) pwc__dir=$pwc__rest; pwc__rest='' ;;
-      esac
-      [ -n "$pwc__dir" ] || continue
-      [ -x "$pwc__dir/cosign" ] && continue
-      if [ -z "$pwc__out" ]; then pwc__out=$pwc__dir; else pwc__out="$pwc__out:$pwc__dir"; fi
-    done
-    printf '%s' "$pwc__out"
-  }
-  bare_path=$(path_without_cosign)
-  # …and without it, for the cases that must not find cosign at all.
-  verify_bare() {
-    PATH="$bare_path" "$self" "$@"
-  }
-  # The premise those rows rest on, checked rather than assumed. Without this
-  # they pass on a host where cosign is absent for an unrelated reason and stop
-  # meaning anything on one where it is not.
-  rc_run env PATH="$bare_path" sh -c 'command -v cosign'
-  rc_note "$([ "$RC_STATUS" -ne 0 ] && echo 0 || echo 1)" \
-    "the cosign-absent rows below really run without cosign on PATH"
-
-  d=$(fixture happy)
-  rc_expect_status 0 "a complete, consistent release verifies" verify "$d" tl-linux-x64
-
-  d=$(fixture no-sums); rm "$d/SHA256SUMS"
-  rc_expect_status 1 "a missing SHA256SUMS is refused" verify "$d" tl-linux-x64
-  d=$(fixture no-sums-bundle); rm "$d/SHA256SUMS.sigstore.json"
-  rc_expect_status 1 "a missing SHA256SUMS bundle is refused" verify "$d" tl-linux-x64
-  d=$(fixture no-asset-bundle); rm "$d/tl-linux-x64.sigstore.json"
-  rc_expect_status 1 "a missing per-asset bundle is refused" verify "$d" tl-linux-x64
-  d=$(fixture no-asset); rm "$d/tl-linux-x64"
-  rc_expect_status 1 "a missing asset is refused" verify "$d" tl-linux-x64
-
-  d=$(fixture unlisted); printf 'deadbeef  some-other-asset\n' > "$d/SHA256SUMS"
-  rc_expect_status 1 "an asset absent from SHA256SUMS is refused" verify "$d" tl-linux-x64
-  d=$(fixture malformed); printf 'not-a-digest  tl-linux-x64\n' > "$d/SHA256SUMS"
-  rc_expect_status 1 "a non-hex digest line is refused" verify "$d" tl-linux-x64
-  d=$(fixture truncated); printf 'abcdef  tl-linux-x64\n' > "$d/SHA256SUMS"
-  rc_expect_output 1 "not the 64" "a short digest line is refused as truncated, not as tampering" \
-    verify "$d" tl-linux-x64
-  d=$(fixture mismatch); printf 'tampered\n' >> "$d/tl-linux-x64"
-  rc_expect_output 1 "digest mismatch" "a digest mismatch is refused" verify "$d" tl-linux-x64
-
-  # An uppercase sums file is valid and must verify. The hex check accepts A-F
-  # deliberately, so comparing case-sensitively against lowercase output would
-  # report correct bytes as tampering — the worst possible false positive.
-  d=$(fixture uppercase)
-  awk '{ print toupper($1) "  " $2 }' "$d/SHA256SUMS" > "$d/SHA256SUMS.up"
-  mv "$d/SHA256SUMS.up" "$d/SHA256SUMS"
-  rc_expect_status 0 "an uppercase SHA256SUMS verifies rather than reading as tampering" \
-    verify "$d" tl-linux-x64
-
-  # Signature verdicts, via the stub.
-  d=$(fixture bad-signature)
-  rc_expect_output 1 "did not verify against the pinned identity" "a rejected signature is refused" \
-    env COSIGN_STUB_VERDICT=bad PATH="$work/bin:$PATH" "$self" "$d" tl-linux-x64
-
-  # The escape hatch drops signatures and keeps digests.
-  d=$(fixture skip-ok); rm "$d/SHA256SUMS.sigstore.json" "$d/tl-linux-x64.sigstore.json"
-  rc_expect_status 0 "TL_INSTALL_SKIP_SIGNATURE=1 verifies without bundles" \
-    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="$bare_path" "$self" "$d" tl-linux-x64
-  d=$(fixture skip-mismatch); rm "$d/SHA256SUMS.sigstore.json" "$d/tl-linux-x64.sigstore.json"
-  printf 'tampered\n' >> "$d/tl-linux-x64"
-  rc_expect_status 1 "TL_INSTALL_SKIP_SIGNATURE=1 still refuses a digest mismatch" \
-    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="$bare_path" "$self" "$d" tl-linux-x64
-
-  # --require-signature is the release gate's mode: the escape is refused, not
-  # honoured, because a gate that can be switched off by an inherited
-  # environment variable is not a gate. Both arms — the variable set, and
-  # cosign simply absent — must refuse.
-  d=$(fixture require-vs-skip)
-  rc_expect_output 1 "invoked with --require-signature" \
-    "--require-signature refuses an inherited TL_INSTALL_SKIP_SIGNATURE" \
-    env TL_INSTALL_SKIP_SIGNATURE=1 PATH="$work/bin:$PATH" "$self" --require-signature "$d" tl-linux-x64
-  d=$(fixture require-no-cosign)
-  rc_expect_output 1 "cannot fall back to a digest-only check" \
-    "--require-signature refuses when cosign is absent" \
-    env PATH="$bare_path" "$self" --require-signature "$d" tl-linux-x64
-  d=$(fixture require-happy)
-  rc_expect_status 0 "--require-signature still verifies a good release" \
-    verify --require-signature "$d" tl-linux-x64
-
-  # Without cosign and without the explicit opt-out, refuse rather than
-  # silently degrade to a digest-only check.
-  d=$(fixture no-cosign)
-  rc_expect_output 1 "cosign not found" "a missing cosign is refused rather than skipped" \
-    verify_bare "$d" tl-linux-x64
-
-  # A host with no digest tool must say so, not report the artifact as
-  # tampered. The two are the opposite diagnosis and send a reader to
-  # completely different places; a nested command substitution used to hide
-  # the difference by capturing the wrong status.
-  # An empty PATH is not the scenario — the script needs dirname and pwd to
-  # start at all. What is being modelled is a host where the digest tools
-  # specifically are absent, so they are shadowed by stubs that fail the way
-  # a missing command does.
-  d=$(fixture no-digest-tool)
-  nodigest="$work/nodigest"
-  mkdir -p "$nodigest"
-  for tool in sha256sum shasum; do
-    printf '#!/bin/sh\nexit 127\n' > "$nodigest/$tool"
-    chmod +x "$nodigest/$tool"
-  done
-  rc_expect_output 1 "digest check is mandatory" \
-    "a broken digest tool refuses rather than producing an empty digest" \
-    env PATH="$nodigest:$PATH" TL_INSTALL_SKIP_SIGNATURE=1 "$self" "$d" tl-linux-x64
-  rc_note "$(! grep -q 'digest mismatch' "$RC_ERR" && echo 0 || echo 1)" \
-    "the missing-tool refusal is not phrased as tampering"
-
-  # The macOS fallback is selected only when sha256sum is genuinely absent,
-  # not when a first PATH entry shadows it with a failing program. Give the
-  # verifier an isolated declared tool set with a shasum stub and no
-  # sha256sum, then prove the stub was reached. This runs on Linux as well as
-  # Darwin, so retiring the lexical dependency scan does not retire the only
-  # executable evidence for this branch.
-  d=$(fixture shasum-fallback)
-  shasum_bin="$work/shasum-bin"
-  mkdir -p "$shasum_bin"
-  for tool in awk dirname mktemp pwd rm tr wc; do
-    tool_path=$(command -v "$tool") || {
-      echo "verify-release-artifacts: --selftest needs $tool to build the isolated shasum fixture" >&2
-      exit 2
-    }
-    ln -s "$tool_path" "$shasum_bin/$tool"
-  done
-  cat > "$shasum_bin/shasum" <<SHASUM
-#!/bin/sh
-[ "\${1-}" = -a ] && [ "\${2-}" = 256 ] || exit 64
-shift 2
-printf 'reached\n' >> '$work/shasum-reached'
-SHASUM
-  if digest_backend=$(command -v sha256sum); then
-    printf '%s\n' "exec '$digest_backend' \"\$@\"" >> "$shasum_bin/shasum"
-  elif digest_backend=$(command -v shasum); then
-    printf '%s\n' "exec '$digest_backend' -a 256 \"\$@\"" >> "$shasum_bin/shasum"
-  else
-    echo "verify-release-artifacts: --selftest needs one real digest tool behind the declared shasum fixture" >&2
-    exit 2
-  fi
-  chmod +x "$shasum_bin/shasum"
-  rc_expect_status 0 "the declared shasum fallback verifies a good release" \
-    env PATH="$shasum_bin" TL_INSTALL_SKIP_SIGNATURE=1 "$self" "$d" tl-linux-x64
-  rc_note "$([ -s "$work/shasum-reached" ] && echo 0 || echo 1)" \
-    "the shasum fallback stub was reached"
-
-  # A read-only asset directory is a legitimate place to verify from: immutable
-  # media, a root-owned download. The verifier must not need to write there,
-  # and must not lose its own message when it cannot.
-  d=$(fixture read-only)
-  chmod a-w "$d"
-  rc_expect_output 0 "digest ok" "a read-only asset directory verifies" \
-    verify "$d" tl-linux-x64
-  printf 'not-a-digest  tl-linux-x64\n' > "$work/ro-sums" 2>/dev/null || true
-  chmod u+w "$d"
-  printf 'not-a-digest  tl-linux-x64\n' > "$d/SHA256SUMS"
-  chmod a-w "$d"
-  rc_expect_output 1 "not a hex digest" \
-    "a refusal from a read-only directory still carries its message" \
-    verify "$d" tl-linux-x64
-  chmod u+w "$d"
-
-  # The pin itself. These run the script against a substituted identity file,
-  # so they check what happens when the *pin* is broken rather than when an
-  # artifact is.
-  # `pin_bytes` is written with `printf '%s'` and no trailing newline of its
-  # own, so each case controls the file's bytes exactly — including whether it
-  # ends in a newline, which is one of the malformations under test.
-  pin_case() {
-    # pin_case <name> <expected-status> <needle> <pin-bytes>
-    name=$1; want=$2; needle=$3; content=$4
-    d=$(fixture "pin-$(echo "$name" | tr ' /$^' '____')")
-    alt_root="$work/alt-$(echo "$name" | tr ' /$^' '____')"
-    mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
-    cp "$self" "$alt_root/scripts/"
-    cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
-    printf '%s' "$content" > "$alt_root/release/identity.pin"
-    rc_expect_output "$want" "$needle" "$name" \
-      env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
-  }
-  valid_expr='^https://github.com/x$'
-  pin_case "an empty pin is refused" 1 "no issuer on its first line" ''
-  pin_case "a pin with only an issuer is refused" 1 "no certificate identity expression" \
-    'https://example.invalid
-'
-  pin_case "a pin with an empty issuer line is refused" 1 "no issuer on its first line" \
-    "
-$valid_expr
-"
-  pin_case "a pin with an empty expression line is refused" 1 "no certificate identity expression" \
-    'https://example.invalid
-
-'
-  # A third line is refused rather than ignored: a reader that skipped it could
-  # be handed a second, different pin below the one it used.
-  pin_case "a pin with a third line is refused" 1 "more than two lines" \
-    "https://example.invalid
-$valid_expr
-https://evil.invalid
-"
-  pin_case "a pin with an empty third line is refused" 1 "more than two lines" \
-    "https://example.invalid
-$valid_expr
-
-"
-  pin_case "a pin with trailing data and no newline is refused" 1 "more than two lines" \
-    "https://example.invalid
-$valid_expr
-trailing"
-  # A truncated write: two lines, but the second has no terminator. `read`
-  # assigns what it got and then reports end-of-file, so a reader that ignored
-  # its status would accept this — and disagree with release/Identity.lean,
-  # which refuses it.
-  pin_case "a pin whose last line is unterminated is refused" 1 "does not end with a newline" \
-    "https://example.invalid
-$valid_expr"
-  # A carriage return rides into the value cosign is given and makes the
-  # expression match nothing — a silent rejection of every genuine signature,
-  # which looks exactly like tampering.
-  pin_case "a pin with Windows line endings is refused" 1 "outside printable ASCII" \
-    "$(printf 'https://example.invalid\r\n%s\r\n' "$valid_expr")"
-  # Non-ASCII. release/Identity.lean refuses anything above U+007E, and under a
-  # UTF-8 locale the shell's [[:print:]] does not — so this row is what shows
-  # the two readers of one pin actually agreeing.
-  pin_case "a pin carrying a non-ASCII byte is refused" 1 "outside printable ASCII" \
-    "$(printf 'https://ex\303\251mple.invalid\n%s\n' "$valid_expr")"
-  # A NUL, written straight into the file. It cannot travel through `pin_case`
-  # at all: its content arrives as a shell argument, and an argument is a
-  # NUL-terminated string — which is the same reason this verifier now counts
-  # the file's own bytes instead of inspecting what `read` managed to store.
-  # Before that it accepted a pin `tlrelease check-pin` refuses, so one pin had
-  # two answers and only the stricter reader was ever going to say so.
-  d=$(fixture pin-nul)
-  alt_root="$work/alt-pin-nul"
-  mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
-  cp "$self" "$alt_root/scripts/"
-  cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
-  printf 'https://example.invalid\000\n%s\n' "$valid_expr" > "$alt_root/release/identity.pin"
-  rc_expect_output 1 "outside printable ASCII" "a NUL byte in the pin is refused" \
-    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
-  rc_expect_output 1 "vanishes on its way into a shell variable" \
-    "the NUL refusal says why the bytes are counted rather than read" \
-    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
-  # An unanchored expression is the failure a text-equality drift guard cannot
-  # see: it is well-formed, it verifies real artifacts, and it also accepts a
-  # certificate whose identity merely contains this repository's.
-  pin_case "an expression unanchored at the head is refused" 1 "not anchored at ^" \
-    'https://example.invalid
-https://github.com/x$
-'
-  # The tail anchor is the half this verifier used to drop. A tag name may
-  # contain a slash, so trailing content past the pinned identity is reachable.
-  pin_case "an expression unanchored at the tail is refused" 1 "not anchored at" \
-    'https://example.invalid
-^https://github.com/x
-'
-  # The pin is data, never sourced. A line that would be a command
-  # substitution if it were ever evaluated must reach cosign as literal text —
-  # so it is refused for its shape, not executed.
-  pin_case "a pin whose expression is not anchored cannot execute either" 1 "not anchored at" \
-    'https://example.invalid
-$(touch '"$work"'/pin-was-evaluated)
-'
-  rc_expect_status 1 "no pin file was evaluated while being read" \
-    test -e "$work/pin-was-evaluated"
-
-  # The missing and unreadable pin, which is the difference between a check
-  # that is weaker and a check that is absent.
-  d=$(fixture pin-missing)
-  alt_root="$work/alt-pin-missing"
-  mkdir -p "$alt_root/scripts/lib" "$alt_root/release"
-  cp "$self" "$alt_root/scripts/"
-  cp "$RC_LIB_SELF" "$alt_root/scripts/lib/"
-  rc_expect_output 1 "identity.pin not found" "a missing pin is refused" \
-    env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
-  printf '%s\n' 'https://example.invalid' "$valid_expr" > "$alt_root/release/identity.pin"
-  chmod a-r "$alt_root/release/identity.pin"
-  # root ignores the mode bit, so this row only means something unprivileged.
-  if [ -r "$alt_root/release/identity.pin" ]; then
-    echo "  ok   an unreadable pin is refused (skipped: this user can read a mode-000 file)"
-  else
-    rc_expect_output 1 "is not readable" "an unreadable pin is refused" \
-      env PATH="$work/bin:$PATH" "$alt_root/scripts/$(basename -- "$self")" "$d" tl-linux-x64
-  fi
-  chmod u+r "$alt_root/release/identity.pin"
-
-  # A verifier that cannot run must not be reported as tampering: the two
-  # outcomes send a reader to entirely different places.
-  d=$(fixture broken-verifier)
-  rc_expect_output 1 "not evidence of tampering" \
-    "a verifier that cannot run is not reported as tampering" \
-    env COSIGN_STUB_VERDICT=broken PATH="$work/bin:$PATH" "$self" "$d" tl-linux-x64
-
-  # Usage and argument handling: exit 2, distinct from a verification refusal.
-  d=$(fixture usage)
-  rc_expect_status 2 "no arguments is a usage error" verify
-  rc_expect_status 2 "an unknown flag is a usage error" verify --bogus
-  rc_expect_status 2 "--selftest with extra arguments is a usage error" verify --selftest extra
-  rc_expect_status 2 "a directory with no assets named is a usage error" verify "$d"
-  rc_expect_status 2 "--require-signature with no assets named is a usage error" \
-    verify --require-signature "$d"
-  rc_expect_output 1 "is not a directory" "a nonexistent directory refuses with a naming message" \
-    verify "$work/no-such-dir" tl-linux-x64
-  rc_expect_output 1 "for example" "the not-a-directory message shows the expected invocation" \
-    verify "$work/no-such-dir" tl-linux-x64
-
-  # What was actually passed to cosign, from the stub's own log of the happy
-  # path. The transparency-log check is not ours to skip, and the bundle the
-  # proof lives in has to be named on every call.
-  if [ -s "$work/cosign-argv" ]; then
-    if grep -q 'insecure-ignore-tlog' "$work/cosign-argv"; then
-      rc_note 1 "cosign is never invoked with a transparency-log bypass"
-    else
-      rc_note 0 "cosign is never invoked with a transparency-log bypass"
-    fi
-    calls=$(grep -c 'verify-blob' "$work/cosign-argv" || true)
-    bundles=$(grep -c -- '--bundle' "$work/cosign-argv" || true)
-    if [ "$calls" -ge 2 ] && [ "$calls" = "$bundles" ]; then
-      rc_note 0 "every cosign call names a bundle ($calls calls)"
-    else
-      rc_note 1 "every cosign call names a bundle ($calls verify-blob calls, $bundles with --bundle)"
-    fi
-    # Which blobs, not just how many calls. An aggregate count is satisfied by
-    # the sums-file call alone, so deleting the per-asset check would pass it.
-    : > "$work/cosign-blobs"
-    d=$(fixture blob-coverage)
-    rc_run verify "$d" tl-linux-x64
-    if grep -qx SHA256SUMS "$work/cosign-blobs" && grep -qx tl-linux-x64 "$work/cosign-blobs"; then
-      rc_note 0 "cosign is handed both the sums file and each asset"
-    else
-      rc_note 1 "cosign is handed both the sums file and each asset (saw: $(tr '\n' ' ' < "$work/cosign-blobs"))"
-    fi
-  else
-    rc_note 1 "cosign was never invoked, so the signature checks did not run"
-  fi
-
-  rc_selftest_end "This verifier no longer refuses what it claims to refuse — repair it before trusting anything it accepts."
-}
 
 require_signature=0
 case "${1-}" in
   '') usage ;;
-  --selftest)
-    [ "$#" -eq 1 ] || usage
-    selftest
-    ;;
   --require-signature)
     require_signature=1
     shift

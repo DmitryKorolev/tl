@@ -572,8 +572,24 @@ in `Tests/InstallerProcessTests.lean`. They run the unchanged public adapter
 with a declared curl fixture and check the installed bytes, resolved download
 URL, transport refusal, and collaborator reachability. Mutations cover early
 success, a guessed version, discarded transport failure, and weakened protocol
-arguments. The remaining adapter selftests still migrate before enforcement;
-this first move does not tighten the inventory or delete the migration guards.
+arguments. The installer's remaining embedded selftest has moved to
+`release/InstallerSuite.lean`, exposed as `tlrelease installer-selftest --root .`
+and called by the native and migration policy registries. Its isolated tool
+manifests, per-invocation logs, temporary directory, signature ordering, verified
+bytes and staging cleanup are checked through the public adapter. The test suite
+also mutates signatures, digests, platform selection, notice handling and cleanup
+to establish that those observations refuse broken adapters. Permission-bypass
+skips are disclosed explicitly. The native corpus now owns the hermetic curl
+fixture; the workflow's old outer downloader fixture is removed.
+The standalone verifier likewise has no embedded selftest or tracked shell
+library import: `release/VerifierSuite.lean` owns its public pin, signature,
+digest, usage, read-only-directory and multiple-asset corpus, invoked through
+`tlrelease artifact-verifier-selftest --root .`. `release/AdapterFixture.lean`
+shares strict cosign and digest collaborators between the two suites.
+`Tests/VerifierProcessTests.lean` removes individual checks to test the observers,
+and both native commands are tested through success, refusal and usage statuses.
+These migrations do not tighten the inventory or delete the remaining migration
+guards; those still cut over atomically.
 
 Per the threat model in Context, this check counts declared shell surfaces; it
 does not claim to discover a tracked data file that already-trusted shell code
@@ -656,7 +672,7 @@ closed, pinned input set includes a POSIX shell and the ordinary file utilities
 the adapter suites declare, Git, `sha256sum`, ShellCheck, actionlint, and either
 the pinned Lean/Lake toolchain with its dependency cache or digest-verified
 handoff binaries for every compiled gate the selected policy invokes. The
-standalone verifier selftest supplies its own declared cosign stub and proves
+standalone verifier native corpus supplies its own declared cosign stub and proves
 that stub was reached; a row that invokes real cosign instead must receive a
 pinned binary and an offline trust root explicitly. No gate may download a
 missing tool or refresh trust state through the disabled network. A checked

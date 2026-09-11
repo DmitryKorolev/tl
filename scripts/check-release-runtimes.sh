@@ -34,7 +34,7 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
 cd "$repo_root"
 
-RC_LIB_SELF="$script_dir/lib/release-common.sh"
+RC_LIB_SELF="$repo_root/scripts/lib/release-common.sh"
 # shellcheck source=lib/release-common.sh
 . "$RC_LIB_SELF"
 

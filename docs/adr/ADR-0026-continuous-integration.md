@@ -126,7 +126,7 @@ express:
   `tlrelease stamp --root .` regenerated and diffed, because three documents
   state as fact that the checked-in copy is the development stamp and nothing
   but a comparison enforces it.
-- `scripts/verify-release-artifacts.sh --selftest` exercises the artifact
+- `tlrelease artifact-verifier-selftest --root .` exercises the artifact
   verifier's, against fabricated missing, malformed, mismatched, and
   rejected-signature inputs, and against a verifier that cannot run — which
   must not be reported as tampering. That script is the VERIFYING.md procedure
@@ -157,7 +157,7 @@ express:
   The channel's own decisions are `tlrelease`'s and are covered against a stub
   client in `lake exe tltest`, which is what lets them run where the release
   profile may not reach npm at all.
-- `install.sh --selftest` runs the installer against a fabricated local
+- `tlrelease installer-selftest --root .` runs the unchanged installer against a fabricated local
   release, covering each refusal path including a rejected signature, a digest
   mismatch, a missing bundle, an unwritable install directory, and every
   unsupported platform.

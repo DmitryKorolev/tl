@@ -441,7 +441,7 @@ private def documentTests : IO (List Outcome) := do
     | _, _ => none
   let mut outs := [
     -- The drift guard. `release/identity.pin` is what the scripted verifier
-    -- and the installer selftest actually read, so a stale one is a signature
+    -- and the native adapter corpora actually read, so a stale one is a signature
     -- check against the wrong identity — which looks like a verification
     -- failure rather than a broken verifier.
     checkEq "pin: the committed pin is exactly what the identity produces"
@@ -759,6 +759,7 @@ private def documentTests : IO (List Outcome) := do
     every public contract here makes retiring one a compile error rather than a
     silent deletion. -/
 private def pinnedReleaseVerdictTheorems : Unit :=
+  let _ := @Release.ShellInventory.accepts_iff
   let _ := @Release.WorkflowOutput.rowAllowed_iff
   let _ := @Release.Stamp.workflowStampAllowed_iff
   let _ := @Release.WorkflowRelease.sourceAgrees_iff
@@ -3709,17 +3710,17 @@ private def policyTests : List Outcome :=
     installing or uninstalling anything, which is the point of the seam. -/
 private def policyRunnerTests : IO (List Outcome) := do
   let asked ← IO.mkRef (0 : Nat)
-  let runnerWith (tools : List String) (failing : List String) : Policy.Runner :=
+  let runnerWith (tools : List String) (failing : List Policy.Invocation) : Policy.Runner :=
     { present := fun tool => do
         asked.modify (· + 1)
         return tools.contains tool
       invoke := fun invocation => do
-        if failing.contains invocation.command then
+        if failing.contains invocation then
           return .error s!"'{invocation.command}' refused"
         return .ok () }
   -- The runner reports each gate as it goes, which is what an operator reads
   -- and what a test must not print a hundred lines of.
-  let outcomesOf (tools failing : List String) (profile : Policy.Profile) (tagRun : Bool) :
+  let outcomesOf (tools : List String) (failing : List Policy.Invocation) (profile : Policy.Profile) (tagRun : Bool) :
       IO (List (Policy.Gate × Policy.GateOutcome)) := do
     let sink ← IO.mkRef { : IO.FS.Stream.Buffer }
     IO.withStdout (IO.FS.Stream.ofBuffer sink) <|
@@ -3730,7 +3731,7 @@ private def policyRunnerTests : IO (List Outcome) := do
   let allPresent ← outcomesOf everyTool [] .ci false
   let asksPerRun ← asked.get
   let noTools ← outcomesOf [] [] .ci false
-  let oneFailing ← outcomesOf everyTool ["./scripts/verify-release-artifacts.sh"] .release false
+  let oneFailing ← outcomesOf everyTool [.releaseCommand ["artifact-verifier-selftest", "--root", "."]] .release false
   -- A gate that started and did not finish. The process layer's own bound is
   -- covered where it lives; what the registry owns is that its report is a
   -- failure carrying what happened, and never a skip — "it is there and did not
@@ -5851,7 +5852,8 @@ private def boundaryCommandTests : IO (List Outcome) := do
   let write := writeIn
   let plant (name installer extra : String) (workflow : String := cleanWorkflow) :
       IO System.FilePath := plantCheckout base name installer extra workflow
-  let cleanRoot ← plant "clean" "#!/bin/sh\necho install\n" "echo policy\n"
+  let cleanRoot ← plant "clean" "#!/bin/sh\n. ./scripts/lib/release-common.sh\n" "echo policy\n"
+  write cleanRoot "scripts/lib/release-common.sh" "#!/bin/sh\necho fixture\n"
   let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
   let deferredRoot ← plant "deferred" "#!/bin/sh\necho install\n"
     "./scripts/check-channel-policy.sh --strict\n"
@@ -5909,8 +5911,10 @@ private def boundaryCommandTests : IO (List Outcome) := do
       (["install.sh", "scripts/verify-release-artifacts.sh", "scripts/check-release-policy.sh",
         ".github/workflows/release.yml"].all fun path => (realOut.splitOn path).length > 1)
       realOut,
-    check "boundary: the clean verdict names the shared library it followed into"
+    check "boundary: the real verdict includes the library still used by migration scripts"
       ((realOut.splitOn "scripts/lib/release-common.sh").length > 1) realOut,
+    check "boundary: a planted source edge reaches its shared library"
+      ((cleanOut.splitOn "scripts/lib/release-common.sh").length > 1) cleanOut,
     check "boundary: a fixture with no interpreter on the path passes" (cleanStatus == 0) cleanOut,
     check "boundary: an invocation in an entry point refuses" (violatingStatus == 1) violatingErr,
     check "boundary: the refusal names the file and the interpreter"
@@ -6636,10 +6640,10 @@ which established that two files said the same thing and nothing about what
 either one did. They are exercised here instead: one planted release, served
 over `file://` to the real script, with the digest column varied per row.
 
-`scripts/verify-release-artifacts.sh` retains the same two behaviours by
-*sourcing* the library rather than embedding a copy, which is why it carried no
-row in the old guard and carries none here. When it stops sourcing tracked
-code, its copies join this corpus.
+The standalone verifier's local helpers are exercised separately through
+`release/VerifierSuite.lean`; neither retained adapter sources tracked shell
+code. The native installer corpus extends these original digest observations
+with signed installs, sidecars, platform selection and failure cleanup.
 
 Signature verification is skipped throughout — deliberately, and it is the
 documented escape rather than a test-only branch. These rows are about the

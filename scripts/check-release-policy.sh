@@ -103,7 +103,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-RC_LIB_SELF="$script_dir/lib/release-common.sh"
+RC_LIB_SELF="$repo_root/scripts/lib/release-common.sh"
 # shellcheck source=lib/release-common.sh
 . "$RC_LIB_SELF"
 
@@ -173,9 +173,9 @@ if [ "$list" -eq 1 ]; then
   cat <<'GATES'
 release-policy gates, in order:
   shell static analysis               shellcheck over every tracked shell file
-  artifact verifier selftest          scripts/verify-release-artifacts.sh --selftest
+  artifact verifier selftest          ${TL_RELEASE_TOOL:-./.lake/build/bin/tlrelease} artifact-verifier-selftest --root .
   release runtime boundary selftest   scripts/check-release-runtimes.sh --selftest
-  installer selftest                  sh install.sh --selftest
+  installer selftest                  ${TL_RELEASE_TOOL:-./.lake/build/bin/tlrelease} installer-selftest --root .
   workflow lint                       actionlint .github/workflows/*.yml (needs actionlint)
 GATES
   if [ "$profile" = ci ]; then
@@ -256,7 +256,7 @@ rc_tool_gate "shell static analysis" --tool shellcheck -- shellcheck_all
 
 # The code path behind VERIFYING.md, the installer, and the release workflow's
 # own pre-publish check. Its refusal paths are the whole point of it.
-rc_gate "artifact verifier selftest" ./scripts/verify-release-artifacts.sh --selftest
+rc_gate "artifact verifier selftest" "${TL_RELEASE_TOOL:-./.lake/build/bin/tlrelease}" artifact-verifier-selftest --root .
 
 # The PATH-shim arm of the v0.1 dependency boundary proves it can fire here,
 # and only that. The arm itself runs the whole release profile under the shims,
@@ -268,7 +268,7 @@ rc_gate "release runtime boundary selftest" ./scripts/check-release-runtimes.sh 
 # The installer is piped into a shell by people who cannot inspect it first, so
 # a check that silently stopped running would be invisible to exactly the users
 # who most depend on it.
-rc_gate "installer selftest" sh install.sh --selftest
+rc_gate "installer selftest" "${TL_RELEASE_TOOL:-./.lake/build/bin/tlrelease}" installer-selftest --root .
 
 # A workflow cannot validate itself: if GitHub refuses to load release.yml,
 # nothing runs to say so, and the failure surfaces only when someone pushes a

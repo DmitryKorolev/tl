@@ -140,30 +140,8 @@ jobs:
           chmod 0755 "$scratch/tools/actionlint"
           install -m 0755 .lake/build/bin/tlrelease-static "$scratch/tools/tlrelease"
 
-          # The installer suite needs a downloader but must not have a network.
-          # This declared fixture implements only its file:// reads and records
-          # reachability; every other scheme refuses.
-          cat > "$scratch/tools/curl" <<'CURL_STUB'
-          #!/bin/sh
-          set -eu
-          out=''
-          url=''
-          while [ "$#" -gt 0 ]; do
-            case $1 in
-              -o) out=$2; shift 2 ;;
-              -w) shift 2 ;;
-              --retry | --proto | --proto-redir) shift 2 ;;
-              -*) shift ;;
-              *) url=$1; shift ;;
-            esac
-          done
-          printf '%s\n' "$url" >> "${HERMETIC_CURL_LOG:?}"
-          case $url in
-            file://*) [ -n "$out" ] || exit 64; cp "${url#file://}" "$out" ;;
-            *) exit 22 ;;
-          esac
-          CURL_STUB
-          chmod 0755 "$scratch/tools/curl"
+          # The native installer corpus owns its isolated curl fixture and
+          # checks its per-invocation reachability inside the policy gate.
 
           # This is generated workflow test code, not a fourth tracked shell
           # program. It drives the exact launcher bytes copied into each
@@ -410,7 +388,6 @@ jobs:
             sha256sum "$scratch/tools/tlrelease"
             sha256sum "$scratch/tools/actionlint"
             sha256sum "$scratch/tools/shellcheck"
-            sha256sum "$scratch/tools/curl"
             sha256sum "$scratch/launcher-suite"
             sha256sum "$scratch/packed/package/bin/tl"
           } | sed "s|$scratch|/scratch|" > "$scratch/positive-inputs.sha256"
@@ -430,7 +407,6 @@ jobs:
             --workdir /workspace \
             --env HOME=/scratch/home \
             --env TMPDIR=/scratch/tmp \
-            --env HERMETIC_CURL_LOG=/scratch/curl-reached \
             --env "HERMETIC_REQUIRED_TOOLS=$HERMETIC_REQUIRED_TOOLS" \
             --env "HERMETIC_FORBIDDEN_RUNTIMES=$HERMETIC_FORBIDDEN_RUNTIMES" \
             --env PATH=/scratch/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -460,7 +436,7 @@ jobs:
                   exit 1
                 }
               done
-              for tool in $HERMETIC_REQUIRED_TOOLS curl; do
+              for tool in $HERMETIC_REQUIRED_TOOLS; do
                 command -v "$tool" >/dev/null 2>&1 || {
                   echo "hermetic release: required input $tool is absent" >&2
                   exit 1
@@ -471,12 +447,8 @@ jobs:
               git --version
               shellcheck --version
               actionlint -version
-              shellcheck -S warning -s sh /scratch/tools/curl /scratch/launcher-suite
+              shellcheck -S warning -s sh /scratch/launcher-suite
               tlrelease policy --profile release --strict
-              [ -s "$HERMETIC_CURL_LOG" ] || {
-                echo "hermetic release: the declared curl fixture was never reached" >&2
-                exit 1
-              }
               /scratch/launcher-suite
               echo "hermetic release: policy and all three retained-adapter suites passed"
             '

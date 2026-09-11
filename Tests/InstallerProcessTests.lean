@@ -2,6 +2,7 @@
 fixtures; no function is extracted, sourced, or invoked through a test hatch. -/
 import Tests.Harness
 import release.Digest
+import release.InstallerSuite
 
 namespace Tl.Tests
 
@@ -36,7 +37,7 @@ case $1 in
     [ "$7" = '=https,file' ] && [ "$8" = -o ] || exit 93
     url=${10}
     case $url in
-      https://github.com/DmitryKorolev/tl/releases/download/*) ;;
+      "$PROBE_DOWNLOAD_BASE/"*) ;;
       *) exit 94 ;;
     esac
     cp "$PROBE_RELEASE/${url##*/}" "$9"
@@ -76,17 +77,19 @@ def installerProcessTests (script : System.FilePath := "install.sh") : IO (List 
         ("changed-redirect", "https://github.com/DmitryKorolev/tl/something/else", "0", 1, "redirect changed shape"),
         ("transport", "https://github.com/DmitryKorolev/tl/releases/tag/v1.2.3", "37", 1, "could not reach GitHub")]
       do
+      IO.FS.createDirAll (base / "tmp")
       let dest := base / label
       let log := base / (label ++ ".log")
       let result ← IO.Process.output {
         cmd := "/usr/bin/env"
-        args := #["-i", s!"PATH={bin}", s!"HOME={base}",
+        args := #["-i", s!"PATH={bin}", s!"HOME={base}", s!"TMPDIR={base / "tmp"}",
           s!"TL_INSTALL_DIR={dest}", "TL_INSTALL_SKIP_SIGNATURE=1",
           -- These formerly disabled the script before its dispatch. A success
           -- row must still install and execute the binary with them present.
           "TL_INSTALL_SOURCE_ONLY=1", "TL_INSTALL_SELFTEST=1", "TL_SOURCE_ONLY=1",
           s!"PROBE_CURL_LOG={log}", s!"PROBE_EFFECTIVE_URL={effective}",
           s!"PROBE_CURL_STATUS={transport}", s!"PROBE_RELEASE={release}",
+          s!"PROBE_DOWNLOAD_BASE=https://github.com/DmitryKorolev/tl/releases/download/{diagnostic}",
           "/bin/sh", script.toString] }
       let output := result.stdout ++ result.stderr
       let reached ← if ← log.pathExists then IO.FS.readFile log else pure ""
@@ -133,6 +136,63 @@ def installerProcessMutationTests : IO (List Outcome) := do
       let observations ← installerProcessTests script
       rows := rows ++ [check s!"installer process observer rejects {name}"
         (observations.any (!·.passed)) "every observation accepted the mutated adapter"]
+    return rows
+  finally IO.FS.removeDirAll base
+
+/-- The same public-process corpus the release policy invokes. -/
+def installerBranchTests (script : System.FilePath := "install.sh") : IO (List Outcome) := do
+  return (← Release.InstallerSuite.run "." script).map fun row =>
+    { name := row.name, passed := row.passed, msg := row.msg }
+
+/-- Remove safeguards individually and demand a failing observation from the
+    same corpus. The named rows bound runtime while targeting each effect. -/
+def installerBranchMutationTests : IO (List Outcome) := do
+  let source ← IO.FS.readFile "install.sh"
+  let base ← IO.FS.createTempDir
+  try
+    let mut rows : List Outcome := []
+    for (name, before, after, cases) in [
+        ("sums-signature", "    verify_signature \"$work/SHA256SUMS\" \"$work/SHA256SUMS.sigstore.json\" SHA256SUMS", "    :", ["sums-signature"]),
+        ("asset-signature", "    verify_signature \"$work/$asset\" \"$work/${asset}.sigstore.json\" \"$asset\"", "    :", ["asset-signature"]),
+        ("signature-pin", "--certificate-oidc-issuer \"$TL_ISSUER\"", "--certificate-oidc-issuer wrong", ["signed"]),
+        ("digest-comparison", "  [ \"$(lower \"$actual\")\" = \"$(lower \"$expected\")\" ]", "  true", ["mismatch"]),
+        ("cleanup", "[ -z \"$staged\" ] || rm -f \"$staged\"", ":", ["copy-failure", "rename-failure"]),
+        ("notice-comparison", "  if [ \"$(lower \"$actual\")\" != \"$(lower \"$expected\")\" ]; then", "  if false; then", ["notice-mismatch"]),
+        ("wrong-platform", "Linux) install_os=linux", "Linux) install_os=darwin", ["signed"]),
+        ("notice-fatal", "    install_notice \"$notice\" \"$notice_expected\" || true", "    install_notice \"$notice\" \"$notice_expected\"", ["notice-mismatch"]),
+        ("skip-digest", "  actual=$(sha256_of \"$work/$asset\")", "  actual=$expected", ["skip-still-checks"])] do
+      unless (source.splitOn before).length == 2 do
+        throw (IO.userError s!"installer mutation {name} no longer targets exactly one site; update the probe")
+      let script := base / name
+      IO.FS.writeFile script (source.replace before after)
+      let observations ← Release.InstallerSuite.run "." script cases
+      rows := rows ++ [check s!"installer branch observer rejects {name}"
+        (!observations.isEmpty && observations.any (!·.passed)) "every observation accepted the mutated adapter"]
+    return rows
+  finally IO.FS.removeDirAll base
+
+/-- Exercise the native command's public success, refusal, and usage statuses. -/
+def installerSuiteCommandTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  try
+    let bad := base / "bad-adapter"
+    IO.FS.createDirAll (bad / "release")
+    IO.FS.writeFile (bad / "release/identity.pin") (← IO.FS.readFile "release/identity.pin")
+    IO.FS.writeFile (bad / "install.sh") "#!/bin/sh\nexit 0\n"
+    let mut rows : List Outcome := []
+    for (name, args, status, diagnostic) in [
+        ("success", #["--root", "."], 0, "installer public-process corpus passed"),
+        ("missing-root", #[], 2, "--root"),
+        ("unknown-option", #["--root", ".", "--unknown"], 2, "unknown"),
+        ("unreadable-input", #["--root", base.toString], 1, "identity.pin"),
+        ("failed-observations", #["--root", bad.toString], 1, "Repair the installer")]
+      do
+      let result ← IO.Process.output {
+        cmd := ".lake/build/bin/tlrelease"
+        args := #["installer-selftest"] ++ args }
+      rows := rows ++ [checkEq s!"installer suite command {name}: status" result.exitCode status,
+        check s!"installer suite command {name}: diagnostic"
+          (((result.stdout ++ result.stderr).splitOn diagnostic).length > 1) (result.stdout ++ result.stderr)]
     return rows
   finally IO.FS.removeDirAll base
 
