@@ -647,10 +647,16 @@ assertions, including elapsed monotonic milliseconds and failures. Large release
 tool fixture boundaries have additional FIXTURE timings. Empty groups and setup
 exceptions become visible failed assertions; subsequent groups still execute.
 The test supervisor streams both pipes concurrently, retaining only the last
-nonempty stdout line for the existing completion decision. Reader failures stop
-and reap the worker. `Tests/RunnerTests.lean` covers selection, registry coverage,
+nonempty stdout line for the existing completion decision. Either reader's
+failure requests worker termination and asynchronous reaping, then returns the
+error without waiting for the other pipe: a descendant may hold it open. The
+worker retains the terminal's process group so terminal interrupts still reach
+its fixtures. This is not process containment: the public launcher exits on
+failure; an embedding caller must own cleanup of any surviving descendants.
+`Tests/RunnerTests.lean` covers selection, registry coverage,
 empty/failing/throwing groups, actual launcher argument forwarding, and real
 workers with early exits, malformed final markers, pipe bursts, broken consumers,
+descendants holding pipes open across a consumer failure,
 and a handshake requiring both streams to be flushed before worker completion.
 The verifier launcher retains its existing buffered path.
 

@@ -117,10 +117,11 @@ def superviseWorker (protocol : CompletionProtocol) (worker : System.FilePath) :
 
 /-- Drain a pipe as it arrives, retaining only the last nonempty line needed
     for the completion check. Memory does not grow with the assertion log. -/
-partial def forwardWorkerStream (source : IO.FS.Handle) (target : IO.FS.Stream) : IO String := do
+partial def forwardWorkerStream (source : IO.FS.Handle) (target : IO.FS.Stream)
+    (stopped : IO.Ref Bool) : IO String := do
   let rec loop (last : String) : IO String := do
     let line ← source.getLine
-    if line.isEmpty then return last
+    if line.isEmpty || (← stopped.get) then return last
     target.putStr line
     target.flush
     loop (if line.trimAscii.isEmpty then last else line)
@@ -134,19 +135,29 @@ def streamingWorkerOutput (worker : System.FilePath) (args : Array String) :
   let err ← IO.getStderr
   let child ← IO.Process.spawn {
     cmd := worker.toString, args, stdin := .null, stdout := .piped, stderr := .piped }
-  -- A failed reader must stop the child before joining the other reader:
-  -- otherwise the child could block forever on the abandoned pipe.
-  let drain (source : IO.FS.Handle) (target : IO.FS.Stream) : IO String := do
-    try forwardWorkerStream source target catch error =>
-      try child.kill catch _ => pure ()
-      throw error
-  let stdout ← IO.asTask (drain child.stdout out) Task.Priority.dedicated
-  let stderrResult ← (drain child.stderr err).toBaseIO
-  let stdoutResult ← IO.wait stdout
-  let exitCode ← child.wait
-  let _ ← IO.ofExcept stderrResult
-  let last ← IO.ofExcept stdoutResult
-  return { exitCode, stdout := last, stderr := "" }
+  let stopped ← IO.mkRef false
+  let stdout ← IO.asTask (forwardWorkerStream child.stdout out stopped) Task.Priority.dedicated
+  let stderr ← IO.asTask (forwardWorkerStream child.stderr err stopped) Task.Priority.dedicated
+  -- Observe either reader's failure without first joining the other: a fixture
+  -- descendant can inherit its pipe and keep it open after the worker exits.
+  -- Keep the terminal's process group so Ctrl+C still reaches worker fixtures.
+  try
+    let (first, remaining) ← IO.waitAny' [stdout, stderr]
+    let _ ← IO.ofExcept first
+    for reader in remaining do
+      let _ ← IO.ofExcept (← IO.wait reader)
+    let exitCode ← child.wait
+    let last ← IO.ofExcept (← IO.wait stdout)
+    return { exitCode, stdout := last, stderr := "" }
+  catch error =>
+    stopped.set true
+    try child.kill catch _ => pure ()
+    -- Reap asynchronously: termination is best-effort and neither a worker
+    -- ignoring it nor a descendant retaining a pipe may hide this failure.
+    -- The public launcher exits after reporting the error. This is not process
+    -- containment; callers embedding this helper must own descendant cleanup.
+    let _ ← IO.asTask child.wait Task.Priority.dedicated
+    throw error
 
 def superviseStreamingWorker (protocol : CompletionProtocol) (worker : System.FilePath)
     (args : Array String := #[]) : IO UInt32 :=

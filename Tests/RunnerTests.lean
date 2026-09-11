@@ -125,7 +125,10 @@ private def streamingSupervisorTests : IO (List Outcome) := do
         ("blank-tail", s!"{verdict}; printf '\\n  \\n'", 0, ""),
         ("no-newline", s!"printf '%s' '{protocol.verdict}'", 0, ""),
         ("wrong-protocol", s!"echo '{testCompletionProtocol.verdict}'", 1, "early-exit"),
-        ("truncated", "printf 'tltest: test runner request'", 1, "early-exit")] do
+        ("truncated", "printf 'tltest: test runner request'", 1, "early-exit"),
+        ("nul-tail", s!"{verdict}; printf '\\000after\\n'", 1, "last nonempty stdout line"),
+        ("nul-verdict", s!"printf '%s\\000hidden\\n' '{protocol.verdict}'", 1, "early-exit"),
+        ("invalid-utf8-tail", s!"{verdict}; printf '\\377after\\n'", 1, "last nonempty stdout line") ] do
       let worker ← stub name body
       let (code, _, err) ← captureRunner (superviseStreamingWorker protocol worker)
       rows := rows ++ [checkEq s!"streamed {name}: status" code expected,
@@ -165,7 +168,7 @@ private def streamingSupervisorTests : IO (List Outcome) := do
     rows := rows ++ [checkEq "both streams reach consumer before worker exit" code 0,
       check "streaming preserves Unicode" ((String.fromUTF8! (← out.get).data).contains "λ ✓"),
       check "stderr burst drains without deadlock" ((← err.get).data.size > 65536)]
-    -- A broken consumer must terminate the direct worker and join both readers,
+    -- A broken consumer must request termination of the direct worker,
     -- including when the error happens on the background stdout reader.
     let brokenWorker ← stub "broken-consumer" "while :; do echo line; echo line >&2; done"
     for breakStdout in [true, false] do
@@ -178,6 +181,43 @@ private def streamingSupervisorTests : IO (List Outcome) := do
         (match result with
          | .error error => error.toString.contains "injected consumer failure"
          | .ok _ => false)]
+    -- The descendant keeps both pipes open until the caller releases it.
+    -- Failure must return before that release, for either reader; the bounded
+    -- fallback makes a regression fail an assertion instead of hanging tests.
+    let ready := base / "descendant-ready"
+    let release := base / "descendant-release"
+    let expired := base / "descendant-expired"
+    let stopped := base / "descendant-stopped"
+    let descendant ← stub "descendant" s!"echo ready > '{ready}'\n\
+      i=0\nwhile [ ! -f '{release}' ]; do\n\
+      i=$((i + 1)); if [ \"$i\" -ge 200 ]; then echo expired > '{expired}'; break; fi\n\
+      sleep 0.01\ndone\necho stopped > '{stopped}'"
+    let parent ← stub "parent" s!"'{descendant}' &\n\
+      i=0\nwhile [ ! -f '{ready}' ]; do\n\
+      i=$((i + 1)); [ \"$i\" -lt 500 ] || exit 9; sleep 0.01\ndone\n\
+      echo stdout-ready; echo stderr-ready >&2\nwait"
+    for breakStdout in [true, false] do
+      for path in [ready, release, expired, stopped] do
+        if ← path.pathExists then IO.FS.removeFile path
+      let sink := IO.FS.Stream.ofBuffer (← IO.mkRef { : IO.FS.Stream.Buffer })
+      let broken := { sink with flush := throw (IO.userError "descendant consumer failure") }
+      let result ← (IO.withStdout (if breakStdout then broken else sink) <|
+        IO.withStderr (if breakStdout then sink else broken) <|
+          streamingWorkerOutput parent #[]).toBaseIO
+      let returnedBeforeRelease := !(← expired.pathExists)
+      IO.FS.writeFile release "release"
+      for _ in [:500] do
+        if ← stopped.pathExists then break
+        IO.sleep 10
+      rows := rows ++ [
+        check s!"descendant cleanup preserves consumer error (stdout={breakStdout})"
+          (match result with
+           | .error error => error.toString.contains "descendant consumer failure"
+           | .ok _ => false),
+        check s!"consumer failure returns while descendant retains pipes (stdout={breakStdout})"
+          returnedBeforeRelease,
+        check s!"descendant fixture completes after release (stdout={breakStdout})"
+          (← stopped.pathExists)]
     return rows
   finally IO.FS.removeDirAll base
 
