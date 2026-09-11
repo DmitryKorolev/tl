@@ -605,7 +605,7 @@ criterion is actual Darwin-only reachability of a **forbidden** runtime, not
 whether an adapter also runs on macOS.
 
 The `hermetic-release` CI job is configured to collect that Linux evidence;
-the exact workflow step passed locally on 2026-09-09 using Podman 6.1.1 in a
+the exact workflow step passed locally on 2026-09-10 using Podman 6.1.1 in a
 rootless Linux VM, executing the pinned linux/amd64 image. Hosted CI remains
 a separate check of runner integration. Its pinned
 inner image receives only a read-only checkout and separate writable scratch
@@ -619,9 +619,14 @@ and injected uname and
 loader observations; the installer suite injects every supported platform
 selection and the Rosetta observation; and the standalone verifier proves its
 declared cosign and shasum collaborators were reached. The guarded Podman argv
-is the authority statement. The arm64-loader-only and neither-loader paths
-remain uncovered pending a static shell/utility fixture (ADR-0028); the
-image's dynamic programs cannot run with their actual musl loader hidden.
+is the authority statement. A versioned, digest-pinned static BusyBox fixture
+is mounted read-only over the image's shell/utility executable, and `/lib` is
+copied from the same pinned image into a writable observation mount. After the
+policy runs, the launcher suite can remove the actual musl loader. It exercises
+arm64-loader-only, arm64 glibc alongside musl, and neither-loader observations,
+each with a platform package present and missing. The cases check uname
+collaborator reachability and byte identity with the packed launcher; the suite
+also checks that its shell is the static fixture (ADR-0028).
 The job is regression evidence over the paths it
 executes, not a sandbox against malicious protected-reviewed source.
 The verifier's mode-000 unreadable-file row runs in the ordinary non-root

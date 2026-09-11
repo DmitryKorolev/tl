@@ -198,9 +198,10 @@ CI gates (mirror these locally before declaring done):
   lookup and the image filesystem for `python`, `python3`, `ruby`, `brew`,
   `node`, and `npm`, checks its declared positive tool manifest, proves the
   curl/cosign/shasum fixtures are reached, and drives the exact npm-launcher
-  bytes through supported/refused platform and process cases. The arm64-only
-  and neither-loader observations still need a static test fixture, as recorded
-  in ADR-0028. The full
+  bytes through supported/refused platform and process cases. A digest-pinned
+  static BusyBox fixture and a separate `/lib` observation mount cover the
+  arm64-only, glibc-alongside-musl, and neither-loader cases with both present
+  and missing packages, as recorded in ADR-0028. The full
   outer Podman argv and each evidence command are mutation-tested in
   `Tests/ReleaseDriftTests.lean`. This job requires Podman and therefore cannot
   be reproduced by a local validation run whose Linux machine is unavailable; in

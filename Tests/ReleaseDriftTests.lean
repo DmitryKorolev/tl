@@ -259,6 +259,8 @@ private def hermeticImage : String :=
 
 private def hermeticEnvironment : List String :=
   [s!"HERMETIC_IMAGE: {hermeticImage}",
+   "BUSYBOX_STATIC_VERSION: \"1.37.0-r20\"",
+   "BUSYBOX_STATIC_SHA256: \"488ad6efd04b5a722719e79f8e0dcc2c24afd6758867af3ce41b04839e60c74b\"",
    "ACTIONLINT_VERSION: \"1.7.12\"",
    "ACTIONLINT_SHA256: \"8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8\"",
    "SHELLCHECK_VERSION: \"0.11.0\"",
@@ -281,6 +283,8 @@ private def hermeticPodmanPrefix : List String :=
    "--user 0:0 \\",
    "--mount \"type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly\" \\",
    "--mount \"type=bind,source=$scratch,target=/scratch\" \\",
+   "--mount \"type=bind,source=$scratch/static/bin/busybox.static,target=/bin/busybox,readonly\" \\",
+   "--mount \"type=bind,source=$scratch/lib,target=/lib\" \\",
    "--mount \"type=bind,source=$scratch/lib64,target=/lib64\" \\",
    "--workdir /workspace \\",
    "--env HOME=/scratch/home \\",
@@ -301,7 +305,33 @@ private def hermeticBodyFragments : List String :=
    "install -m 0755 .lake/build/bin/tlrelease-static \"$scratch/tools/tlrelease\"",
    "sha256sum \"$scratch/tools/tlrelease\"",
    "echo \"${ACTIONLINT_SHA256}  $scratch/actionlint.tar.gz\" | sha256sum -c -",
-   "echo \"${SHELLCHECK_SHA256}  $scratch/shellcheck.tar.xz\" | sha256sum -c -"]
+   "echo \"${SHELLCHECK_SHA256}  $scratch/shellcheck.tar.xz\" | sha256sum -c -",
+   "curl -sSfL --retry 3 -o \"$scratch/busybox-static.apk\" \\",
+   "\"https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/busybox-static-${BUSYBOX_STATIC_VERSION}.apk\"",
+   "echo \"${BUSYBOX_STATIC_SHA256}  $scratch/busybox-static.apk\" | sha256sum -c -",
+   "tar -xzf \"$scratch/busybox-static.apk\" -C \"$scratch/static\" bin/busybox.static",
+   "chmod 0755 \"$scratch/static/bin/busybox.static\"",
+   "library_source=$(podman create --platform linux/amd64 \"$HERMETIC_IMAGE\")",
+   "trap 'podman rm -f \"$library_source\" >/dev/null' EXIT",
+   "podman cp \"$library_source:/lib/.\" \"$scratch/lib\"",
+   "podman rm \"$library_source\" >/dev/null",
+   "rm -f /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-aarch64.so.1 /lib/ld-musl-*.so.1",
+   "glibc) : > /lib64/ld-linux-x86-64.so.2; : > /lib/ld-musl-test.so.1 ;;",
+   "arm64-only) : > /lib/ld-linux-aarch64.so.1 ;;",
+   "arm64-with-musl) : > /lib/ld-linux-aarch64.so.1; : > /lib/ld-musl-test.so.1 ;;",
+   "musl) : > /lib/ld-musl-test.so.1 ;;",
+   "neither) : ;;",
+   "note \"$([ /bin/sh -ef /scratch/static/bin/busybox.static ] && echo 0 || echo 1)\" \\",
+   "for observation in arm64-only arm64-with-musl neither; do",
+   "selection \"$observation-present\" Linux aarch64 \"$observation\" linux-arm64 hoisted",
+   "prepare \"$observation-missing\" Linux aarch64 \"$observation\"",
+   "note \"$([ \"$run_status\" -eq 1 ] && printf '%s' \"$run_out\" | grep -q 'not installed' && ! printf '%s' \"$run_out\" | grep -q 'uses musl libc' && echo 0 || echo 1)\" \\",
+   "for variant in present missing; do",
+   "observed_case=\"$work/$observation-$variant\"",
+   "note \"$(grep -qx -- -s \"$observed_case/uname-calls\" && grep -qx -- -m \"$observed_case/uname-calls\" && echo 0 || echo 1)\" \\",
+   "observed_digest=$(sha256sum \"$observed_case/tl/bin/tl\" | cut -d' ' -f1)",
+   "note \"$([ \"$source_digest\" = \"$observed_digest\" ] && echo 0 || echo 1)\" \\",
+   "sha256sum \"$scratch/static/bin/busybox.static\""]
 
 /-- The complete inner program, including each refusal and final invocation.
     Exact lines and ordering prevent a lint argument or a swallowed failure

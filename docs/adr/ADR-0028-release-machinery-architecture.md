@@ -705,11 +705,21 @@ branch: its `sha256sum`/`shasum` choice depends only on PATH availability, so th
 isolated fixture above executes both arms, and `shasum` itself is permitted.
 The npm launcher executes supported/refused platform cases and glibc-present
 and musl-present cases through injected observations and a planted native
-target. The arm64-loader-only and neither-loader file-existence paths are not
-yet exercised: hiding the image's real musl loader would also prevent its
-dynamic shell and utilities from running. Covering these remaining paths needs
-a declared static shell/utility fixture and a separate library observation
-mount, without changing launcher bytes or adding container capabilities.
+target. A versioned, SHA-256-pinned Alpine `busybox-static` package supplies
+`/bin/busybox` through a read-only bind mount, including the image's `/bin/sh`
+and utility symlinks. The outer job copies `/lib` from a stopped container of
+the same digest-pinned image into a separate writable observation mount; it
+executes no image initializer. The strict policy runs with those libraries
+intact, then the static launcher suite replaces loader observations without
+needing the image's dynamic loader. It crosses arm64-loader-only, arm64 glibc
+alongside musl (glibc takes precedence), and neither-loader observations with
+both installed and missing packages, covering both `on_musl` call sites. Each
+new case checks that both uname collaborators ran and its launcher copy matches
+the extracted npm package. The suite checks that `/bin/sh` is the mounted static fixture;
+the input manifest checks the fixture bytes. The input version/digest, library
+copy, read-only static mount, writable observation mounts, case invocations and
+assertions are mutation-pinned in `Tests/ReleaseDriftTests.lean`. Launcher bytes,
+container capabilities, and the read-only image/checkout boundary are unchanged.
 
 An actual macOS-only branch of `install.sh` is different. Hosted macOS contains
 `/usr/bin/python3` and `/usr/bin/ruby`, and the Linux container cannot execute a
