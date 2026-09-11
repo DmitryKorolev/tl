@@ -52,6 +52,22 @@ opaque readAll (fd : UInt32) : IO ByteArray
 @[extern "tl_sys_write_all"]
 opaque writeAll (fd : UInt32) (data : @&ByteArray) : IO Unit
 
+/-- Attempt to terminate an owned POSIX process group using its captured id.
+    The caller keeps the leader unreaped until cleanup, preventing PID reuse.
+    If the group has not formed yet, target the owned leader instead.
+    Returns whether a signal was sent; invalid ids (0, 1, out of pid_t range),
+    and operational refusals return false. Never call this after reaping the leader. This avoids
+    the pinned runtime's loss of the group flag through `Child.takeStdin`.
+    Callers bound waiting independently of whether termination succeeds. -/
+@[extern "tl_sys_terminate_group"]
+opaque terminateProcessGroup (group : UInt32) : IO Bool
+
+/-- The pinned runtime borrows both arguments, but `IO.Process.Child.pid`
+    declares the child owned. Match the runtime signature so reading a PID
+    does not leak the child and its pipe descriptors. -/
+@[extern "lean_io_process_child_pid"]
+opaque childPid {cfg : @& IO.Process.StdioConfig} (child : @& IO.Process.Child cfg) : UInt32
+
 /-! ### The durability barrier and the policy over it -/
 
 /-- Which durability barrier a completed `sync` actually reached.

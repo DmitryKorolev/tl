@@ -118,21 +118,27 @@ private def localGitTimeoutMs : Nat := 5000
 private def remoteGitTimeoutMs : Nat := 30000
 
 /-- Spawn `cfg` with `stdin`, waiting at most `timeoutMs` for it to exit. On
-    expiry the child is SIGTERM-killed — so a hung git can never wedge a tl
+    expiry the isolated process group is sent a termination signal, and no further wait is
+    made — so a hung git or inherited pipe cannot wedge a tl
     command — and the result is `(124, .empty, "timed out …")`: the conventional
     timeout exit, which every caller already treats as a git failure (→ a
     best-effort `degraded` note, or a thrown `internal`). Otherwise the real
     `(exitCode, stdout-bytes, stderr-text)`. Both pipes drain on tasks so a full
     stdout/stderr buffer can't deadlock the wait; the wait is a 10ms `tryWait`
     poll on the calling thread — no extra thread, ≤10ms fast-path latency, no
-    busy-spin. Tested via `sleep`/`true`, no hung git needed. -/
+    busy-spin. The deadline covers child exit and all three pipe tasks;
+    zero opts out of both. Group termination is cleanup, not a sandbox: a deliberately
+    detached descendant is not contained by this runner. -/
 def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat) :
     IO (UInt32 × ByteArray × String) := do
   -- every subprocess goes through here, so this is the one place the
   -- ADR-0012 environment scrub is applied — a git call that bypassed it
   -- would re-open the cross-repository routing hole
+  let started ← IO.monoMsNow
   let spawned ← IO.Process.spawn { cfg with env := gitEnvScrub ++ cfg.env,
-                                            stdin := .piped, stdout := .piped, stderr := .piped }
+                                            stdin := .piped, stdout := .piped, stderr := .piped,
+                                            setsid := true }
+  let groupId := Sys.childPid spawned
   let (stdinH, child) ← spawned.takeStdin
   -- drain stdout/stderr and write stdin on concurrent tasks before the wait. A child
   -- that interleaves a large stdout with reading a large stdin would otherwise deadlock
@@ -143,27 +149,37 @@ def runBounded (cfg : IO.Process.SpawnArgs) (stdin : ByteArray) (timeoutMs : Nat
   -- pipe (the child already exited) is caught and benign.
   let outTask ← IO.asTask child.stdout.readBinToEnd Task.Priority.dedicated
   let errTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
-  let _inTask ← IO.asTask
+  let inTask ← IO.asTask
     (try (do stdinH.write stdin; stdinH.flush) catch _ => pure ())
     Task.Priority.dedicated
-  let mut code? : Option UInt32 := none
+  let timeout := (124, ByteArray.empty,
+    s!"timed out after {timeoutMs}ms — a git process or inherited input/output pipe did not finish; stop the hung helper or hook, then retry")
   if timeoutMs == 0 then
-    code? := some (← child.wait)  -- 0 ⇒ unbounded: the git-config opt-out
-  else
-    let stepMs := 10
-    for _ in [0 : timeoutMs / stepMs + 1] do
-      code? := (← child.tryWait)
-      if code?.isSome then break
-      IO.sleep (UInt32.ofNat stepMs)
-  match code? with
-  | some code =>
+    let code ← child.wait  -- explicit unbounded opt-out includes streams
+    let _ ← IO.ofExcept inTask.get
     let out ← IO.ofExcept outTask.get
     let err ← IO.ofExcept errTask.get
     return (code, out, err)
-  | none =>
-    child.kill
-    return (124, ByteArray.empty,
-      s!"timed out after {timeoutMs}ms — a hung git (a stale lock, a credential helper waiting on input, or an unreachable remote)")
+  -- One budget covers execution AND every pipe task. Child exit alone is
+  -- insufficient: a grandchild may still own stdout, stderr, or stdin.
+  for _ in [0 : timeoutMs / 10 + 1] do
+    if (← IO.monoMsNow) - started ≥ timeoutMs then break
+    -- Do not reap the leader while descendants may still hold pipes: its
+    -- retained PID identifies the owned group until cleanup, without reuse.
+    if (← IO.hasFinished outTask) && (← IO.hasFinished errTask)
+        && (← IO.hasFinished inTask) then
+      if let some code ← child.tryWait then
+        let out ← IO.ofExcept outTask.get
+        let err ← IO.ofExcept errTask.get
+        return (code, out, err)
+    IO.sleep 10
+  -- Terminate the isolated process group, including inherited-pipe owners.
+  -- A group that exited between observation and cleanup may already be gone.
+  let _ ← (Sys.terminateProcessGroup groupId).toBaseIO
+  -- Reap asynchronously: cleanup must not turn an expired deadline into a
+  -- second unbounded wait, even if the OS delays termination.
+  let _ ← IO.asTask (do let _ ← child.wait.toBaseIO; pure ()) Task.Priority.dedicated
+  return timeout
 
 /-- Per-repo memo of the resolved (local, remote) timeouts, so the git-config
     read happens at most once per repo per process (tl is one-shot; a process may
@@ -213,7 +229,7 @@ private def git (d : Dirs) (args : List String) (stdin : String := "")
 /-- A git plumbing failure that isn't an expected condition is `internal`
     (the caller maps "not a repo" / "no remote" to no-upstream itself). -/
 private def gitErr (op : String) (o : IO.Process.Output) : Tl.Error :=
-  .mk' .internal s!"git {op} failed (exit {o.exitCode}): {o.stderr.trimAscii.toString}"
+  .mk' .internal s!"git {op} failed (exit {o.exitCode}): {o.stderr.trimAscii.toString} — repair Git/repository access, then retry `tl sync`"
 
 private def run (d : Dirs) (op : String) (args : List String) (stdin : String := "")
     (env : List (String × Option String) := []) (remote : Bool := false) : TlM String := do
@@ -244,10 +260,27 @@ def inGitRepo (d : Dirs) : IO Bool := do
   let o ← git d ["rev-parse", "--git-dir"]
   return o.exitCode == 0
 
+/-- A captured Git object identity. Its constructor is private: callers must
+    resolve a ref once through `pinRef`, then pass this value to tree readers.
+    A mutable ref name cannot accidentally become a second snapshot read. -/
+structure PinnedRef where
+  private mk ::
+  oid : String
+
+/-- Capture an immutable object identity before reading any of its contents.
+    A missing ref is empty; operational Git failures are not empty state. -/
+def pinRef (d : Dirs) (ref : String) : TlM (Option PinnedRef) := do
+  let o ← (git d ["rev-parse", "--verify", "--quiet", ref] : IO _)
+  if o.exitCode == 0 then return some ⟨o.stdout.trimAscii.toString⟩
+  else if o.exitCode == 1 then return none
+  else throw (gitErr "rev-parse" o)
+
+/-- The current task-log identity, captured once. -/
+def pinLogRef (d : Dirs) : TlM (Option PinnedRef) := pinRef d "refs/tl/log"
+
 /-- The current `refs/tl/log` commit oid, or `none` if the ref is unset. -/
-def refTip (d : Dirs) : TlM (Option String) := do
-  let o ← (git d ["rev-parse", "--verify", "--quiet", "refs/tl/log"] : IO _)
-  if o.exitCode == 0 then return some o.stdout.trimAscii.toString else return none
+def refTip (d : Dirs) : TlM (Option String) :=
+  return (← pinLogRef d).map (·.oid)
 
 /-- A `refs/tl/log` tree entry the transport does not recognize as a replica
     segment — any name that is not a canonical `<replica-id>.jsonl`. Carried
@@ -300,11 +333,9 @@ def unionForeign (a b : List ForeignEntry) : List ForeignEntry :=
     exception: a segment-*named* entry that is not a blob is dropped outright —
     carrying it could collide with that replica's real segment entry in a
     later tree build. -/
-def readRefEntriesAt (d : Dirs) (ref : String) :
+def readPinnedEntries (d : Dirs) (ref : PinnedRef) :
     TlM (List SegmentData × List ForeignEntry) := do
-  let o ← (git d ["rev-parse", "--verify", "--quiet", ref] : IO _)
-  if o.exitCode != 0 then return ([], [])
-  let listing ← run d "ls-tree" ["ls-tree", ref]
+  let listing ← run d "ls-tree" ["ls-tree", ref.oid]
   let entries := listing.splitOn "\n" |>.filter (· ≠ "")
   let mut segs : Array SegmentData := #[]
   let mut foreign : Array ForeignEntry := #[]
@@ -329,6 +360,19 @@ def readRefEntriesAt (d : Dirs) (ref : String) :
       else
         foreign := foreign.push { name, raw := line }
   return (segs.toList, foreign.toList)
+
+/-- Read an optional captured snapshot; an absent ref contributes no entries. -/
+def readPinnedEntries? (d : Dirs) (ref : Option PinnedRef) :
+    TlM (List SegmentData × List ForeignEntry) :=
+  match ref with
+  | none => pure ([], [])
+  | some pinned => readPinnedEntries d pinned
+
+/-- Convenience reader for callers that do not need to retain the identity.
+    Resolve once, then read only the captured object. -/
+def readRefEntriesAt (d : Dirs) (ref : String) :
+    TlM (List SegmentData × List ForeignEntry) := do
+  readPinnedEntries? d (← pinRef d ref)
 
 /-- The segments stored at `ref` — the segment-only view of
     `readRefEntriesAt`, for read-only callers that never rebuild the tree. -/
@@ -532,22 +576,36 @@ def effectivePushUrls (d : Dirs) (remote : String) : TlM (List String) := do
     let t := l.trimAscii.toString
     if t.isEmpty || t == remote then none else some t)
 
-/-- Fetch the remote's `refs/tl/log` and return its tip + segments + carried-
-    unknown entries — `(none, [], [])` when the remote has no `refs/tl/log`
-    yet (a fresh remote). A genuine transport failure (unreachable / auth)
-    throws. The fetched tip is read from the per-worktree `FETCH_HEAD` (no
-    shared scratch ref, so concurrent remote legs in sibling worktrees of one
-    repo don't collide). -/
-def fetchRemoteLog (d : Dirs) (remote : String) :
+/-- Fetch into an invocation-private ref. `FETCH_HEAD` belongs to ordinary
+    Git users too, so it is never read as transport evidence. The private ref
+    is removed on success and failure; a captured OID supplies both the tree
+    and merge parent. The fetch uses only flags supported by Git 2.17.
+
+    `afterFetch` forces concurrent ordinary fetches and nested syncs in tests;
+    `entropy` covers unavailable/short entropy without probabilistic fixtures. -/
+def fetchRemoteLog (d : Dirs) (remote : String)
+    (afterFetch : TlM Unit := pure ())
+    (entropy : UInt32 → IO ByteArray := Sys.entropy) :
     TlM (Option String × List SegmentData × List ForeignEntry) := do
-  -- ls-remote first: empty ⇒ the remote has no tl log (nothing to fetch)
   let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"] (remote := true)
   if ls.trimAscii.isEmpty then return (none, [], [])
-  let _ ← run d "fetch" ["fetch", remote, "refs/tl/log"] (remote := true)  -- records FETCH_HEAD
-  let o ← (git d ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"] : IO _)
-  if o.exitCode != 0 then return (none, [], [])
-  let (segs, foreign) ← readRefEntriesAt d "FETCH_HEAD"
-  return (some o.stdout.trimAscii.toString, segs, foreign)
+  let bytes ← liftSys (fun e => .mk' .internal
+    s!"cannot allocate a private fetch ref: {e} — restore OS entropy and retry `tl sync`") (entropy 16)
+  unless bytes.size == 16 do
+    throw (.mk' .internal "cannot allocate a private fetch ref: short entropy read — retry `tl sync` and report this if it persists")
+  let scratch := "refs/tl/incoming/" ++ Tl.Format.toCrockford (Sys.natOfBytesBE bytes) 26
+  try
+    -- Empty refmap prevents configured tracking refspecs from moving the
+    -- local task-log ref as a side effect of this fetch.
+    let _ ← run d "fetch" ["fetch", "--no-tags", "--refmap=", remote,
+      s!"refs/tl/log:{scratch}"] (remote := true)
+    afterFetch
+    let some pinned ← pinRef d scratch
+      | throw (.mk' .internal "the private fetched ref disappeared — retry `tl sync`; another process may be modifying internal refs")
+    let (segs, foreign) ← readPinnedEntries d pinned
+    return (some pinned.oid, segs, foreign)
+  finally
+    let _ ← run d "update-ref" ["update-ref", "-d", scratch]
 
 /-- Build the merge commit (tree = `segs` plus the carried-unknown `foreign`
     entries, parents = `parents`) and compare-and-set the local `refs/tl/log`

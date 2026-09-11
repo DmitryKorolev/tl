@@ -169,18 +169,23 @@ def persistClock (d : Dirs) (h : Hlc)
     copy has already materialized siblings from. Absent (never refreshed) or
     unreadable → `none`, which makes the next read re-materialize — safe, since
     the materialized content is a pure function of the ref OID. -/
+-- Version 2 invalidates markers written before same-replica recovery.
+-- Both fast paths must run once after upgrade even if the ref has not moved.
 def loadRefMark (d : Dirs) : TlM (Option String) := do
   match ← fileContents d d.relRefMark with
-  | some raw => let s := raw.trimAscii.toString; return (if s.isEmpty then none else some s)
+  | some raw =>
+    match raw.trimAscii.toString.splitOn " " with
+    | ["2", oid] => return some oid
+    | _ => return none
   | none => return none
 
 /-- Record the ref OID just materialized (atomic-replace like the other
     `.tl/local` files). The caller decides whether a failure is fatal: a read
     treats it as best-effort, an explicit `sync` lets it surface. -/
 def storeRefMark (d : Dirs) (oid : String) : TlM Unit :=
-  writeLocalFile d d.relRefMark (oid ++ "\n")
+  writeLocalFile d d.relRefMark ("2 " ++ oid ++ "\n")
 
-/-- The auto-sync publish marker `<tip> <ownLen> <ownHash>` (see `relSyncPub`):
+/-- The auto-sync publish marker `2 <tip> <ownLen> <ownHash>` (see `relSyncPub`):
     the ref OID our own segment is published into, with that segment's byte
     length and `ByteArray.hash` at publish time. Absent or unparsable → `none`
     (the next reconcile runs the full path and re-records it). -/
@@ -189,7 +194,7 @@ def loadSyncPub (d : Dirs) : TlM (Option (String × Nat × UInt64)) := do
   | none => return none
   | some raw =>
     match raw.trimAscii.toString.splitOn " " with
-    | [tip, lenS, hashS] =>
+    | ["2", tip, lenS, hashS] =>
       match lenS.toNat?, hashS.toNat? with
       | some len, some h => return some (tip, len, h.toUInt64)
       | _, _ => return none
@@ -200,7 +205,7 @@ def loadSyncPub (d : Dirs) : TlM (Option (String × Nat × UInt64)) := do
     later fast-out at this `(oid, len, hash)` provably skips an already-published
     own segment — never a real publish. -/
 def storeSyncPub (d : Dirs) (oid : String) (ownBytes : ByteArray) : TlM Unit :=
-  writeLocalFile d d.relSyncPub s!"{oid} {ownBytes.size} {ByteArray.hash ownBytes}\n"
+  writeLocalFile d d.relSyncPub s!"2 {oid} {ownBytes.size} {ByteArray.hash ownBytes}\n"
 
 /-- The last-sync marker `(ms, tip)` (see `relLastSync`): when this clone last
     ran `tl sync` and the `refs/tl/log` tip it left. Absent/unparsable → `none`

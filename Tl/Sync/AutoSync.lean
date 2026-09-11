@@ -2,7 +2,7 @@
 `Tl.Sync.AutoSync` — the write-path freshness bracket (ADR-0016 write-path freshness +
 ADR-0021), composed over the sync legs and exposed to the CLI write verbs.
 
-A write verb brackets `Store.transact` with two best-effort, lock-free steps,
+A write verb brackets `Store.transact` with two best-effort steps (the ordinary unique-replica path is lock-free),
 both built from the primitives in `Tl.Sync.Local`/`Tl.Sync.Ref`:
 
   - `preWriteRefresh` — absorb the shared `refs/tl/log` before the write's

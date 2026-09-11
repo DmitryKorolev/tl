@@ -401,16 +401,20 @@ Tl/Sync/                -- I/O shell: refs/tl/log transport (tested)
                         --   ADR-0012 sanitized-subprocess policy)
   Merge.lean            --   per-segment complete-line set union, canonical
                         --   (sorted/deduped) — the CRDT join (built, ADR-0001 §5)
+  Recovery.lean         --   missing own-replica lines: hashed delta selector,
+                        --   exact membership, append-union, and replay-idempotence theorems;
+                        --   locked reread + append, preserving concurrent writes
   Local.lean            --   the local-first worktree leg + read-time refresh
                         --   (built, ADR-0016 §1/§3): syncLocal publishes the own
                         --   segment into the shared ref (CAS-retry) and absorbs
-                        --   siblings into .tl/log/ via atomic rename, never the
-                        --   own segment (`tl sync`); refreshFromRef is the O(1)
+                        --   siblings into .tl/log/ via atomic rename, with locked
+                        --   own-segment append recovery (`tl sync`); refreshFromRef is the O(1)
                         --   ref-OID trigger (vs the .tl/local/ref-mark) that
-                        --   absorbs siblings — best-effort, lock-free, never
+                        --   absorbs received ops — best-effort, normally lock-free, never
                         --   fails — run before every read fold and before every
                         --   write's guards (pre-transact absorb, ADR-0016 §3)
-  Ref.lean              --   git ref/config plumbing: refTip/readRef/writeRef
+  Ref.lean              --   git ref/config plumbing: captured PinnedRef tree reads,
+                        --   invocation-private fetch refs, refTip/readRef/writeRef
                         --   (CAS), gitConfig/gitConfigSet, isLinkedWorktree
                         --   (--git-dir ≠ --git-common-dir → auto-sync default-on),
                         --   gitToplevel + effectiveRemoteUrl (doctor's

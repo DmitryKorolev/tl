@@ -77,8 +77,9 @@ private def reconcileRemote (d : Dirs) (remote : String)
       s!"the remote '{remote}' refs/tl/log moved during the push and it was rejected after a retry — run `tl sync` again")
   | fuel + 1 => do
     let (remoteTip, remoteSegs, remoteForeign) ← fetchRemoteLog d remote
-    let localTip ← refTip d
-    let (localSegs, localForeign) ← readRefEntries d
+    let localPinned ← pinLogRef d
+    let localTip := localPinned.map (·.oid)
+    let (localSegs, localForeign) ← readPinnedEntries? d localPinned
     let merged := unionSegments localSegs remoteSegs
     let pulled := pulledAcc || !segsEquiv merged localSegs       -- remote had content we lacked
     -- push only when we have content the remote lacks (never an empty-log churn

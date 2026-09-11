@@ -306,8 +306,9 @@ bound sits on every read. Its pinned form:
   A filesystem copy (`cp -r`, an image snapshot, a CI cache restoring
   `.tl/local/`, a file-sync agent replicating the directory to a second machine
   — ADR-0015 §8) duplicates the id into two live replicas. Convergence still
-  holds (the per-op nonce keeps LWW total, and `tl`'s segment-union on sync
-  absorbs same-named-segment appends, ADR-0001), so this is not a
+  holds (the per-op nonce keeps LWW total; segment union preserves the ops
+  in Git, and locked own-segment append recovery delivers missing same-replica
+  lines locally, ADR-0015/0016), so this is not a
   correctness break; it violates the single-writer-append *ownership* model and
   weakens id-derivation entropy. Scoped explicitly in the carried assumption
   (overview.md); a future `doctor` check may detect a moved segment and re-mint,

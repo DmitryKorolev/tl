@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #ifdef _WIN32
 
@@ -73,6 +74,9 @@ LEAN_EXPORT lean_obj_res tl_sys_entropy(uint32_t n, lean_obj_arg w) {
 LEAN_EXPORT lean_obj_res tl_sys_owned_by_caller(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("owned_by_caller");
 }
+LEAN_EXPORT lean_obj_res tl_sys_terminate_group(uint32_t group, lean_obj_arg w) {
+    (void)group; (void)w; return tl_sys_unsupported("terminate_group");
+}
 LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("close");
 }
@@ -86,6 +90,7 @@ LEAN_EXPORT lean_obj_res tl_release_write_atomic(b_lean_obj_arg base, b_lean_obj
 }
 
 #else /* POSIX */
+#include <signal.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -532,6 +537,25 @@ LEAN_EXPORT lean_obj_res tl_sys_owned_by_caller(uint32_t fd, lean_obj_arg w) {
     struct stat st;
     if (fstat((int)fd, &st) != 0) return tl_sys_err("owned_by_caller", errno);
     return lean_io_result_mk_ok(lean_box(st.st_uid == geteuid() ? 1 : 0));
+}
+
+/* The caller owns this process group and keeps its leader unreaped until
+ * cleanup. Use the captured group id: the pinned runtime's takeStdin loses
+ * the setsid flag, so Child.kill on that returned handle targets only one pid.
+ * No Lean process-object layout is inspected here. False means no group was
+ * signalled (invalid id, already gone, or an operational refusal); cleanup is
+ * best-effort and must never extend the caller's expired waiting deadline. */
+LEAN_EXPORT lean_obj_res tl_sys_terminate_group(uint32_t group, lean_obj_arg w) {
+    (void)w;
+    if (group <= 1 || group > INT_MAX)
+        return lean_io_result_mk_ok(lean_box(0));
+    if (kill(-(pid_t)group, SIGKILL) == 0)
+        return lean_io_result_mk_ok(lean_box(1));
+    /* The child may not yet have reached setsid. Its unreaped pid is still
+       owned, so stop that child before it can start the requested program. */
+    if (errno == ESRCH)
+        return lean_io_result_mk_ok(lean_box(kill((pid_t)group, SIGKILL) == 0));
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res tl_sys_close(uint32_t fd, lean_obj_arg w) {

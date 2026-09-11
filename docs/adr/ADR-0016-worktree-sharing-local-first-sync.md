@@ -54,7 +54,7 @@ cross-host sandboxing forces a network endpoint.
   update it from this replica's own segment, and materialize the *other*
   replicas' segments from it into `.tl/log/` (the §3 foreign-cache writeback of
   [ADR-0015](ADR-0015-local-concurrency-fs-safety.md): temp-file + atomic
-  `rename`, never the own segment). For worktrees of one repo this ref is the
+  `rename` for foreign segments; locked append for missing same-replica lines). For worktrees of one repo this ref is the
   shared common-`.git` ref, so the local leg is the same-machine transport.
 - Remote leg (only if a remote exists): the existing `fetch → union → push`
   to the configured remote (ADR-0001 §5).
@@ -72,7 +72,8 @@ siblings.
 **Built form (the local leg).** `tl sync` is implemented (`Tl/Sync/Local.lean`,
 `syncLocal`): publish the own segment into the ref by the canonicalized union +
 compare-and-set, retrying on a lost CAS race; absorb the *other* replicas'
-segments into `.tl/log/` by atomic rename, never the own segment. Because the
+segments into `.tl/log/` by atomic rename. Missing own-replica lines are
+recovered by append under the mutation lock, preserving local concurrent writes. Because the
 union is canonicalized (ADR-0001 §5), a sync with nothing new is a byte-stable
 no-op — it builds no churn commit. The `--json` `data` is a forever-contract
 shape with one leg-result object per leg, so adding the remote leg never
@@ -137,7 +138,7 @@ lock (not by `doctor`, which stays a pure diagnostic). The marker is
 compared against the mark: equal ⇒ fold the local files, git untouched;
 different ⇒ materialize the changed foreign segments (the §3 atomic-rename
 writeback, reusing `writeForeignSegment`), record the new OID, then fold. The
-whole refresh is best-effort and lock-free — it catches both thrown `Tl.Error`s
+whole refresh is best-effort; the normal unique-replica path is lock-free — it catches both thrown `Tl.Error`s
 and raw `IO.Error`s (git absent, a read-only FS) and degrades to "fold what is
 on disk," never failing the read; a genuine path-safety/corruption problem is
 still surfaced by the subsequent fold. It does **not** publish — that is the
@@ -167,8 +168,8 @@ or — worse for coordination — let two worktrees both claim the same item (th
 LWW join still converges, but the readiness guard that exists to prevent the
 double-claim was bypassed). The decision: a **pre-transact local absorb**. Every
 write verb runs the *same* `refreshFromRef` reads use, in the CLI layer *before*
-`transact` acquires the mutation lock (the absorb is lock-free, so it stays
-outside the lock — `Tl.Store.transact` is in the `Store` layer and cannot import
+`transact` acquires the mutation lock (the normal foreign absorb is lock-free; any same-replica recovery
+takes and releases its own lock before the transaction — `Tl.Store.transact` is in the `Store` layer and cannot import
 `Sync` anyway). Guards then run against the freshest local-leg state. This is
 symmetric with reads — a write is never staler than a read — at the cost of one
 `git rev-parse` per write (O(1) when the ref has not moved). The *remote* fetch
@@ -280,3 +281,15 @@ and nothing to resume.
   Rejected: it abandons the gitignored-working-tree layout, muddies per-replica
   ownership and the discovery boundary, and the shared ref already provides
   the substrate without moving the segments.
+
+The refresh and publication markers use local format version 2. Unversioned
+markers are discarded on upgrade so an old "already reconciled" decision cannot
+suppress same-replica recovery. The existing transaction clock floor over the
+own segment ensures the next write outstamps recovered own-replica operations.
+`Tl.Sync.recoveryDelta_mem_iff` characterizes the exact missing-line selector;
+`Tl.Sync.recoveryDelta_append_iff` proves that appending its output gives exactly
+the union of local and received line sets; `recoveryDelta_after_append` proves
+that replaying the same received snapshot selects no more lines. These internal
+selector theorems do
+not prove disk I/O or scheduling: native recovery and copied-clone tests cover
+the append, lock, clock, marker, and failure paths.

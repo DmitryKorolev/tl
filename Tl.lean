@@ -68,6 +68,7 @@ import Tl.Store.Cache
 import Tl.Store.Lock
 import Tl.Sync.Merge
 import Tl.Sync.Ref
+import Tl.Sync.Recovery
 import Tl.Sync.Local
 import Tl.Sync.Remote
 import Tl.Sync.AutoSync

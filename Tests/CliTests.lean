@@ -5966,12 +5966,72 @@ def cliInitBoundaryTests : IO (List Outcome) := do
   finally
     IO.Process.setCurrentDir prev
 
+/-- A copied working directory has the same replica identity but an independent
+    authoritative segment. Synchronization must deliver both histories locally,
+    and the next local write must outstamp recovered same-replica operations. -/
+def cliCopiedReplicaTests : IO (List Outcome) := do
+  let root ← IO.FS.createTempDir
+  let a := root / "a"
+  let b := root / "b"
+  let remote := root / "remote.git"
+  IO.FS.createDirAll a
+  let command (cmd : String) (args : Array String) : IO Unit := do
+    let out ← IO.Process.output { cmd, args }
+    unless out.exitCode == 0 do throw (IO.userError out.stderr)
+  command "git" #["init", "--bare", "-q", remote.toString]
+  command "git" #["-C", a.toString, "init", "-q"]
+  command "git" #["-C", a.toString, "remote", "add", "origin", remote.toString]
+  command "git" #["-C", a.toString, "config", "protocol.file.allow", "always"]
+  command "git" #["-C", a.toString, "config", "tl.autosync", "false"]
+  let invoke (repo : System.FilePath) (args : List String) : IO CmdOut := do
+    match ← run' (args ++ ["--dir", (repo / ".tl").toString]) with
+    | .ok out => return out
+    | .error e => throw (IO.userError e.message)
+  let _ ← invoke a ["init"]
+  let _ ← invoke a ["create", "baseline"]
+  let _ ← invoke a ["sync"]
+  command "cp" #["-R", a.toString, b.toString]
+  let _ ← invoke a ["create", "only A"]
+  let da := Dirs.ofStatePath (a / ".tl").toString
+  let db := Dirs.ofStatePath (b / ".tl").toString
+  let seeded ← (do
+    persistClock db ⟨(← nowMs) + 3600000, 0⟩ : TlM Unit).run
+  if let .error e := seeded then throw (IO.userError e.message)
+  let _ ← invoke b ["create", "only B"]
+  for _ in [0:2] do
+    let _ ← invoke a ["sync"]
+    let _ ← invoke b ["sync"]
+  let viewA ← invoke a ["list", "--limit", "0"]
+  let viewB ← invoke b ["list", "--limit", "0"]
+  let titles (out : CmdOut) := (jArr out.data "items").filterMap (fun j => jStr j "title")
+  let allTasks (out : CmdOut) :=
+    let names := titles out
+    names.length == 3 && ["baseline", "only A", "only B"].all names.contains
+  -- Simulate pre-upgrade fast-path markers, with a valid tip but old semantics.
+  let marked ← (do
+    let tip ← Tl.Sync.refTip da
+    writeLocalFile da da.relRefMark (tip.getD "" ++ "\n")
+    writeLocalFile da da.relSyncPub s!"{tip.getD ""} 0 0\n" : TlM Unit).run
+  if let .error e := marked then throw (IO.userError e.message)
+  let upgrade ← invoke a ["list", "--limit", "0"]
+  let bClock ← (loadClock db).run
+  let _ ← invoke a ["create", "after recovery"]
+  let aClock ← (loadClock da).run
+  return [
+    check "copied replicas converge locally after real remote synchronization"
+      (allTasks viewA && allTasks viewB) s!"A={titles viewA}, B={titles viewB}",
+    check "legacy fast-path markers do not hide recovered operations" (allTasks upgrade),
+    check "the next local write advances beyond the recovered same-replica clock"
+      (match aClock, bClock with
+       | .ok (some ah), .ok (some bh) => ah.pack > bh.pack
+       | _, _ => false)]
+
 def cliTests : IO (List Outcome) := do
   return parsedListFacetTests ++ (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
-    ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
+    ++ (← cliCopiedReplicaTests) ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests

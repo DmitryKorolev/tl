@@ -18,14 +18,17 @@ It does two things against the shared ref, both idempotent:
      dropped, never a publish trigger by themselves.
   2. Absorb — materialize the *other* replicas' segments from the ref into
      `.tl/log/` by the atomic temp-file + rename writeback (ADR-0015 §3),
-     **never** the own segment (it stays the authoritative append-only file).
+     never rename over the own segment. Missing same-replica lines from a
+     copied working directory are recovered by a locked append.
 
-No mutation lock is taken (ADR-0016 §3 — the foreign-cache writeback is
-lock-free; the CAS is the cross-worktree serialization). The remote
+The ordinary unique-replica path takes no mutation lock. Same-replica recovery
+uses the mutation lock to reread and append; foreign-cache writeback stays
+lock-free, and CAS is the cross-worktree serialization. The remote
 `fetch → union → push` leg (ADR-0001 §5) layers on top of these primitives and
 is a separate increment. Tested I/O shell; no Mathlib.
 -/
 import Tl.Sync.Merge
+import Tl.Sync.Recovery
 import Tl.Sync.Ref
 import Tl.Store.Local
 import Tl.Format.Crockford
@@ -41,7 +44,7 @@ structure LocalOutcome where
   ran : Bool
   /-- Did this replica's own ops actually move the ref? -/
   published : Bool
-  /-- The sibling replica ids whose local cache was (re)materialized. -/
+  /-- Replica ids whose bytes changed through foreign writeback or own recovery. -/
   absorbed : List String
   /-- The resulting `refs/tl/log` tip. `none` when `ran` is false, or when
       the ref does not exist yet and this run published nothing into it —
@@ -105,13 +108,16 @@ def writeForeignSegment (d : Dirs) (replicaId : String) (bytes : ByteArray)
     let _ ← (IO.FS.removeFile (d.absOf tmpRel)).toBaseIO
     throw (mapSysError rel e)
 
-/-- Write every segment of `final` that is not this replica's own and whose
-    on-disk copy differs into `.tl/log/`. Returns the (re)materialized ids. -/
+/-- Materialize received segments: foreign files use atomic replace; an own
+    segment uses locked append recovery. Unknown identity still forbids replacing
+    existing files. Returns the ids whose local bytes changed. -/
 private def absorbForeign (d : Dirs) (ownReplica : Option String)
     (localSegs final : List SegmentData) : TlM (List String) := do
+  let diskIndex := localSegs.foldl (fun index s => index.insert s.replicaId s.bytes)
+    ({} : Std.HashMap String ByteArray)
   let mut absorbed : List String := []
   for s in final do
-    let onDisk := localSegs.find? (·.replicaId == s.replicaId)
+    let onDisk := diskIndex[s.replicaId]?
     -- write a foreign segment whose on-disk copy differs. When our own replica
     -- id is unknown (the `.tl/local/replica` file was removed), we cannot prove
     -- a given on-disk segment is not our own authoritative one, so we only
@@ -120,10 +126,13 @@ private def absorbForeign (d : Dirs) (ownReplica : Option String)
     let mayWrite := match ownReplica with
       | some own => s.replicaId != own
       | none => onDisk.isNone
-    if mayWrite && (onDisk.map (·.bytes)).getD ByteArray.empty != s.bytes then
+    if ownReplica == some s.replicaId then
+      if ← recoverOwnSegment d s.replicaId s.bytes then
+        absorbed := s.replicaId :: absorbed
+    else if mayWrite && onDisk.getD ByteArray.empty != s.bytes then
       writeForeignSegment d s.replicaId s.bytes
-      absorbed := absorbed ++ [s.replicaId]
-  return absorbed
+      absorbed := s.replicaId :: absorbed
+  return absorbed.reverse
 
 /-- Record the reconciled tip in the read-time refresh marker, best-effort: a
     marker-write failure must never fail an otherwise-successful sync (the next
@@ -165,7 +174,8 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
   | 0 => throw (.mk' .internal
       "sync: refs/tl/log kept moving under concurrent writers — retry `tl sync`")
   | fuel + 1 => do
-    let tip ← refTip d
+    let pinned ← pinLogRef d
+    let tip := pinned.map (·.oid)
     -- Publish-marker fast-out (ADR-0023 write-path analogue of the fold cache):
     -- if the ref still sits at the OID our own segment is published into, and the
     -- own segment is byte-identical to then, nothing publishes and the absorbed
@@ -179,7 +189,7 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
       if let some (mTip, mLen, mHash) ← loadSyncPub d then
         if tip == some mTip && ownBytes.size == mLen && ByteArray.hash ownBytes == mHash then
           return { ran := true, published := false, absorbed := [], tip }
-    let (refSegs, refForeign) ← readRefEntries d
+    let (refSegs, refForeign) ← readPinnedEntries? d pinned
     let merged := unionSegments refSegs localSegs
     -- publish only our own ops, and only when they change the ref (a worktree
     -- with no own writes never re-sorts a sibling's segment into a churn
@@ -223,7 +233,7 @@ def syncLocal (d : Dirs) (ownReplica : Option String)
 structure RefreshOutcome where
   /-- Did the ref move since last time, prompting a materialize? -/
   refreshed : Bool
-  /-- The foreign replica ids (re)materialized this refresh. -/
+  /-- Replica ids changed by foreign writeback or own append recovery. -/
   absorbed : List String
   /-- The ref OID now reflected in `.tl/log/` (`none` when there is no ref). -/
   tip : Option String
@@ -234,14 +244,17 @@ structure RefreshOutcome where
 deriving Repr, Inhabited
 
 private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
-  match ← refTip d with  -- the O(1) trigger: one `rev-parse`, no object store
+  let captured ← try pinLogRef d catch e => do
+    if ← inGitRepo d then throw e else pure none
+  match captured with  -- the O(1) trigger: one `rev-parse`, no object store
   | none => return { refreshed := false, absorbed := [], tip := none, degraded := none }
-  | some tip =>
+  | some pinned =>
+    let tip := pinned.oid
     if (← loadRefMark d) == some tip then
       -- unchanged (the common case): fold the local files, git untouched
       return { refreshed := false, absorbed := [], tip := some tip, degraded := none }
     -- the ref moved: materialize the changed foreign segments, record the OID
-    let refSegs ← readRef d
+    let (refSegs, _) ← readPinnedEntries d pinned
     let (localSegs, _) ← readSegments d
     let absorbed ← absorbForeign d ownReplica localSegs refSegs
     storeRefMark d tip
@@ -250,12 +263,11 @@ private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOut
 /-- Read-time refresh: before a read folds `.tl/log/`, cheaply detect whether a
     sibling published to the shared `refs/tl/log` (an O(1) OID compare against
     the `ref-mark`) and, only if it moved, materialize the changed foreign
-    segments into `.tl/log/` (the atomic-rename writeback, never the own
-    segment). So a worktree sees its siblings without an explicit `tl sync`,
+    segments into `.tl/log/` (atomic foreign replace or locked own append). So a worktree sees its siblings without an explicit `tl sync`,
     while git stays off the steady-state read path (an unchanged ref costs one
     `rev-parse` + one small file read).
 
-    Entirely best-effort and lock-free: any failure — git absent, a read-only
+    Best-effort, with a lock only for same-replica recovery: any failure — git absent, a read-only
     filesystem, a concurrent refresher — degrades to "fold what is on disk"
     and never fails the read (ADR-0016 §3). It catches both thrown `Tl.Error`s
     and raw `IO.Error`s for that reason. A genuine path-safety / corruption

@@ -111,8 +111,10 @@ private def looksUnexecutable (output : ProcessOutput) : Bool :=
 
     The bound is enforced by polling rather than by a second thread: `tryWait`
     on the calling thread costs nothing while the child runs and needs no
-    coordination to tear down. On expiry the child is killed, so a hung tool
-    cannot outlive the command that started it.
+    coordination to tear down. One deadline covers execution and both streams.
+    On expiry the isolated process group is terminated; return does not wait
+    for termination. This is bounded waiting, not containment of a deliberately
+    detached descendant.
 
     A `timeoutMs` of `0` would make the loop below run once and then report a
     timeout the child never had a chance to miss, which is a bound that refuses
@@ -123,9 +125,10 @@ private def runWithEnv (command : String) (args : Array String)
     (env : Array (String × Option String))
     (timeoutMs : Nat := defaultTimeoutMs) : IO RunOutcome := do
   let bound := if timeoutMs == 0 then pollStepMs else timeoutMs
+  let started ← IO.monoMsNow
   let spawned ← (IO.Process.spawn {
     cmd := command, args := args, env := env,
-    stdin := .null, stdout := .piped, stderr := .piped }).toBaseIO
+    stdin := .null, stdout := .piped, stderr := .piped, setsid := true }).toBaseIO
   match spawned with
   | .error error =>
       -- Not "the program failed": the program was never entered. Everything
@@ -138,41 +141,25 @@ private def runWithEnv (command : String) (args : Array String)
       -- here so a child that fills a pipe keeps moving while this thread polls.
       let outTask ← IO.asTask child.stdout.readToEnd Task.Priority.dedicated
       let errTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
-      let mut code? : Option UInt32 := none
       for _ in [0 : bound / pollStepMs + 1] do
-        code? ← child.tryWait
-        if code?.isSome then break
+        if (← IO.monoMsNow) - started ≥ bound then break
+        -- Keep the leader unreaped until its streams close, preventing its
+        -- PID from being reused before group cleanup on the timeout path.
+        if (← IO.hasFinished outTask) && (← IO.hasFinished errTask) then
+          if let some exitCode ← child.tryWait then
+            match outTask.get, errTask.get with
+            | .ok stdout, .ok stderr =>
+                let output : ProcessOutput := { exitCode, stdout, stderr }
+                if looksUnexecutable output then
+                  return .unavailable command output.stderr.trimAscii.toString
+                else return .completed output
+            | .error error, _ | _, .error error =>
+                return .unavailable command
+                  s!"it ran, but its output could not be read ({error})"
         IO.sleep (UInt32.ofNat pollStepMs)
-      match code? with
-      | some exitCode =>
-          -- The child has exited, but the pipes are not necessarily closed: a
-          -- grandchild that inherited them keeps `readToEnd` waiting, and a
-          -- bound that covered only the wait would leave this blocked forever
-          -- in a release job whose own timeout is then the only thing that
-          -- stops it. The reads get the same bound as the run.
-          let mut drained := false
-          for _ in [0 : bound / pollStepMs + 1] do
-            if (← IO.hasFinished outTask) && (← IO.hasFinished errTask) then
-              drained := true
-              break
-            IO.sleep (UInt32.ofNat pollStepMs)
-          if !drained then
-            return .timedOut command bound
-          -- A stream that could not be read is not an empty stream. Reading it
-          -- as one would turn a broken pipe into a digest tool that printed
-          -- nothing, which is a different refusal with a different remedy.
-          match outTask.get, errTask.get with
-          | .ok stdout, .ok stderr =>
-              let output : ProcessOutput := { exitCode, stdout, stderr }
-              if looksUnexecutable output then
-                return .unavailable command output.stderr.trimAscii.toString
-              else return .completed output
-          | .error error, _ | _, .error error =>
-              return .unavailable command
-                s!"it ran, but its output could not be read ({error})"
-      | none =>
-          child.kill
-          return .timedOut command bound
+      let _ ← child.kill.toBaseIO
+      let _ ← IO.asTask (do let _ ← child.wait.toBaseIO; pure ()) Task.Priority.dedicated
+      return .timedOut command bound
 
 /-- Run an ordinary external tool with its inherited environment. -/
 def run (command : String) (args : Array String)

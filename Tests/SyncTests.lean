@@ -9,6 +9,7 @@ import Tl.Sync.Ref
 import Tl.Sync.Local
 import Tl.Sync.Remote
 import Tests.Harness
+import release.Process
 
 namespace Tl.Tests
 
@@ -860,9 +861,281 @@ def syncForeignNoOpTests : IO (List Outcome) := do
     | _, _ => { name := "merge reconciles divergence", passed := false, msg := "unexpected error" }]
   return o
 
+private def fixtureGit (d : Dirs) (args : List String) : IO IO.Process.Output :=
+  IO.Process.output { cmd := "git", args := #["-C", d.base] ++ args.toArray }
+
+/-- Snapshot evidence stays attached to the resolved object even when its
+    original ref moves. Tests use the public snapshot type, not reconstructed
+    OID strings, so callers exercise the production capture/read boundary. -/
+def syncSnapshotTests : IO (List Outcome) := do
+  let d ← gitRepo
+  let result ← runTl do
+    let old ← writeRef d [seg "0123456789abc" "old\n"] [] none
+    let pinned ← pinLogRef d
+    let fresh ← writeRef d [seg "0123456789abd" "new\n"] [] (some old)
+    let (captured, _) ← readPinnedEntries? d pinned
+    let (current, _) ← readRefEntries d
+    let missing ← pinRef d "refs/heads/absent"
+    let (empty, emptyForeign) ← readPinnedEntries? d missing
+    return [
+      check "captured contents and identity survive movement of the source ref"
+        (pinned.map (·.oid) == some old && fresh != old
+          && captured.map segStr == ["old\n"] && current.map segStr == ["new\n"]),
+      check "an absent snapshot has no identity or entries"
+        (missing.isNone && empty.isEmpty && emptyForeign.isEmpty)]
+  let outside ← IO.FS.createTempDir
+  let failed ← runTl (pinLogRef { base := outside.toString, tlRel := ".tl" })
+  let failure := match failed with
+    | .error e => check "snapshot resolution reports operational Git failure"
+        (e.code == .internal && (e.message.splitOn "rev-parse").length > 1)
+    | .ok _ => check "snapshot resolution reports operational Git failure" false
+  return (match result with
+    | .ok rows => rows
+    | .error e => [check "snapshot fixture completes" false e.message]) ++ [failure]
+
+/-- Ordinary Git fetches and another transport fetch can overlap the private
+    fetch lifetime without changing its evidence. Failures must not leak the
+    temporary ref or turn missing/invalid evidence into an empty success. -/
+def syncFetchIsolationTests : IO (List Outcome) := do
+  let (d, bare) ← repoWithRemote
+  let remote : Dirs := { base := bare, tlRel := ".tl" }
+  let refs : TlM (List String) := do
+    let out ← fixtureGit d ["for-each-ref", "--format=%(refname)", "refs/tl/incoming/"]
+    if out.exitCode != 0 then throw (.mk' .internal out.stderr)
+    return (out.stdout.splitOn "\n").filter (· != "")
+  let result ← runTl do
+    -- A separate ordinary branch with both a replica-shaped entry and an
+    -- unknown file makes accidental import observable in both tree classes.
+    let firstBranch ← writeRef remote [seg "0123456789abd" "branch\n"] [] none
+    let branchListing ← fixtureGit remote ["ls-tree", firstBranch]
+    let branchOid := (((branchListing.stdout.splitOn "\t").head!).splitOn " ")[2]!
+    let ordinaryFile : ForeignEntry :=
+      { name := "ordinary-file", raw := s!"100644 blob {branchOid}\tordinary-file" }
+    let branch ← writeRef remote [seg "0123456789abd" "branch\n"] [ordinaryFile] (some firstBranch)
+    let _ ← fixtureGit remote ["update-ref", "refs/heads/main", branch]
+    let _ ← fixtureGit remote ["update-ref", "-d", "refs/tl/log"]
+    let expected ← writeRef remote [seg "0123456789abc" "task\n"] [] none
+    let _ ← fixtureGit d ["config", "--add", "remote.origin.fetch", "+refs/tl/log:refs/tl/log"]
+    let overlap ← IO.mkRef false
+    let (tip, segments, foreign) ← fetchRemoteLog d "origin" (afterFetch := do
+      let outerRefs ← refs
+      let (innerTip, innerSegs, _) ← fetchRemoteLog d "origin" (afterFetch := do
+        let both ← refs
+        overlap.set (both.length == 2 && both.eraseDups.length == 2
+          && outerRefs.all both.contains))
+      unless innerTip == some expected && innerSegs.map segStr == ["task\n"] do
+        throw (.mk' .internal "nested fetch read the wrong snapshot")
+      let ordinary ← fixtureGit d ["fetch", "origin", "refs/heads/main"]
+      unless ordinary.exitCode == 0 do throw (.mk' .internal ordinary.stderr))
+    let fetchHead ← pinRef d "FETCH_HEAD"
+    let remaining ← refs
+    let localPinned ← pinLogRef d
+    let mut rows := [
+      check "overlapping fetches use distinct live private refs" (← overlap.get),
+      check "ordinary FETCH_HEAD replacement cannot change transport evidence"
+        (tip == some expected && segments.map segStr == ["task\n"] && foreign.isEmpty
+          && fetchHead.map (·.oid) == some branch),
+      check "fetch removes its private refs without moving the local task-log ref"
+        (remaining.isEmpty && localPinned.isNone)]
+    -- Exception after the real fetch, while the temporary ref exists.
+    let failed : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ← (fetchRemoteLog d "origin" (afterFetch :=
+      throw (.mk' .internal "injected post-fetch failure"))).run
+    rows := rows ++ [check "post-fetch failure is refused and cleans its private ref"
+      ((match failed with | .error _ => true | .ok _ => false) && (← refs).isEmpty)]
+    -- A disappeared private ref must never look like a fresh remote.
+    let vanished : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ← (fetchRemoteLog d "origin" (afterFetch := do
+      for name in ← refs do
+        let _ ← fixtureGit d ["update-ref", "-d", name])).run
+    rows := rows ++ [check "a vanished fetched ref is an error, not an empty remote"
+      (match vanished with
+       | .error e => (e.message.splitOn "disappeared").length > 1
+       | .ok _ => false)]
+    -- Both entropy error paths happen before a private ref can be allocated.
+    let short : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ← (fetchRemoteLog d "origin" (entropy := fun _ => pure .empty)).run
+    let unavailable : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ← (fetchRemoteLog d "origin" (entropy := fun _ =>
+      throw (IO.userError "injected entropy failure"))).run
+    rows := rows ++ [check "short and unavailable entropy refuse without leaking refs"
+      ((match short with | .error _ => true | .ok _ => false) && (match unavailable with | .error _ => true | .ok _ => false) && (← refs).isEmpty)]
+    -- Pinning succeeds for an object that cannot be read as a tree; the
+    -- read error still traverses the same cleanup boundary.
+    let badTree : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ← (fetchRemoteLog d "origin" (afterFetch := do
+      let listing ← fixtureGit d ["ls-tree", expected]
+      let oid := (((listing.stdout.splitOn "\t").head!).splitOn " ")[2]!
+      for name in ← refs do
+        let out ← fixtureGit d ["update-ref", name, oid]
+        unless out.exitCode == 0 do throw (.mk' .internal out.stderr))).run
+    rows := rows ++ [check "invalid fetched tree is refused and cleaned"
+      ((match badTree with | .error _ => true | .ok _ => false) && (← refs).isEmpty)]
+    let fetchFailed : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ←
+      (fetchRemoteLog d "origin" (entropy := fun count => do
+        let _ ← fixtureGit d ["config", "protocol.file.allow", "never"]
+        Sys.entropy count)).run
+    let _ ← fixtureGit d ["config", "protocol.file.allow", "always"]
+    rows := rows ++ [check "a transport failure after allocation traverses cleanup"
+      ((match fetchFailed with | .error e => e.code == .internal | .ok _ => false)
+        && (← refs).isEmpty)]
+    let cleanupFailed : Except Tl.Error (Option String × List SegmentData × List ForeignEntry) ←
+      (fetchRemoteLog d "origin" (afterFetch := do
+        for name in ← refs do
+          IO.FS.writeFile (System.FilePath.mk d.base / ".git" / (name ++ ".lock")) "")).run
+    rows := rows ++ [check "private-ref cleanup failures are reported rather than hidden"
+      (match cleanupFailed with
+       | .error e => e.code == .internal && (e.message.splitOn "update-ref").length > 1
+       | .ok _ => false)]
+    for name in ← refs do
+      IO.FS.removeFile (System.FilePath.mk d.base / ".git" / (name ++ ".lock"))
+      let _ ← fixtureGit d ["update-ref", "-d", name]
+    return rows
+  return match result with
+  | .ok rows => rows
+  | .error e => [check "fetch isolation fixture completes" false e.message]
+
+/-- Recovery tests exercise durable bytes, identity changes, lock ordering,
+    and failure cleanup. The selector's set algebra is proved in Recovery. -/
+def syncRecoveryTests : IO (List Outcome) := do
+  let d ← gitRepo
+  let rid := "0123456789abc"
+  let result ← runTl do
+    liftSys (fun e => .mk' .internal (toString e)) (Sys.mkdirNoFollow d.base d.relLocal)
+    writeLocalFile d d.relReplica (rid ++ "\n")
+    appendOwnRaw d rid ["old".toUTF8] false
+    let changed ← recoverOwnSegment d rid "old\npeer\n".toUTF8 (beforeLock := do
+      let fd ← acquireLock d
+      try appendOwnRaw d rid ["concurrent".toUTF8, "peer".toUTF8] false
+      finally releaseLock fd)
+    let bytes ← readSegment d rid
+    let untouched ← recoverOwnSegment d rid "peer\n".toUTF8 (beforeLock :=
+      throw (.mk' .internal "a no-op must not take the recovery lock"))
+    let mut rows := [
+      check "recovery rereads after the lock and preserves concurrent local appends"
+        (!changed && bytes == "old\nconcurrent\npeer\n".toUTF8),
+      check "already recovered lines need neither an append nor a lock" (!untouched)]
+    let raw : ByteArray := ⟨#[0xff, 0xfe, 10]⟩
+    let recovered ← recoverOwnSegment d rid raw
+    rows := rows ++ [check "recovery appends unknown bytes without a UTF-8 round trip"
+      (recovered && (← readSegment d rid) == bytes ++ raw)]
+    let before := (← readSegment d rid)
+    let mismatch : Except Tl.Error Bool ← (recoverOwnSegment d rid "later\n".toUTF8
+      (beforeLock := writeLocalFile d d.relReplica "0123456789abd\n")).run
+    rows := rows ++ [check "identity change under the recovery lock refuses without appending"
+      ((match mismatch with | .error _ => true | .ok _ => false)
+        && (← readSegment d rid) == before)]
+    writeLocalFile d d.relReplica (rid ++ "\n")
+    let held ← acquireLock d
+    let busy : Except Tl.Error Bool ← (recoverOwnSegment d rid "later\n".toUTF8
+      (timeoutMs := 0)).run
+    releaseLock held
+    rows := rows ++ [check "recovery honors lock contention and changes no bytes"
+      ((match busy with | .error e => e.code == .lockBusy | .ok _ => false)
+        && (← readSegment d rid) == before)]
+    let failed : Except Tl.Error Bool ← (recoverOwnSegment d rid "later\n".toUTF8
+      (syncMechanism := fun _ => throw (IO.userError "injected barrier failure"))).run
+    let released ← acquireLock d 0
+    releaseLock released
+    rows := rows ++ [check "recovery reports a failed durability barrier and releases the lock"
+      (match failed with | .error _ => true | .ok _ => false)]
+    -- A crash fragment is closed using the same discipline as a local write.
+    appendOwnRaw d rid [] false
+    liftSys (fun e => .mk' .internal (toString e)) do
+      Sys.withFd d.base (d.relSegment rid) Sys.flagAppend fun fd =>
+        Sys.writeAll fd "tail".toUTF8
+    let oldTail ← readSegment d rid
+    let closed ← recoverOwnSegment d rid "final\n".toUTF8
+    rows := rows ++ [check "recovery preserves and closes a torn tail before appending"
+      (closed && (← readSegment d rid) == oldTail ++ "\nfinal\n".toUTF8)]
+    -- Markers from the old recovery semantics cannot suppress a first read.
+    writeLocalFile d d.relRefMark "old-tip\n"
+    writeLocalFile d d.relSyncPub "old-tip 3 5\n"
+    rows := rows ++ [check "legacy sync markers force recovery after upgrade"
+      ((← loadRefMark d).isNone && (← loadSyncPub d).isNone)]
+    writeLocalFile d d.relRefMark "2 too many fields\n"
+    writeLocalFile d d.relSyncPub "2 tip invalid 5\n"
+    rows := rows ++ [check "malformed current markers force reconciliation"
+      ((← loadRefMark d).isNone && (← loadSyncPub d).isNone)]
+    storeRefMark d "new-tip"
+    storeSyncPub d "new-tip" before
+    rows := rows ++ [check "current sync markers round-trip their evidence"
+      ((← loadRefMark d) == some "new-tip"
+        && (← loadSyncPub d) == some ("new-tip", before.size, ByteArray.hash before))]
+    return rows
+  return match result with
+  | .ok rows => rows
+  | .error e => [check "recovery I/O fixture completes" false e.message]
+
+/-- Every pipe belongs to the deadline, even after successful child exit.
+    Delayed descendants are finite so a regression fails instead of hanging
+    the test suite; marker files also observe process-group cleanup. -/
+private def inheritedPipeCorpus (label : String)
+    (runner : IO.Process.SpawnArgs → ByteArray → Nat → IO (UInt32 × ByteArray × String))
+    (withStdin : Bool) : IO (List Outcome) := do
+  let root ← IO.FS.createTempDir
+  let mut rows := []
+  let streams := if withStdin then ["stdout", "stderr", "stdin"] else ["stdout", "stderr"]
+  for stream in streams do
+    let marker := root / stream
+    let command := match stream with
+      | "stdout" => "(sleep 2; echo survived > \"$1\") 2>/dev/null & exit 0"
+      | "stderr" => "(sleep 2; echo survived > \"$1\") >/dev/null & exit 0"
+      | _ => "exec 3<&0; (sleep 2; echo survived > \"$1\") <&3 >/dev/null 2>&1 & exit 0"
+    let input := if stream == "stdin" then ByteArray.mk (Array.replicate 1048576 97) else .empty
+    let started ← IO.monoMsNow
+    let (code, _, error) ← runner
+      { cmd := "sh", args := #["-c", command, "pipe-fixture", marker.toString] } input 100
+    let elapsed := (← IO.monoMsNow) - started
+    rows := rows ++ [check s!"{label}: the {stream} task remains inside the deadline after child exit"
+      (code == 124 && elapsed < 1500 && (error.splitOn "timed out").length > 1)
+      s!"code={code}, elapsed={elapsed}, error={error}"]
+  IO.sleep 2200
+  for stream in streams do
+    rows := rows ++ [check s!"{label}: timeout terminates the descendant holding {stream}"
+      (!(← (root / stream).pathExists))]
+  let (code, out, err) ← runner
+    { cmd := "sh", args := #["-c", "printf out; printf err >&2"] } .empty 5000
+  rows := rows ++ [check s!"{label}: successful process completion preserves both streams"
+    (code == 0 && out == "out".toUTF8 && err == "err")]
+  return rows
+
+def syncInheritedPipeTests : IO (List Outcome) := do
+  let invalidZero ← Sys.terminateProcessGroup 0
+  let invalidOne ← Sys.terminateProcessGroup 1
+  let invalidRange ← Sys.terminateProcessGroup 4294967295
+  let forming ← IO.Process.spawn { cmd := "sleep", args := #["2"] }
+  let stoppedLeader ← Sys.terminateProcessGroup (Sys.childPid forming)
+  let stoppedStatus ← forming.wait
+  let product ← inheritedPipeCorpus "product" runBounded true
+  let releaseRunner (cfg : IO.Process.SpawnArgs) (_ : ByteArray) (timeoutMs : Nat) := do
+    match ← Release.run cfg.cmd cfg.args timeoutMs with
+    | .completed output => pure (output.exitCode, output.stdout.toUTF8, output.stderr)
+    | .timedOut _ _ => pure (124, ByteArray.empty, "timed out")
+    | .unavailable _ detail => pure (127, ByteArray.empty, detail)
+  let administration ← inheritedPipeCorpus "release" releaseRunner false
+  -- Both supported hosts expose /dev/fd. Compare live descriptors rather
+  -- than depending on the host's soft limit to make a leak fail eventually.
+  let fdDirectory : System.FilePath := "/dev/fd"
+  let descriptorsBefore := (← fdDirectory.readDir).size
+  let mut repeatedSucceeded := true
+  for _ in [0:100] do
+    let (status, _, _) ← runBounded { cmd := "true" } .empty 5000
+    repeatedSucceeded := repeatedSucceeded && status == 0
+  let descriptorsAfter := (← fdDirectory.readDir).size
+  let (unbounded, inherited, _) ← runBounded
+    { cmd := "sh", args := #["-c", "(sleep 1; printf late) & exit 0"] } .empty 0
+  return product ++ administration ++ [
+    check "repeated process completion releases child pipe descriptors"
+      (repeatedSucceeded && descriptorsAfter ≤ descriptorsBefore + 3)
+      s!"before={descriptorsBefore}, after={descriptorsAfter}",
+    check "group cleanup rejects unsafe ids without signalling"
+      (!invalidZero && !invalidOne && !invalidRange),
+    check "group cleanup can stop an owned leader before a group exists"
+      (stoppedLeader && stoppedStatus != 0),
+    check "product zero timeout waits for inherited streams to finish"
+      (unbounded == 0 && inherited == "late".toUTF8)]
+
 def syncTests : IO (List Outcome) := do
   return syncMergeTests ++ syncMergeCanonicalProp ++ (← syncRefTests) ++ (← syncLocalTests)
     ++ (← syncRefreshTests) ++ (← syncRemoteTests) ++ (← syncTimeoutTests)
+    ++ (← syncRecoveryTests) ++ (← syncInheritedPipeTests)
+    ++ (← syncSnapshotTests) ++ (← syncFetchIsolationTests)
     ++ (← syncEnvScrubTests)
     ++ (← syncRefNameValidationTests) ++ (← syncForeignEntryTests)
     ++ (← syncCasRetryForeignTests) ++ (← syncForeignNoOpTests)

@@ -86,13 +86,16 @@ keeps the `internal` error code: the ADR-0008 set has no storage code, and
 naming these conditions in a message is not a reason to widen a closed contract.
 
 ### 3. `sync` never rewrites its own segment
-The replica's own segment is append-only authority; `sync` only *reads* it.
+The replica's own segment is append-only authority. A normal sync reads it;
+when a copied working directory has published missing same-replica lines,
+sync acquires the mutation lock, rereads identity and bytes, and appends only
+those missing complete lines. It never replaces the authoritative inode.
 (The one pinned, not-yet-built exception is the explicit destructive
 `tl compact`, which trims the own segment last via the same atomic
 temp-file + `rename` under the mutation lock — ADR-0008's pinned design; a
 routine `sync` never rewrites it.)
 `sync` = fetch `refs/tl/log` → union all segments → push a candidate ref. Locally
-it writes back only the other replicas' segments (read-only caches for
+it replaces only the other replicas' segments (read-only caches for
 folding), and does so atomically — write a temp file in `.tl/local/`, then
 `rename` over the target (atomic replace; an open reader keeps its old inode).
 Because the own segment is never rewritten, the "sync rewrite races a local
@@ -102,13 +105,14 @@ append" hazard simply does not exist for the authoritative data.
 A mutation may append to the own segment *during* a fetch→union→push round.
 The local-first leg (ADR-0016 §1) publishes the own segment into `refs/tl/log`
 under CAS before the remote leg runs, and the remote leg re-reads the local ref
-(`readRef`) at the start of each attempt — so on a non-fast-forward rejection it
+(a captured `PinnedRef`) at the start of each attempt — so on a non-fast-forward rejection it
 re-fetches, re-unions against the now-larger local ref, and retries. Ops
 appended mid-round are picked up by the next attempt, never dropped. The remote
 leg works at the ref level and holds no mutation lock.
 
 ### 5. Readers are lock-free and see a consistent-enough snapshot
-`ready`/`show`/`list`/… take no lock. Atomic appends (§2) and atomic
+`ready`/`show`/`list`/… normally take no lock. Their refresh may acquire the
+mutation lock to recover missing same-replica lines after a directory copy. Atomic appends (§2) and atomic
 renames (§3) mean each segment reads as a coherent snapshot: a concurrent append
 is fully present or absent (never torn), and a concurrent foreign-segment refresh
 leaves the reader on its opened inode. A reader folds each segment to its last
@@ -254,3 +258,21 @@ with `--dir` / `TL_DIR` (ADR-0012).
 - A segment file per mutation (lock-free). Rejected: explodes file count and
   complicates `sync`'s union; one append-only segment per replica is the
   ADR-0001 model.
+
+### Snapshot identities and inherited pipes
+
+Tree reads accept captured `PinnedRef` values, whose constructor is private.
+Local/remote reconciliation and refresh retain the same identity for contents,
+CAS expectations, parents, and markers. Remote fetch uses an invocation-private
+`refs/tl/incoming/` destination and an empty refmap; ordinary `FETCH_HEAD` and
+configured tracking updates cannot substitute a different tree. The private
+ref is removed on normal success and exceptions. Abrupt process death may leave
+a private ref behind; uniqueness relies on the same OS entropy assumption as
+other temporary names, and an old ref is never reused as a new fetch result.
+
+The subprocess deadline covers execution, stdin completion, stdout, and stderr.
+A successful direct-child exit is insufficient while a descendant holds a pipe.
+Children run in an isolated POSIX process group, which is terminated on expiry;
+return does not wait for termination. Zero timeout explicitly waits without a
+bound. Scheduling and signal delivery remain OS assumptions, and this is not an
+execution sandbox against descendants that detach.

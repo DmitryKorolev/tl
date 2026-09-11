@@ -90,7 +90,7 @@ def tornTail (bytes : ByteArray) : Bool :=
 /-- Append rendered record lines to the replica's own segment under the
     mutation lock (the caller holds it): close a crash fragment if needed,
     one `O_APPEND` write per record (§2), fsync (§2; F_FULLFSYNC on Darwin). -/
-def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
+def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
     (closeFragment : Bool) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   -- create .tl/log through the no-follow shim mkdir (a planted
   -- `.tl/log -> /elsewhere` symlink is refused, never followed and created
@@ -104,9 +104,15 @@ def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
       if closeFragment then
         Sys.writeAll fd "\n".toUTF8
       for line in lines do
-        Sys.writeAll fd (line ++ "\n").toUTF8
+        Sys.writeAll fd (line ++ "\n".toUTF8)
       Sys.syncBestEffortWith syncMechanism fd
     finally
       Sys.close fd
+
+/-- Rendered local operations use the same raw append path as recovered
+    complete lines. Recovery must preserve even unknown/non-UTF-8 bytes. -/
+def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
+    (closeFragment : Bool) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit :=
+  appendOwnRaw d replicaId (lines.map String.toUTF8) closeFragment syncMechanism
 
 end Tl.Store
