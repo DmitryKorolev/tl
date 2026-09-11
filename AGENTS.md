@@ -110,6 +110,13 @@ for the decisions and their rationale, read the ADRs in
   verdict, so an imported initializer cannot silently exit successfully before
   assertions run.
 
+For local iteration, `lake exe tltest --list` lists groups and
+`lake exe tltest --group sync --group store` runs a selected set sequentially.
+Each group reports its start, failures and elapsed milliseconds immediately;
+large release-tool fixtures also report their own timings. Unknown or empty
+selections refuse. A focused run has a distinct completion verdict and does
+not replace the required no-argument full suite before declaring done.
+
 CI gates (mirror these locally before declaring done):
 - Warning-free `lake build --wfail` and `lake build tlverify --wfail`.
 - No `sorry`, `admit`, or new `axiom`. `lake build --wfail` rejects unfinished

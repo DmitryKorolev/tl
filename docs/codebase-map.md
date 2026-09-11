@@ -548,6 +548,10 @@ Tl/Cli/                 -- I/O shell: command dispatch + JSON output (tested)
 
 Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   Harness.lean          --   assertion + seeded-generator harness
+  Runner.lean           --   lazy named groups, exact selection, flushed progress,
+                        --   monotonic group/fixture timings and failure summaries
+  RunnerTests.lean      --   registry and selection tests; real supervised workers,
+                        --   streaming handshakes and public launcher argument flow
   JsonUtil.lean         --   shared option-returning JSON accessors for the
                         --   grammar suites (GrammarTests/DocGrammarTests) —
                         --   one definition so they cannot drift apart
@@ -673,7 +677,7 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
   VerifyLoadedTests.lean --  real loaded-environment module/declaration selection,
                         --   provenance, direct-import rows, replay closure, injected
                         --   audit evidence, landmarks, and axiom observation wiring
-  Main.lean             --   tltest entry point
+  Main.lean             --   tltestWorker entry point and complete lazy group registry
 
 Verify/                 -- Lean-native trust gate: `lake exe tlverify`
   Report.lean           --   typed semantic/gate evidence and pure policy

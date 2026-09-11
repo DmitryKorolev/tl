@@ -4,5 +4,5 @@ import Verify.Supervise
 
 open Tl.Verify
 
-def main : IO UInt32 :=
-  launchSiblingWorker testCompletionProtocol
+def main (args : List String) : IO UInt32 :=
+  launchSiblingWorker (testRequestCompletionProtocol args) args.toArray true

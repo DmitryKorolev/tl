@@ -59,6 +59,11 @@ def testCompletionProtocol : CompletionProtocol := {
   runCommand := "lake exe tltest"
 }
 
+/-- A selected run or a discovery request must never emit the full-suite verdict. -/
+def testRequestCompletionProtocol (args : List String) : CompletionProtocol :=
+  if args.isEmpty then testCompletionProtocol
+  else { testCompletionProtocol with label := "test runner request" }
+
 /-- Status zero is accepted only when the protocol's verdict is the final
     nonempty stdout line. This detects both an early exit before the verdict
     and later work accidentally moved after it. Deliberate in-worker forgery
@@ -75,7 +80,7 @@ def completedSuccessfully (protocol : CompletionProtocol)
 def superviseWorkerWith
     (runWorker : System.FilePath → IO IO.Process.Output)
     (protocol : CompletionProtocol)
-    (worker : System.FilePath) : IO UInt32 := do
+    (worker : System.FilePath) (forwardOutput : Bool := true) : IO UInt32 := do
   -- A missing worker does not raise: `IO.Process.output` reports the failed
   -- exec as status 255, which would otherwise be diagnosed as trust findings.
   unless ← worker.pathExists do
@@ -87,8 +92,9 @@ def superviseWorkerWith
       IO.eprintln s!"{protocol.label} supervisor: could not run the worker at {worker}: {error}. Rebuild it with `{protocol.buildCommand}`, then rerun `{protocol.runCommand}` from the tl checkout."
       pure none
   let some result := spawned | return 1
-  IO.print result.stdout
-  IO.eprint result.stderr
+  if forwardOutput then
+    IO.print result.stdout
+    IO.eprint result.stderr
   if completedSuccessfully protocol result.exitCode result.stdout then return 0
   -- The two failures need opposite next actions: a worker that exited non-zero
   -- has already said what is wrong, while status zero without the verdict is
@@ -109,12 +115,54 @@ def superviseWorkerWith
 def superviseWorker (protocol : CompletionProtocol) (worker : System.FilePath) : IO UInt32 :=
   superviseWorkerWith (fun path => IO.Process.output { cmd := path.toString }) protocol worker
 
+/-- Drain a pipe as it arrives, retaining only the last nonempty line needed
+    for the completion check. Memory does not grow with the assertion log. -/
+partial def forwardWorkerStream (source : IO.FS.Handle) (target : IO.FS.Stream) : IO String := do
+  let rec loop (last : String) : IO String := do
+    let line ← source.getLine
+    if line.isEmpty then return last
+    target.putStr line
+    target.flush
+    loop (if line.trimAscii.isEmpty then last else line)
+  loop ""
+
+/-- Both pipes are drained concurrently; a full stderr pipe cannot block stdout
+    progress. The caller's streams are captured before starting the reader task. -/
+def streamingWorkerOutput (worker : System.FilePath) (args : Array String) :
+    IO IO.Process.Output := do
+  let out ← IO.getStdout
+  let err ← IO.getStderr
+  let child ← IO.Process.spawn {
+    cmd := worker.toString, args, stdin := .null, stdout := .piped, stderr := .piped }
+  -- A failed reader must stop the child before joining the other reader:
+  -- otherwise the child could block forever on the abandoned pipe.
+  let drain (source : IO.FS.Handle) (target : IO.FS.Stream) : IO String := do
+    try forwardWorkerStream source target catch error =>
+      try child.kill catch _ => pure ()
+      throw error
+  let stdout ← IO.asTask (drain child.stdout out) Task.Priority.dedicated
+  let stderrResult ← (drain child.stderr err).toBaseIO
+  let stdoutResult ← IO.wait stdout
+  let exitCode ← child.wait
+  let _ ← IO.ofExcept stderrResult
+  let last ← IO.ofExcept stdoutResult
+  return { exitCode, stdout := last, stderr := "" }
+
+def superviseStreamingWorker (protocol : CompletionProtocol) (worker : System.FilePath)
+    (args : Array String := #[]) : IO UInt32 :=
+  superviseWorkerWith (fun path => streamingWorkerOutput path args) protocol worker false
+
 /-- Minimal executable entry shared by the two distinct launcher roots. -/
-def launchSiblingWorker (protocol : CompletionProtocol) : IO UInt32 := do
+def launchSiblingWorker (protocol : CompletionProtocol) (args : Array String := #[])
+    (streaming : Bool := false) : IO UInt32 := do
   let appPath ← IO.appPath
   let some appDir := appPath.parent | do
     IO.eprintln s!"{protocol.label} supervisor: cannot locate the executable directory above {appPath}; run it as `{protocol.runCommand}` from the tl checkout"
     return 1
-  superviseWorker protocol (appDir / protocol.workerFile)
+  if streaming then
+    superviseStreamingWorker protocol (appDir / protocol.workerFile) args
+  else
+    superviseWorkerWith (fun path => IO.Process.output { cmd := path.toString, args })
+      protocol (appDir / protocol.workerFile)
 
 end Tl.Verify

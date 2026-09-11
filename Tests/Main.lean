@@ -31,94 +31,70 @@ import Tests.PerfTests
 import Tests.ImportsTests
 import Tests.VerifyTests
 import Tests.VerifyLoadedTests
+import Tests.Runner
+import Tests.RunnerTests
 import Verify.Supervise
 
 open Tl.Tests
 open Tl.Verify
 
-unsafe def main : IO UInt32 := do
-  -- the suite drives `performSync` in-process against temp remotes; the default
-  -- sink would spray "syncing with remote 'origin'…" onto the runner's stderr.
-  -- Silence it — the sink's wiring is asserted with a recording sink in
-  -- `cliSyncPostureTests`.
+/-- Every group is deferred; listing or selecting groups never constructs other fixtures. -/
+unsafe def testGroups : List TestGroup := [
+  { id := "hermetic", label := "Native local/CI hermetic validation", run := fun _ => hermeticTests },
+  { id := "imports", label := "Root module imports every Tl/ source (AGENTS.md)", run := fun _ => importsTests },
+  { id := "verify", label := "Lean-native trust verification: policy, inventory, kernel replay", run := fun _ => verifyTests },
+  { id := "verify-loaded", label := "Lean-native trust verification: loaded environment selection", run := fun _ => verifyLoadedTests },
+  { id := "hlc", label := "HLC update rules & encoding", run := fun _ => pure (hlcUnitTests) },
+  { id := "hlc-roundtrip", label := "HLC hex round-trip (seeded property)", run := fun _ => pure (hlcRoundtripProp) },
+  { id := "hlc-monotone", label := "HLC local-event monotonicity (seeded property)", run := fun _ => pure (hlcMonotoneProp) },
+  { id := "crockford", label := "Crockford base32 & replica id", run := fun _ => pure (crockfordTests) },
+  { id := "crockford-roundtrip", label := "Crockford round-trip (seeded property)", run := fun _ => pure (crockfordRoundtripProp) },
+  { id := "record", label := "JSONL record round-trip & preserve-unknown", run := fun _ => pure (recordTests) },
+  { id := "errors", label := "Error codes, exit codes & --json envelope", run := fun _ => pure (errorCodeTests ++ envelopeTests) },
+  { id := "sha256", label := "SHA-256 vectors, padding edges & the mint vector", run := fun _ => pure (sha256Tests) },
+  { id := "time", label := "ISO-8601 UTC instant codec", run := fun _ => pure (timeTests) },
+  { id := "codec", label := "Record↔Op codec: canonical lines, escapes, fail-closed", run := fun _ => pure (codecTests) },
+  { id := "sys", label := "Native shim (ADR-0019): no-follow, sync, locks, entropy", run := fun _ => sysTests },
+  { id := "store", label := "Store: discovery, transact, adversity, locking", run := fun _ => storeTests },
+  { id := "cli", label := "CLI contract: verbs, guards, envelope, exit codes", run := fun _ => cliTests },
+  { id := "cross", label := "Cross-checks: encoding order, compiled kernel vs spec", run := fun _ => pure (crossTests) },
+  { id := "cross-evidence", label := "Cross-check evidence: the drift guard, and ADR-0004's list == the registry", run := fun _ => do return crossEvidenceGuardTests ++ (← crossEvidenceTests) },
+  { id := "sanitize", label := "Render sanitization (ADR-0014)", run := fun _ => pure (sanitizeTests) },
+  { id := "grammar", label := "Grammar: tl help --json schema & parser agreement", run := fun _ => grammarTests },
+  { id := "doc-grammar", label := "Docs vs grammar: vision surface == commandSpecs", run := fun _ => docGrammarTests },
+  { id := "release-identity", label := "Release identity: repository/workflow/npm pins do not drift", run := fun _ => releaseIdentityTests },
+  { id := "release-plan", label := "Release plan: enabled channels, and the documents that state them", run := fun _ => releasePlanTests },
+  { id := "release-tool", label := "tlrelease: dispatch, usage, and the two refusals", run := fun _ => releaseToolTests },
+  { id := "shell-inventory", label := "Exact three-program shell inventory", run := fun _ => shellInventoryTests },
+  { id := "verifier-process", label := "Standalone verifier public-process probes — process", run := fun _ => verifierProcessTests },
+  { id := "verifier-mutations", label := "Standalone verifier public-process probes — mutations", run := fun _ => verifierProcessMutationTests },
+  { id := "verifier-command", label := "Standalone verifier public-process probes — command", run := fun _ => verifierSuiteCommandTests },
+  { id := "installer-command", label := "Installer public-process probes — command", run := fun _ => installerSuiteCommandTests },
+  { id := "installer-branches", label := "Installer public-process probes — branches", run := fun _ => installerBranchTests },
+  { id := "installer-branch-mutations", label := "Installer public-process probes — branch-mutations", run := fun _ => installerBranchMutationTests },
+  { id := "installer-process", label := "Installer public-process probes — process", run := fun _ => installerProcessTests },
+  { id := "installer-process-mutations", label := "Installer public-process probes — process-mutations", run := fun _ => installerProcessMutationTests },
+  { id := "release-drift", label := "Release drift: documented invocations, and one decision about a missing tool", run := fun _ => releaseDriftTests },
+  { id := "workflow-commands", label := "Typed workflow output producers", run := fun _ => workflowCommandTests },
+  { id := "workflow-release", label := "Typed release orchestration", run := fun _ => workflowReleaseTests },
+  { id := "workflow-policy", label := "Workflow authority and invocation mutations", run := fun _ => workflowPolicyTests },
+  { id := "release-privilege", label := "Release workflow: privileged jobs need a pushed tag", run := fun _ => releaseWorkflowPrivilegeTests },
+  { id := "build-provenance", label := "Build provenance: tl version kinds, renderings, and stamp drift", run := fun _ => buildProvenanceTests },
+  { id := "sync", label := "Sync: line-union, ref I/O, local leg + read-time refresh", run := fun _ => syncTests },
+  { id := "cache-codec", label := "Fold cache: codec round-trip & fail-closed decode", run := fun _ => pure (cacheCodecTests) },
+  { id := "cache-fold", label := "Fold cache: validity branches (stale/refusal/deferral/skip-bad)", run := fun _ => pure (cacheFoldTests) },
+  { id := "cache-suffix", label := "Fold cache: cached fold ≡ fresh fold (seeded property)", run := fun _ => pure (cacheSuffixFoldProp) },
+  { id := "cache-version", label := "Fold cache: cacheVersion-bump guard (ADR-0022 §3)", run := fun _ => pure (cacheVersionGuardTests) },
+  { id := "cache-io", label := "Fold cache: file lifecycle, healing, doctor non-persist", run := fun _ => cacheIoTests },
+  { id := "perf", label := "Perf: ×4-op scaling stays near-linear on every fast path", run := fun _ => perfTests },
+  { id := "perf-primitives", label := "Perf: native-primitive fast paths (String compare, content hash)", run := fun _ => perfPrimitiveTests },
+  { id := "perf-binary", label := "Perf: end-to-end compiled-binary latency on a scaled repo", run := fun _ => perfBinaryTests },
+  { id := "runner", label := "Focused selection, progress, timing and worker supervision", run := fun _ => runnerTests }
+]
+
+unsafe def main (args : List String) : IO UInt32 := do
+  -- The progress sink wiring is independently checked by cliSyncPostureTests.
   Tl.Cli.syncProgressSink.set (fun _ => pure ())
-  let sys ← sysTests
-  let store ← storeTests
-  let cli ← cliTests
-  let grammar ← grammarTests
-  let docGrammar ← docGrammarTests
-  let crossEvidence ← crossEvidenceTests
-  let releaseIdentity ← releaseIdentityTests
-  let releasePlan ← releasePlanTests
-  let releaseTool ← releaseToolTests
-  let shellInventory ← shellInventoryTests
-  let hermetic ← hermeticTests
-  let verifierBranches ← verifierProcessTests
-  let verifierMutations ← verifierProcessMutationTests
-  let verifierCommands ← verifierSuiteCommandTests
-  let installerSuiteCommands ← installerSuiteCommandTests
-  let installerBranchMutations ← installerBranchMutationTests
-  let installerBranches ← installerBranchTests
-  let installerProcess ← installerProcessTests
-  let installerProcessMutations ← installerProcessMutationTests
-  let releaseDrift ← releaseDriftTests
-  let workflowCommands ← workflowCommandTests
-  let workflowRelease ← workflowReleaseTests
-  let workflowPolicy ← workflowPolicyTests
-  let releaseWorkflowPrivilege ← releaseWorkflowPrivilegeTests
-  let buildProvenance ← buildProvenanceTests
-  let sync ← syncTests
-  let cacheIo ← cacheIoTests
-  let perf ← perfTests
-  let perfPrim ← perfPrimitiveTests
-  let perfBin ← perfBinaryTests
-  let imports ← importsTests
-  let verify ← verifyTests
-  let verifyLoaded ← verifyLoadedTests
-  let status ← runAll [
-    ("Native local/CI hermetic validation", hermetic),
-    ("Root module imports every Tl/ source (AGENTS.md)", imports),
-    ("Lean-native trust verification: policy, inventory, kernel replay", verify),
-    ("Lean-native trust verification: loaded environment selection", verifyLoaded),
-    ("HLC update rules & encoding", hlcUnitTests),
-    ("HLC hex round-trip (seeded property)", hlcRoundtripProp),
-    ("HLC local-event monotonicity (seeded property)", hlcMonotoneProp),
-    ("Crockford base32 & replica id", crockfordTests),
-    ("Crockford round-trip (seeded property)", crockfordRoundtripProp),
-    ("JSONL record round-trip & preserve-unknown", recordTests),
-    ("Error codes, exit codes & --json envelope", errorCodeTests ++ envelopeTests),
-    ("SHA-256 vectors, padding edges & the mint vector", sha256Tests),
-    ("ISO-8601 UTC instant codec", timeTests),
-    ("Record↔Op codec: canonical lines, escapes, fail-closed", codecTests),
-    ("Native shim (ADR-0019): no-follow, sync, locks, entropy", sys),
-    ("Store: discovery, transact, adversity, locking", store),
-    ("CLI contract: verbs, guards, envelope, exit codes", cli),
-    ("Cross-checks: encoding order, compiled kernel vs spec", crossTests),
-    ("Cross-check evidence: the drift guard, and ADR-0004's list == the registry", crossEvidenceGuardTests ++ crossEvidence),
-    ("Render sanitization (ADR-0014)", sanitizeTests),
-    ("Grammar: tl help --json schema & parser agreement", grammar),
-    ("Docs vs grammar: vision surface == commandSpecs", docGrammar),
-    ("Release identity: repository/workflow/npm pins do not drift", releaseIdentity),
-    ("Release plan: enabled channels, and the documents that state them", releasePlan),
-    ("tlrelease: dispatch, usage, and the two refusals", releaseTool),
-    ("Exact three-program shell inventory", shellInventory),
-    ("Standalone verifier public-process probes", verifierBranches ++ verifierMutations ++ verifierCommands),
-    ("Installer public-process probes", installerSuiteCommands ++ installerBranches ++ installerBranchMutations ++ installerProcess ++ installerProcessMutations),
-    ("Release drift: documented invocations, and one decision about a missing tool", releaseDrift),
-    ("Typed workflow output producers", workflowCommands),
-    ("Typed release orchestration", workflowRelease),
-    ("Workflow authority and invocation mutations", workflowPolicy),
-    ("Release workflow: privileged jobs need a pushed tag", releaseWorkflowPrivilege),
-    ("Build provenance: tl version kinds, renderings, and stamp drift", buildProvenance),
-    ("Sync: line-union, ref I/O, local leg + read-time refresh", sync),
-    ("Fold cache: codec round-trip & fail-closed decode", cacheCodecTests),
-    ("Fold cache: validity branches (stale/refusal/deferral/skip-bad)", cacheFoldTests),
-    ("Fold cache: cached fold ≡ fresh fold (seeded property)", cacheSuffixFoldProp),
-    ("Fold cache: cacheVersion-bump guard (ADR-0022 §3)", cacheVersionGuardTests),
-    ("Fold cache: file lifecycle, healing, doctor non-persist", cacheIo),
-    ("Perf: ×4-op scaling stays near-linear on every fast path", perf),
-    ("Perf: native-primitive fast paths (String compare, content hash)", perfPrim),
-    ("Perf: end-to-end compiled-binary latency on a scaled repo", perfBin)
-  ]
-  if status == 0 then IO.println testCompletionProtocol.verdict
+  let status ← runTestRequest testGroups args
+  if status == 0 then testProgress (testRequestCompletionProtocol args).verdict
   return status

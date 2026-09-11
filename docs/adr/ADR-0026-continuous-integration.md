@@ -625,12 +625,37 @@ only process completion and contains no trust policy.
 
 `lake exe tltest` runs after the verifier. Like `tlverify`, it is a minimal
 launcher around a worker and accepts status zero only when `tltestWorker`
-emits its fixed marker after `runAll` completes. This prevents an imported
+emits its fixed marker after the complete registered suite finishes. This prevents an imported
 initializer from exiting zero before any assertion runs. The suite covers
 serialization, git and filesystem behavior, clocks, imports, CLI contracts,
 compiled-kernel/spec cross-checks, and performance regressions. These tests
 remain a regression net over the executable, never a substitute for theorems
 about provable kernel properties.
+
+For local iteration, `lake exe tltest --list` lists stable group names and
+`lake exe tltest --group sync --group store` selects groups without constructing
+unselected fixtures. Selection is exact, validated in full before execution,
+deduplicated, and executed in registry order. Empty names, missing values,
+unknown groups, mixed discovery/selection options, and an empty or malformed
+registry refuse rather than running an accidental subset. No arguments still
+runs every group; CI continues to use that form. A focused run is explicitly
+labelled and emits a different completion verdict, which cannot certify a
+full-suite pass. Help and listing use the same request-completion protocol.
+
+`Tests/Runner.lean` flushes START before each group's setup and END after its
+assertions, including elapsed monotonic milliseconds and failures. Large release
+tool fixture boundaries have additional FIXTURE timings. Empty groups and setup
+exceptions become visible failed assertions; subsequent groups still execute.
+The test supervisor streams both pipes concurrently, retaining only the last
+nonempty stdout line for the existing completion decision. Reader failures stop
+and reap the worker. `Tests/RunnerTests.lean` covers selection, registry coverage,
+empty/failing/throwing groups, actual launcher argument forwarding, and real
+workers with early exits, malformed final markers, pipe bursts, broken consumers,
+and a handshake requiring both streams to be flushed before worker completion.
+The verifier launcher retains its existing buffered path.
+
+Groups remain sequential: the performance groups require uncontended execution.
+Focused runs accelerate local diagnosis, not the required final full validation.
 
 ### Git runtime floor
 

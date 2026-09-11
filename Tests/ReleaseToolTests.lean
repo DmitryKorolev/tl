@@ -13,7 +13,7 @@ by its exit status and the text it teaches than by a process's output stream.
 `release.Main` exists only so that this import does not collide with the
 harness's own `main`.
 -/
-import Tests.Harness
+import Tests.Runner
 import Tl.Sync.Ref
 import release.Cli
 
@@ -6739,10 +6739,38 @@ def releaseToolTests : IO (List Outcome) := do
       s!"duplicate command names: {commands.map (·.name)}"]
   return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ policyTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
-    ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
+    ++ (← measureTestFixture "release-tool/documentTests" documentTests)
+    ++ (← measureTestFixture "release-tool/pinCommandTests" pinCommandTests)
+    ++ (← measureTestFixture "release-tool/writeCommandTests" writeCommandTests)
+    ++ (← measureTestFixture "release-tool/planCommandTests" planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
-    ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← homebrewSyntaxTests) ++ (← policyListTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
-    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← gitRoutingTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← platformTests)
+    ++ writeAcceptTests
+    ++ (← measureTestFixture "release-tool/writeSeamTests" writeSeamTests)
+    ++ (← measureTestFixture "release-tool/sbomDocumentTests" sbomDocumentTests)
+    ++ (← measureTestFixture "release-tool/sbomCommandTests" sbomCommandTests)
+    ++ (← measureTestFixture "release-tool/processTests" processTests)
+    ++ (← measureTestFixture "release-tool/digestTests" digestTests)
+    ++ (← measureTestFixture "release-tool/goldenManifestTests" goldenManifestTests)
+    ++ (← measureTestFixture "release-tool/formulaDriftTests" formulaDriftTests)
+    ++ (← measureTestFixture "release-tool/homebrewCommandTests" homebrewCommandTests)
+    ++ (← measureTestFixture "release-tool/tapPublishTests" tapPublishTests)
+    ++ (← measureTestFixture "release-tool/homebrewSyntaxTests" homebrewSyntaxTests)
+    ++ (← measureTestFixture "release-tool/policyListTests" policyListTests)
+    ++ (← measureTestFixture "release-tool/policyRunnerTests" policyRunnerTests)
+    ++ (← measureTestFixture "release-tool/certificateTests" certificateTests)
+    ++ (← measureTestFixture "release-tool/consistencyTests" consistencyTests)
+    ++ (← measureTestFixture "release-tool/npmManifestTests" npmManifestTests)
+    ++ (← measureTestFixture "release-tool/npmManifestCommandTests" npmManifestCommandTests)
+    ++ (← measureTestFixture "release-tool/npmStageTests" npmStageTests)
+    ++ (← measureTestFixture "release-tool/npmPublishTests" npmPublishTests)
+    ++ npmComparisonTests ++ taskIdRuleTests
+    ++ (← measureTestFixture "release-tool/taskIdCommandTests" taskIdCommandTests)
+    ++ (← measureTestFixture "release-tool/stampTests" stampTests)
+    ++ (← measureTestFixture "release-tool/gitRoutingTests" gitRoutingTests)
+    ++ (← measureTestFixture "release-tool/npmBootstrapTests" npmBootstrapTests)
+    ++ (← measureTestFixture "release-tool/prerequisiteIoTests" prerequisiteIoTests)
+    ++ (← measureTestFixture "release-tool/clientTests" clientTests)
+    ++ (← measureTestFixture "release-tool/lifecycleTests" lifecycleTests)
+    ++ (← measureTestFixture "release-tool/platformTests" platformTests)
 
 end Tl.Tests
