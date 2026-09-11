@@ -132,8 +132,7 @@ CI gates (mirror these locally before declaring done):
   set, and registering a token is where a human asserts it is a placeholder and
   not a tracker reference, so a new test id lands there in the same change. It
   is a Lean binary rather than a script, so CI runs it in the job that has a
-  toolchain and `check-release-policy.sh` does not carry it; the rule, the
-  scope predicate and the registry lookup are covered in
+  toolchain; the rule, scope predicate and the registry lookup are covered in
   `Tests/ReleaseToolTests.lean`, over a corpus of the shapes a leak takes and
   over planted checkouts through the command itself. The native policy registry
   now owns the deferred npm suite, including its poisoned configuration paths.
@@ -141,13 +140,11 @@ CI gates (mirror these locally before declaring done):
   its own required CI job and is *not* implied by the four gates above. One
   registry, two profiles, and `tlrelease policy-list --profile ci` names its CI gates.
   It runs the native installer and standalone verifier public-process corpora,
-  remaining migration scripts' `--selftest` modes (each proves it can still
-  refuse before its silence is believed), shellcheck over every tracked shell file,
-  actionlint over the workflows, and the generators for the installer, the
-  artifact verifier, the npm packages and the Homebrew formula. Every channel's
-  generator runs on every commit whether or not `release/plan.json` publishes
-  through it — a deferred channel that stopped being exercised would rot until
-  the release that enabled it. `--strict` refuses to skip a gate whose tool is
+  the exact three-adapter shell inventory, ShellCheck over those adapters,
+  actionlint and the native workflow authority guard, Ruby formula syntax, and
+  native npm packaging validation. Generator/render comparisons run in the
+  full test suite on every commit, including channels that `release/plan.json`
+  defers. `--strict` refuses to skip a gate whose tool is
   missing; without it, a missing `shellcheck` or `ruby` is a smaller policy
   rather than a broken run. Touching anything under `scripts/`, `release/`,
   `npm/`, `Formula/`, `install.sh` or `.github/workflows/` means running it.
@@ -158,37 +155,21 @@ CI gates (mirror these locally before declaring done):
   `--profile release` selects those gates only when enabled by the plan. For
   the current GitHub-only plan they are
   absent rather than skipped, because a skip is a report about this run and
-  absence is a statement about the release. The boundary itself is enforced
-  twice: `tlrelease dependency-boundary --root . --plan release/plan.json`
-  reads what the reachable scripts *say*, and the hermetic job runs the native
-  release profile with all six runtimes absent. The old PATH-shim selftest and
-  shell parity snapshot remain migration evidence until shell deletion.
-  Deferred-channel files are excluded
-  from the first by name and by channel, never by directory. The lexical arm
-  reads a `#!` line with the syntax a shebang has rather than as shell —
-  `#! /usr/bin/python3` executes, and read as shell it is a command named `#!`
-  taking a path, which was invisible to both arms — and it refuses on a line it
-  cannot read at all, so an omission in the parser stops a release instead of
-  passing as a clean file. What each arm sees is narrower than "says" and
-  "executes": a shim intercepts a command resolved *through PATH* and cannot
-  shadow `/usr/bin/python3`, so the lexical arm reads a backslash as the shell
-  does and reads a path wherever it is written, not only in command position.
-  An interpreter path assembled at runtime is seen by neither, is pinned as
-  uncovered by a corpus row, and is closed by construction only by a runtime
-  without the interpreter. The spellings it must keep understanding are a corpus
-  in `Tests/ReleaseToolTests.lean`, each row asserted through the parser *and*
-  through the public command over a planted checkout.
+  absence is a statement about the release. The exact shell inventory requires only
+  `install.sh`, `scripts/verify-release-artifacts.sh`, and `npm/tl/bin/tl`, each
+  with exact `#!/bin/sh`. It unions tracked `.sh` paths and tracked regular files
+  with recognized shell shebangs, refuses unreadable candidates, and has no
+  override. It does not parse shell bodies. Adding another shell program requires
+  a protected ADR-0028 and allowlist change. The native policy, closed privileged
+  workflow schemas, adapter action budgets and public process tests own the
+  release decisions; the hermetic job supplies the Linux runtime-budget evidence.
+  Actual Darwin-only installer paths retain the explicit overview.md assumption.
 - The native registry owns missing-tool and strict-mode verdicts, with pinned
-  characterization theorems and subprocess tests. In the remaining shell,
-  a gate whose *tool* may be absent goes through `rc_tool_gate` in
-  `scripts/lib/release-common.sh`, the one place entitled to `command -v` or
-  `rc_skip_gate`: it crosses tool-present/absent × strict/not × passed/failed,
-  and `scripts/check-release-runtimes.sh --selftest` exercises the crossing.
-  `Tests/ReleaseDriftTests.lean` refuses a policy script that branches on tool
-  presence itself, and refuses a backticked `tlrelease` invocation in the docs
-  that the tool's own parser would reject — so an option that becomes mandatory breaks
-  every stale example in the same build. In backticks, name a command or write
-  an invocation that works; a fragment is what rots.
+  characterization theorems and subprocess tests. The old shell gate library,
+  lexer, command-spelling corpus, PATH-shim runner and profile-parity oracle are
+  deleted. `Tests/ReleaseDriftTests.lean` still refuses a backticked invocation
+  that the tool's own parser rejects. In backticks, name a command or write an
+  invocation that works; a fragment is what rots.
 - A `hermetic-release` job runs the strict GitHub-only release profile and the
   installer, standalone-verifier, and npm-launcher public suites inside one
   digest-pinned inner Linux container. Its checkout is read-only; scratch and

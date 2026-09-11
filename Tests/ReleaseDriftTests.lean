@@ -1,25 +1,4 @@
-/-
-`Tests.ReleaseDriftTests` — the two guards over statements kept beside the
-release layer rather than inside it.
-
-Both exist for the same failure, in two materials. `--plan` became mandatory on
-`tlrelease dependency-boundary`, and three sentences went on showing
-`--root .` alone: a documented invocation that exits 2 for anyone who copies it,
-in a repository whose own rule is that artifacts stand on their own. And the
-decision "a missing tool is a skip, unless the run is strict, in which case it
-is a failure" was written out at four gates, so the rule lived in four places
-and was tested at none of them.
-
-Neither guard reads a copy of what it checks. The documentation rows run the
-command's own `accepts` — the same function its `run` goes through, so an
-invocation accepted here is one the tool accepts. The shell rows read the policy
-scripts with `release/Boundary.lean`'s own lexer, which is the one that already
-knows what a comment is and what command position means.
-
-Tested I/O shell (ADR-0004): both guards read tracked files and decide, and
-neither is part of the product. What they protect is the thing a reader of the
-documentation, or of one policy script, cannot check for themselves.
--/
+/- Guards over documented invocations, workflow authority and release-native wiring. -/
 import Tests.Harness
 import Tests.WorkflowTests
 import Verify.Environment
@@ -92,8 +71,7 @@ private def wordsOf (text : String) : List String :=
 /-- The tokens of a documented span, with the ways a reader is told to run this
     executable removed: a `lake exe` prefix, and a path to the built binary.
 
-    Normalizing by basename is the same rule the dependency boundary uses on a
-    command word, and for the same reason — `./.lake/build/bin/tlrelease` and
+    Normalizing by basename keeps equivalent documented spellings together — `./.lake/build/bin/tlrelease` and
     `tlrelease` are one command, and a guard that only knew the second was a
     guard three copyable spellings walked around. -/
 private def invocationTokens (span : String) : List String :=
@@ -102,7 +80,7 @@ private def invocationTokens (span : String) : List String :=
     | "lake" :: "exe" :: rest => rest
     | _ => words
   match words with
-  | executable :: rest => commandName executable :: rest
+  | executable :: rest => (executable.splitOn "/").getLast! :: rest
   | [] => []
 
 /-- What one documented span has to be.
@@ -146,60 +124,6 @@ def usageOptions (usage : String) : List String :=
     let word := (word.takeWhile fun c =>
       c != ')' && c != ']' && c != '}' && c != '|' && c != ',').toString
     if word.startsWith "--" && word.length > 2 then some (word.drop 2).toString else none
-
-/-! ## One decision about a missing tool
-
-`command -v` and `rc_skip_gate` belong to `scripts/lib/release-common.sh`. A
-policy script that reaches for either is writing its own answer to "what happens
-when the tool is absent", and the four that did had already produced two
-spellings of it. -/
-
-/-- The builtins that answer "is this tool here" on their own. `command`
-    is not among them: it takes a flag, and `command npm publish` is an
-    invocation rather than a probe. -/
-private def presenceProbes : List String := ["type", "which", "hash"]
-
-/-- Does this line probe for a command's presence?
-
-    Read from the code half of the line with the boundary's own lexer, so the
-    sentence explaining this rule in a comment is prose and a quoted gate name
-    containing one of these words is one token rather than several.
-
-    Every word is normalized to its program name first. A guard that compared
-    whole words forbade a spelling rather than a decision: `type shellcheck` and
-    `/usr/bin/command -v shellcheck` both branch on tool presence, and both were
-    invisible to a rule written for the literal string `command -v`. -/
-def probesForTool (line : String) : Bool :=
-  let code := codeOf line
-  let named := (lineWords code).map commandName
-  let commanded := (commandWords code).map commandName
-  (named.zip (named.drop 1)).any (fun (word, next) =>
-      word == "command" && next.startsWith "-" && next.any (· == 'v'))
-    || commanded.any presenceProbes.contains
-
-/-- Does this line call `name` in command position? -/
-def callsDirectly (line : String) (name : String) : Bool :=
-  (commandWords (codeOf line)).any fun word => commandName word == name
-
-/-- The library that owns the decision, by what it defines rather than by where
-    it sits: the file carrying `rc_tool_gate` is the one place entitled to the
-    two constructs below it. -/
-private def definesToolGate (text : String) : Bool :=
-  (text.splitOn "rc_tool_gate()").length > 1
-
-/-- A script that runs gates, which is what puts it under this rule. Found by
-    what it does — it opens a policy run — so a third policy script is covered
-    the day it is written rather than the day somebody remembers it. -/
-private def runsGates (text : String) : Bool :=
-  (text.splitOn "rc_policy_begin").length > 1
-
-private def hygieneFailures (path : String) (text : String) : List String :=
-  ((text.splitOn "\n").zipIdx 1).filterMap fun (line, number) =>
-    if probesForTool line then
-      some s!"  {path}:{number}: decides for itself whether a tool is present — {line.trimAscii}"
-    else if callsDirectly line "rc_skip_gate" then
-      some s!"  {path}:{number}: calls rc_skip_gate directly — {line.trimAscii}"
-    else none
 
 /-! ## The release-tool artifact handoff, structurally
 
@@ -1071,22 +995,8 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
         "\nThe native side reports a phase and an errno as numbers, decoded by release/Write.lean. Matching the formatted message instead makes a sentence part of the contract, so rewording it silently stops the classification without failing a build."),
      check "release errors: the scan read release sources to check"
        (releaseSources.size ≥ 10) s!"found {releaseSources.size} release source(s)"]
-  let scripts ← filesUnder "scripts" ["sh"]
   let releaseWorkflow ← IO.FS.readFile ".github/workflows/release.yml"
   let ciWorkflow ← IO.FS.readFile ".github/workflows/ci.yml"
-  let mut library := 0
-  let mut policies : List (FilePath × String) := []
-  for path in scripts do
-    let text ← IO.FS.readFile path
-    if definesToolGate text then library := library + 1
-    else if runsGates text then policies := policies ++ [(path, text)]
-  let mut hygieneRows : List Outcome := []
-  for (path, text) in policies do
-    let failures := hygieneFailures path.toString text
-    hygieneRows := hygieneRows ++
-      [check s!"release policy: {path} decides a missing tool through rc_tool_gate alone"
-        failures.isEmpty (String.intercalate "\n" failures ++
-          "\nrc_tool_gate in scripts/lib/release-common.sh crosses the three inputs — present or absent, strict or not, passed or failed — and its selftest matrix is what proves the crossing. A branch written here is a second answer to the same question, tested by nothing.")]
   let lakefile ← IO.FS.readFile "lakefile.lean"
   let hermeticMutationRows := hermeticPodmanPrefix.map fun line =>
     check s!"hermetic release: removing `{line}` changes the pinned Podman argv"
@@ -1117,7 +1027,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: |\n"
          s!"        {field}\n        run: |\n")).toOption.isNone)]
   return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile ++ staticReleaseRecipeRows lakefile
-    ++ hygieneRows ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
+    ++ hermeticMutationRows ++ hermeticEnvironmentRows ++ hermeticBodyRows
     ++ hermeticInnerRows ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
     -- leave alone. Without these a detector that matched nothing would report
@@ -1202,10 +1112,6 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
     -- satisfies it.
     check "release docs: the scan read documented invocations to check"
       (documented ≥ 4) s!"found {documented} documented invocation(s) with arguments",
-    check "release policy: the library that owns the decision was found exactly once"
-      (library == 1) s!"{library} file(s) define rc_tool_gate",
-    check "release policy: the scripts that run gates were found"
-      (policies.length ≥ 2) s!"{policies.length} policy script(s)",
     check "hermetic release: the live CI workflow has the pinned job shape"
       (hermeticReleaseShape ciWorkflow).toOption.isSome
       (match hermeticReleaseShape ciWorkflow with
@@ -1254,50 +1160,27 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
     -- must leave alone. Without these rows a guard that accepted everything
     -- would report the same clean result as the repository being clean.
     check "release docs: the stale form this guard was written for is rejected"
-      ((documentedVerdict "tlrelease dependency-boundary --root .").toOption.isNone),
+      ((documentedVerdict "tlrelease policy --strict").toOption.isNone),
     check "release docs: the complete form is accepted"
-      ((documentedVerdict "tlrelease dependency-boundary --root . --plan release/plan.json").toOption.isSome),
+      ((documentedVerdict "tlrelease policy --profile ci --strict").toOption.isSome),
     check "release docs: naming a command without invoking it is prose"
       ((documentedVerdict "tlrelease prereqs").toOption.isSome),
     check "release docs: naming the tool alone is prose"
       ((documentedVerdict "tlrelease").toOption.isSome),
     check "release docs: a command this build does not offer is rejected"
-      ((documentedVerdict "tlrelease depenency-boundary --root .").toOption.isNone),
+      ((documentedVerdict "tlrelease unknown-policy --root .").toOption.isNone),
     -- The wrapper forms a reader can copy. Each is the same command, and a
     -- guard that only knew the bare name let three stale spellings through.
     check "release docs: a stale invocation behind `lake exe` is rejected"
-      ((documentedVerdict "lake exe tlrelease dependency-boundary --root .").toOption.isNone),
+      ((documentedVerdict "lake exe tlrelease policy --strict").toOption.isNone),
     check "release docs: a stale invocation behind the built path is rejected"
-      ((documentedVerdict "./.lake/build/bin/tlrelease dependency-boundary --root .").toOption.isNone),
+      ((documentedVerdict "./.lake/build/bin/tlrelease policy --strict").toOption.isNone),
     check "release docs: a stale invocation separated by a tab is rejected"
-      ((documentedVerdict "tlrelease\tdependency-boundary --root .").toOption.isNone),
+      ((documentedVerdict "tlrelease\tpolicy --strict").toOption.isNone),
     check "release docs: naming the built path without arguments is prose"
       ((documentedVerdict "./.lake/build/bin/tlrelease").toOption.isSome),
     check "release docs: another executable's span is not read as one of these"
       ((documentedVerdict "lake exe tltest --root .").toOption.isSome),
-    check "release policy: a presence probe is recognised"
-      (probesForTool "if command -v npm >/dev/null 2>&1; then"),
-    check "release policy: spacing does not decide it"
-      (probesForTool "command   -v ruby > /dev/null"),
-    -- The spellings that are the same decision. A guard that forbade the string
-    -- `command -v` forbade a spelling, and a policy script could keep its own
-    -- present/strict/passed logic by writing any of these instead.
-    check "release policy: the probe reached through a path is recognised"
-      (probesForTool "if /usr/bin/command -v shellcheck >/dev/null 2>&1; then"),
-    check "release policy: type is a presence probe"
-      (probesForTool "if type shellcheck >/dev/null 2>&1; then"),
-    check "release policy: which is a presence probe"
-      (probesForTool "which actionlint >/dev/null || exit 1"),
-    check "release policy: hash is a presence probe"
-      (probesForTool "hash ruby 2>/dev/null"),
-    check "release policy: a gate name that contains one of those words is not one"
-      (!probesForTool "rc_gate \"the type check\" ./scripts/x.sh"),
-    check "release policy: the same words in a comment are prose"
-      (!probesForTool "# command -v belongs to the library"),
-    check "release policy: a direct skip is recognised"
-      (callsDirectly "  rc_skip_gate \"workflow lint\" \"actionlint is not on PATH\"" "rc_skip_gate"),
-    check "release policy: going through the helper is not one"
-      (!callsDirectly "rc_tool_gate \"workflow lint\" --tool actionlint -- actionlint" "rc_skip_gate"),
     -- The commands' own examples. `arguments` is the shape and `invocation` is
     -- an instance of it, and the second is what makes the first checkable.
     check "tlrelease: every command's canonical invocation is one it accepts"

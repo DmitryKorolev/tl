@@ -8,10 +8,10 @@ launcher ships inside a published npm package — so each carries the mapping
 inline. That duplication is forced and is not the problem.
 
 What was a problem is where the mapping was *authoritative*. It used to live in
-`scripts/lib/release-common.sh` as a shell function nothing called, and the two
+the former shared shell library as a shell function nothing called, and the two
 shipped copies were compared against it as text. That made a shell file the
 source of truth for a decision the release already models in typed form, and it
-meant the guard died with the file: deleting `release-common.sh` would delete
+meant the guard died with the file: deleting that library would delete
 the comparison rather than migrate it.
 
 The authority is here instead, as data. `release/targets.json` says which

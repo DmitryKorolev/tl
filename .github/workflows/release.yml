@@ -153,8 +153,6 @@ jobs:
       # not have, or at a runtime for a channel it deliberately defers, fails
       # after the tag exists — which is the one point at which it cannot be
       # undone by fixing the commit.
-      - name: the v0.1 dependency boundary
-        run: ./.lake/build/bin/tlrelease dependency-boundary --root . --plan release/plan.json
       - name: trust boundary (lake exe tlverify)
         run: lake exe tlverify
       - name: test (lake exe tltest)

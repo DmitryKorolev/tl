@@ -773,29 +773,33 @@ Adding a new public release contract theorem therefore includes its pin in the
 same change. Protected review owns the registry's completeness; compilation owns
 the survival of every registered theorem.
 
-### Migration is explicit
+### Migration record
 
-Both workflows now use the typed policy and workflow command layer. The
-dependency-boundary scan, runtime-shim selftest, shell single-gate adapters and
-historical parity snapshot remain migration evidence. The full dynamic policy
-runs as a static native executable in the stripped container. Obsolete shell
-is deleted only in the subsequent atomic inventory/deletion change.
+The atomic shell deletion is complete. Both workflows use the typed policy and
+workflow command layer. The exact three-program inventory is a mandatory policy
+gate; the shell policy scripts, shared library, dependency lexer, spelling corpus,
+PATH-shim harness and parity snapshot are removed. ShellCheck is invoked directly
+from the registry and Ruby syntax checking is a native Homebrew command. The full
+dynamic policy runs as a static native executable in the stripped container.
+Per-adapter isolated-PATH fixtures remain required and were not migration shims.
 
 The cutover and a capability-free GitHub rehearsal both precede the v0.1.0 tag.
-The four formerly active GitHub-only defects retired in
-`docs/design-backlog.md` are not
-deferred to that rehearsal: the existing Lean ports already close them at the
-decision layer. `Targets.parse` and manifest assembly refuse an empty target
+The four former GitHub-only defects are not deferred to that rehearsal:
+the Lean ports close them at the decision layer. `Targets.parse` and manifest assembly refuse an empty target
 set, `RunContext` binds every build record to the executing run, the GitHub
 client keeps 404 apart from an unreadable response, and
 `restrictsTagCreation` requires coverage of the whole release-tag namespace.
-Their public-command and pure-decision rows remain required through cutover.
+Their public-command and pure-decision rows remain required after cutover.
+The three former npm findings are also retired: native snapshots compare modes
+and refuse symlinks, existing versions must match the intended dist-tag, and
+bootstrap guards preserve the current latest release. Native subprocess rows
+retain those checks; the deleted shell selftests are no longer their evidence.
 npm and Homebrew may still be disabled in `release/plan.json` for v0.1.0; their
 complete implementations and ordinary CI gates land before the shell deletion,
 while external namespace/tap bootstrap controls when the channels are enabled.
 
-The migration is a partial order, not an unnecessarily serialized checklist.
-Six workstreams may proceed in parallel while the old gates remain live:
+The completed migration followed a partial order. Its six preparatory workstreams
+were:
 
 - widen the manifest parser into the full typed downstream description, then
   port Homebrew and npm administration to public `tlrelease` commands;
@@ -803,7 +807,7 @@ Six workstreams may proceed in parallel while the old gates remain live:
   file-set-hash handoff above and ADR-0026's resulting `gates` → `stamp` edge;
 - replace the embedded-copy guard with the typed/rendered and behavioral
   adapter guards above, mutation-checking them while
-  `scripts/lib/release-common.sh` still exists (landed: the guard is
+  the shared shell library still existed (landed: the guard is
   `tlrelease platform-classification` plus the installer corpus, and the
   library's uname reference functions are gone);
 - build the nested hermetic harness and the three retained-adapter suites while
@@ -822,7 +826,8 @@ Six workstreams may proceed in parallel while the old gates remain live:
   equal the shell policy's lists and is mutation-checked. The oracle is deleted
   with the shell policy after the typed registry becomes authoritative.
 
-The cutover then has strict dependencies:
+The dependency order is recorded below. Steps 1–3 are complete; the hosted
+rehearsal in step 4 remains a prerequisite to the first tag:
 
 1. all channel commands and their characterization-theorem pins, the typed
    policy registry and parity oracle, the handoff bootstrap, replacement copy

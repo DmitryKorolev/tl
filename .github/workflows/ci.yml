@@ -631,20 +631,15 @@ jobs:
       - name: build trust verifier warning-free
         run: lake build tlverify --wfail
 
-      # The lexical half of ADR-0026's v0.1 dependency boundary: every script
-      # the release path reaches, read for an invocation of python, python3,
-      # ruby, brew, node or npm. This migration gate stays beside the full
-      # build; the stripped job independently executes the native policy.
+      # The native policy owns the exact adapter inventory and release checks.
       - name: build the release tool warning-free
         run: lake build tlrelease --wfail
-      - name: the v0.1 dependency boundary
-        run: ./.lake/build/bin/tlrelease dependency-boundary --root . --plan release/plan.json
 
       # No task-tracker id in a tracked artifact (AGENTS.md, "Artifacts must be
       # human-readable"; ADR-0026). It was its own toolchain-free job while it
       # was a shell script; the rule, the scope and the placeholder registry are
       # the release tool's now, so it runs where the binary exists — the same
-      # move the dependency boundary and the build stamp already made.
+      # move the build stamp already made.
       - name: no tracker id in a tracked artifact
         run: ./.lake/build/bin/tlrelease task-id-lint --root .
 

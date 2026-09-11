@@ -589,8 +589,15 @@ bindings, and rejection of unregistered secret consumers and output writers.
 Its parser and subprocess seams are tested locally; that evidence does not
 claim execution of hosted OIDC or publication.
 
-ADR-0028's accepted shell cutover carries one additional platform-scoped
-assumption once its lexical dependency-boundary gate is removed. The pinned
+Both policy profiles enforce `tlrelease shell-inventory --root .`: the union of
+tracked `.sh` paths and recognized shell shebangs must equal the three reviewed
+adapters, each with exact `#!/bin/sh`, and unreadable candidates refuse. The
+migration lexer, spelling corpus, PATH-shim harness and profile-parity snapshot
+are removed. The native policy and workflow schemas, adapter action budgets and
+public process tests now own the release decisions and their evidence.
+
+ADR-0028's completed shell cutover carries one additional platform-scoped
+assumption. The pinned
 inner Linux container can establish that no forbidden interpreter exists for
 the Linux-exercised GitHub-only policy and adapter paths. It cannot establish
 the same fact for an actual macOS-only branch of `install.sh`: hosted macOS has
@@ -632,12 +639,11 @@ executes, not a sandbox against malicious protected-reviewed source.
 The verifier's mode-000 unreadable-file row runs in the ordinary non-root
 local suite; its existing uid-0 skip applies inside this mapped-root container.
 Injected-platform installer tests exercise its branch bodies and
-permitted-action contract, but after the lexical arm is retired, the claim that
+permitted-action contract, but the claim that
 no unobserved Darwin-only installer branch invokes `/usr/bin/python3`,
 `/usr/bin/ruby`, or another preinstalled interpreter remains protected-review
-evidence, not a proved or hermetic fact. Until the cutover, the existing lexical
-arm still covers literal and escaped paths on every platform; the new assumption
-begins only when that arm is deleted.
+evidence, not a proved or hermetic fact. This carried assumption is active now
+that the migration lexer has been deleted.
 
 This is intentionally scoped by ADR-0028's threat model. The release controls
 are a regression boundary over protected-reviewed source, not a sandbox against

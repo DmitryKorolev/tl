@@ -3523,6 +3523,79 @@ private def syntheticRegistry : List Policy.Gate :=
 
 private def presentOnly (tools : List String) : String → Bool := fun tool => tools.contains tool
 
+private def homebrewSyntaxTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  try
+    let tool := ((← IO.currentDir) / ".lake/build/bin/tlrelease").toString
+    let run (root : System.FilePath) (env : Array (String × Option String) := #[]) :=
+      IO.Process.output { cmd := tool, args := #["homebrew-syntax", "--root", root.toString], env }
+    let git (root : System.FilePath) (args : Array String) : IO Unit := do
+      match ← succeededGit (#["-C", root.toString] ++ args) with
+      | .ok _ => pure ()
+      | .error message => throw (IO.userError message)
+    let plant (name : String) := do
+      let root := base / name
+      IO.FS.createDirAll (root / "Formula")
+      IO.FS.createDirAll (root / "Tests/fixtures/homebrew")
+      git root #["init", "--quiet"]
+      IO.FS.writeFile (root / "Formula/tl.rb") "valid\n"
+      IO.FS.writeFile (root / "Tests/fixtures/homebrew/with spaces.rb") "valid\n"
+      IO.FS.writeFile (root / "Tests/fixtures/homebrew/with\nnewline.rb") "valid\n"
+      git root #["add", "--all"]
+      return root
+    let root ← plant "root with spaces"
+    let bin := base / "bin"
+    IO.FS.createDirAll bin
+    let calls := base / "ruby-calls"
+    IO.FS.writeFile (bin / "ruby")
+      "#!/bin/sh\n[ \"$#\" -eq 2 ] && [ \"$1\" = -c ] || exit 40\nprintf '<%s>\\n' \"$2\" >> \"$SYNTAX_CALLS\"\nIFS= read -r first < \"$2\" || exit 41\n[ \"$first\" = valid ] || { echo 'syntax sentinel' >&2; exit 42; }\n"
+    let _ ← succeeded "chmod" #["755", (bin / "ruby").toString]
+    let ambient ← IO.getEnv "PATH"
+    let env := #[("PATH", some (bin.toString ++ ":" ++ ambient.getD "")),
+      ("SYNTAX_CALLS", some calls.toString)]
+    IO.FS.writeFile (root / "Tests/fixtures/homebrew/untracked.rb") "invalid\n"
+    let good ← run root env
+    let observed ← IO.FS.readFile calls
+    let expected := ["Formula/tl.rb", "Tests/fixtures/homebrew/with\nnewline.rb",
+      "Tests/fixtures/homebrew/with spaces.rb"].map fun (path : String) => s!"<{root / path}>\n"
+    let mut rows := [
+      checkEq "formula syntax: public command passes with separately quoted tracked paths" good.exitCode 0,
+      checkEq "formula syntax: every tracked formula reaches Ruby, untracked files do not"
+        observed (String.join expected),
+      check "formula syntax: successful run names its scope" (contains good.stdout "2 tracked") good.stdout]
+    for path in ["Formula/tl.rb", "Tests/fixtures/homebrew/with spaces.rb"] do
+      IO.FS.writeFile (root / path) "invalid\n"
+      let bad ← run root env
+      rows := rows ++ [check s!"formula syntax: parser refusal at {path} propagates and teaches repair"
+        (bad.exitCode == 1 && contains bad.stderr "syntax sentinel" && contains bad.stderr "fix its syntax") bad.stderr]
+      IO.FS.removeFile (root / path)
+      let missing ← run root env
+      rows := rows ++ [check s!"formula syntax: unreadable tracked file {path} refuses"
+        (missing.exitCode == 1 && contains missing.stderr path) missing.stderr]
+      IO.FS.writeFile (root / path) "valid\n"
+    let empty ← plant "empty"
+    git empty #["rm", "-r", "--cached", "--quiet", "--", "Tests/fixtures/homebrew"]
+    let noFixtures ← run empty env
+    rows := rows ++ [check "formula syntax: no fixtures refuses instead of checking nothing"
+      (noFixtures.exitCode == 1 && contains noFixtures.stderr "restore and stage") noFixtures.stderr]
+    let alien ← run (base / "absent") env
+    rows := rows ++ [check "formula syntax: git failure refuses with checkout repair"
+      (alien.exitCode == 1 && contains alien.stderr "Repair") alien.stderr]
+    -- Git remains reachable while Ruby is absent; absence must be a refusal.
+    let noRuby := base / "no-ruby"
+    IO.FS.createDirAll noRuby
+    let gitPath ← succeeded "sh" #["-c", "command -v git"]
+    match gitPath with
+    | .error message => throw (IO.userError message)
+    | .ok output =>
+      let linked ← succeeded "ln" #["-s", output.stdout.trimAscii.toString, (noRuby / "git").toString]
+      if let .error message := linked then throw (IO.userError message)
+    let absent ← run root #[("PATH", some noRuby.toString)]
+    rows := rows ++ [check "formula syntax: absent Ruby refuses and teaches installation"
+      (absent.exitCode == 1 && contains absent.stderr "Install Ruby") absent.stderr]
+    return rows
+  finally IO.FS.removeDirAll base
+
 private def policyTests : List Outcome :=
   let ciNames := Policy.gateNames .ci false
   let releaseNames := Policy.gateNames .release false
@@ -3539,8 +3612,6 @@ private def policyTests : List Outcome :=
     Policy.runAccepts strict (rows outcomes)
   let reportSays (strict : Bool) (outcome : Policy.GateOutcome) (needle : String) : Bool :=
     (Policy.runFailures strict (rows [outcome])).any fun failure => contains failure needle
-  let saysAny (problems : List String) (needle : String) : Bool :=
-    problems.any fun problem => contains problem needle
   -- Through `tally`, not from a number written beside it: what the ending says
   -- about skipped gates has to be the same count the line above it prints, and
   -- that is exactly the agreement that was broken.
@@ -3550,11 +3621,7 @@ private def policyTests : List Outcome :=
   let planWithChannels (npm brew : Bool) : Option ReleasePlan :=
     (ReleasePlan.parse "p" (planTextOf npm brew)).toOption
   [ -- Profiles, and the one difference between them.
-    -- The npm half of the deferred channels is not in this registry: it needs
-    -- the built tool, so it runs from `check-channel-policy.sh --npm-only` in
-    -- the job that builds it, and the policy this registry describes has no
-    -- toolchain. What is left here is the one deferred-channel gate a shell can
-    -- run, and it is still the profiles' only difference.
+    -- CI also validates deferred publication channels.
     checkEq "policy: the release profile is the ci profile without the deferred channels"
       (ciNames.filter fun name => name != "the rendered formulae parse" && name != "npm packaging selftest")
       releaseNames,
@@ -3677,31 +3744,7 @@ private def policyTests : List Outcome :=
       (match planWithChannels false false with
        | some plan => !(Policy.contributedEffects plan .githubRelease).isEmpty
            && !(Policy.contributedEffects plan .installer).isEmpty
-       | none => false) "",
-    -- The parity oracle's own arithmetic.
-    checkEq "policy parity: identical lists agree" (Policy.parityProblems .ci ["a", "b"] ["a", "b"])
-      [],
-    check "policy parity: a gate the shell runs and the registry lacks is reported"
-      (saysAny (Policy.parityProblems .ci ["a"] ["a", "b"]) "the ci profile runs 'b'") "",
-    check "policy parity: a gate the registry invents is reported"
-      (saysAny (Policy.parityProblems .release ["a", "b"] ["a"]) "the typed registry puts 'b'") "",
-    check "policy parity: the same gates in a different order are reported"
-      (saysAny (Policy.parityProblems .ci ["b", "a"] ["a", "b"]) "different order") "",
-    -- The one result an oracle must never accept.
-    check "policy parity: an empty observed list is refused rather than satisfied"
-      (saysAny (Policy.parityProblems .ci [] []) "nothing to compare") "",
-    -- The grouping, whose two mistakes both make the comparison pass.
-    checkEq "policy parity: a grouped listing with its channel listing is well formed"
-      (Policy.groupingProblems ["a", Policy.shellChannelGroupGate] true) [],
-    checkEq "policy parity: an ungrouped listing with no channel listing is well formed"
-      (Policy.groupingProblems ["a", "b"] false) [],
-    check "policy parity: a grouped listing with no channel listing is refused"
-      (saysAny (Policy.groupingProblems ["a", Policy.shellChannelGroupGate] false) "would pass") "",
-    check "policy parity: a channel listing for an ungrouped profile is refused"
-      (saysAny (Policy.groupingProblems ["a", "b"] true) "nothing would expand into it") "",
-    checkEq "policy parity: the grouping gate expands into the channel gates"
-      (Policy.flattenShellNames ["a", Policy.shellChannelGroupGate, "z"] ["x", "y"])
-      ["a", "x", "y", "z"]]
+       | none => false) ""]
 
 /-- The runner, over a world that answers whatever a row needs it to.
 
@@ -3755,7 +3798,7 @@ private def policyRunnerTests : IO (List Outcome) := do
   let absentOutcome ← Policy.defaultRunner.invoke absentCommand.invocation
   let shellPresent ← Policy.onPath "sh"
   let nonsensePresent ← Policy.onPath "tl-no-such-program-exists"
-  let relativePresent ← Policy.onPath "./scripts/check-release-policy.sh"
+  let relativePresent ← Policy.onPath "./install.sh"
   let relativeAbsent ← Policy.onPath "./scripts/there-is-no-such-script.sh"
   let outcomeNames (rows : List (Policy.Gate × Policy.GateOutcome)) (which : String) :=
     (rows.filter fun (_, outcome) =>
@@ -3810,90 +3853,21 @@ private def policyRunnerTests : IO (List Outcome) := do
     check "policy runner: a command on PATH is found" shellPresent "sh was not found on PATH",
     check "policy runner: a command that does not exist is not found" (!nonsensePresent) "",
     check "policy runner: a relative path is checked as a path, not searched for on PATH"
-      relativePresent "./scripts/check-release-policy.sh was not found",
+      relativePresent "./install.sh was not found",
     check "policy runner: a relative path that is not there is not found" (!relativeAbsent) "",
     check "policy runner: a gate whose command cannot be run fails rather than skipping"
       (absentOutcome.toOption.isNone) "an absent command was reported as success",
     check "policy runner: and the refusal says the tool is not there"
       (mentions absentOutcome "could not be run") (errorOf absentOutcome)]
 
-/-- The oracle against the shell scripts themselves.
-
-    Run here rather than only in CI, because the property is that the registry
-    tracks the shell *on this commit*: a gate added to one of them is a failing
-    test on the change that added it, not a failing job afterwards. -/
-private def policyParityTests : IO (List Outcome) := do
-  let base ← IO.FS.createTempDir
-  let listing (name : String) (args : List String) : IO (Except String String) := do
-    match ← Release.succeeded "sh" ((["-c", "\"$@\"", "sh"] ++ args).toArray) with
-    | .error message => return .error s!"{name}: {message}"
-    | .ok output =>
-        let path := (base / name).toString
-        IO.FS.writeFile path output.stdout
-        return .ok path
-  let ci ← listing "ci.txt" ["./scripts/check-release-policy.sh", "--profile", "ci", "--list-names"]
-  let rel ← listing "release.txt"
-    ["./scripts/check-release-policy.sh", "--profile", "release", "--list-names"]
-  let relTag ← listing "release-tag.txt"
-    ["./scripts/check-release-policy.sh", "--profile", "release", "--tag", "v9.9.9", "--list-names"]
-  let chan ← listing "channel.txt" ["./scripts/check-channel-policy.sh", "--list-names"]
-  let run (args : List String) : IO (UInt32 × String × String) := runCommand "policy-parity" args
-  let mut outs : List Outcome := []
-  match ci, rel, relTag, chan with
-  | .ok ciPath, .ok relPath, .ok relTagPath, .ok chanPath =>
-      let (ciStatus, ciOut, ciErr) ← run ["--profile", "ci", "--observed", ciPath,
-        "--channel", chanPath]
-      let (relStatus, _, relErr) ← run ["--profile", "release", "--observed", relPath]
-      let (tagStatus, _, tagErr) ← run ["--profile", "release", "--observed", relTagPath, "--tag"]
-      -- The mutation that used to pass: the ci listing carries the grouping
-      -- gate, which flattens to nothing without a channel listing and leaves
-      -- exactly the release profile's gates behind.
-      let (crossed, _, crossedErr) ← run ["--profile", "release", "--observed", ciPath]
-      let emptyPath := (base / "empty.txt").toString
-      IO.FS.writeFile emptyPath "\n\n"
-      let (emptyStatus, _, emptyErr) ← run ["--profile", "ci", "--observed", emptyPath]
-      let (absent, _, absentErr) ← run ["--profile", "ci", "--observed", (base / "no.txt").toString]
-      let (usage, _, _) ← run ["--profile", "ci"]
-      let (badProfile, _, badProfileErr) ← run ["--profile", "everything", "--observed", ciPath]
-      outs := [
-        check "policy parity: the ci profile matches the shell policy on this commit"
-          (ciStatus == 0) ciErr,
-        check "policy parity: it says how many gates it compared"
-          (contains ciOut "6 gate(s)") ciOut,
-        check "policy parity: the release profile matches" (relStatus == 0) relErr,
-        -- One row for the tag listing, not two: `relTag` and `rel` are the
-        -- same list while nothing is working-tree-only, so a second comparison
-        -- over the same bytes states nothing the first did not. What holds the
-        -- distinction in place is `gatesFrom` driven over a registry that
-        -- carries one, in `policyTests`.
-        check "policy parity: a tag run matches" (tagStatus == 0) tagErr,
-        checkEq "policy parity: the ci listing does not satisfy the release profile" crossed 1,
-        check "policy parity: that refusal names the grouping gate"
-          (contains crossedErr "deferred-channel gates") crossedErr,
-
-        checkEq "policy parity: an empty listing is refused" emptyStatus 1,
-        check "policy parity: that refusal says the comparison would have nothing to compare"
-          (contains emptyErr "nothing to compare") emptyErr,
-        checkEq "policy parity: a listing that is not there is refused" absent 1,
-        check "policy parity: that refusal names the path" (contains absentErr "no.txt") absentErr,
-        checkEq "policy parity: a missing --observed is a usage error" usage 2,
-        checkEq "policy parity: an unknown profile is a usage error" badProfile 2,
-        check "policy parity: that usage error names the profiles"
-          (contains badProfileErr "'release'") badProfileErr]
-  | _, _, _, _ =>
-      outs := [check "policy parity: the shell policy scripts list their gates" false
-        s!"{ci} {rel} {relTag} {chan}"]
-  -- `policy-list` is the same projection the oracle compares, driven through
-  -- the command a workflow would run.
+private def policyListTests : IO (List Outcome) := do
   let (listStatus, listOut, listErr) ← runCommand "policy-list" ["--profile", "release"]
   let (listUsage, _, _) ← runCommand "policy-list" []
-  IO.FS.removeDirAll base
-  return outs ++ [
+  return [
     check "policy-list: it names the gates of a profile" (listStatus == 0) listErr,
     -- The names, then the one summary line every command ends with. Compared
     -- as "the names come first, in order" rather than as the whole stream, so
-    -- this stays a report a human reads and `policy-parity` keeps reading the
-    -- shell's machine-readable listing instead.
+    -- this stays a report a human reads.
     checkEq "policy-list: one name per line, in registry order"
       (((listOut.splitOn "\n").filter (!·.isEmpty)).dropLast) (Policy.gateNames .release false),
     check "policy-list: the last line is the command's own summary"
@@ -4120,7 +4094,7 @@ private def prerequisiteTests : List Outcome :=
 
 /-! ## One version, and the embedded copies
 
-Both were shell gates in check-release-policy.sh until they moved into the
+Both were shell gates in the former shell policy until they moved into the
 release tool. That script runs in a job with no Lean toolchain by design, so
 these run here — against the real repository files, which is what makes them a
 drift guard rather than a test of a fixture. -/
@@ -5489,495 +5463,10 @@ private def reportTestsForAudit : List Outcome :=
        | .error message => (message.splitOn "reading its silence as consent").length > 1)
       (match stopped.2 with | .ok m => m | .error m => m)]
 
-/-! ## The v0.1 dependency boundary
-
-The lexical arm of ADR-0026's boundary. Its whole job is to notice a command
-invocation on the release path, so the rows that matter are the ones separating
-an invocation from a mention: these scripts explain themselves at length, and
-every one of the six forbidden names appears in that prose. A scan answered by
-rewording a comment would teach exactly the wrong lesson, and one that missed an
-invocation is a gate reporting a clean release path it never read. -/
-
-private def boundaryCommands' (line : String) : List String := commandWords (codeOf line)
-
-/-- The forbidden commands one text reaches. The scan also reports the lines it
-    could not read, and the rows below that care about those read them from the
-    same value rather than from a second call. -/
-private def invocationsIn (kind : SourceKind) (text : String) : List Invocation :=
-  (scanLines kind text).invocations
-
-private def boundaryTests : List Outcome :=
-  let jobs :=
-    "on:\n  push:\n\njobs:\n  gates:\n    steps:\n      - run: ./scripts/check-release-runtimes.sh\n" ++
-    "  publish-npm:\n    steps:\n      - run: npm publish --provenance\n" ++
-    "  publish-release:\n    steps:\n      - run: gh release create\n"
-  let running := workflowRunningText jobs
-  [ -- Comments, in the four shapes these files actually contain.
-    check "boundary: a commented invocation is prose, not a finding"
-      ((boundaryCommands' "  # npm publish is deferred").isEmpty),
-    check "boundary: a trailing comment does not hide the invocation before it"
-      ((boundaryCommands' "npm publish # deferred").contains "npm"),
-    check "boundary: a `#` inside a word is not a comment"
-      ((boundaryCommands' "echo ${name#prefix} npm").contains "echo"),
-    check "boundary: a quoted `#` is text"
-      ((boundaryCommands' "printf '# %s' npm").contains "printf"),
-    -- Command position. Each row is one way a real script writes an invocation.
-    check "boundary: a bare invocation is found" ((boundaryCommands' "npm publish").contains "npm"),
-    check "boundary: an argument is not an invocation"
-      (!(boundaryCommands' "echo npm").contains "npm"),
-    check "boundary: a probe for the tool counts as reaching for it"
-      ((boundaryCommands' "if command -v npm >/dev/null 2>&1; then").contains "npm"),
-    check "boundary: an invocation after a pipe is found"
-      ((boundaryCommands' "curl -sSf https://example.invalid | node -").contains "node"),
-    check "boundary: an invocation inside a substitution is found"
-      ((boundaryCommands' "version=$(python3 -c 'print(1)')").contains "python3"),
-    check "boundary: an assignment prefix does not consume the command"
-      ((boundaryCommands' "NODE_ENV=production npm run build").contains "npm"),
-    check "boundary: a quoted command name is still a command name"
-      ((boundaryCommands' "'ruby' -c Formula/tl.rb").contains "ruby"),
-    -- The spellings that are the same command. Each was a live evasion: an
-    -- absolute path defeats the PATH-shim arm too, a shebang chooses the
-    -- interpreter for a whole file, and a CRLF line ending glues a carriage
-    -- return to the only token on its line.
-    check "boundary: an absolute path is the command it ends in"
-      ((boundaryCommands' "/usr/bin/python3 -c 'print(1)'").any
-        (fun word => commandName word == "python3")),
-    check "boundary: an interpreter reached through env is still that interpreter"
-      ((invocationsIn .shell "/usr/bin/env python3 -c 'print(1)'").any (·.command.basename == "python3")),
-    check "boundary: a shebang is not a comment"
-      ((invocationsIn .shell "#!/usr/bin/env ruby\nputs 1\n").any (·.command.basename == "ruby")),
-    check "boundary: a CRLF line ending does not hide the command on it"
-      ((invocationsIn .shell "npm\r\necho hi\r\n").any (·.command.basename == "npm")),
-    check "boundary: a script whose name ends in a command name is not that command"
-      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command.basename == "npm")),
-    check "boundary: a longer word that starts with a forbidden one is not it"
-      (!(boundaryCommands' "npm-pack --selftest").contains "npm"),
-    check "boundary: a script named after the tool is not the tool"
-      (!(invocationsIn .shell "./scripts/npm-pack.sh --selftest").any (·.command.basename == "npm")),
-    -- What a finding carries. The line is what makes the message actionable;
-    -- the number is what makes it findable.
-    checkEq "boundary: a finding carries its line number, its line and how it got there"
-      (invocationsIn .shell "set -eu\necho hi\nbrew install tl")
-      [{ line := 3, command := { written := "brew", basename := "brew" },
-         site := .commandPosition, text := "brew install tl" }],
-    checkEq "boundary: an interpreter is reported as written and as identified"
-      (invocationsIn .shell "#! /usr/bin/python3\nprint(1)\n")
-      [{ line := 1, command := { written := "/usr/bin/python3", basename := "python3" },
-         site := .shebang, text := "#! /usr/bin/python3" }],
-    -- References, as the scripts really write them.
-    check "boundary: a plain reference is followed"
-      ((referencedScripts "./scripts/check-release-runtimes.sh --selftest").contains
-        "scripts/check-release-runtimes.sh"),
-    check "boundary: a reference through a variable resolves to the same file"
-      ((referencedScripts "RC_LIB_SELF=\"$repo_root/scripts/lib/release-common.sh\"").contains
-        "scripts/lib/release-common.sh"),
-    check "boundary: a root script is followed without a directory to name it"
-      ((referencedScripts "sh install.sh --selftest").contains "install.sh"),
-    check "boundary: a glob is not a file this can read"
-      ((referencedScripts "git ls-files -- '*.sh'").isEmpty),
-    check "boundary: a path inside a throwaway fixture is not a first-party script"
-      ((referencedScripts "cp x \"$tmp/fixture.sh\"").isEmpty),
-    check "boundary: one file named twice is followed once"
-      ((referencedScripts "./scripts/a.sh\n./scripts/a.sh").length == 1),
-    -- Workflow jobs, excluded by name.
-    checkEq "boundary: a job opener is two spaces, a name and a colon"
-      (jobOpener? "  publish-npm:") (some "publish-npm"),
-    check "boundary: a step key inside a job does not open one"
-      (jobOpener? "    steps:").isNone,
-    check "boundary: the top-level jobs key does not open one" (jobOpener? "jobs:").isNone,
-    -- A workflow step written on one line puts its command after a YAML key.
-    -- Read as plain shell the key takes the command position and the command
-    -- becomes an argument, which is how fifteen steps of the real release
-    -- workflow were invisible to this scan.
-    check "boundary: a single-line run: step is read as the shell it runs"
-      ((invocationsIn .workflow "      - run: brew install coreutils").any
-        (·.command.basename == "brew")),
-    check "boundary: a step's title is prose, not a command line"
-      ((invocationsIn .workflow "      - name: npm publish the packages").isEmpty),
-    check "boundary: a run: block's lines are read too"
-      ((invocationsIn .workflow "      - run: |\n          npm publish\n").any
-        (·.command.basename == "npm")),
-    -- YAML removes a block scalar's common indentation, so a `#!` written ten
-    -- spaces in is at the first byte of the script the step writes. Read as a
-    -- workflow comment it would be prose, and the helper it heads would run
-    -- under an interpreter the release path may not have.
-    check "boundary: a shebang indented inside a block scalar is still a shebang"
-      ((invocationsIn .workflow "          #!/usr/bin/env python3").any
-        (·.command.basename == "python3")),
-    check "boundary: and in a shell file the same line is not one, because the kernel would not honour it"
-      ((invocationsIn .shell "          #!/usr/bin/env python3").isEmpty),
-    -- Both directions over one fixture: the npm step is there to be found, and
-    -- what removes it is the deferred-job filter. Asserting only the second
-    -- would hold just as well if the filter were the identity.
-    check "boundary: a deferred channel's publish job is there to be found"
-      ((invocationsIn .workflow jobs).any (·.command.basename == "npm")) jobs,
-    check "boundary: and it is not read"
-      (!(invocationsIn .workflow running).any (·.command.basename == "npm"))
-      running,
-    check "boundary: the job after a deferred one is still read"
-      (((running.splitOn "publish-release").length > 1) &&
-        ((running.splitOn "gh release create").length > 1))
-      running,
-    -- The verdict is not reachable from fabricated evidence any more:
-    -- `ScannedFile` has a private constructor, so every row about what the gate
-    -- decides is a row about a real tree, in `boundaryFixtureTests` below.
-    -- The inventories themselves.
-    check "boundary: no entry point is also excluded as deferred"
-      (entryPoints.all fun entry => !(deferredPaths.map (·.path)).contains entry.path),
-    check "boundary: each entry point, deferred path and deferred job is named once"
-      (((entryPoints.map (·.path)).eraseDups.length == entryPoints.length) &&
-        ((deferredPaths.map (·.path)).eraseDups.length == deferredPaths.length) &&
-        ((deferredJobs.map (·.job)).eraseDups.length == deferredJobs.length)),
-    check "boundary: every deferred exclusion names the channel that owns it"
-      (deferredPaths.all fun deferred => !deferred.channels.isEmpty && !deferred.why.isEmpty),
-    -- The exclusions are only sound while the plan defers those channels, and
-    -- this is the pair that says so: nothing is stale for the release being cut,
-    -- and enabling a channel makes its own exclusions stale.
-    check "boundary: no exclusion is stale for the release this repository cuts"
-      (match ReleasePlan.parse "p" (planOf
-          [planRow "github-release" true none, planRow "installer" true none,
-           planRow "npm" false (some "\"0.2.0\""),
-           planRow "homebrew" false (some "\"0.2.0\"")]) with
-       | .ok plan => (staleExclusions plan).isEmpty
-       | .error _ => false),
-    check "boundary: enabling a channel makes its exclusions stale, by name"
-      (match planWith true false with
-       | .ok plan =>
-         let stale := staleExclusions plan
-         stale.any (fun line => (line.splitOn "npm/tl/bin/tl").length > 1)
-           && stale.any (fun line => (line.splitOn "publish-npm").length > 1)
-           && !stale.any (fun line => (line.splitOn "publish-homebrew").length > 1)
-       | .error _ => false) ]
-
-/-! ### The boundary against real trees
-
-Every mutation an adversarial review found is a fixture here, driven through the
-public `dependency-boundary` command over a planted checkout. That is the whole
-point of the group: the first version of this file tested the verdict on
-evidence it built by hand, and the two defects that reached `main` — an empty
-entry point, and an interpreter spelled as an absolute path — were both invisible
-to rows shaped that way while being one command away from visible. -/
-
-/-! ### The spellings of one command
-
-A corpus rather than scattered rows, because the defect this closes was not a
-missing check — it was two parsers that disagreed about what a command word is.
-`#!/usr/bin/env python3` was read as an invocation and `#! /usr/bin/python3` as
-a command named `#!` taking a path, and both spellings execute Python on every
-platform this project ships to.
-
-Each row is asserted twice, and the pair is the point. The parser row says what
-the scan makes of the text; the command row plants the same text in a checkout
-and runs the public `dependency-boundary` over it. A parser row alone can hold
-while the command never reaches that code — which is how the spaced shebang
-survived a group of rows that already covered shebangs — and a command row alone
-cannot say *why* a verdict came out the way it did.
-
-Three of the rows are the documented blind spots, asserted as clean on purpose.
-A command name held in a variable, a name inside the string another shell runs,
-and a script whose name ends in a command name are not findings here: the first
-two are what `scripts/check-release-runtimes.sh` exists to catch by running the
-path, and pinning them keeps a later "improvement" from turning this arm into
-one that refuses the release path this repository already has. -/
-
-/-- What the scan must make of one spelling. -/
-private inductive Spelling where
-  /-- The text reaches a forbidden command, by this route. -/
-  | reaches (site : InvocationSite) (command : String)
-  /-- The text was read, and reaches nothing forbidden. -/
-  | clean
-  /-- The text is shaped like something this scan reads and is not, so it
-      refuses rather than reporting nothing. -/
-  | unreadable
-  deriving DecidableEq, Repr
-
-private structure SpellingRow where
-  label : String
-  /-- A whole helper script, not a line: a `#!` is only a shebang at the start
-      of one, and the rows about heredocs need the lines around it. -/
-  helper : String
-  expect : Spelling
-
-private def spellingCorpus : List SpellingRow :=
-  [{ label := "a bare command", helper := "#!/bin/sh\nnpm publish\n"
-     expect := .reaches .commandPosition "npm" },
-   { label := "a relative path", helper := "#!/bin/sh\n./tool/node --version\n"
-     expect := .reaches .commandPosition "node" },
-   { label := "an absolute path", helper := "#!/bin/sh\n/usr/bin/python3 -c 'print(1)'\n"
-     expect := .reaches .commandPosition "python3" },
-   { label := "an interpreter reached through env"
-     helper := "#!/bin/sh\n/usr/bin/env python3 helper.py\n"
-     expect := .reaches .commandPosition "python3" },
-   { label := "exec, which replaces the shell with the command"
-     helper := "#!/bin/sh\nexec npm publish\n"
-     expect := .reaches .commandPosition "npm" },
-   { label := "a probe for the tool", helper := "#!/bin/sh\ncommand -v ruby >/dev/null 2>&1\n"
-     expect := .reaches .commandPosition "ruby" },
-   { label := "an assignment prefix", helper := "#!/bin/sh\nNODE_ENV=production npm run build\n"
-     expect := .reaches .commandPosition "npm" },
-   { label := "a quoted command name", helper := "#!/bin/sh\n'ruby' -c Formula/tl.rb\n"
-     expect := .reaches .commandPosition "ruby" },
-   { label := "a shebang written against the marker"
-     helper := "#!/usr/bin/env ruby\nputs 1\n"
-     expect := .reaches .shebang "ruby" },
-   { label := "a shebang written with a space after the marker"
-     helper := "#! /usr/bin/python3\nprint(1)\n"
-     expect := .reaches .shebang "python3" },
-   { label := "a shebang with whitespace on both sides of env"
-     helper := "#!  /usr/bin/env  node\nconsole.log(1)\n"
-     expect := .reaches .shebang "node" },
-   { label := "a spaced shebang on a CRLF line"
-     helper := "#! /usr/bin/python3\r\nprint(1)\r\n"
-     expect := .reaches .shebang "python3" },
-   { label := "a command on a CRLF line", helper := "#!/bin/sh\r\nnpm\r\necho hi\r\n"
-     expect := .reaches .commandPosition "npm" },
-   { label := "a heredoc's shebang, which is the script it writes"
-     helper := "#!/bin/sh\ncat > helper.py <<EOF\n#!/usr/bin/env python3\nEOF\n"
-     expect := .reaches .shebang "python3" },
-   { label := "a shebang that names no interpreter", helper := "#!\necho hi\n"
-     expect := .unreadable },
-   { label := "a shebang naming a variable the kernel will not expand"
-     helper := "#!$INTERPRETER\necho hi\n"
-     expect := .unreadable },
-   { label := "a shebang whose interpreter is literal and whose argument is not"
-     helper := "#!/usr/bin/env $INTERPRETER\necho hi\n"
-     expect := .unreadable },
-   { label := "a shebang with an interpreter flag, which is literal"
-     helper := "#!/usr/bin/env -S ruby -w\nputs 1\n"
-     expect := .reaches .shebang "ruby" },
-   { label := "a commented invocation", helper := "#!/bin/sh\n# npm publish is deferred\n"
-     expect := .clean },
-   { label := "an argument that is not a command", helper := "#!/bin/sh\necho npm\n"
-     expect := .clean },
-   { label := "a tool whose name ends in a command name"
-     helper := "#!/bin/sh\n./tool/npm-pack --selftest\n"
-     expect := .clean },
-   { label := "a command name held in a variable, resolved through PATH (the runtime arm's)"
-     helper := "#!/bin/sh\ntool=npm\n\"$tool\" publish\n"
-     expect := .clean },
-   { label := "a command inside the string another shell runs (the runtime arm's)"
-     helper := "#!/bin/sh\nsh -c \"npm publish\"\n"
-     expect := .clean },
-   -- The composition neither arm covered: a shim cannot shadow an absolute
-   -- path, and a lexer cannot see the command position a variable holds. What
-   -- is left visible is the path, wherever it is written.
-   { label := "an interpreter path escaped into a different word"
-     helper := "#!/bin/sh\n/usr/bin/pyt\\hon3 -c 'print(1)'\n"
-     expect := .reaches .commandPosition "python3" },
-   { label := "an interpreter path assigned to a variable"
-     helper := "#!/bin/sh\ntool=/usr/bin/python3\n\"$tool\" -c 'print(1)'\n"
-     expect := .reaches .writtenAsPath "python3" },
-   -- The directory is a variable and the tail is literal, so the word is still
-   -- in command position and still ends in the interpreter's name: caught as an
-   -- invocation rather than as a path, which is the stronger of the two.
-   { label := "an interpreter path built from a directory held in a variable"
-     helper := "#!/bin/sh\ndir=/usr/bin\n\"$dir/python3\" -c 'print(1)'\n"
-     expect := .reaches .commandPosition "python3" },
-   { label := "an interpreter path passed as an argument, not run"
-     helper := "#!/bin/sh\ncp /usr/bin/ruby \"$dest\"\n"
-     expect := .reaches .writtenAsPath "ruby" },
-   -- The residual, pinned as uncovered rather than left to be assumed covered:
-   -- a name that is a literal word to nobody and resolves through PATH for
-   -- nobody. A runtime without the interpreter installed is what closes it.
-   { label := "an interpreter name read out of a file (neither arm's, and tracked as such)"
-     helper := "#!/bin/sh\ntool=$(cat toolname)\n\"$tool\" -c 'print(1)'\n"
-     expect := .clean }]
-
-/-- What the scan made of one helper, in the terms a row states. -/
-private def spellingObserved (helper : String) : Spelling :=
-  let scan := scanLines .shell helper
-  match scan.unsupported, scan.invocations with
-  | _ :: _, _ => .unreadable
-  | [], invocation :: _ => .reaches invocation.site invocation.command.basename
-  | [], [] => .clean
-
-/-- The refusal a row expects to find in the command's output. Deliberately the
-    *finding* form and not the bare command name: the refusal's closing sentence
-    names all six commands, so a row searching for `npm` would pass whatever the
-    scan had done. -/
-private def spellingNeedle : Spelling → String
-  | .reaches .commandPosition command => s!"invokes {command}"
-  | .reaches .shebang command => s!"runs under {command}"
-  | .reaches .writtenAsPath command => s!"names the path of {command}"
-  | .unreadable => "could not read a line"
-  | .clean => "invoke none of"
-
-/-- One file inside a planted checkout. -/
-private def writeIn (root : System.FilePath) (path : String) (text : String) : IO Unit := do
+private def writeIn (root : System.FilePath) (path text : String) : IO Unit := do
   let full := root / path
   if let some parent := full.parent then IO.FS.createDirAll parent
   IO.FS.writeFile full text
-
-private def cleanWorkflow : String := "jobs:\n  gates:\n    steps:\n      - run: true\n"
-
-/-- A minimal checkout with all four entry points, so a refusal is the one the
-    row plants rather than a missing file. Shared by the fixture rows and the
-    spelling corpus: both run the real command over a real tree, and a second
-    way to build one is a second thing to keep in step with `entryPoints`. -/
-private def plantCheckout (base : System.FilePath) (name installer extra : String)
-    (workflow : String := cleanWorkflow) : IO System.FilePath := do
-  let root := base / name
-  writeIn root "install.sh" installer
-  writeIn root "scripts/verify-release-artifacts.sh" "#!/bin/sh\nsha256sum \"$1\"\n"
-  writeIn root "scripts/check-release-policy.sh" ("#!/bin/sh\n" ++ extra)
-  writeIn root ".github/workflows/release.yml" workflow
-  return root
-
-/-- Every spelling, through both the parser and the public command. -/
-private def boundarySpellingTests : IO (List Outcome) := do
-  let plan := "release/plan.json"
-  let base ← IO.FS.createTempDir
-  let mut outcomes : List Outcome := []
-  for (row, index) in spellingCorpus.zipIdx 1 do
-    let root ← plantCheckout base s!"spelling-{index}"
-      "#!/bin/sh\n./scripts/helper.sh\n" "echo policy\n"
-    writeIn root "scripts/helper.sh" row.helper
-    let (status, out, err) ← dispatchCaptured
-      ["dependency-boundary", "--root", root.toString, "--plan", plan]
-    let wanted : UInt32 := if row.expect == .clean then 0 else 1
-    outcomes := outcomes ++
-      [checkEq s!"boundary spelling: {row.label} — the parser"
-         (spellingObserved row.helper) row.expect,
-       check s!"boundary spelling: {row.label} — the command"
-         (status == wanted && ((out ++ err).splitOn (spellingNeedle row.expect)).length > 1)
-         s!"exit {status}: {out}{err}"]
-  IO.FS.removeDirAll base
-  return outcomes
-
-private def boundaryCommandTests : IO (List Outcome) := do
-  let plan := "release/plan.json"
-  let (realStatus, realOut, realErr) ←
-    dispatchCaptured ["dependency-boundary", "--root", ".", "--plan", plan]
-  let base ← IO.FS.createTempDir
-  let write := writeIn
-  let plant (name installer extra : String) (workflow : String := cleanWorkflow) :
-      IO System.FilePath := plantCheckout base name installer extra workflow
-  let cleanRoot ← plant "clean" "#!/bin/sh\n. ./scripts/lib/release-common.sh\n" "echo policy\n"
-  write cleanRoot "scripts/lib/release-common.sh" "#!/bin/sh\necho fixture\n"
-  let violatingRoot ← plant "violating" "#!/bin/sh\npython3 -c 'print(1)'\n" "echo policy\n"
-  let deferredRoot ← plant "deferred" "#!/bin/sh\necho install\n"
-    "./scripts/check-channel-policy.sh --strict\n"
-  write deferredRoot "scripts/check-channel-policy.sh" "#!/bin/sh\nnpm pack\n"
-  let danglingRoot ← plant "dangling" "#!/bin/sh\necho install\n"
-    "./scripts/absent-helper.sh\n"
-  -- A single-line step in a job that runs, and the same command in one that
-  -- does not: the workflow entry point is scanned per job, by name.
-  let workflowRoot ← plant "workflow" "#!/bin/sh\necho install\n" "echo policy\n"
-    ("jobs:\n  gates:\n    steps:\n      - run: brew install coreutils\n" ++
-      "  publish-npm:\n    steps:\n      - run: npm publish\n")
-  -- The interpreter of a helper a step writes, indented as YAML indents it.
-  let scalarRoot ← plant "block-scalar" "#!/bin/sh\necho install\n" "echo policy\n"
-    ("jobs:\n  gates:\n    steps:\n      - run: |\n          cat > helper.py <<'PY'\n" ++
-      "          #!/usr/bin/env python3\n          PY\n          ./helper.py\n")
-  -- The mutants, one per defect a review found. Named for what they do, so a
-  -- failure here says which bypass came back.
-  let emptyRoot ← plant "empty-entry-point" "" "echo policy\n"
-  let absoluteRoot ← plant "absolute-interpreter"
-    "#!/bin/sh\n/usr/bin/python3 -c 'print(1)'\n" "echo policy\n"
-  let shebangRoot ← plant "absolute-shebang" "#!/bin/sh\n./scripts/helper.sh\n" "echo policy\n"
-  write shebangRoot "scripts/helper.sh" "#!/usr/bin/env ruby\nputs 1\n"
-  let chainRoot ← plant "beyond-the-bound" "#!/bin/sh\n./scripts/c1.sh\n" "echo policy\n"
-  for index in [:closureBound + 5] do
-    write chainRoot s!"scripts/c{index + 1}.sh" s!"#!/bin/sh\n./scripts/c{index + 2}.sh\n"
-  write chainRoot s!"scripts/c{closureBound + 6}.sh" "#!/bin/sh\nnpm publish\n"
-  let run (root : System.FilePath) : IO (UInt32 × String × String) :=
-    dispatchCaptured ["dependency-boundary", "--root", root.toString, "--plan", plan]
-  let (cleanStatus, cleanOut, _) ← run cleanRoot
-  let (violatingStatus, _, violatingErr) ← run violatingRoot
-  let (deferredStatus, deferredOut, deferredErr) ← run deferredRoot
-  let (danglingStatus, _, danglingErr) ← run danglingRoot
-  let (workflowStatus, _, workflowErr) ← run workflowRoot
-  let (scalarStatus, _, scalarErr) ← run scalarRoot
-  let (emptyStatus, _, emptyErr) ← run emptyRoot
-  let (absoluteStatus, _, absoluteErr) ← run absoluteRoot
-  let (shebangStatus, _, shebangErr) ← run shebangRoot
-  let (chainStatus, _, chainErr) ← run chainRoot
-  -- The plan the exclusions are read against, rather than the repository's own:
-  -- a channel this release publishes through must make its exclusions a
-  -- refusal, and that transition has no other test that runs the real command.
-  let enabledPlan := (base / "plan-npm-enabled.json").toString
-  IO.FS.writeFile enabledPlan (planOf
-    [planRow "github-release" true none, planRow "installer" true none,
-     planRow "npm" true none, planRow "homebrew" false (some "\"0.2.0\"")])
-  let (enabledStatus, _, enabledErr) ←
-    dispatchCaptured ["dependency-boundary", "--root", cleanRoot.toString,
-      "--plan", enabledPlan]
-  IO.FS.removeDirAll base
-  return [
-    -- The real tree. This row is the boundary itself, not a fixture of it.
-    check "boundary: this checkout's v0.1 release path is clean" (realStatus == 0)
-      s!"{realOut}{realErr}",
-    check "boundary: the clean verdict names every entry point it read"
-      (["install.sh", "scripts/verify-release-artifacts.sh", "scripts/check-release-policy.sh",
-        ".github/workflows/release.yml"].all fun path => (realOut.splitOn path).length > 1)
-      realOut,
-    check "boundary: the real verdict includes the library still used by migration scripts"
-      ((realOut.splitOn "scripts/lib/release-common.sh").length > 1) realOut,
-    check "boundary: a planted source edge reaches its shared library"
-      ((cleanOut.splitOn "scripts/lib/release-common.sh").length > 1) cleanOut,
-    check "boundary: a fixture with no interpreter on the path passes" (cleanStatus == 0) cleanOut,
-    check "boundary: an invocation in an entry point refuses" (violatingStatus == 1) violatingErr,
-    check "boundary: the refusal names the file and the interpreter"
-      (((violatingErr.splitOn "install.sh:2").length > 1) &&
-        ((violatingErr.splitOn "python3").length > 1)) violatingErr,
-    -- The exclusion is by name, and it is what keeps the deferred channels'
-    -- own machinery from failing a boundary it is not part of.
-    check "boundary: a deferred channel's script is not entered" (deferredStatus == 0)
-      s!"{deferredOut}{deferredErr}",
-    check "boundary: the deferred script is absent from what was read"
-      ((deferredOut.splitOn "check-channel-policy").length == 1) deferredOut,
-    -- A reference to a file that is not there means either the reference or
-    -- the inventory is wrong, and both readings end in a file nobody scanned.
-    check "boundary: a referenced script that is missing refuses" (danglingStatus == 1) danglingErr,
-    check "boundary: the refusal names the file it could not read"
-      ((danglingErr.splitOn "absent-helper.sh").length > 1) danglingErr,
-    check "boundary: a one-line run: step in a job that runs is a refusal"
-      (workflowStatus == 1) workflowErr,
-    check "boundary: the refusal names the workflow, the line and the command"
-      (((workflowErr.splitOn "release.yml:4").length > 1) &&
-        ((workflowErr.splitOn "invokes brew").length > 1)) workflowErr,
-    -- Against `invokes npm`, not against `npm`: the refusal's closing sentence
-    -- names all six commands, so a bare search would pass whatever happened.
-    check "boundary: the same command in a deferred channel's job is not one"
-      ((workflowErr.splitOn "invokes npm").length == 1) workflowErr,
-    -- The helper a step writes runs under whatever its first line names, and
-    -- YAML's indentation is not part of that line.
-    check "boundary: an interpreter a workflow step writes into a helper is a refusal"
-      (scalarStatus == 1) scalarErr,
-    check "boundary: and the refusal says the helper runs under it"
-      ((scalarErr.splitOn "runs under python3").length > 1) scalarErr,
-    -- An entry point with nothing in it produces no findings for the same
-    -- reason a clean one does. This is the row that fabricated evidence could
-    -- not supply, and the defect it describes reached main.
-    check "boundary: an empty entry point is not a clean release path"
-      (emptyStatus == 1) emptyErr,
-    check "boundary: and the refusal names the file that held nothing"
-      (((emptyErr.splitOn "read nothing").length > 1) &&
-        ((emptyErr.splitOn "install.sh").length > 1)) emptyErr,
-    -- An absolute path is the spelling neither arm would otherwise catch: a
-    -- PATH shim cannot shadow /usr/bin/python3 either.
-    check "boundary: an interpreter spelled as an absolute path is the same interpreter"
-      (absoluteStatus == 1) absoluteErr,
-    check "boundary: and the refusal names it by its program name"
-      ((absoluteErr.splitOn "invokes python3").length > 1) absoluteErr,
-    check "boundary: a shebang chooses an interpreter, so it is read as one"
-      (shebangStatus == 1) shebangErr,
-    check "boundary: and the shebang refusal names the script and the interpreter"
-      (((shebangErr.splitOn "helper.sh:1").length > 1) &&
-        ((shebangErr.splitOn "runs under ruby").length > 1)) shebangErr,
-    -- Running out of the bound is a refusal, not a shorter verdict over the
-    -- prefix it managed to read.
-    check "boundary: a closure that outgrows its bound refuses"
-      (chainStatus == 1) chainErr,
-    check "boundary: and it says what it did not reach, and how to answer that"
-      (((chainErr.splitOn "still queued").length > 1) &&
-        ((chainErr.splitOn "closureBound").length > 1)) chainErr,
-    -- The exclusions are only sound while the plan defers those channels.
-    check "boundary: a channel this release publishes through cannot stay excluded"
-      (enabledStatus == 1) enabledErr,
-    check "boundary: and the refusal names the file and the edit that clears it"
-      (((enabledErr.splitOn "check-channel-policy.sh").length > 1) &&
-        ((enabledErr.splitOn "deferredPaths").length > 1)) enabledErr]
 
 /-! ## The release-evidence write, as a model
 
@@ -6410,7 +5899,7 @@ private def writeSeamTests : IO (List Outcome) := do
 /-! ## The typed platform authority
 
 The four `uname` mappings `install.sh` and `npm/tl/bin/tl` ship used to be
-compared against a shell function in `scripts/lib/release-common.sh`. They are
+compared against a shell function in the former shared shell library. They are
 compared against `release/Platform.lean` instead, which is cross-checked against
 `release/targets.json`. These rows are the successor evidence for the four
 classification comparisons the old `embedded-copies` guard owned: each mutation
@@ -6635,7 +6124,7 @@ private def platformCommandTests : IO (List Outcome) := do
 /-! ## The installer's digest and case behaviour, driven over a planted corpus
 
 `install.sh` embeds `sha256_of` and `lower`. Those two used to be compared as
-text against `rc_sha256_of` and `rc_lower` in `scripts/lib/release-common.sh`,
+text against `rc_sha256_of` and `rc_lower` in the former shared shell library,
 which established that two files said the same thing and nothing about what
 either one did. They are exercised here instead: one planted release, served
 over `file://` to the real script, with the digest column varied per row.
@@ -7248,12 +6737,12 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ boundaryTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ policyTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ policyTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← documentTests) ++ (← pinCommandTests) ++ (← writeCommandTests) ++ (← planCommandTests)
     ++ writePathTests ++ writeCodecTests ++ writeMalformedTests ++ writeEffectTests
     ++ writeAcceptTests ++ (← writeSeamTests)
-    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← policyParityTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
-    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← gitRoutingTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← boundarySpellingTests) ++ (← boundaryCommandTests) ++ (← platformTests)
+    ++ (← sbomDocumentTests) ++ (← sbomCommandTests) ++ (← processTests) ++ (← digestTests) ++ (← goldenManifestTests) ++ (← formulaDriftTests) ++ (← homebrewCommandTests) ++ (← tapPublishTests) ++ (← homebrewSyntaxTests) ++ (← policyListTests) ++ (← policyRunnerTests) ++ (← certificateTests) ++ (← consistencyTests) ++ (← npmManifestTests) ++ (← npmManifestCommandTests) ++ (← npmStageTests) ++ (← npmPublishTests)
+    ++ npmComparisonTests ++ taskIdRuleTests ++ (← taskIdCommandTests) ++ (← stampTests) ++ (← gitRoutingTests) ++ (← npmBootstrapTests) ++ (← prerequisiteIoTests) ++ (← clientTests) ++ (← lifecycleTests) ++ (← platformTests)
 
 end Tl.Tests

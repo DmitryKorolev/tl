@@ -1034,7 +1034,31 @@ private def publishCommand : Command :=
     ["--dist", "dist", "--manifest", "dist/release-manifest.json", "--tap", "tap", "--dry-run"]
     publishOptions publishArgs publishDecision
 
-def homebrewCommands : List Command := [renderCommand, placeholderCommand, publishCommand]
+/-- Discover tracked render fixtures and ask Ruby to parse each one separately.
+    NUL-delimited paths preserve whitespace, and no fixtures is a refusal. -/
+private def syntaxDecision (root : String) : Decision String := do
+  let listing ← ofIO do
+    match ← succeededGit #["-C", root, "ls-files", "-z", "--", "Tests/fixtures/homebrew/*.rb"] with
+    | .ok output => return .ok output
+    | .error message => return .error s!"could not list formula fixtures: {message}. Repair the checkout or Git installation and retry with --root at the checkout root."
+  let fixtures := (listing.stdout.splitOn "\x00").filter (!·.isEmpty)
+  if fixtures.isEmpty then
+    decline "found no tracked rendered formula fixtures under Tests/fixtures/homebrew; restore and stage the fixtures before checking Ruby syntax."
+  for path in "Formula/tl.rb" :: fixtures do
+    let full := (System.FilePath.mk root / path).toString
+    let result ← ofIO (do return .ok (← succeeded "ruby" #["-c", full]))
+    match result with
+    | .error message => decline s!"could not check Ruby syntax for {path}: {message}. Install Ruby, restore the formula, or fix its syntax, then rerun homebrew-syntax."
+    | .ok _ => pure ()
+  return s!"Formula/tl.rb and {fixtures.length} tracked rendered fixtures parse as Ruby"
+
+private def syntaxCommand : Command :=
+  optionCommand "homebrew-syntax" "--root <dir>"
+    "Check Ruby syntax for the formula and every tracked rendered fixture."
+    ["--root", "."] [{ name := "root", takesValue := true }]
+    (fun options => options.required "root") syntaxDecision
+
+def homebrewCommands : List Command := [renderCommand, placeholderCommand, publishCommand, syntaxCommand]
 
 end Homebrew
 

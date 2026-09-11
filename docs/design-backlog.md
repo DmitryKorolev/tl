@@ -42,62 +42,9 @@ forever-contract surface that freezes on first implementation.
 
 ## Distribution (before release)
 
-- Release-shell defect migration record [high] — seven confirmed findings were
-  recorded here so deleting their original scripts could not make the defects
-  disappear from the architecture record.
+The release-shell migration and its seven defect obligations are complete;
+ADR-0028 retains their replacement evidence and the remaining hosted rehearsal.
 
-  **The four GitHub-only blockers are retired.** The Lean ports replaced the
-  affected scripts and close each defect at the decision layer:
-
-  - `Targets.parse` plus manifest assembly refuse an unreadable or empty target
-    set, replacing the generator path that swallowed a failed target-list read;
-  - `RunContext` / `runContextOf` bind build records to the workflow run that is
-    executing, rather than merely checking that the records agree with each
-    other;
-  - the prerequisite GitHub client keeps a 404 answer distinct from a response
-    it could not read, so an operational API failure cannot become a false
-    "missing prerequisite" verdict; and
-  - `restrictsTagCreation` requires a ruleset to cover the whole release-tag
-    namespace, not merely one pattern beginning with `refs/tags/v`.
-
-  Their pure decisions and public-command refusal rows remain part of the
-  release tests. The deleted shell generator and prerequisite checker are no
-  longer first-release blockers; ADR-0028 requires these replacement checks to
-  survive the remaining cutover.
-
-  Two additional generator selftest defects were found by running it the way CI
-  does rather than the way a developer does, and were **fixed in shell before
-  the port**, because the rule against patching code that is about to be deleted
-  is outranked by not leaving the branch unable to pass its own gates. Its
-  fixture hardcoded a `workflowRef`, and the generator compared that field
-  against `GITHUB_WORKFLOW_REF` whenever the variable is non-empty — which
-  inside Actions it always is. So the selftest passed on every developer
-  machine and failed in CI, and since both workflows run it through the release
-  policy, the first push would have failed the gates job for a reason nothing
-  local could show. Before deletion, the selftest was corrected to scrub the
-  variable rather than adopt it: a fixture that copied the ambient value would
-  compare a thing with itself, which is the check not running. The Lean port
-  instead exercises the comparison with an injected run identity.
-
-  The second is why that failure was hard to read: one invocation was not
-  wrapped in the harness, so under `set -eu` a failure aborted the whole
-  selftest with its diagnostic sent to `/dev/null` — no failing row, no count,
-  no remedy line. A selftest that cannot report its own failure is the same
-  defect class as a gate that cannot fail, one level up. That invocation was
-  moved through the harness before the generator was retired.
-
-  **Three npm findings remain as port obligations, but are no longer live
-  defects in the current shell.** The publisher's normalized snapshot includes
-  executable mode and refuses symbolic links it cannot compare to npm's served
-  tree; an already-published version must resolve from the intended dist-tag;
-  and the bootstrap latest-guard uses the corrected line-oriented pattern plus
-  a planted command that proves the row can fire. Each has a discrete public
-  selftest row.
-
-  Retain these three findings until the npm port carries the same properties
-  and replacement tests into `tlrelease`; deleting the record merely because
-  the shell files disappear is what happened to reproducible builds once
-  already.
 - Reproducible builds [medium] — the one ADR-0006 release-integrity item still
   open, and the only bullet under ADR-0014 T3 not built. The inputs are already
   pinned and recorded per release (`build-metadata-<target>.json`, the SBOM,

@@ -71,10 +71,10 @@ owns the clean-source/version checks, stamp write and framed output batch.
 workflow runs the release profile. `release/Policy.lean` owns the ordered
 registry and both execution and listing use its plan-aware selection function.
 `--strict` makes a missing tool a failure, and a skipped gate is never counted
-as passing. The historical shell runner and parity snapshot remain temporarily
-for the subsequent atomic shell deletion; neither workflow uses that runner
-as its full policy. Its ShellCheck and formula single-gate adapters remain
-explicit registry entries until that deletion.
+as passing. The historical shell runner, single-gate adapters and parity
+snapshot are deleted. The registry requires the exact shell inventory, invokes
+ShellCheck directly, and checks formula syntax through the native Homebrew
+command.
 
 `hermetic-release` is the dynamic half of ADR-0028's dependency budget. One
 outer job builds `tlrelease` with `lake build tlreleaseStatic --wfail`, reusing
@@ -246,8 +246,9 @@ globalconfig paths beneath a regular-file blocker; subprocess tests observe
 all three poisoned inputs and cleanup. This closes the former unowned npm
 workflow-step gap. Tests cover all four npm/Homebrew enablement combinations
 through the public policy listing as well as the shared selection function.
-The surviving shell single-gate selector remains separately tested until its
-atomic deletion.
+The exact shell inventory is mandatory in both profiles; ShellCheck receives its
+three survivors directly. `tlrelease homebrew-syntax --root .` discovers every
+tracked formula fixture and runs Ruby separately for each, refusing an empty set.
 
 The split is a prerequisite of ADR-0006's dependency budget rather than a
 tidying of it. That budget forbids `python`, `python3`, `ruby`, `brew`, `node`
@@ -268,92 +269,26 @@ also requires separating that runtime-stripped evidence from the enabled
 channel's packaging environment; adding those runtimes to the stripped image
 would erase the dependency-boundary claim it exists to test.
 
-A gate whose *tool* is absent is a different decision, and it is made in one
-place. `rc_tool_gate` in `scripts/lib/release-common.sh` crosses the three
-inputs — the tool is on PATH or it is not, the run is strict or it is not, the
-command passed or it did not — and `scripts/check-release-runtimes.sh
---selftest` exercises that crossing against fixture tools and a fixture gate,
-including the two-tool case where the second one's absence leaves the first
-running over less than it claims. It was written out per gate before, in four
-places and tested in none, which is four chances to swap the two outcomes that
-matter: a skip that is a smaller policy today, and a strict skip that is a broken
-job. `command -v` and `rc_skip_gate` are the library's alone now, and
-`Tests/ReleaseDriftTests.lean` refuses a policy script that reaches for either —
-found by what the script does (it opens a policy run) rather than by a list of
-script names, so the rule reaches a third policy script the day it is written.
+A gate whose *tool* is absent is a different decision, owned by `release/Policy.lean`.
+Its characterization theorems and injected-runner/subprocess tests cover tool
+present/absent, strict/non-strict, and passed/failed, including multiple required
+tools. A strict run refuses a missing tool; a non-strict run reports a skip.
 
-The budget is enforced twice rather than documented once.
-
-The first arm is `tlrelease dependency-boundary`, which states the v0.1 entry
-points — `install.sh`, `scripts/verify-release-artifacts.sh`,
-`scripts/check-release-policy.sh` and `.github/workflows/release.yml` — walks
-the first-party scripts they reach, and refuses on an invocation of one of the
-six in command position. It reads what a script *says*: comments are stripped
-with quote awareness, because these files discuss npm and Homebrew at length and
-a gate answered by rewording a comment teaches the wrong lesson. Deferred
-channel files are excluded by name and by channel, and a deferred channel's
-publish job leaves the workflow scan by name too; a referenced script that is
-missing is a refusal rather than a skip. A clean verdict names the files it
-read, so a walk that stopped following references is visible as a list with
-something missing rather than as a plausible count.
-
-What each arm sees is narrower than "says" and "executes", and the gap between
-those readings is where a bypass lived. A PATH shim intercepts a command
-resolved *through PATH*; it cannot shadow `/usr/bin/python3`. The lexical arm
-cannot see a command name that is not a literal word. Compose the two and there
-is a shape neither covered: an absolute interpreter path held in a variable, or
-spelled with a shell escape — `/usr/bin/pyt\hon3` executes and matched neither
-the six names nor a shim. The lexical arm therefore reads a backslash as the
-shell does, and reads a path wherever it is written rather than only in command
-position: a first-party release script naming `/usr/bin/python3` anywhere is a
-refusal, because a path is runnable from a variable and a shim cannot shadow it.
-
-The residual is stated rather than implied: an interpreter path *assembled* at
-runtime, or a name read out of a file, is a literal word to nobody and resolves
-through PATH for nobody. Neither arm sees it, a corpus row pins that as
-uncovered, and what closes it by construction is a runtime with no interpreter
-installed — tracked separately, not claimed here.
-
-Refusing every dynamic command position instead was considered and measured. The
-lexical arm's notion of command position is necessarily broad, since a flag keeps
-the position open and so the value of `--bundle "$bundle"` lands in it, as does a
-redirect target: 236 words on the current release path sit in that position
-carrying a `$`. A rule refusing those would refuse this repository's own release,
-every edit would move the set, and the exception list would be the files
-themselves — a gate nobody can maintain is a gate that gets disabled.
-
-That arm reads each line as what it is, and refuses when it cannot. A `#!` line
-is parsed by the syntax a shebang has rather than by the shell lexer, because
-the two disagree in a way that executed: `#! /usr/bin/python3` — a space after
-the marker, which every platform this project ships to accepts — read as shell
-is a command named `#!` taking a path as its argument, so it produced no finding
-and a clean verdict over a Python helper on the release path. An absolute
-interpreter also defeats the PATH-shim arm, so that spelling was invisible to
-both. Reading one line therefore returns either the commands it understood or
-the reason it could not, and a line in the second class is a refusal naming it —
-an omission in the parser now costs a release rather than passing as a clean
-file. What stays deliberately readable-but-invisible is the class no lexical
-scan can see: a command name held in a variable, or one inside the string
-`sh -c` runs. Those are the second arm's, they are pinned as such in the
-spelling corpus, and refusing on them would refuse the release path this
-repository already has.
-
-The second arm is `scripts/check-release-runtimes.sh`, which puts a failing shim
-for each of the six first on `PATH` and runs the release profile under them —
-carrying the installer and artifact-verifier selftests with it, since both are
-gates inside that profile. It observes what a script *executes*. Each shim is
-invoked and required to fail before the run is read as evidence: a shim that was
-never on `PATH` would make every run look clean, which is the silently-green
-shape this whole file exists to prevent.
-
-Neither arm subsumes the other. A command name held in a variable, or inside the
-string `sh -c` runs, executes without being readable; a branch this run did not
-take is readable without executing.
+The dependency budget is enforced by the exact three-adapter shell inventory,
+typed registry and privileged-workflow schemas, public process corpora, and the
+pinned runtime-stripped Linux job described in ADR-0028. The migration lexer,
+command-spelling corpus, PATH-shim runner and selftests, shell gate harnesses,
+and temporary profile-parity oracle have been deleted together. Their historical
+split mattered because the lexer saw literals on untaken paths while the shims
+observed dynamic commands resolved through PATH. Neither saw computed absolute
+interpreter paths. The hermetic image removes those interpreters altogether;
+actual Darwin-only installer paths retain the explicit overview.md assumption.
+The narrow shell inventory reads names and shebangs, not executable shell bodies.
 
 `.github/workflows/release.yml` is a separate workflow, triggered by a SemVer
 tag ([ADR-0006](ADR-0006-distribution-and-platforms.md)). It re-runs the whole
-policy — the same script, plus `--tag`, which additionally checks the tag
-against every copy of the version — against the tagged commit rather than
+native policy against the plan, plus the separate version-consistency gate,
+against the tagged commit rather than
 trusting that the tag happens to point at a commit CI already saw, then builds
 the four native artifacts and signs them. Signing runs directly in that workflow because GitHub's OIDC
 certificate names the workflow that requested it, and `release/identity.json`

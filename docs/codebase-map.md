@@ -246,19 +246,9 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- mappings install.sh and the npm launcher each carry
                         -- inline to release/Platform.lean, cross-checked
                         -- against release/targets.json),
-                        -- check-release-policy.sh (historical parity oracle
-                        -- and ShellCheck single-gate adapter; both workflows
-                        -- now run the native Policy registry),
-                        -- check-release-runtimes.sh (migration PATH-shim
-                        -- evidence; its selftest remains in the native policy)
+                        -- tlrelease policy (typed registry, exact shell inventory,
+                        -- direct ShellCheck, and native Homebrew syntax checks)
 
-scripts/lib/            -- shared by the release scripts
-  release-common.sh     --   digests, the SHA256SUMS lookup, the file-mode
-                        --   reader, the uname mapping, the stub cosign, and
-                        --   the selftest and policy-gate harnesses. install.sh
-                        --   and npm/tl/bin/tl carry marked copies of the parts
-                        --   they need, because neither can source a file from
-                        --   this repository at the moment it runs
 release/                -- what a release is, machine-readable; ADR-0028 owns
                         -- the release-machinery boundaries and migration end state
   identity.json         --   the signing pin every verifier checks against
@@ -624,11 +614,7 @@ Tests/                  -- outside-TCB checks, run via `lake exe tltest`
                         --   `tlrelease` in a tracked .md/.sh/.yml must be one
                         --   the command's own `accepts` takes (name a command
                         --   or write an invocation that works — a fragment is
-                        --   what rots), and a script that runs policy gates
-                        --   must decide a missing tool through `rc_tool_gate`
-                        --   alone. Both read the real tree, and the second uses
-                        --   Boundary.lean's own lexer, so a comment explaining
-                        --   the rule is not a violation of it. Two more that
+                        --   what rots). Other guards
                         --   are permanent: no release source may recover a
                         --   native error class by matching formatted text
                         --   (`:E…:`), since that makes a message a contract;
@@ -738,11 +724,17 @@ The `tlrelease` decision layer is the seventh audited scope, and shares the
 architectural boundary: typed release decisions and channel administration
 live here; workflows schedule them; exactly `install.sh`,
 `scripts/verify-release-artifacts.sh`, and `npm/tl/bin/tl` remain as standalone
-shell adapters after migration. `Formula/tl.rb` remains the channel-required
+shell adapters. `Formula/tl.rb` remains the channel-required
 Ruby DSL and is not release administration.
 
 ```
 release/                -- `lake exe tlrelease`, and its inputs
+  Policy.lean           --   one registry for listing and execution, CI/release
+                        --   profile membership and missing-tool verdicts;
+                        --   direct ShellCheck and native Homebrew syntax gate
+  ShellInventory.lean   --   tracked .sh paths plus recognized shell shebangs;
+                        --   exactly three survivors with exact #!/bin/sh;
+                        --   unreadable candidates refuse, no body parser
   Workflow.lean         --   shared structural source reader for drift and privilege
                         --   guards: job blocks, direct step fields, run scalars,
                         --   raw source and line positions; tested in WorkflowTests
@@ -905,40 +897,8 @@ release/                -- `lake exe tlrelease`, and its inputs
                         --   *load*, for every brew command touching the tap.
                         --   tapDisposition_identical_iff is what keeps a
                         --   drifting comparison from reporting a skipped
-                        --   publication as success
-  Boundary.lean         --   `dependency-boundary` states the four v0.1 entry
-                        --   points, walks the first-party scripts they reach,
-                        --   and refuses on an invocation of python, python3,
-                        --   ruby, brew, node or npm in command position. It
-                        --   reads what a script says — comments stripped with
-                        --   quote awareness, since these files discuss npm and
-                        --   Homebrew throughout, and a gate answered by
-                        --   rewording a comment would teach the wrong lesson.
-                        --   Deferred channel files and publish jobs leave the
-                        --   scan by name and by channel, a missing referenced
-                        --   script is a refusal rather than a skip, and a clean
-                        --   verdict names the files it read so a walk that
-                        --   stopped following references is visible as a short
-                        --   list rather than a plausible count. What it cannot
-                        --   see — a command name in a variable, or inside the
-                        --   string `sh -c` runs — is what
-                        --   scripts/check-release-runtimes.sh observes instead.
-                        --   Each line is read as what it is: a `#!` goes to the
-                        --   parser its own syntax has (the marker, optional
-                        --   whitespace, then the interpreter), because read as
-                        --   shell `#! /usr/bin/python3` is a command named `#!`
-                        --   taking a path — no finding, and a Python helper on
-                        --   the release path. Reading a line yields either the
-                        --   commands it understood or the reason it could not,
-                        --   and the second is a refusal: a parser omission
-                        --   costs a release rather than passing as a clean file.
-                        --   A backslash escapes as the shell's does, and a
-                        --   forbidden path is a finding wherever it is written
-                        --   rather than only in command position — a shim
-                        --   cannot shadow /usr/bin/python3, so an absolute path
-                        --   held in a variable was the one shape neither arm
-                        --   saw. What remains uncovered (a path assembled at
-                        --   runtime) is pinned by a corpus row, not assumed
+                        --   publication as success; homebrew-syntax checks
+                        --   the formula and every tracked rendered fixture
   TaskId.lean           --   `task-id-lint` states the ADR-0026 lexical rule
                         --   once — the ADR-0007 affix, a token boundary, and a
                         --   Crockford run at or above the four-digit floor — as

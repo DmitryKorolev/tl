@@ -48,7 +48,6 @@ bounded contracts for all four native surfaces and the exact three-file shell
 inventory.
 -/
 
-import release.Boundary
 import release.Certificate
 import release.Workflow
 import release.WorkflowRelease
@@ -79,7 +78,7 @@ namespace Release
     dispatch reads: a subcommand that exists but is undocumented, or documented
     but unreachable, is not representable. -/
 def commands : List Command :=
-  boundaryCommands ++ certificateCommands ++ consistencyCommands ++ homebrewCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ npmCommands ++ planCommands ++ platformCommands ++ policyCommands ++ prerequisiteCommands ++ sbomCommands ++ stampCommands ++ taskIdCommands ++ WorkflowRelease.commands ++ [WorkflowPolicy.command, ShellInventory.command, InstallerSuite.command, VerifierSuite.command]
+  certificateCommands ++ consistencyCommands ++ homebrewCommands ++ identityCommands ++ manifestCommands ++ metadataCommands ++ npmCommands ++ planCommands ++ platformCommands ++ policyCommands ++ prerequisiteCommands ++ sbomCommands ++ stampCommands ++ taskIdCommands ++ WorkflowRelease.commands ++ [WorkflowPolicy.command, ShellInventory.command, InstallerSuite.command, VerifierSuite.command]
 
 def usage : String :=
   let header :=

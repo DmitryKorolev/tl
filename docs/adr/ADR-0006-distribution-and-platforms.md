@@ -175,62 +175,46 @@ verifier was.
 **When it must hold.** Before v0.1.0 is tagged, and it does. The budget was not
 a direction of travel to be settled later: a release that shipped with `python3`
 on a first-party release path would have established the opposite precedent at
-exactly the moment the precedent is set. Both arms below run on every commit and
+exactly the moment the precedent is set. The policy runs on every commit and
 on the tagged commit, so the deadline is now a property of the gate rather than
 a date written down — which is the decay this repository's own artifact rule
 exists to prevent.
 
-**How it is enforced during the ADR-0028 migration.** The budget is enforced
-twice, because the two current arms see different things and neither subsumes
-the other. The atomic cutover in ADR-0028 replaces this subsection, its entry
-point list, and the filename inventory below with the exact adapter inventory,
-typed tool declarations, privileged-workflow invocation guard, nested hermetic
-Linux execution, and the explicitly carried macOS residual; deleting an arm
-without those updates would weaken the documented budget.
+**Current enforcement (ADR-0028).** Both workflows run the native typed policy.
+Its exact shell inventory is the union of tracked `.sh` paths and tracked regular
+files with recognized shell shebangs. Unreadable candidates refuse. The set must
+be exactly `install.sh`, `scripts/verify-release-artifacts.sh`, and
+`npm/tl/bin/tl`, each beginning with exact `#!/bin/sh`. There is no override or
+shell-body interpreter in this check. Adding a fourth program requires a
+protected change to ADR-0028 and the allowlist.
 
-`tlrelease dependency-boundary --root . --plan release/plan.json` reads what the
-release path *says*: it states the four v0.1 entry points — `install.sh`,
-`scripts/verify-release-artifacts.sh`, `scripts/check-release-policy.sh` and
-`.github/workflows/release.yml` — walks the first-party scripts they reach, and
-refuses on an invocation of one of the six in command position. It refuses on a
-line it cannot read, too: a `#!` whose interpreter it cannot identify is a
-refusal naming the line, rather than a file reported clean by a scan that did not
-finish reading it. Comments are
-stripped, since these files discuss npm and Homebrew throughout; a deferred
-channel's files and publish jobs leave the scan by name and by channel; a
-referenced script that is missing is a refusal rather than a skip; and a clean
-verdict names the files it read, so a walk that stopped following references
-shows up as a short list rather than a plausible count.
+The release entry points are the typed commands in `.github/workflows/release.yml`
+and the three retained adapters. Each adapter contains its complete behavior,
+sources no tracked code, and starts no nested shell. Typed tool declarations,
+closed privileged-workflow invocation schemas, and public adapter process
+corpora constrain their authority. The pinned hermetic Linux job executes the
+GitHub-only policy and all three adapter suites without any of the six forbidden
+runtimes, a network, or write access to the image and checkout. Actual Darwin-only
+installer paths retain the explicit platform-scoped assumption in
+[overview.md](../overview.md); Linux execution does not establish their budget.
 
-`scripts/check-release-runtimes.sh` observes what it *executes*: it puts a
-failing shim for each of the six first on `PATH`, proves each one fires, and
-then runs the release profile of the policy under them — which carries the
-installer and artifact-verifier selftests with it, since both are gates inside
-that profile. Both workflows run it, so the evidence for a tagged commit is that
-the release path did not reach for a runtime rather than that a runner happened
-to have one.
+The former lexical command scan and PATH-shim runner were complementary migration
+evidence, not a complete shell analysis: computed absolute interpreter paths
+escaped both. They and their spelling corpus, shared shell libraries, and
+parity oracle were deleted together after the native policy matched the legacy
+profiles and the hermetic/adapter gates passed. They are not replaced by an argv,
+dot/source, BusyBox, Toybox, or dynamic-operand parser.
 
-What made this possible was splitting the policy: `--profile release` does not
-have the npm and Homebrew gates at all, and `--profile ci` keeps running them on
-every commit so a deferred channel does not rot
-([ADR-0026](ADR-0026-continuous-integration.md) records the split and both
-arms). The measurement that motivated it — thirteen of the old policy's
-twenty-one gates failing under refusing `python3`/`ruby` shims, five of them the
-npm and Homebrew gates and the rest generators that have since moved into
-`tlrelease` — is kept there as the reason, not as a description of the present.
-
-No interpreter-backed administration remains. Both channels are administered by
-`tlrelease`: the formula is rendered, compared and published by it, and so are
-the five npm packages — staged around the signed binaries, compared with the
-registry path-for-path, and published resumably with the launcher last. What is
-left of each ecosystem is the part its own tooling defines: `Formula/tl.rb` is a
-Ruby DSL because Homebrew formulas are, and the npm channel invokes the
-channel-native `npm` client. The npm launcher itself is POSIX shell and starts
-neither Node nor a lifecycle hook. The gates that reach those two tools live in
-`scripts/check-channel-policy.sh`. None of the
-interpreter-backed administration is reachable from the four entry points above
-while `release/plan.json` defers both channels; enabling one puts its scripts
-back on the release path, and its reads have to move into `tlrelease` first.
+No interpreter-backed administration remains. `tlrelease` renders, compares and
+publishes the Homebrew formula and npm packages. The authenticated typed manifest
+is Homebrew's data authority; `Formula/tl.rb` is a Ruby DSL artifact checked by
+render-and-compare, and `SHA256SUMS` is not a substitute authority. The npm launcher
+is POSIX shell because it resolves npm's fixed bin entry to an exact platform
+optional dependency and execs it; it performs no download, lifecycle action, or
+release-policy decision. CI runs Ruby formula syntax and npm packaging checks
+through the native registry even while their channels are deferred. The
+GitHub-only release profile excludes those gates; enabling a channel adds its
+gates and requires its separate packaging environment (ADR-0026).
 
 - GitHub Releases — the source of truth. CI uploads the prebuilt
   binaries here; everything else wraps them.

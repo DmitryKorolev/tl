@@ -34,7 +34,23 @@ def shellInventoryTests : IO (List Outcome) := do
         inventoryWrite root path "#!/bin/sh\nexit 0\n"
       inventoryGit root #["add", "--all"]
       pure root
-    let mut rows : List Outcome := []
+    let live ← inventoryRun "."
+    let inventory := Release.Policy.gates.find? (·.name == "exact shell inventory")
+    let lint := Release.Policy.gates.find? (·.name == "shell static analysis")
+    let mut rows : List Outcome := [
+      check "shell inventory: the live checkout has exactly the three survivors"
+        (live.exitCode == 0) live.stderr,
+      check "shell inventory: both profiles require the inventory without optional tools"
+        (match inventory with
+         | some gate => gate.profiles == Release.Policy.Profile.all && gate.requires.isEmpty &&
+           gate.invocation == .releaseCommand ["shell-inventory", "--root", "."]
+         | none => false),
+      check "shell inventory: ShellCheck receives every survivor directly"
+        (match lint with
+         | some gate => gate.invocation == .tool "shellcheck"
+             (["-S", "warning"] ++ ["install.sh", "scripts/verify-release-artifacts.sh", "npm/tl/bin/tl"])
+           && gate.requires.map (·.tool) == ["shellcheck"]
+         | none => false)]
     let clean ← plant "clean"
     inventoryWrite clean "untracked.sh" "#!/bin/sh\n"
     inventoryWrite clean "data" "ordinary data\n#!/bin/bash\n"

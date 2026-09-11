@@ -1,47 +1,10 @@
-/-
-The release policy, as typed data instead of a shell script's call order.
-
-`scripts/check-release-policy.sh` is two things at once: a list of what the
-policy *is*, and a program that runs it. The list lives in a heredoc, the
-program lives in a sequence of `rc_gate` calls, and nothing compares them —
-`--list` has been wrong about the profile split, about which tool a gate needs,
-and about which gates a tag run omits, each time without any gate failing.
-Profile membership is the same shape: `ci` and `release` differ by one `if`, and
-what that `if` means is written in three comments.
-
-Here the gates are a list of values. Which profile a gate belongs to, which
-tools it needs, what it runs and what a missing tool costs are fields, so the
-listing is a projection of the registry rather than a parallel document, and
-the runner reads the same list. A gate that exists but is unlisted, or listed
-but never run, is not representable.
-
-## What is decided rather than described
-
-Three decisions here can be wrong silently, and each carries a theorem:
-
-- **Whether a gate may be skipped.** A skipped gate is not a passing one, and
-  under `--strict` it is a failure. Collapsing the two is how a policy run comes
-  to mean "everything installed here passed" while reading as "everything
-  passed".
-- **Whether the run passed.** A failed gate must not be recoverable by a later
-  one, and a run with no gates at all must not read as a clean run — a per-row
-  verdict says nothing about the empty list, so that is its own row.
-- **What a distribution surface contributes.** GitHub Release, npm and Homebrew
-  are publication channels; the installer is a repository-served adapter with no
-  publish job. A surface that silently acquired a publication effect would put a
-  job behind a plan row that never promised one.
-
-## The oracle, and its lifetime
-
-This registry is authoritative for both workflows. `policy-parity` compares
-the historical `legacyGates` snapshot with the surviving shell runner; the
-native additions are intentionally outside that migration oracle. The oracle
-and shell runner are deleted together after the exact shell inventory.
--/
+/- The typed release policy registry owns gate membership, tool requirements,
+execution and strict-mode verdicts. Listings project the same registry. -/
 import release.Command
 import release.Model
 import release.Process
 import release.WorkflowOutput
+import release.ShellInventory
 
 namespace Release
 
@@ -144,8 +107,6 @@ def Invocation.render (invocation : Invocation) : String :=
 /-- One gate: what it is called, when it runs, what it needs, and what it
     does. -/
 structure Gate where
-  /-- The name every report uses. It is also what the parity oracle compares,
-      so it is the shell's name exactly while both exist. -/
   name : String
   profiles : List Profile
   onTag : TagBehaviour
@@ -156,35 +117,24 @@ structure Gate where
   channel : Option Channel := none
   deriving Repr
 
-/-! ## The registry
-
-Every gate the release policy runs, in the order it runs them. The order is part
-of the contract: a policy run is read top to bottom, and two runs of the same
-profile that reported their gates in different orders would be two documents to
-compare by hand.
-
-Two gates still invoke a shell script's single-gate flag — the ShellCheck
-sweep and the formula parse — because their bodies have not been ported yet. Naming a real invocation rather than a placeholder is
-what keeps these remaining adapters explicit; each becomes a `tlrelease`
-command as its own port lands, and the shell allowlist is what will say when
-none is left. -/
+/-! ## The registry: every gate in execution order. -/
 
 private def shellcheckTool : ToolRequirement :=
   { tool := "shellcheck", lost := "shellcheck is not on PATH" }
 
-def legacyGates : List Gate :=
-  [{ name := "shell static analysis"
+def gates : List Gate :=
+  [{ name := "exact shell inventory"
+     profiles := Profile.all, onTag := .always, requires := []
+     invocation := .releaseCommand ["shell-inventory", "--root", "."]
+     summary := "Exactly the three reviewed adapters, each with the pinned POSIX shell header." },
+   { name := "shell static analysis"
      profiles := Profile.all, onTag := .always, requires := [shellcheckTool]
-     invocation := .script "./scripts/check-release-policy.sh" ["--shellcheck-only"]
+     invocation := .tool "shellcheck" (["-S", "warning"] ++ ShellInventory.survivors)
      summary := "ShellCheck over every tracked shell file, found by shebang and extension." },
    { name := "artifact verifier selftest"
      profiles := Profile.all, onTag := .always, requires := []
      invocation := .releaseCommand ["artifact-verifier-selftest", "--root", "."]
      summary := "The code path behind VERIFYING.md, driven through every refusal it has." },
-   { name := "release runtime boundary selftest"
-     profiles := Profile.all, onTag := .always, requires := []
-     invocation := .script "./scripts/check-release-runtimes.sh" ["--selftest"]
-     summary := "The PATH shims that observe the dependency budget prove they still fire." },
    { name := "installer selftest"
      profiles := Profile.all, onTag := .always, requires := []
      invocation := .releaseCommand ["installer-selftest", "--root", "."]
@@ -203,12 +153,8 @@ def legacyGates : List Gate :=
      profiles := [.ci], onTag := .always
      channel := some .homebrew
      requires := [{ tool := "ruby", lost := "ruby is not on PATH" }]
-     invocation := .script "./scripts/check-channel-policy.sh" ["--ruby-only"]
-     summary := "An early signal on the rendered formulae; real Homebrew is the acceptance authority." }]
-
-/-- The native registry extends the historical parity snapshot with the suite
-    that previously needed a separate toolchain-bearing CI step. -/
-def gates : List Gate := legacyGates ++ [
+     invocation := .releaseCommand ["homebrew-syntax", "--root", "."]
+     summary := "An early signal on the rendered formulae; real Homebrew is the acceptance authority." },
   { name := "workflow authority and invocation policy", profiles := Profile.all, onTag := .always,
     requires := [], invocation := .releaseCommand ["workflow-policy", "--root", "."],
     summary := "Every capability and output edge has a closed reviewed schema." },
@@ -247,7 +193,7 @@ def gatesFrom (registry : List Gate) (profile : Profile) (tagRun : Bool) : List 
 def gatesIn (profile : Profile) (tagRun : Bool) : List Gate :=
   gatesFrom gates profile tagRun
 
-/-- Their names, which is what a listing and the parity oracle compare. -/
+/-- Their names, as displayed by the listing. -/
 def gateNames (profile : Profile) (tagRun : Bool) : List String :=
   (gatesIn profile tagRun).map (·.name)
 
@@ -625,70 +571,6 @@ def runRemedy (skipped : Nat) : String :=
   else
     s!"{skipped} gate(s) did not run, so this was a smaller policy than the one being reported on — install the tools they name above and run it again."
 
-/-! ## The parity oracle
-
-Temporary, and deleted with the shell policy. This compares the historical
-snapshot: same gates, same order, same profile. The native registry additionally
-owns workflow authority and npm coverage. The comparison is over the names the shell scripts report,
-because that is the thing both a reader and a report use to say which gate is
-which.
-
-Two listings compose into one profile because the shell nests: the `ci` profile
-runs the deferred channels as a *single* outer gate whose command is the other
-script. That wrapper is the shell's own grouping and has no typed counterpart —
-naming it here, once, is what lets the comparison be exact rather than
-approximate. -/
-
-/-- The outer script's name for the gate that runs the channel script. -/
-def shellChannelGroupGate : String := "deferred-channel gates"
-
-/-- What the shell reports for a profile, flattened the way the registry is: the
-    grouping gate replaced by the gates it groups.
-
-    A listing that does not contain the wrapper is left alone, which is what the
-    release profile's listing looks like — it does not have the group at all. -/
-def flattenShellNames (outer : List String) (channel : List String) : List String :=
-  outer.flatMap fun name => if name == shellChannelGroupGate then channel else [name]
-
-/-- The two ways the caller can pair the listings wrongly.
-
-    Checked before the comparison, and separately from it, because both make the
-    comparison *pass* rather than fail. A `ci` listing given with no channel
-    listing has its wrapper flattened to nothing, which leaves exactly the gates
-    of the release profile — so comparing the ci listing against the release
-    registry succeeded, having silently dropped the channel's. A channel listing
-    given for a profile with no wrapper is the same mistake in the other
-    direction: gate names that never reach the comparison. The counts are the
-    registry's and are deliberately not repeated here; a number in a comment
-    beside a list that owns it is a second definition that drifts. -/
-def groupingProblems (outer : List String) (channelGiven : Bool) : List String :=
-  let grouped := outer.contains shellChannelGroupGate
-  (if grouped && !channelGiven then
-     [s!"the listing names '{shellChannelGroupGate}', which is the shell's grouping for the gates in another script, and no --channel listing was given. Flattening it to nothing would drop those gates from the comparison and the comparison would pass."]
-   else [])
-  ++ (if !grouped && channelGiven then
-        [s!"a --channel listing was given and the profile's listing does not name '{shellChannelGroupGate}', so nothing would expand into it. Either the wrong profile was listed, or the channel gates are no longer grouped and this oracle is comparing a listing it does not understand."]
-      else [])
-
-/-- Every way the two lists disagree, in the order a reader would find them.
-
-    Reported as the whole comparison rather than the first difference: the two
-    lists are short, and an oracle that reported one disagreement per run would
-    be run once per gate during a migration that moves several at a time. -/
-def parityProblems (profile : Profile) (typed observed : List String) : List String :=
-  let missing := observed.filter fun name => !typed.contains name
-  let extra := typed.filter fun name => !observed.contains name
-  (missing.map fun name =>
-    s!"the {profile.wire} profile runs '{name}' and the typed registry does not have it. A gate the shell runs and the registry does not know about is one the cutover would drop.")
-  ++ (extra.map fun name =>
-    s!"the typed registry puts '{name}' in the {profile.wire} profile and the shell does not run it there. Either the registry invented a gate or it moved one between profiles, and a gate that moved into 'release' is one the dependency boundary has not been checked against.")
-  ++ (if missing.isEmpty && extra.isEmpty && typed != observed then
-        [s!"the {profile.wire} profile runs the same gates in a different order: the shell runs {String.intercalate ", " observed} and the registry lists {String.intercalate ", " typed}. A policy run is read top to bottom, so the order is part of what it says."]
-      else [])
-  ++ (if observed.isEmpty then
-        [s!"the shell reported no gates at all for the {profile.wire} profile, so this comparison would hold by having nothing to compare. That is the one result an oracle must never accept."]
-      else [])
-
 end Policy
 
 /-! ## The commands -/
@@ -715,63 +597,6 @@ private def listCommand : Command :=
   optionCommand "policy-list" "--profile <ci|release> [--tag]"
     "Name the gates a profile runs, one per line, in the order it runs them."
     ["--profile", "ci"] listOptions listArguments listDecision
-
-open Policy in
-private def parityOptions : List OptionSpec :=
-  [{ name := "profile", takesValue := true },
-   { name := "observed", takesValue := true },
-   { name := "channel", takesValue := true },
-   { name := "tag", takesValue := false }]
-
-open Policy in
-private structure ParityArgs where
-  profile : Profile
-  observedPath : String
-  channelPath : Option String
-  tagRun : Bool
-
-open Policy in
-private def parityArgs (options : Options) : Except String ParityArgs := do
-  return {
-    profile := ← Profile.parse "--profile" (← options.required "profile")
-    observedPath := ← options.required "observed"
-    channelPath := options.value? "channel"
-    tagRun := options.given "tag" }
-
-/-- One name per line, blank lines dropped and surrounding space trimmed.
-
-    Trimmed because the shell prints these through `echo` and a trailing space
-    is invisible in a diff; blank lines dropped because a file written by a
-    redirect ends with one. -/
-private def listedNames (text : String) : List String :=
-  ((text.splitOn "\n").map (·.trimAscii.toString)).filter (!·.isEmpty)
-
-open Policy in
-private def parityDecision (args : ParityArgs) : Decision String := do
-  let observedText ← ofIO (readTextFile args.observedPath)
-  let channelNames ← match args.channelPath with
-    | none => pure []
-    | some path => do
-        let text ← ofIO (readTextFile path)
-        pure (listedNames text)
-  let outer := listedNames observedText
-  let observed := flattenShellNames outer channelNames
-  let typed := (gatesFrom legacyGates args.profile args.tagRun).map (·.name)
-  match groupingProblems outer args.channelPath.isSome ++ parityProblems args.profile typed observed with
-  | [] =>
-      return s!"the typed registry and the shell policy run the same {typed.length} gate(s) in the same order for the {args.profile.wire} profile"
-  | problems =>
-      decline ("the typed release policy registry and the shell policy disagree.\n"
-        ++ String.join (problems.map fun problem => s!"  {problem}\n")
-        ++ "Restore agreement between the historical legacyGates snapshot and the surviving shell runner; native additions belong in gates.")
-
-open Policy in
-private def parityCommand : Command :=
-  optionCommand "policy-parity"
-    "--profile <ci|release> --observed <names-file> [--channel <names-file>] [--tag]"
-    "Refuse unless the historical gate snapshot names exactly what the shell policy runs, in order."
-    ["--profile", "ci", "--observed", "ci-gates.txt", "--channel", "channel-gates.txt"]
-    parityOptions parityArgs parityDecision
 
 open Policy in
 private def runOptions : List OptionSpec :=
@@ -813,6 +638,6 @@ private def runCommand : Command :=
     "Run one profile's gates, in order, and refuse unless every one of them passed."
     ["--profile", "release", "--strict"] runOptions runArgs runDecision
 
-def policyCommands : List Command := [listCommand, parityCommand, runCommand]
+def policyCommands : List Command := [listCommand, runCommand]
 
 end Release

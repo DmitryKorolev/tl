@@ -62,13 +62,6 @@ def verifierSuiteCommandTests : IO (List Outcome) := do
       rows := rows ++ [checkEq s!"verifier suite command {name}: status" result.exitCode status,
         check s!"verifier suite command {name}: diagnostic"
           (((result.stdout ++ result.stderr).splitOn diagnostic).length > 1) (result.stdout ++ result.stderr)]
-    let listing ← IO.Process.output {
-      cmd := "/bin/sh"
-      args := #["scripts/check-release-policy.sh", "--list"] }
-    rows := rows ++ [checkEq "migration policy list: status" listing.exitCode 0]
-    for command in ["installer-selftest --root .", "artifact-verifier-selftest --root ."] do
-      rows := rows ++ [check s!"migration policy list: names {command}"
-        ((listing.stdout.splitOn command).length > 1) listing.stdout]
     return rows
   finally IO.FS.removeDirAll base
 

@@ -1,8 +1,7 @@
 /-
 ADR-0028's declared shell surfaces. This reads only tracked names and first
 lines; it does not interpret shell bodies, workflow arguments, or operands.
-The command lands before policy enforcement so migration adapters can remain
-until their process probes have moved into the test harness.
+Both policy profiles enforce this inventory before linting the survivors.
 -/
 import release.TaskId
 
