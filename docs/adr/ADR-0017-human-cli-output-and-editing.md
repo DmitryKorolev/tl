@@ -98,8 +98,17 @@ all`). Truncation is always disclosed, never silent.
 A header line (`<glyph> <id> · <title>   [<prio> · <STATUS>]`), then provenance
 (assignee, the derived epic marker, created/updated, close reason) and the issue's
 `labels` (including any `type:*`), then `DESCRIPTION` and `NOTES` blocks, then the
-relationships inline (blockers, dependents, parent, related) — with children
-rendered as a tree (§2). The `DESCRIPTION`/`NOTES` blocks are where ADR-0014's
+relationships in separate `PARENT`, `DEPENDS ON`, `CHILDREN`, `BLOCKS`, and
+`RELATED` sections; empty sections are omitted. Each relationship row shows an
+unambiguous short ID, sanitized title, priority, effective display status (glyph
+and word), and an epic marker where applicable. Closed prerequisites remain
+visible under `DEPENDS ON`. A missing endpoint is shown with its full ID and a
+missing-task marker, without a fabricated status or priority. The parent remains
+the canonical parent used by the JSON contract. Children retain the cycle-safe
+tree (§2); their summary counts closed **direct** children, using effective
+status and counting both done and cancelled as closed. Nested descendants are
+not counted again. Arrows and tree markers have ASCII alternatives for plain
+output. Relationship data in JSON retains the existing full-ID fields. The `DESCRIPTION`/`NOTES` blocks are where ADR-0014's
 untrusted-content fence appears in human output; one-line list/ready rows rely
 on byte-sanitization plus width truncation rather than a per-row fence.
 

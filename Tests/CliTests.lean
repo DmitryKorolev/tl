@@ -2477,7 +2477,7 @@ def cliRenderTests : IO (List Outcome) := do
        check "show detail renders the DESCRIPTION fence"
          ((plain.splitOn "DESCRIPTION").length > 1) plain,
        check "show detail lists the blocker relationship"
-         ((plain.splitOn "blocked by").length > 1) plain]
+         ((plain.splitOn "DEPENDS ON").length > 1) plain]
   | .error e => o := o ++ [{ name := "show render", passed := false, msg := e.message }]
   -- list renders the hierarchy tree by default (ADR-0017 §2); --flat opts into
   -- one-line rows; --json stays the flat items array either way
@@ -3057,6 +3057,186 @@ def treeCycleRenderTests : List Outcome :=
       ((chainOut.splitOn "\\-- ").length - 1 == 1) chainOut,
     check "the blocker tree shows both the direct and the transitive blocker"
       (((chainOut.splitOn "A").length - 1 ≥ 1) && ((chainOut.splitOn "B").length - 1 ≥ 1)) chainOut ]
+
+/-- Human relationship rows over merge-reachable states. These assertions test
+    rendering, using the existing kernel functions only to construct fixtures. -/
+def showRelationshipTests : List Outcome := Id.run do
+  let root := "a000000000000000"
+  let parent := "b000000000000000"
+  let prerequisite := "c000000000000000"
+  let dependent := "d000000000000000"
+  let doneChild := "e000000000000000"
+  let cancelled := "f000000000000000"
+  let nested := "g000000000000000"
+  let grandchild := "h000000000000000"
+  let openChild := "j000000000000000"
+  let related := "k000000000000000"
+  let missing := "m000000000000000"
+  let later := "n000000000000000"
+  let stamp (n : Nat) : Tl.Crdt.Stamp := ⟨n, 7, n⟩
+  let mkView (s : State) : View :=
+    { dirs := ⟨"", ".tl"⟩
+      loaded := { state := s, ops := [], refused := [], skipped := [], deferred := [],
+                  maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      now := 0, replica := none
+      rollup := s.effStatusAll, present := s.presentIssues, edges := s.presentEdges, pedges := s.parentEdges
+      prov := Tl.Crdt.AMap.empty
+      idx := ViewIndex.of s.data s.effStatusAll s.presentIssues s.presentEdges s.parentEdges
+        Tl.Crdt.AMap.empty s.edges.adds.toList s.edges.removed.toList }
+  let s := Tl.Kernel.fold [
+    Op.create root (stamp 1) { title := some "Current work", status := some .InProgress },
+    Op.create parent (stamp 2) { title := some "Planning", priority := some (1 : Fin 5) },
+    Op.create prerequisite (stamp 3) { title := some "Finished prerequisite", status := some .Done, priority := some (0 : Fin 5) },
+    Op.create dependent (stamp 4) { title := some "Waiting consumer", priority := some (3 : Fin 5) },
+    Op.create doneChild (stamp 5) { title := some "Finished child", status := some .Done },
+    Op.create cancelled (stamp 6) { title := some "Retired child", status := some .Cancelled },
+    Op.create nested (stamp 7) { title := some "Nested work" },
+    Op.create grandchild (stamp 8) { title := some "Nested result", status := some .Done },
+    Op.create openChild (stamp 9) { title := some "Remaining child" },
+    Op.create related (stamp 10) { title := some ("Linked\nFORGED" ++ String.singleton (Char.ofNat 27) ++ "[31m") },
+    Op.create later (stamp 11) { title := some "Scheduled consumer", deferUntil := some (some 1000), priority := some (4 : Fin 5) },
+    Op.edgeAdd (parent, root, .Parent) (stamp 12),
+    Op.edgeAdd (prerequisite, root, .Blocks) (stamp 13),
+    Op.edgeAdd (missing, root, .Blocks) (stamp 14),
+    Op.edgeAdd (root, dependent, .Blocks) (stamp 15),
+    Op.edgeAdd (root, later, .Blocks) (stamp 16),
+    Op.edgeAdd (root, related, .Related) (stamp 17),
+    Op.edgeAdd (root, doneChild, .Parent) (stamp 18),
+    Op.edgeAdd (root, cancelled, .Parent) (stamp 19),
+    Op.edgeAdd (root, nested, .Parent) (stamp 20),
+    Op.edgeAdd (nested, grandchild, .Parent) (stamp 21),
+    Op.edgeAdd (root, openChild, .Parent) (stamp 22)]
+  let v := mkView s
+  let plain := styledShow Style.plain v root
+  let unicode := styledShow ⟨.off, .unicode⟩ v root
+  let colored := styledShow ⟨.on, .unicode⟩ v root
+  let coloredAscii := styledShow ⟨.on, .ascii⟩ v root
+  let blockText (text label : String) :=
+    let suffix := ((text.splitOn (label ++ "\n")).drop 1).headD ""
+    (suffix.splitOn "\n\n").headD ""
+  let containsLine (text fragment : String) := (text.splitOn "\n").any (·.contains fragment)
+  let missingLine := "? " ++ displayId missing ++ " [missing task]"
+  let empty := styledShow Style.plain (mkView (Tl.Kernel.fold [
+    Op.create root (stamp 1) { title := some "Isolated" }])) root
+  let missingParent := styledShow Style.plain (mkView (Tl.Kernel.apply s
+    (Op.edgeAdd (missing, root, .Parent) (stamp 30)))) root
+  let cycle := styledShow Style.plain (mkView (Tl.Kernel.apply s
+    (Op.edgeAdd (nested, root, .Parent) (stamp 31)))) root
+  let shared := styledShow Style.plain (mkView (Tl.Kernel.apply s
+    (Op.edgeAdd (openChild, grandchild, .Parent) (stamp 32)))) root
+  let allClosed := styledShow Style.plain (mkView (Tl.Kernel.apply s
+    (Op.setFields openChild (stamp 33) { status := some .Done }))) root
+  let noneClosed := styledShow Style.plain (mkView (Tl.Kernel.fold [
+    Op.create root (stamp 1) { title := some "Parent" },
+    Op.create openChild (stamp 2) { title := some "Child" },
+    Op.edgeAdd (root, openChild, .Parent) (stamp 3)])) root
+  let mut rows := [
+    check "parent row has short ID, priority, epic marker, title and status"
+      (containsLine (blockText plain "PARENT") (v.shortId parent ++ " P1 [epic] Planning [open]")) plain,
+    check "closed prerequisites retain a complete row under DEPENDS ON"
+      (plain.contains "DEPENDS ON" && containsLine (blockText plain "DEPENDS ON")
+        (v.shortId prerequisite ++ " P0 Finished prerequisite [done]")) plain,
+    check "dependent rows expose derived blocked status"
+      (containsLine (blockText plain "BLOCKS") (v.shortId dependent ++ " P3 Waiting consumer [blocked]")) plain,
+    check "deferred dependents show their status and priority"
+      (containsLine (blockText plain "BLOCKS") (v.shortId later ++ " P4 Scheduled consumer") && plain.contains "[deferred]") plain,
+    check "nested epic rows expose effective done status"
+      (containsLine (blockText plain "CHILDREN") (v.shortId nested ++ " P2 [epic] Nested work [done]")) plain,
+    check "open child rows expose open status"
+      (containsLine plain "Remaining child [open]") plain,
+    check "cancelled child rows expose cancelled status"
+      (containsLine plain "Retired child [cancelled]") plain,
+    check "child summary counts effective closed direct children only"
+      (plain.contains "3/4 direct children closed (75%)") plain,
+    check "all-closed children have a complete summary"
+      (allClosed.contains "4/4 direct children closed (100%)") allClosed,
+    check "no closed children have a zero summary"
+      (noneClosed.contains "0/1 direct children closed (0%)") noneClosed,
+    check "missing prerequisite does not invent status or priority"
+      ((plain.splitOn "\n").any (fun line => line == "  -> " ++ missingLine)) plain,
+    check "missing canonical parent is explicitly identified"
+      ((missingParent.splitOn "\n").any (fun line => line == "  ^ " ++ missingLine)) missingParent,
+    check "related titles cannot inject a new output row or ANSI"
+      (plain.contains "RELATED" && plain.contains "Linked" && !plain.contains "\nFORGED"
+        && !plain.contains (Char.ofNat 27)) plain,
+    check "plain relationship arrows and child connectors are ASCII"
+      (plain.contains "  ^ " && plain.contains "  -> " && plain.contains "  <- "
+        && plain.contains "  <-> " && !plain.contains '↑' && !plain.contains '→'
+        && !plain.contains '←' && !plain.contains '↔' && !plain.contains '└') plain,
+    check "Unicode relationships use arrows and retain status words"
+      (unicode.contains '↑' && unicode.contains '→' && unicode.contains '←'
+        && unicode.contains '↔' && unicode.contains '✓' && unicode.contains "[done]"
+        && !unicode.contains (Char.ofNat 27)) unicode,
+    check "colored relationships include ANSI and title metadata"
+      (colored.contains (Char.ofNat 27) && colored.contains "Finished prerequisite") colored,
+    check "show children terminate a cycle with a plain marker"
+      (cycle.contains "(cycle)" && !cycle.contains '↺') cycle,
+    check "show children mark a shared descendant without rewalking it"
+      (shared.contains "(shown above)") shared,
+    check "ASCII glyphs and color can be selected independently"
+      (coloredAscii.contains (Char.ofNat 27) && coloredAscii.contains "-> "
+        && !coloredAscii.contains '↑' && !coloredAscii.contains '→') coloredAscii,
+    check "Unicode show uses its cycle marker"
+      ((styledShow ⟨.off, .unicode⟩ (mkView (Tl.Kernel.apply s
+        (Op.edgeAdd (nested, root, .Parent) (stamp 31)))) root).contains '↺'),
+    check "Unicode show marks a shared child"
+      ((styledShow ⟨.off, .unicode⟩ (mkView (Tl.Kernel.apply s
+        (Op.edgeAdd (openChild, grandchild, .Parent) (stamp 32)))) root).contains '⧉'),
+    checkEq "relationship sections have a stable reading order"
+      ((plain.splitOn "\n").filter (fun line =>
+        ["PARENT", "DEPENDS ON", "CHILDREN", "BLOCKS", "RELATED"].contains line))
+      ["PARENT", "DEPENDS ON", "CHILDREN", "BLOCKS", "RELATED"]]
+  for label in ["PARENT", "DEPENDS ON", "CHILDREN", "BLOCKS", "RELATED", "direct children closed"] do
+    rows := rows ++ [check s!"show omits empty {label} section" (!empty.contains label) empty]
+  return rows
+
+/-- The public command carries human relationship rows while JSON retains the
+    existing full-ID relationship fields. -/
+def cliShowRelationshipTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let parent ← mkIssue dir "Planning group" ["-p", "1"]
+  let prerequisite ← mkIssue dir "Prepare inputs" ["-p", "0"]
+  let root ← mkIssue dir "Perform work" ["--parent", "tl-" ++ parent,
+    "--blocked-by", "tl-" ++ prerequisite]
+  let _ ← run' ["close", "tl-" ++ prerequisite, "--dir", dir, "--as", "done", "--actor", "tester"]
+  let dependent ← mkIssue dir "Consume output" ["--blocked-by", "tl-" ++ root, "-p", "3"]
+  let child ← mkIssue dir "Small step" ["--parent", "tl-" ++ root]
+  let related ← mkIssue dir "Companion work" ["--related", "tl-" ++ root, "-p", "4"]
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  let invoke (flags : Array String) := IO.Process.output {
+    cmd := exe.toString, args := #["show", "tl-" ++ root, "--dir", dir] ++ flags }
+  let plain ← invoke #["--plain"]
+  let unicode ← invoke #["--color=never", "--glyphs=unicode"]
+  let colored ← invoke #["--color=always", "--glyphs=unicode"]
+  let machine ← invoke #["--json", "--color=always", "--glyphs=unicode"]
+  let data := (Json.parse machine.stdout).toOption.bind (fun j => jGet j "data")
+  let edges := data.map (fun j => jArr j "dependencies") |>.getD []
+  let hasEdge (source target kind : String) := edges.any (fun e =>
+    jStr e "from" == some ("tl-" ++ source) && jStr e "to" == some ("tl-" ++ target)
+      && jStr e "type" == some kind)
+  return [
+    check "public plain show lists titled relationships"
+      (plain.exitCode == 0 && plain.stdout.contains "Planning group [open]"
+        && plain.stdout.contains "Prepare inputs [done]" && plain.stdout.contains "Consume output [blocked]"
+        && plain.stdout.contains "Small step [open]" && plain.stdout.contains "Companion work [open]") plain.stdout,
+    check "public show includes the direct-child summary"
+      (plain.stdout.contains "0/1 direct children closed (0%)") plain.stdout,
+    check "public plain show is ANSI-free" (!plain.stdout.contains (Char.ofNat 27)) plain.stdout,
+    check "public Unicode show supports arrows without ANSI"
+      (unicode.exitCode == 0 && unicode.stdout.contains '↑' && unicode.stdout.contains '→'
+        && !unicode.stdout.contains (Char.ofNat 27)) unicode.stdout,
+    check "public colored show uses color"
+      (colored.exitCode == 0 && colored.stdout.contains (Char.ofNat 27)) colored.stdout,
+    check "JSON show remains undecorated" (machine.exitCode == 0 && !machine.stdout.contains (Char.ofNat 27)) machine.stdout,
+    checkEq "JSON parent remains a full ID" (data.bind (fun j => jStr j "parent")) (some ("tl-" ++ parent)),
+    check "JSON retains closed prerequisite edges with full IDs" (hasEdge prerequisite root "blocks"),
+    check "JSON retains dependent edges with full IDs" (hasEdge root dependent "blocks"),
+    check "JSON retains child edges with full IDs" (hasEdge root child "parent"),
+    check "JSON retains related edges with full IDs"
+      (hasEdge root related "related" || hasEdge related root "related"),
+    check "JSON relationship entries retain the exact edge schema"
+      (edges.length == 5 && edges.all (fun e => jKeys e == ["from", "to", "type"]))]
+
 
 /-- The canonical-parent LWW tie-break: with two surviving parent edges the
     display parent is the one whose greatest add-tag is LWW-greater — on both
@@ -6132,7 +6312,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
-    ++ treeCycleRenderTests ++ canonicalParentTieTests ++ rowAccessorAgreementTests
+    ++ treeCycleRenderTests ++ showRelationshipTests ++ (← cliShowRelationshipTests) ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ readyRankedTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)
     ++ (← cliShortIdTests) ++ (← cliSyncPostureTests) ++ (← cliClaimSyncTests)

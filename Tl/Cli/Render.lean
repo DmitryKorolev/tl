@@ -164,6 +164,13 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
     | none => ""
   s!"{glyph} {id} {prio}{epic} {title}{deferUntil}"
 
+/-- A relationship row includes a status word as well as its glyph. Missing
+    endpoints carry their full reference, without invented field defaults. -/
+private def showRelationLine (st : Style) (v : View) (i : IssueId) : String :=
+  if !v.has i then
+    st.paint "33" s!"? {displayId i} [missing task]"
+  else styledLine st v i ++ st.paint "2" s!" [{(displayState v i).word}]"
+
 /-! ## Edge tree (ADR-0017 §2) — total on cyclic/dangling graphs -/
 
 /-- The tree walk over a caller-supplied `children` accessor, so the same
@@ -179,7 +186,7 @@ def styledLine (st : Style) (v : View) (i : IssueId) : String :=
     what made diamonds exponential). Returns the lines and the grown emitted set. -/
 private partial def treeLines (st : Style) (v : View) (i : IssueId)
     (pre : String) (path : Std.HashSet IssueId) (emitted : Std.HashSet IssueId)
-    (keep : IssueId → Bool) (children : IssueId → List IssueId) :
+    (keep : IssueId → Bool) (children : IssueId → List IssueId) (detail : Bool := false) :
     List String × Std.HashSet IssueId := Id.run do
   let kids := (children i).filter keep
   let n := kids.length
@@ -195,14 +202,16 @@ private partial def treeLines (st : Style) (v : View) (i : IssueId)
     -- default (brighter) color and stands out from the rest of the tree
     let childPre := pre ++ st.paint "2" (if st.glyph == .unicode then (if last then "    " else "│   ")
                             else (if last then "    " else "|   "))
-    let node := pre ++ st.paint "2" conn ++ styledLine st v c
+    let row := if detail then showRelationLine st v c else styledLine st v c
+    let node := pre ++ st.paint "2" conn ++ row
     if c == i || path.contains c then
-      lines := lines ++ [pre ++ st.paint "2" "↺ " ++ styledLine st v c]
+      let marker := if detail && st.glyph == .ascii then "(cycle) " else "↺ "
+      lines := lines ++ [pre ++ st.paint "2" marker ++ row]
     else if em.contains c then
       lines := lines ++ [node ++ st.paint "2" (if st.glyph == .unicode then " ⧉" else " (shown above)")]
     else
       em := em.insert c
-      let (sub, em') := treeLines st v c childPre (path.insert i) em keep children
+      let (sub, em') := treeLines st v c childPre (path.insert i) em keep children detail
       lines := lines ++ (node :: sub)
       em := em'
     idx := idx + 1
@@ -270,25 +279,28 @@ def styledShow (st : Style) (v : View) (i : IssueId)
   let labels := d.labels.presentElements
   let labelLine := if labels.isEmpty then []
     else ["labels: " ++ String.intercalate ", " (labels.map sanitizeSingle)]
-  -- relationships
-  let blockers := v.blockers i
-  let deps := v.dependents i
-  let related := v.relatedOf i
-  let rel (label : String) (ids : List IssueId) : List String :=
-    if ids.isEmpty then [] else [label ++ ": " ++ String.intercalate ", " (ids.map displayId)]
-  let parentLine := match canonicalParentE v i with
-    | some p => ["parent: " ++ displayId p] | none => []
-  let childrenBlock :=
-    if (v.kids i).isEmpty then []
-    else st.paint "1" "children:"
-      :: (treeLines st v i "  " ∅ ((∅ : Std.HashSet IssueId).insert i) (fun _ => true) v.kids).1
+  -- Keep the edge buckets intact: a closed prerequisite is still a dependency.
+  let rel (label unicodeArrow asciiArrow : String) (ids : List IssueId) : List String :=
+    if ids.isEmpty then []
+    else [st.paint "1" label] ++ ids.map (fun r =>
+      "  " ++ st.paint "2" (if st.glyph == .unicode then unicodeArrow else asciiArrow)
+        ++ showRelationLine st v r) ++ [""]
+  let parentBlock := rel "PARENT" "↑ " "^ " (canonicalParentE v i).toList
+  let kids := v.kids i
+  let childrenBlock := if kids.isEmpty then [] else Id.run do
+    let closed := kids.foldl (fun n c => if v.has c && v.effClosed c then n + 1 else n) 0
+    return [st.paint "1" "CHILDREN"]
+      ++ (treeLines st v i "  " ∅ ((∅ : Std.HashSet IssueId).insert i)
+          (fun _ => true) v.kids true).1
+      ++ ["  " ++ st.paint "2" s!"{closed}/{kids.length} direct children closed ({closed * 100 / kids.length}%)", ""]
   let body := [header] ++ (if prov.isEmpty then [] else [String.intercalate "  ·  " prov])
     ++ labelLine ++ [""]
     ++ fence st "DESCRIPTION" (sanitizeMulti ((d.description.value.getD none).getD ""))
     ++ fence st "NOTES" (String.intercalate "\n"
         (d.notes.visibleEntries.map (fun (tag, p) => noteHumanLine tag p)))
-    ++ rel "blocked by" blockers ++ rel "blocks" deps ++ rel "related" related ++ parentLine
-    ++ childrenBlock
+    ++ parentBlock ++ rel "DEPENDS ON" "→ " "-> " (v.blockers i)
+    ++ childrenBlock ++ rel "BLOCKS" "← " "<- " (v.dependents i)
+    ++ rel "RELATED" "↔ " "<-> " (v.relatedOf i)
   return String.intercalate "\n" body
 
 /-! ## Footer / legend (ADR-0017 §3) and stats block (§5) -/
