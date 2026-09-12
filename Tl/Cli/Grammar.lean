@@ -140,7 +140,7 @@ def commandSpecs : List CommandSpec :=
       flags :=
         [ { name := "title", value := true, summary := "new title" },
           { name := "priority", value := true, summary := "0–4; also -p" },
-          { name := "description", value := true, summary := "replace the body" },
+          { name := "description", value := true, summary := "replace the body; `-` reads stdin (empty clears; strips one final newline)" },
           { name := "slug", value := true, summary := "set the display handle (kebab-case; not identity)" },
           actorFlag ] },
     { command := "reopen", positionals := "<id>",

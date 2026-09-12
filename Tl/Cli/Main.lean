@@ -142,6 +142,14 @@ private def createPositionals (a : Argv) : Except Tl.Error (String × Bool) :=
   | [] => .error (usageErr "create needs a title")
   | _ => .error (usageErr "create takes a title, optionally followed by `-` to read the body from stdin (quote multi-word values)")
 
+/-- Explicit text input shared by create, update and note add. Field-specific
+    empty-body semantics belong to the caller, after a successful read. -/
+private def readStdinText : TlM String :=
+  liftSys (fun e => .mk' .internal
+    s!"cannot read stdin: {e}; supply readable text on stdin or pass the text directly as an argument") do
+    let body ← (← (IO.getStdin : IO IO.FS.Stream)).readToEnd
+    pure (if body.endsWith "\n" then (body.dropEnd 1).toString else body)
+
 /-- No positionals, or a `usage` error. -/
 private def noPositionals (a : Argv) (verb : String) : Except Tl.Error Unit :=
   if a.positionals.isEmpty then .ok ()
@@ -214,11 +222,9 @@ def runVerb : List String → TlM CmdOut
       if dashPos && descFlag.isSome && descFlag != some "-" then
         throw (usageErr "give the body once — `--description <text>`, or `-`/`--description -` to read stdin, not both")
       let desc : Option String ←
-        if wantStdin then
-          liftSys (fun e => .mk' .internal s!"cannot read stdin: {e}") do
-            let body ← (← (IO.getStdin : IO IO.FS.Stream)).readToEnd
-            let body := if body.endsWith "\n" then (body.dropEnd 1).toString else body
-            pure (if body.trimAscii.toString.isEmpty then none else some body)
+        if wantStdin then do
+          let body ← readStdinText
+          pure (if body.trimAscii.toString.isEmpty then none else some body)
         else pure descFlag
       cmdCreate (a.get? "dir") title prio desc (a.get? "slug") actor
         (a.getAll "blocked-by") (a.getAll "blocks") (a.getAll "parent") (a.getAll "related")
@@ -319,7 +325,11 @@ def runVerb : List String → TlM CmdOut
       let tok ← MonadExcept.ofExcept (onePositional a "update" "an issue id")
       let prio ← MonadExcept.ofExcept (priorityFlag a)
       let actor ← actorOf a
-      cmdUpdate (a.get? "dir") tok (a.get? "title") (a.get? "description")
+      MonadExcept.ofExcept (validateUpdateNotes (a.get? "notes") (a.get? "append-notes"))
+      let description ← if a.get? "description" == some "-" then
+          some <$> readStdinText
+        else pure (a.get? "description")
+      cmdUpdate (a.get? "dir") tok (a.get? "title") description
         (a.get? "notes") (a.get? "append-notes") (a.get? "slug") prio actor
     | "parent" => do
       match rest with
@@ -393,14 +403,8 @@ def runVerb : List String → TlM CmdOut
         let a ← MonadExcept.ofExcept (parseArgs (valFlagsOf "note add" ++ globalVal) (boolFlagsOf "note add" ++ globalBool) (repeatableFlagsOf "note add") "note add" rest')
         match a.positionals with
         | [x, t] => do
-          -- `-` reads the entry text from stdin (the `create` body convention);
-          -- route the read through `liftSys` so an IO failure stays inside the
-          -- `Tl.Error` / JSON-envelope discipline (finding 5), like create's body
-          let text ← if t == "-" then
-              liftSys (fun e => .mk' .internal s!"cannot read stdin: {e}") do
-                let body ← (← (IO.getStdin : IO IO.FS.Stream)).readToEnd
-                pure (if body.endsWith "\n" then (body.dropEnd 1).toString else body)
-            else pure t
+          -- Share the explicit text read; cmdNoteAdd retains its empty-entry guard.
+          let text ← if t == "-" then readStdinText else pure t
           cmdNoteAdd (a.get? "dir") x text (← actorOf a)
         | _ => throw (usageErr "note add takes <id> <text> ('-' reads the text from stdin)")
       | "list" :: rest' => do

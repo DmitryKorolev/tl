@@ -1937,6 +1937,16 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
       s!"close of {displayId i} was superseded by a later concurrent write — it is closed as {heldAs}, not {asStr}; rerun if still intended"
   return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
 
+/-- Reject retired note flags before dispatch can request stdin. The command
+    repeats this guard for callers that bypass argument dispatch. -/
+def validateUpdateNotes (notes appendNotes : Option String) : Except Tl.Error Unit := do
+  if notes.isSome then
+    throw (.mk' .usage
+      "--notes is retired (ADR-0027): notes are an append-only journal — append an entry with `tl note add <id> <text>`; a correction is a new note, and `tl note remove <id> <note-id>` deletes one")
+  if appendNotes.isSome then
+    throw (.mk' .usage
+      "--append-notes is retired (ADR-0027): `tl note add <id> <text>` appends an immutable entry with no lost-update race — concurrent appends are all retained")
+
 /-- `tl update` writes the mutable scalar fields. The notes scalar is retired
     (ADR-0027): notes are an append-only journal of immutable entries, so
     `--notes` (replace) and `--append-notes` (a non-atomic read-modify-write
@@ -1945,12 +1955,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
 def cmdUpdate (dirOverride : Option String) (tok : String)
     (title description notes appendNotes slug : Option String)
     (priority : Option Nat) (actor : String) : TlM CmdOut := do
-  if notes.isSome then
-    throw (.mk' .usage
-      "--notes is retired (ADR-0027): notes are an append-only journal — append an entry with `tl note add <id> <text>`; a correction is a new note, and `tl note remove <id> <note-id>` deletes one")
-  if appendNotes.isSome then
-    throw (.mk' .usage
-      "--append-notes is retired (ADR-0027): `tl note add <id> <text>` appends an immutable entry with no lost-update race — concurrent appends are all retained")
+  MonadExcept.ofExcept (validateUpdateNotes notes appendNotes)
   if title.isNone && description.isNone && slug.isNone && priority.isNone then
     throw (.mk' .usage
       "update needs at least one of --title, --priority, --description, --slug (notes moved to `tl note add`)")

@@ -99,6 +99,13 @@ tl parent remove <id> <parent>      # detach <id> from that parent
 tl defer <id> --until <YYYY-MM-DD> | --for <dur>   # timed postponement; `tl undefer` clears it
 ```
 
+- **Pipe replacement descriptions explicitly:** `tl update <id> --description -`
+  reads stdin, including with `--json`. It strips one final newline, preserves
+  other whitespace, and an empty body clears the description. Without the flag,
+  the description is unchanged; literal arguments do not read stdin. To store
+  a literal dash, feed `printf '%s' '-'` through the same stdin form. A failed
+  read applies none of the requested field updates.
+
 - **Write a `--description` on every create.** The description is the context
   handoff: what, why, and the file/ADR refs an agent with *no conversation
   history* needs in order to act. A bare title rarely survives a context

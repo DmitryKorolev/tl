@@ -1926,6 +1926,103 @@ def cliDescriptionTests : IO (List Outcome) := do
       s!"exit={held.exitCode} elapsed={elapsed}ms out={held.stdout}"]
   return o
 
+/-- Description replacement through the public binary, including failure before
+    any combined-field write and explicit input with an inherited open pipe. -/
+def cliUpdateDescriptionTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let id := "tl-" ++ (← mkIssue dir "Original" ["--description", "original body"])
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  let scratch ← IO.FS.createTempDir
+  try
+    let q (s : String) : String := "'" ++ s.replace "'" "'\\''" ++ "'"
+    let base := [exe.toString, "update", id, "--dir", dir, "--actor", "tester"]
+    let command (flags : List String) := String.intercalate " " ((base ++ flags).map q)
+    let sh (script : String) := IO.Process.output { cmd := "sh", args := #["-c", script] }
+    let input := scratch / "input"
+    let invoke (flags : List String) (source : System.FilePath) :=
+      sh s!"{command flags} < {q source.toString}"
+    let showData : IO Json := do
+      match ← run' ["show", id, "--dir", dir] with
+      | .ok out => pure out.data
+      | .error e => throw (IO.userError e.message)
+    let logBytes : IO (Array (String × ByteArray)) := do
+      let entries ← (System.FilePath.mk dir / "log").readDir
+      entries.mapM fun entry => do
+        return (entry.fileName, ← IO.FS.readBinFile entry.path)
+    let mut rows : List Outcome := []
+    for json in [true, false] do
+      let mode := if json then ["--json"] else ["--plain"]
+      for (name, body, expected) in [
+          ("multiline Unicode", "first λ\nsecond ✓\n", "first λ\nsecond ✓"),
+          ("no final newline", "body", "body"),
+          ("two final newlines", "body\n\n", "body\n"),
+          ("empty clears", "", ""),
+          ("newline clears", "\n", ""),
+          ("whitespace preserved", " \t\n", " \t"),
+          ("literal dash via stdin", "-", "-")] do
+        let _ ← run' ["update", id, "--dir", dir, "--description", "old value"]
+        IO.FS.writeFile input body
+        let result ← if name == "multiline Unicode" then
+            sh s!"cat {q input.toString} | {command (["--description", "-"] ++ mode)}"
+          else invoke (["--description", "-"] ++ mode) input
+        let after ← showData
+        rows := rows ++ [
+          checkEq s!"update stdin {name} (json={json}): exit" result.exitCode 0,
+          checkEq s!"update stdin {name} (json={json}): stored body"
+            (jStr after "description") (some expected),
+          check s!"update stdin {name} (json={json}): output"
+            (if json then
+              ((Json.parse result.stdout).toOption.bind (fun j => jGet j "data") |>.bind
+                (fun j => jStr j "description")) == some expected
+             else result.stdout.contains "Updated") result.stdout]
+      -- Directory input fails on read; invalid UTF-8 fails after bytes arrive.
+      IO.FS.writeBinFile input ("partial body".toUTF8 ++ ByteArray.mk #[255])
+      for (name, source) in [("read failure", scratch), ("invalid UTF-8", input)] do
+        let before ← showData
+        let beforeLog ← logBytes
+        let result ← invoke (["--description", "-", "--title", "must not change",
+          "--priority", "0", "--slug", "must-not-change"] ++ mode) source
+        let after ← showData
+        let diagnostic := if json then
+          ((Json.parse result.stdout).toOption.bind (fun j => jGet j "error"))
+        else none
+        rows := rows ++ [
+          checkEq s!"update stdin {name} (json={json}): error exit" result.exitCode 1,
+          check s!"update stdin {name} (json={json}): error and remedy"
+            (if json then diagnostic.any (fun e => jStr e "code" == some "internal" &&
+              (jStr e "message").any (·.contains "supply readable text"))
+             else result.stderr.contains "supply readable text") (result.stdout ++ result.stderr),
+          checkEq s!"update stdin {name} (json={json}): all fields and timestamps unchanged"
+            after.compress before.compress,
+          check s!"update stdin {name} (json={json}): no log write"
+            ((← logBytes) == beforeLog)]
+    -- These requests must finish before the writer closes the pipe. A bounded
+    -- fallback records expiration, so a regression fails instead of hanging.
+    for (name, flags, expectedCode, expectedBody) in [
+        ("literal", ["--description", "literal\nbody\n"], 0, "literal\nbody\n"),
+        ("other field", ["--title", "Changed"], 0, "literal\nbody\n"),
+        ("retired notes", ["--description", "-", "--notes", "old"], 2, "literal\nbody\n"),
+        ("retired append", ["--description", "-", "--append-notes", "old"], 2, "literal\nbody\n"),
+        ("invalid priority", ["--description", "-", "--priority", "bad"], 2, "literal\nbody\n")] do
+      let fifo := scratch / "fifo"
+      let release := scratch / "release"
+      let expired := scratch / "expired"
+      for path in [release, expired] do
+        if ← path.pathExists then IO.FS.removeFile path
+      let result ← sh s!"mkfifo {q fifo.toString}\n\
+        (i=0; while [ ! -f {q release.toString} ]; do\n\
+        i=$((i + 1)); if [ \"$i\" -ge 500 ]; then touch {q expired.toString}; break; fi\n\
+        sleep 0.01; done) > {q fifo.toString} 2>/dev/null &\n\
+        holder=$!\n{command (flags ++ ["--json"])} < {q fifo.toString}\n\
+        result=$?\ntouch {q release.toString}\nwait \"$holder\"\n\
+        rm -f {q fifo.toString}\nexit \"$result\""
+      rows := rows ++ [
+        checkEq s!"update {name}: status before stdin EOF" result.exitCode expectedCode,
+        check s!"update {name}: finishes without requesting stdin" (!(← expired.pathExists)),
+        checkEq s!"update {name}: description" (jStr (← showData) "description") (some expectedBody)]
+    return rows
+  finally IO.FS.removeDirAll scratch
+
 /-- The consistency batch: stamp-ordered provenance ties, mode-scoped
     `--of`, segment-owner validation, junk stems, hardened enumeration. (The
     ownership *refusal* itself needs a second uid and stays untestable here;
@@ -6029,7 +6126,7 @@ def cliCopiedReplicaTests : IO (List Outcome) := do
 def cliTests : IO (List Outcome) := do
   return parsedListFacetTests ++ (← cliBasicTests) ++ (← cliWorkLoopTests) ++ (← cliCloseGuardTests)
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
-    ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliConsistencyTests)
+    ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliUpdateDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
     ++ (← cliCopiedReplicaTests) ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)

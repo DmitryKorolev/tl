@@ -189,6 +189,18 @@ mutable `title`/`description` only):
   `readToEnd`, and a non-blocking peek cannot distinguish that from a slow
   legitimate writer. Trade-off, accepted: bare `echo body | tl create "t"`
   does not feed the body — add `-` (`echo body | tl create "t" -`).
+- `tl update <id> --description -` reads the replacement body from stdin in
+  both human and JSON modes. The reader shared with `create` and `note add`
+  removes exactly one final LF. Updates preserve other whitespace and Unicode
+  content.
+  Empty input deliberately sets an empty description; unlike creation, it is
+  not interpreted as an absent assignment. Omitting `--description` leaves the
+  description unchanged. Literal arguments and updates without the sentinel
+  never read stdin. To store a literal dash, pipe `printf '%s' '-'` into
+  `tl update <id> --description -`.
+  A failed read returns `internal` with a remedy before any update operation
+  is written, including other fields supplied in the same command. Invalid
+  syntax and retired note flags are rejected before requesting stdin.
 - `tl edit <id>` opens the issue's editable fields (title, description) in
   `$EDITOR` and applies the diff on save. Notes are not editable — an entry is
   immutable; append a new one with `note add` (ADR-0027).
