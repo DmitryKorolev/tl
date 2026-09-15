@@ -1089,3 +1089,17 @@ Two reading rules these encode: derive-or-report, never enforce (any
 cross-entity rule a merge could break is a total function of state, not a
 write-time guard — ADR-0003), and prove the pure core, test the shell, name the
 rest as a carried assumption (ADR-0004 / overview Trusted).
+
+### Completion explanation
+
+`Tl/Kernel/Why.lean` defines `WhyKind`/`WhyLink` and the indexed `whyLinksH`
+adjacency. `whyLinksH_eq` bridges the buckets to the state-level relation;
+`mem_whyLinks` characterizes each label and live endpoints. `whyWork` uses the
+existing singleton-seeded frontier engine. `mem_whyWork_iff` and
+`mem_whyWorkH_iff` prove exact reachability, and `whyWork_nodup` proves output
+uniqueness. The existing frontier expansion proofs apply unchanged. This is
+an explanation query, with no write or readiness/rollup changes.
+`Tl/Cli/Commands.lean` materializes its reached adjacency for typed JSON edges
+and `Tl/Cli/Render.lean` renders one row per target per parent with cached node text and a
+shared output array. `Tests/CliTests.lean` covers field projection, human
+wording, cyclic/shared rendering and the public command.

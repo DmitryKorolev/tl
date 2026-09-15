@@ -3238,6 +3238,288 @@ def cliShowRelationshipTests : IO (List Outcome) := do
       (edges.length == 5 && edges.all (fun e => jKeys e == ["from", "to", "type"]))]
 
 
+/-- Explanation serialization and rendering over merge-reachable fixtures.
+    Kernel membership and label semantics are proved in Kernel.Why; these
+    assertions cover the shell's field projection, wording and tree markers. -/
+def whyExplanationTests : List Outcome := Id.run do
+  let root := "a000000000000000"
+  let child := "b000000000000000"
+  let prerequisite := "c000000000000000"
+  let nested := "d000000000000000"
+  let leaf := "e000000000000000"
+  let closed := "f000000000000000"
+  let cancelled := "g000000000000000"
+  let ignored := "h000000000000000"
+  let missing := "j000000000000000"
+  let stamp (n : Nat) : Tl.Crdt.Stamp := ⟨n, 7, n⟩
+  let mkView (s : State) : View :=
+    View.ofLoaded ⟨"", ".tl"⟩
+      { state := s, ops := [], refused := [], skipped := [], deferred := [],
+        maxHlc := 0, maxDeferredHlc := 0, warnings := [], segmentCount := 0 }
+      100 none
+  let base := Tl.Kernel.fold [
+    Op.create root (stamp 1) { title := some "Release group" },
+    Op.create child (stamp 2) { title := some "Blocked child", priority := some (1 : Fin 5) },
+    Op.create prerequisite (stamp 3) { title := some "Dependency epic", priority := some (0 : Fin 5) },
+    Op.create nested (stamp 4) { title := some "Nested group" },
+    Op.create leaf (stamp 5) { title := some ("Leaf\nFORGED" ++ String.singleton (Char.ofNat 27)), status := some .InProgress },
+    Op.create closed (stamp 6) { title := some "Finished", status := some .Done },
+    Op.create cancelled (stamp 7) { title := some "Abandoned", status := some .Cancelled },
+    Op.create ignored (stamp 8) { title := some "Work under cancellation" },
+    Op.edgeAdd (root, child, .Parent) (stamp 9),
+    Op.edgeAdd (root, nested, .Parent) (stamp 10),
+    Op.edgeAdd (nested, leaf, .Parent) (stamp 11),
+    Op.edgeAdd (prerequisite, leaf, .Parent) (stamp 12),
+    Op.edgeAdd (prerequisite, child, .Blocks) (stamp 13),
+    Op.edgeAdd (root, closed, .Parent) (stamp 14),
+    Op.edgeAdd (root, cancelled, .Parent) (stamp 15),
+    Op.edgeAdd (cancelled, ignored, .Parent) (stamp 16),
+    Op.edgeAdd (missing, child, .Blocks) (stamp 17),
+    Op.edgeAdd (root, missing, .Parent) (stamp 18)]
+  let output (s : State) (i : IssueId) := whyFromView (mkView s) i
+  let render (s : State) (i : IssueId) (style : Style := Style.plain) :=
+    let out := output s i
+    (out.render.map (· style)).getD out.human
+  let explanation (out : CmdOut) := (jGet out.data "explanation").getD Json.null
+  let nodes (out : CmdOut) := jArr (explanation out) "nodes"
+  let edges (out : CmdOut) := jArr (explanation out) "edges"
+  let ids (out : CmdOut) := (nodes out).filterMap (fun n => jStr n "id")
+  let hasEdge (out : CmdOut) (source target kind : String) := (edges out).any (fun e =>
+    jStr e "from" == some (displayId source) && jStr e "to" == some (displayId target)
+      && jStr e "kind" == some kind)
+  let out := output base root
+  let plain := render base root
+  let unicode := render base root ⟨.off, .unicode⟩
+  let colored := render base root ⟨.on, .unicode⟩
+  let asciiColor := render base root ⟨.on, .ascii⟩
+  let mixed := Tl.Kernel.apply base (Op.edgeAdd (root, leaf, .Blocks) (stamp 20))
+  let parentCycle := Tl.Kernel.apply base (Op.edgeAdd (leaf, root, .Parent) (stamp 21))
+  let depCycle := Tl.Kernel.apply base (Op.edgeAdd (child, prerequisite, .Blocks) (stamp 22))
+  let dual := Tl.Kernel.apply base (Op.edgeAdd (child, root, .Blocks) (stamp 23))
+  let done := Tl.Kernel.apply base (Op.setFields leaf (stamp 24) { status := some .Done })
+  let allDone := Tl.Kernel.apply done (Op.setFields child (stamp 25) { status := some .Done })
+  let deferred := Tl.Kernel.apply base (Op.setFields child (stamp 26) { deferUntil := some (some 1000) })
+  let expired := Tl.Kernel.apply base (Op.setFields child (stamp 27) { deferUntil := some (some 50) })
+  let terminalDeps := Tl.Kernel.apply base (Op.edgeAdd (child, closed, .Blocks) (stamp 28))
+  let rootLink := Tl.Kernel.apply base (Op.edgeAdd (prerequisite, root, .Blocks) (stamp 29))
+  let rootDeferred := Tl.Kernel.apply base (Op.setFields root (stamp 30) { deferUntil := some (some 1000) })
+  let selfCycle := Tl.Kernel.apply base (Op.edgeAdd (root, root, .Parent) (stamp 31))
+  let deep := Tl.Kernel.apply base (Op.edgeAdd (ignored, prerequisite, .Blocks) (stamp 32))
+  let sharedDual := Tl.Kernel.apply base (Op.edgeAdd (leaf, nested, .Blocks) (stamp 34))
+  let progressDeferred := Tl.Kernel.apply base (Op.setFields leaf (stamp 33) { deferUntil := some (some 1000) })
+  let mut rows := [
+    check "epic why keeps dependency-only blockedBy absent" ((jGet out.data "blockedBy").isNone),
+    checkEq "explanation object has nodes and edges" (jKeys (explanation out)) ["edges", "nodes"],
+    check "explanation edge schema is typed and exact"
+      ((edges out).all (fun e => jKeys e == ["from", "kind", "to"])),
+    check "parent explanation includes child, dependency epic, nested work and leaf"
+      ([root, child, prerequisite, nested, leaf].all (fun x => (ids out).contains (displayId x))),
+    check "closed, cancelled and missing endpoints do not produce rows"
+      ([closed, cancelled, ignored, missing].all (fun x => !(ids out).contains (displayId x))),
+    check "root child link is labelled" (hasEdge out root child "unfinished-child"),
+    check "nested epic child link is labelled" (hasEdge out nested leaf "unfinished-child"),
+    check "dependency epic reached from child has labelled prerequisite edge"
+      (hasEdge out child prerequisite "depends-on"),
+    check "dependency epic expands unfinished work" (hasEdge out prerequisite leaf "unfinished-child"),
+    checkEq "shared work serializes once" ((ids out).filter (· == displayId leaf)).length 1,
+    check "node projection includes priority, stored and effective/display statuses"
+      ((nodes out).any (fun n => jStr n "id" == some (displayId child)
+        && jNat n "priority" == some 1 && jStr n "status" == some "open"
+        && jStr n "effectiveStatus" == some "open" && jStr n "displayStatus" == some "blocked"
+        && jBool n "isEpic" == some false)),
+    check "plain epic why explains unfinished children"
+      (plain.contains "unfinished epic" && !plain.contains "unfinished child: "
+        && !plain.contains "depends on: " && plain.contains "Blocked child [blocked]"
+        && plain.contains "Dependency epic [open]" && plain.contains "[in_progress]") plain,
+    check "plain why marks shared work" (plain.contains "(shown above)") plain,
+    check "plain why sanitizes hostile titles" (!plain.contains "\nFORGED" && !plain.contains (Char.ofNat 27)) plain,
+    check "JSON why sanitizes hostile titles"
+      ((nodes out).all (fun n => (jStr n "title").all (fun t => !t.contains '\n' && !t.contains (Char.ofNat 27)))),
+    check "Unicode why has tree and shared markers without color"
+      (unicode.contains '└' && unicode.contains '⧉' && !unicode.contains (Char.ofNat 27)) unicode,
+    check "why color is independent of glyphs"
+      (colored.contains (Char.ofNat 27) && asciiColor.contains (Char.ofNat 27)
+        && !asciiColor.contains '└'),
+    check "both edge meanings survive for the same endpoints"
+      (hasEdge (output dual root) root child "unfinished-child"
+        && hasEdge (output dual root) root child "depends-on"),
+    check "legacy child blocker rows retain exact schema and direct flags"
+      (let oldRows := jArr (output deep child).data "blockedBy"
+       oldRows.length == 2 && oldRows.all (fun n =>
+         jKeys n == ["direct", "effectiveStatus", "id", "status", "title"])
+         && oldRows.any (fun n => jStr n "id" == some (displayId prerequisite) && jBool n "direct" == some true)
+         && oldRows.any (fun n => jStr n "id" == some (displayId ignored) && jBool n "direct" == some false)),
+    check "epic explanation follows a multi-hop dependency chain beneath its child"
+      (hasEdge (output deep root) prerequisite ignored "depends-on"
+        && (render deep root).contains "Work under cancellation"),
+    check "dual-labelled child has one JSON node and one human row"
+      (((ids (output dual root)).filter (· == displayId child)).length == 1
+        && ((render dual root).splitOn "Blocked child").length == 2
+        && !(render dual root).contains "depends on:"),
+    check "dual-labelled child renders once in Unicode and color modes"
+      ([Style.mk .off .unicode, Style.mk .on .unicode, Style.mk .on .ascii].all (fun st =>
+        let text := render dual root st
+        (text.splitOn "Blocked child").length == 2
+          && !text.contains "depends on:" && !text.contains "unfinished child:")),
+
+    check "in-progress root retains its future deadline explanation"
+      ((render progressDeferred leaf).contains "is in progress"
+        && (render progressDeferred leaf).contains "Deferred until"),
+    check "already-shared target has one row under its next parent"
+      (let text := render sharedDual root
+       (text.splitOn "Leaf").length == 3
+         && (text.splitOn "\n").any (fun line =>
+           line.contains "Leaf" && line.contains "(shown above)")),
+    check "completed epic gives its actual completion reason"
+      ((render allDone root).contains "is complete; all children are closed"),
+    check "completed epic explanation contains only its root"
+      ((ids (output allDone root)) == [displayId root] && (edges (output allDone root)).isEmpty),
+    check "cancelled epic gives cancellation reason and no child tree"
+      ((render base cancelled).contains "is cancelled" && !(render base cancelled).contains "Work under cancellation"),
+    check "cancelled epic JSON retains only the root" (ids (output base cancelled) == [displayId cancelled]),
+    check "done task with historical blockers explains done"
+      ((render terminalDeps closed).contains "is done" && !(render terminalDeps closed).contains "Blocked child"),
+    check "legacy blockedBy remains unchanged for a closed root with dependencies"
+      (!(jArr (output terminalDeps closed).data "blockedBy").isEmpty
+        && (edges (output terminalDeps closed)).isEmpty),
+    check "in-progress task gets concrete reason" ((render base leaf).contains "is in progress"),
+    check "blocked task gets concrete reason" ((render base child).contains "is blocked"),
+    check "deferred task gets reason and deadline"
+      ((render deferred child).contains "is deferred" && (render deferred child).contains "Deferred until"),
+    check "deferred node carries a machine-readable deadline"
+      ((nodes (output deferred root)).any (fun n => jStr n "id" == some (displayId child)
+        && jStr n "displayStatus" == some "deferred" && (jStr n "deferUntil").isSome)),
+    check "expired defer is omitted from reason and node"
+      (!(render expired child).contains "Deferred until"
+        && (nodes (output expired child)).all (fun n => (jGet n "deferUntil").isNone)),
+    check "epic defer and child completion reasons are both shown"
+      ((render rootDeferred root).contains "unfinished epic" && (render rootDeferred root).contains "Deferred until"),
+    check "epic direct dependencies stay separately labelled"
+      (hasEdge (output rootLink root) root prerequisite "depends-on"
+        && hasEdge (output rootLink root) root child "unfinished-child"),
+    check "ready response retains minimal schema"
+      (jKeys (output base ignored).data == ["id", "ready"]
+        && (render base ignored).contains "is ready"),
+    check "closed prerequisite stops expansion when its epic rolls up"
+      (!(ids (output done child)).contains (displayId prerequisite))]
+  for (name, s, query) in [("mixed", mixed, root), ("parent", parentCycle, root),
+      ("dependency", depCycle, child), ("self", selfCycle, root)] do
+    let ascii := render s query
+    let uni := render s query ⟨.off, .unicode⟩
+    rows := rows ++ [
+      check s!"{name} cycle has an ASCII marker" (ascii.contains "(cycle)" && !ascii.contains '↺') ascii,
+      check s!"{name} cycle has a Unicode marker" (uni.contains '↺') uni,
+      checkEq s!"{name} cycle serializes root once"
+        ((ids (output s query)).filter (· == displayId query)).length 1]
+  return rows
+
+/-- End-to-end graph output, flag handling and root errors through the binary. -/
+def cliWhyExplanationTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let epic ← mkIssue dir "Delivery epic"
+  let blocker ← mkIssue dir "Prepare dependency" ["-p", "0"]
+  let child ← mkIssue dir "Implement child" ["--parent", "tl-" ++ epic,
+    "--blocked-by", "tl-" ++ blocker]
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  let invoke (args : Array String) := IO.Process.output {
+    cmd := exe.toString, args := #["why", "tl-" ++ epic, "--dir", dir] ++ args }
+  let plain ← invoke #["--plain"]
+  let unicode ← invoke #["--color=never", "--glyphs=unicode"]
+  let colored ← invoke #["--color=always", "--glyphs=ascii"]
+  let machine ← invoke #["--json", "--color=always", "--glyphs=unicode"]
+  let data := (Json.parse machine.stdout).toOption.bind (fun j => jGet j "data")
+  let exp := data.bind (fun j => jGet j "explanation")
+  let edges := exp.map (fun j => jArr j "edges") |>.getD []
+  let mut rows := [
+    check "public epic why shows child and its dependency"
+      (plain.exitCode == 0 && !plain.stdout.contains "unfinished child: "
+        && plain.stdout.contains "Implement child" && !plain.stdout.contains "depends on: "
+        && plain.stdout.contains "Prepare dependency") plain.stdout,
+    check "public plain why is ANSI-free" (!plain.stdout.contains (Char.ofNat 27)),
+    check "public Unicode why" (unicode.exitCode == 0 && unicode.stdout.contains '└'
+      && !unicode.stdout.contains (Char.ofNat 27)),
+    check "public colored ASCII why" (colored.exitCode == 0 && colored.stdout.contains (Char.ofNat 27)
+      && !colored.stdout.contains '└'),
+    check "public JSON why is undecorated" (machine.exitCode == 0 && !machine.stdout.contains (Char.ofNat 27)),
+    check "public JSON preserves blockedBy omission" (data.any (fun j => (jGet j "blockedBy").isNone)),
+    check "public JSON describes both typed edges with full IDs"
+      (edges.length == 2 && edges.any (fun e => jStr e "from" == some (displayId epic)
+          && jStr e "to" == some (displayId child) && jStr e "kind" == some "unfinished-child")
+        && edges.any (fun e => jStr e "from" == some (displayId child)
+          && jStr e "to" == some (displayId blocker) && jStr e "kind" == some "depends-on"))]
+  rows := rows ++ [← expectErr "why missing root retains not-found"
+    ["why", "not-a-known-slug", "--dir", dir] .notFound,
+    ← expectErr "why missing argument retains usage" ["why", "--dir", dir] .usage]
+  return rows
+
+/-- Unblocks uses the shared task style through the public binary, while its
+    JSON and ready-difference membership remain independent of decoration. -/
+def cliUnblocksStyleTests : IO (List Outcome) := do
+  let dir ← freshDir
+  let hub ← mkIssue dir "Prepare interface"
+  let esc := String.singleton (Char.ofNat 27)
+  let first ← mkIssue dir ("Implement parser\n" ++ esc ++ "[31murgent")
+    ["-p", "0", "--blocked-by", "tl-" ++ hub]
+  let second ← mkIssue dir "Write examples" ["-p", "3", "--blocked-by", "tl-" ++ hub]
+  let _ ← mkIssue dir "Later integration" ["--blocked-by", "tl-" ++ first]
+  let exe := (← IO.currentDir) / ".lake" / "build" / "bin" / "tl"
+  let invoke (id : String) (args : Array String) := IO.Process.output {
+    cmd := exe.toString, args := #["unblocks", "tl-" ++ id, "--dir", dir] ++ args }
+  let plain ← invoke hub #["--plain"]
+  let unicode ← invoke hub #["--color=never", "--glyphs=unicode"]
+  let colored ← invoke hub #["--color=always", "--glyphs=unicode"]
+  let asciiColor ← invoke hub #["--color=always", "--glyphs=ascii"]
+  let noColor ← IO.Process.output {
+    cmd := exe.toString,
+    args := #["unblocks", "tl-" ++ hub, "--dir", dir, "--glyphs=unicode"],
+    env := #[("NO_COLOR", some "1")] }
+  let machine ← invoke hub #["--json", "--color=always", "--glyphs=unicode"]
+  let machinePlain ← invoke hub #["--json", "--plain"]
+  let empty ← invoke second #["--color=always", "--glyphs=unicode"]
+  let v ← (loadView (some dir)).run
+  let fallbackOk := match v with
+    | .ok view => styledUnblocks Style.plain view hub [first, second]
+        |>.contains " [blocked]"
+    | .error _ => false
+  let mut rows := [
+    check "unblocks plain rows carry glyph priority and current status"
+      (plain.exitCode == 0 && plain.stdout.contains "  ! "
+        && plain.stdout.contains " P0 " && plain.stdout.contains " P3 Write examples [blocked]"
+        && !plain.stdout.contains (Char.ofNat 27)) plain.stdout,
+    check "unblocks Unicode without color uses blocked glyph"
+      (unicode.exitCode == 0 && unicode.stdout.contains "  ● "
+        && !unicode.stdout.contains (Char.ofNat 27)) unicode.stdout,
+    check "unblocks colors status and priority with the shared palette"
+      (colored.exitCode == 0 && colored.stdout.contains (esc ++ "[31m●")
+        && colored.stdout.contains (esc ++ "[1;31mP0")
+        && colored.stdout.contains (esc ++ "[2mP3")
+        && colored.stdout.contains (esc ++ "[2m [blocked]")) colored.stdout,
+    check "unblocks color and ASCII are independent"
+      (asciiColor.exitCode == 0 && asciiColor.stdout.contains (esc ++ "[31m!")
+        && !asciiColor.stdout.contains '●') asciiColor.stdout,
+    check "unblocks honors NO_COLOR"
+      (noColor.exitCode == 0 && noColor.stdout.contains '●'
+        && !noColor.stdout.contains (Char.ofNat 27)) noColor.stdout,
+    check "unblocks retains full queried ID and short row IDs"
+      (plain.stdout.contains (displayId hub) && !plain.stdout.contains (displayId first)
+        && !plain.stdout.contains (displayId second)) plain.stdout,
+    check "unblocks sanitizes titles to one terminal line"
+      (plain.stdout.contains "Implement parser" && plain.stdout.contains "urgent"
+        && (plain.stdout.splitOn "\n").length == 4) plain.stdout,
+    check "unblocks excludes dependents that would remain blocked"
+      (!plain.stdout.contains "Later integration") plain.stdout,
+    check "unblocks styling leaves JSON identical"
+      (machine.exitCode == 0 && machinePlain.exitCode == 0
+        && machine.stdout == machinePlain.stdout && !machine.stdout.contains (Char.ofNat 27)),
+    check "unblocks empty result retains its explanation"
+      (empty.exitCode == 0 && empty.stdout ==
+        s!"closing {displayId second} would free nothing right now (no dependent becomes ready)\n") empty.stdout,
+    check "unblocks plain fallback uses shared status rows" fallbackOk]
+  rows := rows ++ [← expectErr "unblocks missing root retains not-found"
+    ["unblocks", "not-a-known-slug", "--dir", dir] .notFound,
+    ← expectErr "unblocks missing argument retains usage" ["unblocks", "--dir", dir] .usage]
+  return rows
+
 /-- The canonical-parent LWW tie-break: with two surviving parent edges the
     display parent is the one whose greatest add-tag is LWW-greater — on both
     the spec form and the hoisted-view form. -/
@@ -6312,6 +6594,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests
+    ++ whyExplanationTests ++ (← cliWhyExplanationTests) ++ (← cliUnblocksStyleTests)
     ++ treeCycleRenderTests ++ showRelationshipTests ++ (← cliShowRelationshipTests) ++ canonicalParentTieTests ++ rowAccessorAgreementTests
     ++ readyRankedTests
     ++ (← cliTreeDiamondTests) ++ (← cliTreePrefixDimTests) ++ (← cliHoistedHelperTests)

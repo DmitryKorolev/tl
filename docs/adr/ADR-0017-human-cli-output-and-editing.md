@@ -17,7 +17,7 @@ machine envelope, error codes, and exit statuses are ADR-0008.
 
 ### 1. One-line issue format
 
-Used by `ready` and flat `list` output:
+Used by `ready`, flat `list`, and `unblocks` output:
 
 ```
 <glyph> <id> <prio> [epic] <title>
@@ -53,14 +53,27 @@ Used by `ready` and flat `list` output:
 
 ### 2. Tree rendering (hierarchy, incl. nested epics)
 
+`why` explains remaining work through unfinished epic children and live
+blocking dependencies. Human rows show tasks without repeated relationship
+labels. When one target is both a child and a blocker of the same parent, it
+appears once under that parent. References under different parents still
+retain shared-node markers. Children determine epic completion, while
+dependencies are prerequisites for work; JSON preserves the distinction.
+Nested epics expand even when encountered as blockers. Closed/cancelled
+nodes stop descent. The root gets a concrete reason (ready, in progress,
+blocked, deferred, unfinished epic, complete or cancelled); future deferrals
+also show their deadline. Cycle and shared-node markers apply across both
+edge kinds, with `(cycle)` and `(shown above)` in ASCII. Missing endpoints
+are inert, matching the kernel's discharge rules; `doctor` diagnoses them.
+The separate JSON explanation graph is specified in ADR-0020; `blockedBy`
+retains its dependency-only contract.
+
 Structure — including nested epics (epic → sub-epic → … → task, to arbitrary
 depth) — is rendered as an indented tree, never inline on the one-line format.
 Used by `list` — the tree is the **default** whole-project browse (amended
 2026-06-11: it was the `--tree` opt-in; `--flat` now opts into the one-line
-rows instead) — the dependency views `why <id>` (upward blockers) and
-`unblocks <id>` (downward dependents), each single-rooted over `blocks` edges
-(decided 2026-06-11: these subsume the separate `dep tree` verb, ADR-0003),
-and the children block of `show <epic>`:
+rows instead) — the dependency view `why <id>` (remaining children and upward
+blockers), and the children block of `show <epic>`:
 
 ```
 ○ tl-ep01 P1 [epic] Parser rewrite
@@ -85,6 +98,16 @@ and the children block of `show <epic>`:
   `effectiveStatus`, ADR-0004.)
 - `ready` is never a tree — it is the flat ranked queue (§1); a global
   priority order can't also be a hierarchy.
+
+`unblocks <id>` previews the ready-difference set: tasks that would become
+ready after closing the queried issue. It lists those tasks using the same
+colored glyphs, dimmed short IDs, priority styling, sanitized titles and status
+words as `why`, with the full queried ID in the heading. These are current
+statuses; the heading describes the hypothetical close. It is a flat result
+set, not a recursive dependent tree: a downstream task that would still be
+blocked does not belong in the result. Empty results explain that no dependent
+becomes ready. Color and glyph flags follow the shared rules (§7); JSON stays
+undecorated and keeps its existing fields (ADR-0020).
 
 ### 3. Footer
 

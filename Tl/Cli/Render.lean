@@ -13,6 +13,7 @@ set), the footer/legend (§3), and the stats block (§5). `--json` never goes
 through here (it is the machine contract). Tested I/O shell; no Mathlib.
 -/
 import Tl.Cli.Project
+import Tl.Kernel.Why
 
 namespace Tl.Cli
 
@@ -171,6 +172,14 @@ private def showRelationLine (st : Style) (v : View) (i : IssueId) : String :=
     st.paint "33" s!"? {displayId i} [missing task]"
   else styledLine st v i ++ st.paint "2" s!" [{(displayState v i).word}]"
 
+/-- A ready-difference preview uses the same task rows as dependency explanations.
+    Status describes the current view; the heading describes the hypothetical close. -/
+def styledUnblocks (st : Style) (v : View) (i : IssueId) (freed : List IssueId) : String :=
+  if freed.isEmpty then
+    s!"closing {displayId i} would free nothing right now (no dependent becomes ready)"
+  else s!"closing {displayId i} unblocks:\n" ++
+    String.intercalate "\n" (freed.map (fun b => "  " ++ showRelationLine st v b))
+
 /-! ## Edge tree (ADR-0017 §2) — total on cyclic/dangling graphs -/
 
 /-- The tree walk over a caller-supplied `children` accessor, so the same
@@ -240,6 +249,83 @@ def treeForest (st : Style) (v : View) (roots : List IssueId)
       lines := lines ++ (styledLine st v r :: sub)
       em := em'
   return lines
+
+/-- One vocabulary for the labelled explanation wire format. -/
+def whyKindWire : WhyKind → String
+  | .dependsOn => "depends-on"
+  | .unfinishedChild => "unfinished-child"
+
+/-- A human tree has one row per target under each parent, even when that
+    target is both a child and a blocker. JSON retains both typed edges.
+    Hash membership preserves first-discovery order in linear work. -/
+private def whyDisplayChildren (links : List WhyLink) : List IssueId := Id.run do
+  let mut seen : Std.HashSet IssueId := ∅
+  let mut children : List IssueId := []
+  for link in links do
+    if !seen.contains link.target then
+      seen := seen.insert link.target
+      children := link.target :: children
+  return children.reverse
+
+/-- Append rows to one shared array: wide trees do not repeatedly copy their
+    preceding output. Path membership distinguishes a cycle from shared work. -/
+private partial def whyTreeLines (st : Style) (v : View)
+    (links : IssueId → List WhyLink) (nodeText : Std.HashMap IssueId String)
+    (i : IssueId) (pre : String)
+    (path emitted : Std.HashSet IssueId) (lines : Array String) :
+    Array String × Std.HashSet IssueId := Id.run do
+  let kids := whyDisplayChildren (links i)
+  let mut output := lines
+  let mut seen := emitted
+  let count := kids.length
+  let mut idx := 0
+  for target in kids do
+    let last := idx + 1 == count
+    let conn := if st.glyph == .unicode then (if last then "└── " else "├── ")
+      else (if last then "\\-- " else "+-- ")
+    let row := pre ++ st.paint "2" conn
+      ++ (nodeText[target]?.getD (displayId target))
+    if path.contains target then
+      output := output.push (row ++ st.paint "2"
+        (if st.glyph == .unicode then " ↺" else " (cycle)"))
+    else if seen.contains target then
+      output := output.push (row ++ st.paint "2"
+        (if st.glyph == .unicode then " ⧉" else " (shown above)"))
+    else
+      seen := seen.insert target
+      let childPre := pre ++ st.paint "2" (if last then "    "
+        else if st.glyph == .unicode then "│   " else "|   ")
+      let (sub, visited) := whyTreeLines st v links nodeText target childPre
+        (path.insert target) seen (output.push row)
+      output := sub
+      seen := visited
+    idx := idx + 1
+  return (output, seen)
+
+/-- Human explanation with exact root reasons and one task row per parent. -/
+def styledWhy (st : Style) (v : View) (i : IssueId) (nodes : List IssueId)
+    (links : IssueId → List WhyLink) : String := Id.run do
+  let id := displayId i
+  let status := v.effStatus i
+  if status == .Cancelled then return s!"{id} is cancelled; no completion work is required."
+  if status == .Done then
+    return if v.isEpic i then s!"{id} is complete; all children are closed."
+      else s!"{id} is done; no remaining work."
+  let reason := if v.isEpic i then
+      s!"{id} is an unfinished epic; its remaining children must close."
+    else if (v.issueData i).statusOf == .InProgress then s!"{id} is in progress."
+    else if v.deferred i then s!"{id} is deferred."
+    else if v.blocked i then s!"{id} is blocked."
+    else s!"{id} is ready."
+  let deferLine := match (v.issueData i).deferUntilOf with
+    | some t => if v.now < t then s!"\nDeferred until {Time.isoOfEpochMs t}." else ""
+    | none => ""
+  let nodeText := nodes.foldl (fun m x => m.insert x (showRelationLine st v x))
+    (∅ : Std.HashMap IssueId String)
+  let (rows, _) := whyTreeLines st v links nodeText i "" ((∅ : Std.HashSet IssueId).insert i)
+    ((∅ : Std.HashSet IssueId).insert i) #[]
+  return reason ++ deferLine ++ (if rows.isEmpty then "" else
+    "\nRemaining work and prerequisites:\n" ++ String.intercalate "\n" rows.toList)
 
 /-! ## show detail view (ADR-0017 §4) -/
 

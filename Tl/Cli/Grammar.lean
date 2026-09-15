@@ -173,7 +173,7 @@ def commandSpecs : List CommandSpec :=
       summary := "set <id>'s parent to <new-parent> (replaces the current parent)", flags := [actorFlag] },
     { command := "parent remove", positionals := "<id> <parent>",
       summary := "detach <id> from <parent> (drop that parent edge)", flags := [actorFlag] },
-    { command := "why", positionals := "<id>", summary := "the transitive unclosed blockers of an issue" },
+    { command := "why", positionals := "<id>", summary := "explain unfinished epic children and transitive blocking dependencies" },
     { command := "unblocks", positionals := "<id>", summary := "what closing this would make ready (its freed dependents)" },
     { command := "show", positionals := "<id>", summary := "one issue in full" },
     { command := "list", positionals := "", summary := "open issues as a hierarchy tree, oldest first (--all incl. closed; --flat for rows)",

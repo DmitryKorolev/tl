@@ -22,6 +22,7 @@ import Tl.Kernel.RollupSat
 import Tl.Kernel.RollupFast
 import Tl.Kernel.Ready
 import Tl.Kernel.ReadyFast
+import Tl.Kernel.Why
 import Tl.Kernel.Cycles
 import Tl.Kernel.HashMapView
 import Tl.Kernel.Tarjan

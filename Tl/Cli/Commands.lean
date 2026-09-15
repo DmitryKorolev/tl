@@ -1133,33 +1133,46 @@ def cmdShow (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM 
   let r : Style → String := fun st => styledShow st v i (verdict.map (·.1))
   return { data, human := r Style.plain, render := some r, notes }
 
-def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
-  let v ← loadView dirOverride skipBad
-  let notes ← cleanReadNotes v
-  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+/-- Render and serialize one loaded explanation; the I/O wrapper owns resolution
+    and refresh disclosures. -/
+def whyFromView (v : View) (i : IssueId) : CmdOut := Id.run do
   let s := v.state
-  let d := s.issueData i
-  if State.isReadyWith v.rollup s v.now i then
+  let d := v.issueData i
+  if v.ready i then
     return { data := Json.mkObj [("id", Json.str (displayId i)), ("ready", Json.bool true)]
-             human := s!"{displayId i} is ready", notes }
+             human := s!"{displayId i} is ready" }
   -- fuel = |presentIssues|; reuse the view's hoisted scan (one present pass, not redone here)
   let trans := State.whyFastH v.idx.btgt v.idx.presentH v.idx.rollupH s v.present.length i
-  -- a node's children in the why-tree are its LIVE direct blockers (present and
-  -- not effectively-closed) — the same liveSuccE relation whyFast's transitive
-  -- closure is built from, so the tree's node set equals `trans` (the JSON set),
-  -- just with the clear-this-first order, diamonds, and depth made visible.
-  -- Every read indexed (btgt bucket + hashed discharge, like `View.blocked`), so
-  -- the per-node tree descent stays O(deg) — never an O(E) edge rescan per node.
-  let liveBlockers : IssueId → List IssueId := fun x =>
-    (v.blockers x).filter (fun b =>
-      !State.blockerDischargedH v.idx.presentH v.idx.rollupH v.state b)
-  let direct := liveBlockers i
+  let direct := hashSetOf (State.liveSuccB v.idx.btgt v.idx.presentH v.idx.rollupH s i)
+  let outgoing := State.whyLinksH v.idx.btgt v.idx.pbk v.idx.presentH v.idx.rollupH s
+  let work := State.whyWork outgoing v.present.length i
+  -- Materialize each reached adjacency once for JSON and human rendering.
+  let graph := work.foldl (fun g x => g.insert x (outgoing x))
+    (∅ : Std.HashMap IssueId (List WhyLink))
+  let links := fun x => graph[x]?.getD []
+  let nodeRows := work.map fun x =>
+    let xd := v.issueData x
+    Json.mkObj <|
+      [("id", Json.str (displayId x)),
+       ("title", Json.str (sanitizeSingle (xd.title.value.getD ""))),
+       ("status", Json.str (statusWire xd.statusOf)),
+       ("effectiveStatus", Json.str (statusWire (v.effStatus x))),
+       ("displayStatus", Json.str (displayState v x).word),
+       ("priority", Json.num xd.priorityOf.val), ("isEpic", Json.bool (v.isEpic x))]
+      ++ (match xd.deferUntilOf with
+          | some t => if v.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
+          | none => [])
+  let edgeRows := work.flatMap fun x => (links x).map fun link =>
+    Json.mkObj [("from", Json.str (displayId x)), ("to", Json.str (displayId link.target)),
+      ("kind", Json.str (whyKindWire link.kind))]
+  let explanation := Json.mkObj [("nodes", Json.arr nodeRows.toArray),
+    ("edges", Json.arr edgeRows.toArray)]
   let rows := trans.map (fun b =>
-    let bd := s.issueData b
+    let bd := v.issueData b
     Json.mkObj <|
       [("id", Json.str (displayId b)),
        ("status", Json.str (statusWire bd.statusOf)),
-       ("effectiveStatus", Json.str (statusWire (State.effStatusWith v.rollup s b))),
+       ("effectiveStatus", Json.str (statusWire (v.effStatus b))),
        ("direct", Json.bool (direct.contains b))]
       ++ (match bd.title.value with
           | some t => [("title", Json.str (sanitizeSingle t))]
@@ -1167,20 +1180,19 @@ def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM C
   let data := Json.mkObj <|
     [("id", Json.str (displayId i)), ("ready", Json.bool false),
      ("status", Json.str (statusWire d.statusOf)),
-     ("isEpic", Json.bool (s.isEpic i))]
+     ("isEpic", Json.bool (v.isEpic i)), ("explanation", explanation)]
     ++ (if rows.isEmpty then [] else [("blockedBy", Json.arr rows.toArray)])
     ++ (match d.deferUntilOf with
         | some t => if v.now < t then [("deferUntil", Json.str (Time.isoOfEpochMs t))] else []
         | none => [])
-  -- human: the blocker chain as a tree (ADR-0017 §2) — single-rooted at `i`'s
-  -- direct live blockers, each expanded over the same liveBlockers accessor;
-  -- cycles render "↺", shared blockers render once and mark re-encounters.
-  -- JSON stays the flat blockedBy refs above (agents don't read the tree).
-  let r : Style → String := fun st =>
-    if trans.isEmpty then s!"{displayId i} is not ready (no open blockers — check status/epic/defer)"
-    else s!"{displayId i} waits on:\n" ++
-      String.intercalate "\n" (treeForest st v direct (fun _ => true) liveBlockers)
-  return { data, human := r Style.plain, render := some r, notes }
+  let r : Style → String := fun st => styledWhy st v i work links
+  return { data, human := r Style.plain, render := some r }
+
+def cmdWhy (dirOverride : Option String) (tok : String) (skipBad : Bool) : TlM CmdOut := do
+  let v ← loadView dirOverride skipBad
+  let notes ← cleanReadNotes v
+  let i ← MonadExcept.ofExcept (resolveToken v.state tok)
+  return { whyFromView v i with notes }
 
 /-- `unblocks <id>` — the downward mirror of `why`: the issues that would
     become ready if `<id>` closed (the proved ready-diff `unblocksFast`,
@@ -1205,11 +1217,8 @@ def cmdUnblocks (dirOverride : Option String) (tok : String) (skipBad : Bool) : 
     [("id", Json.str (displayId i)),
      ("freed", Json.arr rows.toArray),
      ("count", jnum freed.length)]
-  let human :=
-    if freed.isEmpty then s!"closing {displayId i} would free nothing right now (no dependent becomes ready)"
-    else s!"closing {displayId i} unblocks:\n" ++
-      String.intercalate "\n" (freed.map (fun b => "  " ++ issueLine v b))
-  return { data, human, notes }
+  let r : Style → String := fun st => styledUnblocks st v i freed
+  return { data, human := r Style.plain, render := some r, notes }
 
 def cmdDepCycles (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := do
   let v ← loadView dirOverride skipBad

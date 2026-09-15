@@ -17,7 +17,8 @@ discovery pointer), the free verbs (`reopen`/`stats`/`log`), rich human output,
 post-write local publish, plus the symmetric pre-transact absorb that refreshes
 a write's view before its guards — ADR-0016 write-path freshness), the Stage-2
 ergonomics verbs (`defer`/`undefer`, `dep path`/`dep critical` — the
-dependency trees render on `why`/`unblocks`, not a separate `dep tree` verb),
+dependency explanations render as trees in `why`, while `unblocks` lists the
+tasks a close would make ready; these use no separate `dep tree` verb),
 and bulk `import` (Stage 3) have landed. Still open: `edit`.
 Everything below remains stage-gated (decide when building that surface) or a
 forever-contract surface that freezes on first implementation.

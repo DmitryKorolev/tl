@@ -46,7 +46,7 @@ Created tl-50mtq61x37sgtrf6  Update the deploy runbook
 ```
 
 Only the schema task is unblocked, so it is the whole ready queue — and
-`why` explains any wait as a blocker tree:
+`why` explains the remaining work as a tree:
 
 ```console
 $ tl ready
@@ -56,10 +56,15 @@ Ready: 1 issue(s) with no active blockers
   ○ open   ◐ in_progress   ● blocked   ❄ deferred   ✓ done   ✗ cancelled
 
 $ tl why tl-50mt
-tl-50mtq61x37sgtrf6 waits on:
-● tl-r835 P2 Write the schema migration
-└── ○ tl-dyc4 P1 Design the payments schema
+tl-50mtq61x37sgtrf6 is blocked.
+Remaining work and prerequisites:
+└── ● tl-r835 P2 Write the schema migration [blocked]
+    └── ○ tl-dyc4 P1 Design the payments schema [open]
 ```
+
+For an epic, `why` also expands unfinished children and their dependencies,
+including nested epics. A task appears once under each parent; shared work is
+marked rather than expanded again. Completed and cancelled work stops expansion.
 
 An agent claims the ready item (claiming a blocked, deferred, or
 already-claimed one is refused with structured reasons), does the work, and

@@ -350,6 +350,31 @@ enough context to act on each:
 (`deferUntil` appears when defer is a reason; a ready issue answers
 `"ready": true` with no reason fields.)
 
+Completion explanations add an optional `explanation` object to non-ready
+responses without changing `schemaVersion: 3`. This is additive under
+ADR-0008: existing fields, omission rules and the dependency-only meaning of
+`blockedBy` remain intact, even for a closed query with historical blockers.
+A ready response retains its existing minimal shape.
+
+`explanation.nodes` contains the root and each reachable issue once, in stable
+breadth-first discovery order. Rows carry `id`, sanitized `title`, `status`,
+`effectiveStatus`, `displayStatus`, `priority`, and `isEpic`; a future
+`deferUntil` is included when applicable. `explanation.edges` contains
+`{from, to, kind}` links in node order, with unfinished children before blockers.
+`kind` is `unfinished-child` or `depends-on`. The direction is always from the
+work being explained to its prerequisite or unfinished child, unlike the
+stored blocks-edge direction. Both labels remain if a child is also a blocker.
+Empty edges are `[]`; even a closed root has its own node.
+
+Only present, effectively unclosed targets are traversed. Closed or missing
+sources are terminal, so cancellation stops descent even when children remain.
+Missing references are inert, matching existing discharge and rollup semantics;
+`tl doctor` remains the diagnostic for them. All present parent edges participate,
+including multiple parents; this is rollup's child relation, not the canonical
+parent chosen for display. Mixed cycles retain their edges, and shared nodes
+are expanded once. This explanation changes no readiness or completion rule:
+children govern epic completion; dependencies explain prerequisites for work.
+
 **`tl unblocks <id> --json`** — the pre-close query dual to
 `close.unblocked`: what closing `<id>` would make ready, computed without
 writing anything. `freed` may be empty; `count` = its length:

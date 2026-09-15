@@ -136,8 +136,12 @@ tl defer <id> --until <YYYY-MM-DD> | --for <dur>   # timed postponement; `tl und
 
 ## Dependency diagnostics
 
-- `tl why <id> --json` — the transitive unclosed blockers of one item: why it
-  is not ready.
+- `tl why <id> --json` — explain remaining work and prerequisites. `blockedBy`
+  remains the dependency-only transitive blocker set; `explanation.nodes` and
+  `explanation.edges` also expand unfinished epic children, including epics
+  reached as blockers. Edge `kind` distinguishes `unfinished-child` from
+  `depends-on`; children govern epic completion, dependencies govern readiness.
+  Closed/cancelled work stops expansion. Ready replies keep the minimal shape.
 - `tl unblocks <id> --json` — what closing it *would* free (`freed`), without
   closing it. The same set the `close` echo reports, available in advance.
 - `tl dep critical --json` — open issues ranked by `weight`: how many others

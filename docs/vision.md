@@ -149,8 +149,8 @@ Dependencies (typed relations — `blocks` / `parent` / `related`, ADR-0003)
 | `tl parent set <child> <parent>` / `tl parent remove <child> <parent>` | reparent — `set` moves the child under a new parent (a courtesy replace; multi-parent from merges is reported, not enforced), `remove` detaches (ADR-0003 §4) |
 | `tl dep relate A B` / `tl dep unrelate A B` | symmetric, informational link |
 | `tl dep cycles` | report cycles per kind and readiness-deadlock (`≺`) cycles (mixed blocks+parent, ADR-0004 thm 5/6) — a key util |
-| `tl why <id>` | the transitive set of *unclosed* issues blocking this one, rendered as the upward blocker tree |
-| `tl unblocks <id>` | what closing this would free, rendered as the downward dependents tree |
+| `tl why <id>` | explain remaining work through unfinished epic children and transitive blocking dependencies; JSON preserves dependency-only `blockedBy` and adds a typed explanation graph |
+| `tl unblocks <id>` | list tasks that would become ready after closing this issue, using the shared colored task-row style |
 | `tl dep path A B` | show a dependency path (the tool for breaking cycles) |
 | `tl dep critical` | rank open issues by transitive dependent-count |
 
