@@ -329,13 +329,13 @@ theorem applyFacets_eq_filter (facets : List ListFacet) (sorted : List IssueId) 
     rw [applyFacets_cons]
     cases hf : f.active with
     | true =>
-      rw [if_pos rfl, ih, List.filter_filter]
+      rw [ite_eq_left rfl, ih, List.filter_filter]
       refine List.filter_congr (fun x _ => ?_)
       rw [List.all_cons, hf]
       simp only [Bool.not_true, Bool.false_or]
       exact Bool.and_comm _ _
     | false =>
-      rw [if_neg Bool.false_ne_true, ih]
+      rw [ite_eq_right Bool.false_ne_true, ih]
       refine List.filter_congr (fun x _ => ?_)
       rw [List.all_cons, hf]
       simp only [Bool.not_false, Bool.true_or, Bool.true_and]
@@ -533,8 +533,8 @@ theorem readyPage_prefix (ranked : List IssueId) (limit : Nat) :
     (readyPage ranked limit).IsPrefix ranked := by
   unfold readyPage
   by_cases h : (limit == 0) = true
-  · rw [if_pos h]
-  · rw [if_neg h]
+  · rw [ite_eq_left h]
+  · rw [ite_eq_right h]
     exact List.take_prefix limit ranked
 
 /-- **The page is as long as the cap allows.** With `readyPage_prefix` this is
@@ -547,8 +547,8 @@ theorem readyPage_length (ranked : List IssueId) (limit : Nat) :
       = if limit == 0 then ranked.length else min limit ranked.length := by
   unfold readyPage
   by_cases h : (limit == 0) = true
-  · rw [if_pos h, if_pos h]
-  · rw [if_neg h, if_neg h]
+  · rw [ite_eq_left h, ite_eq_left h]
+  · rw [ite_eq_right h, ite_eq_right h]
     exact List.length_take
 
 /-- The cap cannot introduce a row: every row `cmdReady` renders is still in the

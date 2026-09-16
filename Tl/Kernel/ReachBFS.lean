@@ -253,7 +253,7 @@ theorem bfsFold_spec : ∀ (ys S r : List IssueId) (v : Std.HashSet IssueId),
        ∧ ∀ z, (ys.foldl bfsStepFn (bfsStepFn (v, r) y)).1.contains z = true ↔ _
     by_cases hc : v.contains y = true
     · -- y already seen: the step is a no-op, and the filter drops y
-      have hceq : bfsStepFn (v, r) y = (v, r) := by unfold bfsStepFn; rw [if_pos hc]
+      have hceq : bfsStepFn (v, r) y = (v, r) := by unfold bfsStepFn; rw [ite_eq_left hc]
       rw [hceq]
       have hyin : y ∈ S ++ r := (hv y).mp hc
       have hpy : decide (y ∉ S ++ r) = false := by
@@ -264,7 +264,7 @@ theorem bfsFold_spec : ∀ (ys S r : List IssueId) (v : Std.HashSet IssueId),
       rw [Bool.not_eq_true] at hc
       have hceq : bfsStepFn (v, r) y = (v.insert y, y :: r) := by
         unfold bfsStepFn
-        rw [if_neg (show ¬ v.contains y = true by rw [hc]; exact Bool.false_ne_true)]
+        rw [ite_eq_right (show ¬ v.contains y = true by rw [hc]; exact Bool.false_ne_true)]
       rw [hceq]
       have hynotin : y ∉ S ++ r := by
         intro h
@@ -337,14 +337,14 @@ theorem reachBFSgo_eq (succ : IssueId → List IssueId) :
                 (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
                 ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse)
          = reachBFSLgo succ (n + 1) accRev.reverse frontier
-      rw [if_pos hfe, hfnil, reachBFSLgo_nil_frontier succ (n + 1) accRev.reverse]
+      rw [ite_eq_left hfe, hfnil, reachBFSLgo_nil_frontier succ (n + 1) accRev.reverse]
     · -- non-empty frontier: the representation refinement (visited set ⇄ list `∉`).
       show (if frontier.isEmpty then accRev.reverse else
               reachBFSgo succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
                 (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
                 ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse)
          = reachBFSLgo succ (n + 1) accRev.reverse frontier
-      rw [if_neg hfe]
+      rw [ite_eq_right hfe]
       obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
         (fun z => by rw [List.append_nil]; exact hvis z)
       have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2

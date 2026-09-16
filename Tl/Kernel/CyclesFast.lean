@@ -77,8 +77,8 @@ theorem lookupCached_map_self (f : IssueId → List IssueId) (v : IssueId) :
   | x :: xs => by
     change (if x = v then f x else lookupCached f v (xs.map (fun x => (x, f x)))) = f v
     by_cases h : x = v
-    · rw [if_pos h, h]
-    · rw [if_neg h, lookupCached_map_self f v xs]
+    · rw [ite_eq_left h, h]
+    · rw [ite_eq_right h, lookupCached_map_self f v xs]
 
 /-- One cached successor list per node. -/
 def succCache (nodes : List IssueId)
@@ -194,9 +194,9 @@ theorem groupSCCGoF_eq (s : State) (succ : IssueId → List IssueId)
   | v :: vs, covered => by
     unfold State.groupSCCGoF State.groupSCCGo
     by_cases h : v ∈ covered
-    · rw [if_pos h, if_pos h]
+    · rw [ite_eq_left h, ite_eq_left h]
       exact groupSCCGoF_eq s succ cyclic vs covered
-    · rw [if_neg h, if_neg h]
+    · rw [ite_eq_right h, ite_eq_right h]
       dsimp only
       rw [groupSCCGoF_eq s succ cyclic vs _]
 
@@ -247,9 +247,9 @@ theorem groupSCCGoF_congr {same₁ same₂ : IssueId → IssueId → Bool}
     unfold State.groupSCCGoF
     have hvs : vs ⊆ cyclic := fun x hx => hwl (List.mem_cons_of_mem v hx)
     by_cases hv : v ∈ covered
-    · rw [if_pos hv, if_pos hv]
+    · rw [ite_eq_left hv, ite_eq_left hv]
       exact groupSCCGoF_congr h vs hvs covered
-    · rw [if_neg hv, if_neg hv]
+    · rw [ite_eq_right hv, ite_eq_right hv]
       have hvc : v ∈ cyclic := hwl (List.mem_cons_self ..)
       have hflt : cyclic.filter (fun u => same₁ u v)
                 = cyclic.filter (fun u => same₂ u v) :=
@@ -276,10 +276,10 @@ theorem groupSCCH_eq (same : IssueId → IssueId → Bool) (cyclic : List IssueI
   | v :: vs, cov, covL, h => by
     unfold groupSCCH State.groupSCCGoF
     by_cases hv : v ∈ covL
-    · rw [if_pos (Std.HashSet.contains_iff_mem.mpr ((h v).mpr hv)), if_pos hv]
+    · rw [ite_eq_left (Std.HashSet.contains_iff_mem.mpr ((h v).mpr hv)), ite_eq_left hv]
       exact groupSCCH_eq same cyclic vs cov covL h
-    · rw [if_neg (fun hc => hv ((h v).mp (Std.HashSet.contains_iff_mem.mp hc))),
-        if_neg hv]
+    · rw [ite_eq_right (fun hc => hv ((h v).mp (Std.HashSet.contains_iff_mem.mp hc))),
+        ite_eq_right hv]
       dsimp only
       rw [groupSCCH_eq same cyclic vs _
         (cyclic.filter (fun u => same u v) ++ covL)
@@ -340,9 +340,9 @@ theorem sccWitnessesT_eq (s : State) (succ : IssueId → List IssueId)
         else sccWitnessesF s.presentIssues s.presentIssues.length succ)
       = s.sccWitnesses succ
   by_cases hc : sccCertOk s.presentIssues succ (tarjanSCC s.presentIssues succ) = true
-  · rw [if_pos hc]
+  · rw [ite_eq_left hc]
     exact sccFromCert_eq s succ hsucc hc
-  · rw [if_neg hc]
+  · rw [ite_eq_right hc]
     exact sccWitnessesF_eq s succ hsucc
 
 /-! ## The per-kind and `≺` graphs over hoisted views -/

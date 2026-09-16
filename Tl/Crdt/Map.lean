@@ -85,7 +85,7 @@ theorem lookup_eq_none_of_lbKey {k : K} : {l : List (K × V)} → lbKey k l → 
   | [], _ => rfl
   | p :: ps, hlb => by
     unfold lookup
-    rw [if_neg (ne_of_lt (hlb p (List.mem_cons_self ..)))]
+    rw [ite_eq_right (ne_of_lt (hlb p (List.mem_cons_self ..)))]
     exact lookup_eq_none_of_lbKey (fun q hq => hlb q (List.mem_cons_of_mem p hq))
 
 /-- Insert `(k, v)`, combining with an existing value at `k` via `f` (existing
@@ -149,15 +149,15 @@ theorem sorted_insertWith {f : V → V → V} {k : K} {v : V} :
 @[simp] theorem lookup_nil (k : K) : lookup k ([] : List (K × V)) = none := rfl
 
 theorem lookup_cons_self (p : K × V) (ps : List (K × V)) :
-    lookup p.1 (p :: ps) = some p.2 := by unfold lookup; rw [if_pos rfl]
+    lookup p.1 (p :: ps) = some p.2 := by unfold lookup; rw [ite_eq_left rfl]
 
 theorem lookup_cons_eq (k : K) (v : V) (ps : List (K × V)) :
-    lookup k ((k, v) :: ps) = some v := by unfold lookup; rw [if_pos rfl]
+    lookup k ((k, v) :: ps) = some v := by unfold lookup; rw [ite_eq_left rfl]
 
 theorem lookup_cons_ne {k : K} {p : K × V} (h : k ≠ p.1) (ps : List (K × V)) :
     lookup k (p :: ps) = lookup k ps := by
   show (if k = p.1 then some p.2 else lookup k ps) = lookup k ps
-  rw [if_neg h]
+  rw [ite_eq_right h]
 
 theorem lookup_insertWith_ne {f : V → V → V} {j k : K} (hjk : j ≠ k) (v : V) :
     (l : List (K × V)) → lookup j (insertWith f k v l) = lookup j l
@@ -165,12 +165,12 @@ theorem lookup_insertWith_ne {f : V → V → V} {j k : K} (hjk : j ≠ k) (v : 
   | p :: ps => by
     unfold insertWith
     by_cases h1 : lt k p.1
-    · rw [if_pos h1, lookup_cons_ne (show j ≠ (k, v).1 from hjk)]
-    · rw [if_neg h1]
+    · rw [ite_eq_left h1, lookup_cons_ne (show j ≠ (k, v).1 from hjk)]
+    · rw [ite_eq_right h1]
       by_cases h2 : k = p.1
-      · rw [if_pos h2, lookup_cons_ne (show j ≠ (k, f p.2 v).1 from hjk),
+      · rw [ite_eq_left h2, lookup_cons_ne (show j ≠ (k, f p.2 v).1 from hjk),
           lookup_cons_ne (show j ≠ p.1 from h2 ▸ hjk)]
-      · rw [if_neg h2]
+      · rw [ite_eq_right h2]
         by_cases hjp : j = p.1
         · rw [hjp, lookup_cons_self p (insertWith f k v ps), lookup_cons_self p ps]
         · rw [lookup_cons_ne hjp, lookup_cons_ne hjp]
@@ -184,14 +184,14 @@ theorem lookup_insertWith_self {f : V → V → V} {k : K} {v : V} :
   | p :: ps, ⟨hlb, _⟩ => by
     unfold insertWith
     by_cases h1 : lt k p.1
-    · rw [if_pos h1, lookup_cons_eq, lookup_cons_ne (ne_of_lt h1),
+    · rw [ite_eq_left h1, lookup_cons_eq, lookup_cons_ne (ne_of_lt h1),
         lookup_eq_none_of_lbKey (lbKey_of_lt h1 hlb)]
-    · rw [if_neg h1]
+    · rw [ite_eq_right h1]
       by_cases h2 : k = p.1
-      · rw [if_pos h2, lookup_cons_eq,
+      · rw [ite_eq_left h2, lookup_cons_eq,
           show lookup k (p :: ps) = some p.2 by rw [h2]; exact lookup_cons_self p ps]
       · rename_i hsp
-        rw [if_neg h2, lookup_cons_ne h2, lookup_cons_ne h2]
+        rw [ite_eq_right h2, lookup_cons_ne h2, lookup_cons_ne h2]
         exact lookup_insertWith_self hsp
 
 /-- Boolean strict-ascending check over adjacent keys — the executable face of
@@ -305,10 +305,10 @@ theorem lookup_mem {k : K} {v : V} : {l : List (K × V)} → lookup k l = some v
   | p :: ps, h => by
     unfold lookup at h
     by_cases hk : k = p.1
-    · rw [if_pos hk] at h
+    · rw [ite_eq_left hk] at h
       have hp : p = (k, v) := Prod.ext hk.symm (Option.some.inj h)
       rw [hp]; exact List.mem_cons_self ..
-    · rw [if_neg hk] at h
+    · rw [ite_eq_right hk] at h
       exact List.mem_cons_of_mem p (lookup_mem h)
 
 /-- An entry's key looks up to some value. -/
@@ -318,8 +318,8 @@ theorem isSome_lookup_of_mem {k : K} {v : V} :
   | p :: ps, h => by
     unfold lookup
     by_cases hk : k = p.1
-    · rw [if_pos hk]; rfl
-    · rw [if_neg hk]
+    · rw [ite_eq_left hk]; rfl
+    · rw [ite_eq_right hk]
       rcases List.mem_cons.mp h with he | he
       · exact absurd (congrArg Prod.fst he) hk
       · exact isSome_lookup_of_mem he
@@ -395,10 +395,10 @@ theorem lookup_mapVal {W : Type w} (f : K → V → W) (k : K) :
     show (if k = p.1 then some (f p.1 p.2) else lookup k (ps.map _))
        = (if k = p.1 then some p.2 else lookup k ps).map (f k)
     by_cases hk : k = p.1
-    · rw [if_pos hk, if_pos hk, Option.map_some]
+    · rw [ite_eq_left hk, ite_eq_left hk, Option.map_some]
       subst hk
       rfl
-    · rw [if_neg hk, if_neg hk]
+    · rw [ite_eq_right hk, ite_eq_right hk]
       exact lookup_mapVal f k ps
 
 /-! ### Sorted merge-join — the `lookup`-per-entry quadratic retired (ADR-0023/0024)
@@ -425,11 +425,11 @@ theorem lookup_dropLt {k target : K} (hge : ¬ lt target k) :
   | p :: ps => by
     unfold dropLt
     by_cases hp : lt p.1 k
-    · rw [if_pos hp]
+    · rw [ite_eq_left hp]
       have hne : target ≠ p.1 := fun he => hge (he ▸ hp)
       rw [lookup_cons_ne hne]
       exact lookup_dropLt hge ps
-    · rw [if_neg hp]
+    · rw [ite_eq_right hp]
 
 /-- `Sorted` is preserved under `dropLt` (a suffix). -/
 theorem sorted_dropLt (k : K) :
@@ -438,8 +438,8 @@ theorem sorted_dropLt (k : K) :
   | p :: ps, ⟨hlb, hsp⟩ => by
     unfold dropLt
     by_cases hp : lt p.1 k
-    · rw [if_pos hp]; exact sorted_dropLt k hsp
-    · rw [if_neg hp]; exact ⟨hlb, hsp⟩
+    · rw [ite_eq_left hp]; exact sorted_dropLt k hsp
+    · rw [ite_eq_right hp]; exact ⟨hlb, hsp⟩
 
 /-- The head of `dropLt k l` has key `≥ k` (that is where the drop stopped). -/
 theorem dropLt_head_ge {k : K} :
@@ -449,8 +449,8 @@ theorem dropLt_head_ge {k : K} :
   | p :: ps, a, as, h => by
     unfold dropLt at h
     by_cases hp : lt p.1 k
-    · rw [if_pos hp] at h; exact dropLt_head_ge h
-    · rw [if_neg hp] at h
+    · rw [ite_eq_left hp] at h; exact dropLt_head_ge h
+    · rw [ite_eq_right hp] at h
       have hap : p = a := (List.cons.injEq .. ▸ h).1
       rw [← hap]; exact hp
 
@@ -516,7 +516,7 @@ theorem zipLookup_eq {W : Type w} :
       by_cases hkk : k = k2
       · have hkw : lookup k l2 = some w := by
           rw [← hfwd k (lt_irrefl k), hd, ← hkk, lookup_cons_self (k, w) rest]
-        rw [if_pos hkk, hkw]
+        rw [ite_eq_left hkk, hkw]
         refine congrArg _ (htail rest hsd'.2 (fun p hp => ?_))
         have hfw := hfwd p.1 (hnlt p hp)
         rw [hd] at hfw
@@ -531,7 +531,7 @@ theorem zipLookup_eq {W : Type w} :
         have hkn : lookup k l2 = none := by
           rw [← hfwd k (lt_irrefl k), hd, lookup_cons_ne (ne_of_lt hlt2)]
           exact lookup_eq_none_of_lbKey (lbKey_of_lt hlt2 hsd'.1)
-        rw [if_neg hkk, hkn]
+        rw [ite_eq_right hkk, hkn]
         refine congrArg _ (htail ((k2, w) :: rest) hsd' (fun p hp => ?_))
         have hfw := hfwd p.1 (hnlt p hp)
         rw [hd] at hfw
@@ -593,7 +593,7 @@ theorem anyNotIn_eq {W : Type w} :
       · have hkw : lookup t l2 ≠ none := by
           rw [← lookup_dropLt (lt_irrefl t) l2, hd, hkk, lookup_cons_eq r w rest]
           exact fun h => nomatch h
-        rw [if_pos hkk, decide_eq_false hkw, Bool.false_or]
+        rw [ite_eq_left hkk, decide_eq_false hkw, Bool.false_or]
         refine htail rest hsd'.2 (fun p hp => ?_)
         have hfw := lookup_dropLt (hnlt p hp) l2
         rw [hd] at hfw
@@ -608,7 +608,7 @@ theorem anyNotIn_eq {W : Type w} :
         have hkn : lookup t l2 = none := by
           rw [← lookup_dropLt (lt_irrefl t) l2, hd, lookup_cons_ne (ne_of_lt hlt2)]
           exact lookup_eq_none_of_lbKey (lbKey_of_lt hlt2 hsd'.1)
-        rw [if_neg hkk, hkn]; rfl
+        rw [ite_eq_right hkk, hkn]; rfl
 
 /-- Filtering the keys of `insertWith f e0 v l` by a predicate that *rejects* `e0`
     yields the same list as filtering `l`'s keys: `insertWith` either merges into an
@@ -626,17 +626,17 @@ theorem mapfst_insertWith_filter {f : V → V → V} {e0 : K} {v : V} {P : K →
   | p :: ps => by
     unfold insertWith
     by_cases h1 : lt e0 p.1
-    · rw [if_pos h1, List.map_cons,
+    · rw [ite_eq_left h1, List.map_cons,
         List.filter_cons_of_neg (a := Prod.fst (e0, v))
           (show ¬ P e0 = true by rw [hP]; exact Bool.false_ne_true)]
-    · rw [if_neg h1]
+    · rw [ite_eq_right h1]
       by_cases h2 : e0 = p.1
-      · rw [if_pos h2, List.map_cons, List.map_cons,
+      · rw [ite_eq_left h2, List.map_cons, List.map_cons,
           List.filter_cons_of_neg (a := Prod.fst (e0, f p.2 v))
             (show ¬ P e0 = true by rw [hP]; exact Bool.false_ne_true),
           List.filter_cons_of_neg (a := Prod.fst p)
             (show ¬ P p.1 = true by rw [← h2, hP]; exact Bool.false_ne_true)]
-      · rw [if_neg h2, List.map_cons, List.map_cons]
+      · rw [ite_eq_right h2, List.map_cons, List.map_cons]
         by_cases h3 : P p.1 = true
         · rw [List.filter_cons_of_pos (a := Prod.fst p) h3,
             List.filter_cons_of_pos (a := Prod.fst p) h3, mapfst_insertWith_filter hP ps]
@@ -682,9 +682,9 @@ def insert (m : AMap K V) (k : K) (v : V) : AMap K V :=
   unfold AMap.insert AMap.find
   by_cases h : j = k
   · subst h
-    rw [if_pos rfl, AssocList.lookup_insertWith_self m.sorted]
+    rw [ite_eq_left rfl, AssocList.lookup_insertWith_self m.sorted]
     cases AssocList.lookup j m.toList <;> rfl
-  · rw [if_neg h, AssocList.lookup_insertWith_ne h v m.toList]
+  · rw [ite_eq_right h, AssocList.lookup_insertWith_ne h v m.toList]
 
 /-- The keys, in sorted order — the finite, duplicate-free enumeration the OR-Set
     and the tracker layer iterate over. -/
@@ -840,8 +840,8 @@ theorem not_mem_empty (a : α) : a ∉ (empty : FinSet α) := by
 theorem mem_singleton (a b : α) : a ∈ singleton b ↔ a = b := by
   rw [mem_def, find_singleton]
   by_cases h : a = b
-  · rw [if_pos h]; exact ⟨fun _ => h, fun _ => rfl⟩
-  · rw [if_neg h]; exact ⟨fun hh => Bool.noConfusion hh, fun hh => absurd hh h⟩
+  · rw [ite_eq_left h]; exact ⟨fun _ => h, fun _ => rfl⟩
+  · rw [ite_eq_right h]; exact ⟨fun hh => Bool.noConfusion hh, fun hh => absurd hh h⟩
 
 theorem mem_union (s t : FinSet α) (a : α) : a ∈ union s t ↔ a ∈ s ∨ a ∈ t := by
   rw [mem_def, mem_def, mem_def, union,

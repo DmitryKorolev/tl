@@ -800,7 +800,7 @@ theorem decodeRow_landed_iff {row : List Nat} {outcome : WriteOutcome}
       simp only [decodeRow] at decoded
       by_cases isCommitted : tag == committedTag
       · have tagEq : tag = committedTag := beq_iff_eq.mp isCommitted
-        rw [if_pos isCommitted] at decoded
+        rw [ite_eq_left isCommitted] at decoded
         cases decodedPair : decodeCommitted rest with
         | error message => rw [decodedPair] at decoded; simp only [reduceCtorEq] at decoded
         | ok pair =>
@@ -812,9 +812,9 @@ theorem decodeRow_landed_iff {row : List Nat} {outcome : WriteOutcome}
             simp only [WriteOutcome.landed, List.head?, tagEq]
       · have tagNe : ¬ tag = committedTag := fun equal =>
           isCommitted (by rw [equal]; exact beq_self_eq_true _)
-        rw [if_neg isCommitted] at decoded
+        rw [ite_eq_right isCommitted] at decoded
         by_cases isFailed : tag == failedTag
-        · rw [if_pos isFailed] at decoded
+        · rw [ite_eq_left isFailed] at decoded
           cases decodedPair : decodeFailed rest with
           | error message => rw [decodedPair] at decoded; simp only [reduceCtorEq] at decoded
           | ok pair =>
@@ -826,7 +826,7 @@ theorem decodeRow_landed_iff {row : List Nat} {outcome : WriteOutcome}
               simp only [WriteOutcome.landed, List.head?]
               exact ⟨fun contradiction => Bool.noConfusion contradiction,
                 fun headEq => absurd (Option.some.inj headEq) tagNe⟩
-        · rw [if_neg isFailed] at decoded
+        · rw [ite_eq_right isFailed] at decoded
           simp only [reduceCtorEq] at decoded
 
 /-! ## What a command does with the observation -/

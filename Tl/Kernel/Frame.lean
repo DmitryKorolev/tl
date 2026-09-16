@@ -78,14 +78,14 @@ theorem status_mergeSingleton (sd : AMap IssueId IssueData) (id : IssueId) (D : 
       = ((sd.find j).getD IssueData.empty).status := by
   rw [AMap.find_merge, AMap.find_singleton]
   by_cases hj : j = id
-  · rw [if_pos hj]
+  · rw [ite_eq_left hj]
     cases sd.find j with
     | none =>
       rw [optCombine_none_left]; exact hD
     | some d =>
       show Reg.merge d.status D.status = d.status
       rw [hD, Reg.merge_none_right]
-  · rw [if_neg hj, optCombine_none_right]
+  · rw [ite_eq_right hj, optCombine_none_right]
 
 /-- A `metaSet` leaves every status register unchanged (its data delta writes only
     `metadata`). -/
@@ -178,11 +178,11 @@ theorem reg_mergeSingleton {V : Type _} [TotalOrd V] (proj : IssueData → Reg V
       = proj ((sd.find j).getD IssueData.empty) := by
   rw [AMap.find_merge, AMap.find_singleton]
   by_cases hj : j = id
-  · rw [if_pos hj]
+  · rw [ite_eq_left hj]
     cases sd.find j with
     | none => rw [optCombine_none_left]; show proj D = proj IssueData.empty; rw [hempty]; exact hD
     | some d => show proj (IssueData.merge d D) = proj d; rw [hmerge, hD, Reg.merge_none_right]
-  · rw [if_neg hj, optCombine_none_right]
+  · rw [ite_eq_right hj, optCombine_none_right]
 
 /-! ### Function congruences over `(issues, edges, scalar registers)` -/
 

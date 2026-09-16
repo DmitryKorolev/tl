@@ -95,8 +95,8 @@ private theorem not_not_eq_true {b : Bool} : ¬ (!b) = true ↔ b = true := by
 private theorem ite_singleton_eq_nil_iff {α : Type} {c : Prop} [Decidable c] (a : α) :
     (if c then [a] else []) = [] ↔ ¬ c := by
   by_cases h : c
-  · rw [if_pos h]; exact iff_of_false nofun (fun hn => hn h)
-  · rw [if_neg h]; exact iff_of_true rfl h
+  · rw [ite_eq_left h]; exact iff_of_false nofun (fun hn => hn h)
+  · rw [ite_eq_right h]; exact iff_of_true rfl h
 
 /-! ### The arms of `analyze`
 
@@ -139,8 +139,8 @@ theorem missingModuleFindings_eq_empty_iff {scope : GateScope} (o : Observation 
   unfold missingModuleFindings
   rw [← missingModules_eq_empty_iff]
   by_cases h : missingModules o = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
 theorem unexpectedModuleFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
@@ -148,8 +148,8 @@ theorem unexpectedModuleFindings_eq_empty_iff {scope : GateScope} (o : Observati
   unfold unexpectedModuleFindings
   rw [← unexpectedModules_eq_empty_iff]
   by_cases h : unexpectedModules o = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
 theorem vacuityReasons_eq_nil_iff {scope : GateScope} (o : Observation scope) :
@@ -168,16 +168,16 @@ theorem vacuityFindings_eq_empty_iff {scope : GateScope} (o : Observation scope)
         ∧ o.evidence.importEdges ≠ 0 := by
   unfold vacuityFindings
   by_cases hlocal : o.localModules = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr hlocal)]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr hlocal)]
     refine iff_of_false (singleton_ne_empty _) ?_
     rintro ⟨hne, -, -, -⟩
     exact hne hlocal
-  · rw [if_neg (fun hc => hlocal (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_right (fun hc => hlocal (Array.isEmpty_iff.mp hc))]
     by_cases hvacuous : vacuityReasons o = []
-    · rw [if_pos (List.isEmpty_iff.mpr hvacuous)]
+    · rw [ite_eq_left (List.isEmpty_iff.mpr hvacuous)]
       obtain ⟨hdecls, hreplay, hedges⟩ := (vacuityReasons_eq_nil_iff o).mp hvacuous
       exact iff_of_true rfl ⟨hlocal, hdecls, hreplay, hedges⟩
-    · rw [if_neg (fun hc => hvacuous (List.isEmpty_iff.mp hc))]
+    · rw [ite_eq_right (fun hc => hvacuous (List.isEmpty_iff.mp hc))]
       refine iff_of_false (singleton_ne_empty _) ?_
       rintro ⟨-, hdecls, hreplay, hedges⟩
       exact hvacuous ((vacuityReasons_eq_nil_iff o).mpr ⟨hdecls, hreplay, hedges⟩)
@@ -186,9 +186,9 @@ theorem landmarkPolicyFindings_eq_empty_iff {scope : GateScope} (o : Observation
     landmarkPolicyFindings o = #[] ↔ o.landmarks.map (·.name) = o.expectedLandmarks := by
   unfold landmarkPolicyFindings
   by_cases h : o.landmarks.map (·.name) = o.expectedLandmarks
-  · rw [if_neg (fun hne => bne_iff_ne.mp hne h)]
+  · rw [ite_eq_right (fun hne => bne_iff_ne.mp hne h)]
     exact iff_of_true rfl h
-  · rw [if_pos (bne_iff_ne.mpr h)]
+  · rw [ite_eq_left (bne_iff_ne.mpr h)]
     exact iff_of_false (singleton_ne_empty _) h
 
 theorem landmarkKindFindings_eq_empty_iff {scope : GateScope} (o : Observation scope) :
@@ -226,11 +226,11 @@ private theorem repeated_size_le (ls : List Landmark) (seen : Std.HashSet Name)
   | cons landmark rest ih =>
     rw [List.foldl_cons, repeatedLandmarkStep_eq]
     by_cases h : seen.contains landmark.name = true
-    · rw [if_pos h]
+    · rw [ite_eq_left h]
       refine Nat.le_trans ?_ (ih seen (repeated.push landmark.name))
       rw [Array.size_push]
       exact Nat.le_succ _
-    · rw [if_neg h]
+    · rw [ite_eq_right h]
       exact ih (seen.insert landmark.name) repeated
 
 private theorem repeated_ne_empty (ls : List Landmark) (seen : Std.HashSet Name)
@@ -250,13 +250,13 @@ private theorem foldl_repeatedLandmarkStep_eq_empty_iff (ls : List Landmark)
   | cons landmark rest ih =>
     rw [List.foldl_cons, repeatedLandmarkStep_eq]
     by_cases hseen : seen.contains landmark.name = true
-    · rw [if_pos hseen]
+    · rw [ite_eq_left hseen]
       refine iff_of_false (repeated_ne_empty _ _ _ (push_ne_empty _ _)) ?_
       rintro ⟨-, hfresh⟩
       have hcontains := hfresh landmark (List.Mem.head _)
       rw [hseen] at hcontains
       exact Bool.noConfusion hcontains
-    · rw [if_neg hseen, ih (seen.insert landmark.name)]
+    · rw [ite_eq_right hseen, ih (seen.insert landmark.name)]
       constructor
       · rintro ⟨hnodup, hfresh⟩
         refine ⟨?_, ?_⟩
@@ -299,8 +299,8 @@ theorem duplicateLandmarkFindings_eq_empty_iff {scope : GateScope} (o : Observat
   unfold duplicateLandmarkFindings
   rw [← repeatedLandmarks_eq_empty_iff]
   by_cases h : repeatedLandmarks o.landmarks = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
 theorem axiomDeclarations_eq_empty_iff {scope : GateScope} (o : Observation scope) :
@@ -317,8 +317,8 @@ theorem axiomDeclarationFindings_eq_empty_iff {scope : GateScope} (o : Observati
   unfold axiomDeclarationFindings
   rw [← axiomDeclarations_eq_empty_iff]
   by_cases h : axiomDeclarations o = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
 /-- A first-party axiom is reported by its own arm, so this arm's silence is
@@ -332,9 +332,9 @@ theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) {scope : GateScope}
   rw [Array.filterMap_eq_empty_iff]
   refine forall_congr' fun decl => imp_congr_right fun _ => ?_
   by_cases hkind : decl.kind = DeclKind.axiomDecl
-  · rw [if_pos (by rw [hkind]; exact beq_self_eq_true _)]
+  · rw [ite_eq_left (by rw [hkind]; exact beq_self_eq_true _)]
     exact iff_of_true rfl (fun hne => absurd hkind hne)
-  · rw [if_neg (show ¬((decl.kind == DeclKind.axiomDecl) = true) from
+  · rw [ite_eq_right (show ¬((decl.kind == DeclKind.axiomDecl) = true) from
       fun hbeq => hkind (of_decide_eq_true hbeq))]
     have allowed : (decl.axioms.filter fun name => !cfg.allowedAxioms.contains name) = #[]
         ↔ ∀ name ∈ decl.axioms, name ∈ cfg.allowedAxioms := by
@@ -342,9 +342,9 @@ theorem axiomDependencyOffenders_eq_empty_iff (cfg : Config) {scope : GateScope}
       refine forall_congr' fun name => imp_congr_right fun _ => ?_
       rw [not_not_eq_true, Array.contains_iff_mem]
     by_cases hbad : (decl.axioms.filter fun name => !cfg.allowedAxioms.contains name) = #[]
-    · rw [if_pos (Array.isEmpty_iff.mpr hbad)]
+    · rw [ite_eq_left (Array.isEmpty_iff.mpr hbad)]
       exact iff_of_true rfl (fun _ => allowed.mp hbad)
-    · rw [if_neg (fun hc => hbad (Array.isEmpty_iff.mp hc))]
+    · rw [ite_eq_right (fun hc => hbad (Array.isEmpty_iff.mp hc))]
       exact iff_of_false nofun (fun h => hbad (allowed.mpr (h hkind)))
 
 theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) {scope : GateScope}
@@ -355,8 +355,8 @@ theorem axiomDependencyFindings_eq_empty_iff (cfg : Config) {scope : GateScope}
   unfold axiomDependencyFindings
   rw [← axiomDependencyOffenders_eq_empty_iff]
   by_cases h : axiomDependencyOffenders cfg o = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (singleton_ne_empty _) h
 
 /-! ### The whole verdict for one scope -/
@@ -485,8 +485,8 @@ theorem unclaimedSourceError?_eq_none_iff (unclaimed : Array String) :
     unclaimedSourceError? unclaimed = none ↔ unclaimed = #[] := by
   unfold unclaimedSourceError?
   by_cases h : unclaimed = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false nofun h
 
 /-- The gate accepts exactly when every scope report, the source inventory, and
@@ -558,8 +558,8 @@ theorem workerVerdict_status_zero_iff (summary marker : String) (evidence : Gate
     (workerVerdict summary marker evidence).status = 0 ↔ evidence.errors = #[] := by
   unfold workerVerdict
   by_cases h : evidence.errors = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]; exact iff_of_false nofun h
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact iff_of_true rfl h
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]; exact iff_of_false nofun h
 
 /-- The completion marker is emitted exactly when there is nothing to report, so
     it cannot accompany a failing run — the supervisor's acceptance rule
@@ -568,9 +568,9 @@ theorem workerVerdict_marker_iff (summary marker : String) (evidence : GateEvide
     marker ∈ (workerVerdict summary marker evidence).report ↔ evidence.errors = #[] := by
   unfold workerVerdict
   by_cases h : evidence.errors = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]
     exact iff_of_true (List.mem_toArray.mpr (List.Mem.tail _ (List.Mem.head _))) h
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
     exact iff_of_false (Array.not_mem_empty marker) h
 
 /-- Every finding reaches the diagnostic stream, and nothing else does: the
@@ -583,8 +583,8 @@ theorem workerVerdict_diagnostics (summary marker : String) (evidence : GateEvid
     (workerVerdict summary marker evidence).diagnostics = evidence.errors := by
   unfold workerVerdict
   by_cases h : evidence.errors = #[]
-  · rw [if_pos (Array.isEmpty_iff.mpr h)]; exact h.symm
-  · rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  · rw [ite_eq_left (Array.isEmpty_iff.mpr h)]; exact h.symm
+  · rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
 
 /-- The marker is the *last* line, so a future edit cannot reorder the summary
     after it — which is what `completedSuccessfully_markerFinal` requires of a
@@ -593,7 +593,7 @@ theorem workerVerdict_marker_last (summary marker : String) (evidence : GateEvid
     (h : evidence.errors = #[]) :
     (workerVerdict summary marker evidence).report = #[summary, marker] := by
   unfold workerVerdict
-  rw [if_pos (Array.isEmpty_iff.mpr h)]
+  rw [ite_eq_left (Array.isEmpty_iff.mpr h)]
 
 /-- A failing run puts nothing on the report stream at all. With
     `workerVerdict_marker_last` this pins the report in *both* arms rather than
@@ -604,7 +604,7 @@ theorem workerVerdict_report_empty (summary marker : String) (evidence : GateEvi
     (h : evidence.errors ≠ #[]) :
     (workerVerdict summary marker evidence).report = #[] := by
   unfold workerVerdict
-  rw [if_neg (fun hc => h (Array.isEmpty_iff.mp hc))]
+  rw [ite_eq_right (fun hc => h (Array.isEmpty_iff.mp hc))]
 
 /-- The payoff: the gate's whole decision, end to end in the pure tier. The
     marker is printed exactly when all seven scopes are `GateClean` and both
@@ -636,8 +636,8 @@ private theorem ite_yield {β : Type} {c : Prop} [Decidable c] (a b : β) :
     (if c then ForInStep.yield a else ForInStep.yield b)
       = ForInStep.yield (if c then a else b) := by
   by_cases h : c
-  · rw [if_pos h, if_pos h]
-  · rw [if_neg h, if_neg h]
+  · rw [ite_eq_left h, ite_eq_left h]
+  · rw [ite_eq_right h, ite_eq_right h]
 
 /-- A fold whose every step is empty-preserving is empty exactly when it started
     empty and every element was clean. This is the general form of "the
@@ -673,9 +673,9 @@ private theorem push_unless_eq_empty_iff {α β : Type} (p : α → Bool) (g : �
     (acc : Array β) (x : α) :
     (if p x = true then acc else acc.push (g x)) = #[] ↔ acc = #[] ∧ p x = true := by
   by_cases h : p x = true
-  · rw [if_pos h]
+  · rw [ite_eq_left h]
     exact ⟨fun hacc => ⟨hacc, h⟩, fun hc => hc.1⟩
-  · rw [if_neg h]
+  · rw [ite_eq_right h]
     exact iff_of_false (push_ne_empty _ _) (fun hc => h hc.2)
 
 private theorem nestedFoldl_push_eq_empty_iff {α β γ : Type} (rows : Array α)
@@ -734,8 +734,8 @@ private theorem arrayFoldl_size_eq {α β : Type} (xs : Array α) (step : Array 
 private theorem push_unless_size {β : Type} (c : Prop) [Decidable c] (acc : Array β) (b : β) :
     (if c then acc else acc.push b).size = acc.size + (if c then 0 else 1) := by
   by_cases h : c
-  · rw [if_pos h, if_pos h, Nat.add_zero]
-  · rw [if_neg h, if_neg h, Array.size_push]
+  · rw [ite_eq_left h, ite_eq_left h, Nat.add_zero]
+  · rw [ite_eq_right h, ite_eq_right h, Array.size_push]
 
 private theorem listFoldl_count_eq_filter_length {β : Type} (ys : List β) (p : β → Bool)
     (n : Nat) :
@@ -746,9 +746,9 @@ private theorem listFoldl_count_eq_filter_length {β : Type} (ys : List β) (p :
   | cons y rest ih =>
     rw [List.foldl_cons]
     by_cases h : p y = true
-    · rw [if_pos h, Nat.add_zero, ih n,
+    · rw [ite_eq_left h, Nat.add_zero, ih n,
         List.filter_cons_of_neg (by rw [h, Bool.not_true]; exact nofun)]
-    · rw [if_neg h, ih (n + 1),
+    · rw [ite_eq_right h, ih (n + 1),
         List.filter_cons_of_pos (by rw [eq_false_of_not_eq_true h, Bool.not_false]),
         List.length_cons]
       exact Nat.add_right_comm n 1 _
@@ -866,14 +866,14 @@ private theorem lastNonemptyLine_eq_some (lines : List String) (init : Option St
   | cons line rest ih =>
     rw [List.foldl_cons] at h
     by_cases hblank : line.trimAscii.isEmpty = true
-    · rw [if_pos hblank] at h
+    · rw [ite_eq_left hblank] at h
       rcases ih init h with ⟨hinit, hrest⟩ | ⟨before, after, hsplit, hafter⟩
       · refine Or.inl ⟨hinit, fun other hother => ?_⟩
         cases hother with
         | head => exact hblank
         | tail _ hmem => exact hrest other hmem
       · exact Or.inr ⟨line :: before, after, by rw [hsplit]; rfl, hafter⟩
-    · rw [if_neg hblank] at h
+    · rw [ite_eq_right hblank] at h
       rcases ih (some line) h with ⟨hinit, hrest⟩ | ⟨before, after, hsplit, hafter⟩
       · exact Or.inr ⟨[], rest, by rw [Option.some.inj hinit]; rfl, hrest⟩
       · exact Or.inr ⟨line :: before, after, by rw [hsplit]; rfl, hafter⟩
@@ -993,14 +993,14 @@ theorem propagateStep_grew (axiomName : Name)
   rw [propagateStep_eq]
   by_cases hcontains :
       (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName = true
-  · rw [if_pos hcontains]; exact hmem
-  · rw [if_neg hcontains]
+  · rw [ite_eq_left hcontains]; exact hmem
+  · rw [ite_eq_right hcontains]
     show a ∈ (acc.insert dependent _)[n]?.getD ({} : Std.HashSet Name)
     rw [Std.HashMap.getElem?_insert]
     cases hbeq : dependent == n with
-    | false => rw [if_neg nofun]; exact hmem
+    | false => rw [ite_eq_right nofun]; exact hmem
     | true =>
-      rw [if_pos rfl, Option.getD_some]
+      rw [ite_eq_left rfl, Option.getD_some]
       refine Std.HashSet.mem_insert.mpr (Or.inr ?_)
       rw [eq_of_beq hbeq]
       exact hmem
@@ -1086,9 +1086,9 @@ theorem seed_rows_sound {cs : Std.HashMap Name Lean.ConstantInfo} {n a : Name}
         simp only at hb'
         rw [Std.HashMap.getElem?_alter] at hb'
         cases hbeq : p.1 == m' with
-        | false => rw [if_neg (by rw [hbeq]; exact nofun)] at hb'; exact hseed m' b' hb'
+        | false => rw [ite_eq_right (by rw [hbeq]; exact nofun)] at hb'; exact hseed m' b' hb'
         | true =>
-          rw [if_pos (by rw [hbeq])] at hb'
+          rw [ite_eq_left (by rw [hbeq])] at hb'
           rw [Option.getD_some] at hb'
           rcases Std.HashSet.mem_insert.mp hb' with heq | hold
           · refine ⟨?_, ?_⟩
@@ -1153,11 +1153,11 @@ private theorem alterFold_reverse_sound_list (name : Name) :
     rcases alterFold_reverse_sound_list name rest _ d m h with hprev | hnew
     · rw [Std.HashMap.getElem?_alter] at hprev
       cases hbeq : edge == d with
-      | false => rw [if_neg (by rw [hbeq]; exact nofun)] at hprev; exact Or.inl hprev
+      | false => rw [ite_eq_right (by rw [hbeq]; exact nofun)] at hprev; exact Or.inl hprev
       | true =>
         have hed : edge = d := eq_of_beq hbeq
         subst hed
-        rw [if_pos (by rw [hbeq]), Option.getD_some] at hprev
+        rw [ite_eq_left (by rw [hbeq]), Option.getD_some] at hprev
         rcases Array.mem_push.mp hprev with hold | hlast
         · exact Or.inl hold
         · exact Or.inr ⟨hlast, List.mem_cons_self ..⟩
@@ -1230,14 +1230,14 @@ private theorem propagateStep_sound {cs : Std.HashMap Name Lean.ConstantInfo}
   rw [propagateStep_eq]
   by_cases hcontains :
       (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName = true
-  · rw [if_pos hcontains]; exact hinv
-  · rw [if_neg hcontains]
+  · rw [ite_eq_left hcontains]; exact hinv
+  · rw [ite_eq_right hcontains]
     refine ⟨fun n a hmem => ?_, fun d x hq => ?_⟩
     · rw [Std.HashMap.getElem?_insert] at hmem
       cases hbeq : dependent == n with
-      | false => rw [if_neg (by rw [hbeq]; exact nofun)] at hmem; exact hinv.rows n a hmem
+      | false => rw [ite_eq_right (by rw [hbeq]; exact nofun)] at hmem; exact hinv.rows n a hmem
       | true =>
-        rw [if_pos (by rw [hbeq]), Option.getD_some] at hmem
+        rw [ite_eq_left (by rw [hbeq]), Option.getD_some] at hmem
         have hdn : dependent = n := eq_of_beq hbeq
         rcases Std.HashSet.mem_insert.mp hmem with heq | hold
         · rw [← eq_of_beq heq]
@@ -1330,15 +1330,15 @@ private theorem propagateStep_shape (axiomName : Name)
   rw [propagateStep_eq]
   by_cases hcontains :
       (acc[dependent]?.getD ({} : Std.HashSet Name)).contains axiomName = true
-  · rw [if_pos hcontains]
+  · rw [ite_eq_left hcontains]
     exact ⟨[], by rw [List.append_nil], fun _ _ h => Or.inl h⟩
-  · rw [if_neg hcontains]
+  · rw [ite_eq_right hcontains]
     refine ⟨[(dependent, axiomName)], Array.toList_push, fun n a h => ?_⟩
     rw [Std.HashMap.getElem?_insert] at h
     cases hbeq : dependent == n with
-    | false => rw [if_neg (by rw [hbeq]; exact nofun)] at h; exact Or.inl h
+    | false => rw [ite_eq_right (by rw [hbeq]; exact nofun)] at h; exact Or.inl h
     | true =>
-      rw [if_pos (by rw [hbeq]), Option.getD_some] at h
+      rw [ite_eq_left (by rw [hbeq]), Option.getD_some] at h
       have hdn : dependent = n := eq_of_beq hbeq
       rcases Std.HashSet.mem_insert.mp h with heq | hold
       · exact Or.inr (List.mem_singleton.mpr (by rw [hdn, eq_of_beq heq]))
@@ -1385,11 +1385,11 @@ private theorem foldl_propagateStep_covers (axiomName : Name) :
       rw [propagateStep_eq]
       by_cases hcontains :
           (acc[m]?.getD ({} : Std.HashSet Name)).contains axiomName = true
-      · rw [if_pos hcontains]
+      · rw [ite_eq_left hcontains]
         exact Std.HashSet.contains_iff_mem.mp hcontains
-      · rw [if_neg hcontains]
+      · rw [ite_eq_right hcontains]
         show axiomName ∈ (acc.insert m _)[m]?.getD ({} : Std.HashSet Name)
-        rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true m), Option.getD_some]
+        rw [Std.HashMap.getElem?_insert, ite_eq_left (beq_self_eq_true m), Option.getD_some]
         exact Std.HashSet.mem_insert.mpr (Or.inl (beq_self_eq_true axiomName))
     · exact foldl_propagateStep_covers axiomName rest _ _ m hrest
 
@@ -1405,9 +1405,9 @@ private theorem alterFold_reverse_grew_list (name : Name) :
     refine alterFold_reverse_grew_list name rest _ d m ?_
     rw [Std.HashMap.getElem?_alter]
     cases hbeq : edge == d with
-    | false => rw [if_neg nofun]; exact h
+    | false => rw [ite_eq_right nofun]; exact h
     | true =>
-      rw [if_pos rfl, Option.getD_some]
+      rw [ite_eq_left rfl, Option.getD_some]
       have hed : edge = d := eq_of_beq hbeq
       exact Array.mem_push.mpr (Or.inl (hed ▸ h))
 
@@ -1420,7 +1420,7 @@ private theorem alterFold_reverse_complete_list (name : Name) :
     rw [List.foldl_cons]
     rcases List.mem_cons.mp hd with rfl | hrest
     · refine alterFold_reverse_grew_list name rest _ d name ?_
-      rw [Std.HashMap.getElem?_alter, if_pos (beq_self_eq_true d), Option.getD_some]
+      rw [Std.HashMap.getElem?_alter, ite_eq_left (beq_self_eq_true d), Option.getD_some]
       exact Array.mem_push.mpr (Or.inr rfl)
     · exact alterFold_reverse_complete_list name rest _ d hrest
 
@@ -1451,10 +1451,10 @@ theorem seed_rows_pending {cs : Std.HashMap Name Lean.ConstantInfo} {n a : Name}
         rw [Std.HashMap.getElem?_alter] at hb'
         cases hbeq : p.1 == m' with
         | false =>
-          rw [if_neg (by rw [hbeq]; exact nofun)] at hb'
+          rw [ite_eq_right (by rw [hbeq]; exact nofun)] at hb'
           exact Array.mem_push.mpr (Or.inl (hseed m' b' hb'))
         | true =>
-          rw [if_pos (by rw [hbeq]), Option.getD_some] at hb'
+          rw [ite_eq_left (by rw [hbeq]), Option.getD_some] at hb'
           have hpm : p.1 = m' := eq_of_beq hbeq
           rcases Std.HashSet.mem_insert.mp hb' with heq | hold
           · exact Array.mem_push.mpr (Or.inr (by rw [← hpm, ← eq_of_beq heq]))
@@ -1496,9 +1496,9 @@ private theorem seedFold_rows_grew :
       simp only
       rw [Std.HashMap.getElem?_alter]
       cases hbeq : p.1 == n with
-      | false => rw [if_neg nofun]; exact h
+      | false => rw [ite_eq_right nofun]; exact h
       | true =>
-        rw [if_pos rfl, Option.getD_some]
+        rw [ite_eq_left rfl, Option.getD_some]
         refine Std.HashSet.mem_insert.mpr (Or.inr ?_)
         rw [← eq_of_beq hbeq] at h
         exact h
@@ -1550,7 +1550,7 @@ theorem seed_rows_complete {cs : Std.HashMap Name Lean.ConstantInfo} {a : Name}
       · refine seedFold_rows_grew rest _ a a ?_
         rw [seedStep_axiomsByName]
         simp only
-        rw [Std.HashMap.getElem?_alter, if_pos (beq_self_eq_true a), Option.getD_some]
+        rw [Std.HashMap.getElem?_alter, ite_eq_left (beq_self_eq_true a), Option.getD_some]
         exact Std.HashSet.mem_insert.mpr (Or.inl (beq_self_eq_true a))
       · exact ih _ hrest
   exact general cs.toList {} hmem

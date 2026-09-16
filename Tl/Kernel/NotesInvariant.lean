@@ -55,8 +55,8 @@ private theorem notes_invariant_delta {P : Journal → Prop}
     intro tid D hD
     rw [AMap.find_singleton]
     by_cases hid : id = tid
-    · rw [if_pos hid]; exact hD
-    · rw [if_neg hid]; exact hempty
+    · rw [ite_eq_left hid]; exact hD
+    · rw [ite_eq_right hid]; exact hempty
   cases op with
   | create cid st w => exact hsing cid (Op.createData st w) hempty
   | setFields cid st w => exact hsing cid (Op.scalarData st w) hempty

@@ -67,9 +67,9 @@ theorem bfsGo_sound {succ : IssueId → List IssueId} {r : IssueId} :
     intro y hy
     unfold bfsGo at hy
     by_cases hx : vis.contains x = true
-    · rw [if_pos hx] at hy
+    · rw [ite_eq_left hx] at hy
       exact bfsGo_sound n front vis (fun z hz => hf z (List.mem_cons_of_mem x hz)) hv y hy
-    · rw [if_neg hx] at hy
+    · rw [ite_eq_right hx] at hy
       refine bfsGo_sound n (succ x ++ front) (vis.insert x) ?_ ?_ y hy
       · intro z hz
         rcases List.mem_append.mp hz with hz | hz
@@ -117,11 +117,11 @@ theorem cidxFrom_sound : (j : Nat) → (cs : List (List IssueId)) →
     rcases cidxFrom_sound (j + 1) cs _ u i h with h' | ⟨C, hC, huC, hji⟩
     · rw [getElem?_foldl_insertConst] at h'
       by_cases hu : u ∈ c
-      · rw [if_pos hu] at h'
+      · rw [ite_eq_left hu] at h'
         have hij : j = i := Option.some_inj.mp h'
         refine Or.inr ⟨c, ?_, hu, Nat.le_of_eq hij⟩
         rw [← hij, Nat.sub_self, List.getElem?_cons_zero]
-      · rw [if_neg hu] at h'
+      · rw [ite_eq_right hu] at h'
         exact Or.inl h'
     · refine Or.inr ⟨C, ?_, huC, Nat.le_of_succ_le hji⟩
       have hpos : 0 < i - j := Nat.sub_pos_of_lt (Nat.lt_of_succ_le hji)

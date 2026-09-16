@@ -34,8 +34,8 @@ namespace State
 theorem effStatusAux_cancelled (s : State) (i : IssueId)
     (h : (s.issueData i).statusOf = Status.Cancelled) :
     (fuel : Nat) → s.effStatusAux fuel i = Status.Cancelled
-  | 0 => by unfold State.effStatusAux; rw [if_pos h]
-  | _ + 1 => by unfold State.effStatusAux; rw [if_pos h]
+  | 0 => by unfold State.effStatusAux; rw [ite_eq_left h]
+  | _ + 1 => by unfold State.effStatusAux; rw [ite_eq_left h]
 
 /-- Manual cancel takes precedence over the rollup (ADR-0003 §3). -/
 theorem effectiveStatus_cancelled (s : State) (i : IssueId)
@@ -55,11 +55,11 @@ theorem effStatusAux_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) 
       | false => unfold State.isEpic at h; rw [hb, Bool.not_false] at h; exact Bool.noConfusion h
     unfold State.effStatusAux
     by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-    · rw [if_pos hc, hc]
-    · rw [if_neg hc]
+    · rw [ite_eq_left hc, hc]
+    · rw [ite_eq_right hc]
       show (if (s.presentChildren i).isEmpty then (s.issueData i).statusOf else Status.Open)
             = (s.issueData i).statusOf
-      rw [hempty, if_pos rfl]
+      rw [hempty, ite_eq_left rfl]
   | _ + 1 => by
     have hempty : (s.presentChildren i).isEmpty = true := by
       cases hb : (s.presentChildren i).isEmpty with
@@ -67,12 +67,12 @@ theorem effStatusAux_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) 
       | false => unfold State.isEpic at h; rw [hb, Bool.not_false] at h; exact Bool.noConfusion h
     unfold State.effStatusAux
     by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-    · rw [if_pos hc, hc]
-    · rw [if_neg hc]
+    · rw [ite_eq_left hc, hc]
+    · rw [ite_eq_right hc]
       show (if (s.presentChildren i).isEmpty then (s.issueData i).statusOf
             else if (s.presentChildren i).all (fun c => Status.closed (s.effStatusAux _ c))
                  then Status.Done else Status.Open) = (s.issueData i).statusOf
-      rw [hempty, if_pos rfl]
+      rw [hempty, ite_eq_left rfl]
 
 /-- A non-epic's effective status is its stored status (ADR-0003 §3). -/
 theorem effectiveStatus_nonEpic (s : State) (i : IssueId) (h : s.isEpic i = false) :
@@ -93,8 +93,8 @@ theorem effStatusAux_epic_zero_ne_done (s : State) (i : IssueId) (h : s.isEpic i
     | true => unfold State.isEpic at h; rw [hb, Bool.not_true] at h; exact Bool.noConfusion h
   unfold State.effStatusAux
   by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-  · rw [if_pos hc]; exact fun heq => Status.noConfusion heq
-  · rw [if_neg hc, hne, if_neg Bool.false_ne_true]
+  · rw [ite_eq_left hc]; exact fun heq => Status.noConfusion heq
+  · rw [ite_eq_right hc, hne, ite_eq_right Bool.false_ne_true]
     exact fun heq => Status.noConfusion heq
 
 /-! ## Live-cycle conservatism (unconditional)
@@ -122,10 +122,10 @@ theorem effStatusAux_open_on_liveCycle (s : State) (C : List IssueId)
         rw [hb] at hchild
         exact absurd hchild (List.not_mem_nil)
     unfold State.effStatusAux
-    rw [if_neg hnc]
+    rw [ite_eq_right hnc]
     show (if (s.presentChildren c).isEmpty then (s.issueData c).statusOf else Status.Open)
        = Status.Open
-    rw [hne, if_neg Bool.false_ne_true]
+    rw [hne, ite_eq_right Bool.false_ne_true]
   | fuel + 1, c, hc => by
     obtain ⟨hnc, c', hc', hchild⟩ := hcyc c hc
     have hne : (s.presentChildren c).isEmpty = false := by
@@ -144,11 +144,11 @@ theorem effStatusAux_open_on_liveCycle (s : State) (C : List IssueId)
         rw [effStatusAux_open_on_liveCycle s C hcyc fuel c' hc'] at hcl
         exact absurd hcl Bool.false_ne_true
     unfold State.effStatusAux
-    rw [if_neg hnc]
+    rw [ite_eq_right hnc]
     show (if (s.presentChildren c).isEmpty then (s.issueData c).statusOf
           else if (s.presentChildren c).all (fun k => Status.closed (s.effStatusAux fuel k))
                then Status.Done else Status.Open) = Status.Open
-    rw [hne, if_neg Bool.false_ne_true, hall, if_neg Bool.false_ne_true]
+    rw [hne, ite_eq_right Bool.false_ne_true, hall, ite_eq_right Bool.false_ne_true]
 
 /-- Live-cycle members are effectively `Open` (the `effectiveStatus` face). -/
 theorem effectiveStatus_open_on_liveCycle (s : State) (C : List IssueId)
@@ -227,12 +227,12 @@ theorem effectiveStatus_epic_of_stable (s : State) (i : IssueId) (N : Nat)
   unfold State.effectiveStatus
   rw [hN]
   unfold State.effStatusAux
-  rw [if_neg hcanc]
+  rw [ite_eq_right hcanc]
   show (if (s.presentChildren i).isEmpty then (s.issueData i).statusOf
         else if (s.presentChildren i).all (fun c => Status.closed (s.effStatusAux N c))
              then Status.Done else Status.Open)
      = (if (s.presentChildren i).all (fun c => s.effClosed c) then Status.Done else Status.Open)
-  rw [hne, if_neg Bool.false_ne_true, hall]
+  rw [hne, ite_eq_right Bool.false_ne_true, hall]
 
 end State
 

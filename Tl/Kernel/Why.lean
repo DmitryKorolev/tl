@@ -81,7 +81,7 @@ theorem mem_whyLinks (s : State) (i j : IssueId) (k : WhyKind) :
   · by_cases hci : s.effClosed i = false
     · have hsource : (!decide (s.hasIssue i) || s.effClosed i) = false := by
         rw [decide_eq_true hi, Bool.not_true, hci, Bool.false_or]
-      rw [if_neg (by rw [hsource]; exact Bool.false_ne_true)]
+      rw [ite_eq_right (by rw [hsource]; exact Bool.false_ne_true)]
       cases k <;>
         simp only [List.mem_append, List.mem_map, List.mem_filter,
           WhyLink.mk.injEq, reduceCtorEq, exists_false,

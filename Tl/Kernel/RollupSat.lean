@@ -73,12 +73,12 @@ theorem closedAt_zero_iff (s : State) (i : IssueId) :
   show Status.closed (s.effStatusAux 0 i) = true ↔ _
   rw [effStatusAux_zero_def]
   by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-  · rw [if_pos hc]
+  · rw [ite_eq_left hc]
     exact ⟨fun _ => Or.inl hc, fun _ => rfl⟩
-  · rw [if_neg hc]
+  · rw [ite_eq_right hc]
     cases hk : (s.presentChildren i).isEmpty with
     | true =>
-      rw [if_pos rfl]
+      rw [ite_eq_left rfl]
       constructor
       · intro hcl
         exact Or.inr ⟨rfl, hcl⟩
@@ -86,7 +86,7 @@ theorem closedAt_zero_iff (s : State) (i : IssueId) :
         · exact absurd hcanc hc
         · exact hcl
     | false =>
-      rw [if_neg Bool.false_ne_true]
+      rw [ite_eq_right Bool.false_ne_true]
       constructor
       · intro h
         exact absurd h Bool.false_ne_true
@@ -106,12 +106,12 @@ theorem closedAt_succ_iff (s : State) (f : Nat) (i : IssueId) :
   show Status.closed (s.effStatusAux (f + 1) i) = true ↔ _
   rw [effStatusAux_succ_def]
   by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-  · rw [if_pos hc]
+  · rw [ite_eq_left hc]
     exact ⟨fun _ => Or.inl hc, fun _ => rfl⟩
-  · rw [if_neg hc]
+  · rw [ite_eq_right hc]
     cases hk : (s.presentChildren i).isEmpty with
     | true =>
-      rw [if_pos rfl]
+      rw [ite_eq_left rfl]
       constructor
       · intro hcl
         exact Or.inr (Or.inl ⟨rfl, hcl⟩)
@@ -120,18 +120,18 @@ theorem closedAt_succ_iff (s : State) (f : Nat) (i : IssueId) :
         · exact hcl
         · exact absurd hk'.symm (by intro hh; exact Bool.noConfusion hh)
     | false =>
-      rw [if_neg Bool.false_ne_true]
+      rw [ite_eq_right Bool.false_ne_true]
       cases hall : (s.presentChildren i).all
           (fun c => Status.closed (s.effStatusAux f c)) with
       | true =>
-        rw [if_pos rfl]
+        rw [ite_eq_left rfl]
         constructor
         · intro _
           exact Or.inr (Or.inr ⟨rfl, fun c hcm => List.all_eq_true.mp hall c hcm⟩)
         · intro _
           rfl
       | false =>
-        rw [if_neg Bool.false_ne_true]
+        rw [ite_eq_right Bool.false_ne_true]
         constructor
         · intro h
           exact absurd h Bool.false_ne_true
@@ -320,18 +320,18 @@ theorem effectiveStatus_recurrence (s : State) (i : IssueId) :
       else if (s.presentChildren i).all (fun c => s.effClosed c) then Status.Done
       else Status.Open := by
   by_cases hc : (s.issueData i).statusOf = Status.Cancelled
-  · rw [if_pos hc]
+  · rw [ite_eq_left hc]
     exact effectiveStatus_cancelled s i hc
-  · rw [if_neg hc]
+  · rw [ite_eq_right hc]
     cases hk : (s.presentChildren i).isEmpty with
     | true =>
-      rw [if_pos rfl]
+      rw [ite_eq_left rfl]
       exact effectiveStatus_nonEpic s i (by
         unfold State.isEpic
         rw [hk]
         rfl)
     | false =>
-      rw [if_neg Bool.false_ne_true]
+      rw [ite_eq_right Bool.false_ne_true]
       obtain ⟨c0, hc0⟩ := List.exists_mem_of_ne_nil (s.presentChildren i) (by
         intro hnil
         rw [hnil] at hk
@@ -347,7 +347,7 @@ theorem effectiveStatus_recurrence (s : State) (i : IssueId) :
         rw [effClosed_eq_closedAt, hN]
         exact closedAt_present_stable s M hN c (presentChildren_subset_present s i hcm)
       show s.effStatusAux s.presentIssues.length i = _
-      rw [hN, effStatusAux_succ_def, if_neg hc, hk, if_neg Bool.false_ne_true, hall]
+      rw [hN, effStatusAux_succ_def, ite_eq_right hc, hk, ite_eq_right Bool.false_ne_true, hall]
 
 end State
 

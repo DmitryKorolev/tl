@@ -253,11 +253,11 @@ theorem selfTagged_addDelta (st : Stamp) (p : NotePayload) :
   rw [show (addDelta st p).entries.adds = AMap.singleton st (FinSet.singleton st) from rfl,
     AMap.find_singleton] at ht
   by_cases he : e = st
-  · rw [if_pos he] at ht
+  · rw [ite_eq_left he] at ht
     have hts : t = st := (FinSet.mem_singleton ..).mp ht
     rw [he]
     exact hts
-  · rw [if_neg he] at ht
+  · rw [ite_eq_right he] at ht
     exact absurd ht (FinSet.not_mem_empty t)
 
 theorem selfTagged_removeDelta (obs : FinSet Stamp) :
@@ -406,9 +406,9 @@ theorem payloadTotal_addDelta (st : Stamp) (p : NotePayload) :
   by_cases he : st' = st
   · show ((addDelta st p).payloads.find st').isSome = true
     rw [show (addDelta st p).payloads = AMap.singleton st p from rfl,
-      AMap.find_singleton, if_pos he]
+      AMap.find_singleton, ite_eq_left he]
     rfl
-  · rw [if_neg he] at hmem
+  · rw [ite_eq_right he] at hmem
     exact absurd hmem (FinSet.not_mem_empty t)
 
 theorem payloadTotal_removeDelta (obs : FinSet Stamp) :

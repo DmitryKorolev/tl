@@ -77,8 +77,8 @@ theorem groupSCCGo_mem_cyclic (cyclic : List IssueId) :
     intro u hu
     simp only [groupSCCGo] at hu
     by_cases hv : v ∈ covered
-    · rw [if_pos hv] at hu; exact groupSCCGo_mem_cyclic cyclic vs covered u hu
-    · rw [if_neg hv, List.flatten_cons, List.mem_append] at hu
+    · rw [ite_eq_left hv] at hu; exact groupSCCGo_mem_cyclic cyclic vs covered u hu
+    · rw [ite_eq_right hv, List.flatten_cons, List.mem_append] at hu
       rcases hu with hu | hu
       · exact List.mem_of_mem_filter hu
       · exact groupSCCGo_mem_cyclic cyclic vs _ u hu
@@ -92,10 +92,10 @@ theorem mem_groupSCCGo_form (cyclic : List IssueId) :
     intro W hW
     simp only [groupSCCGo] at hW
     by_cases hv : v ∈ covered
-    · rw [if_pos hv] at hW
+    · rw [ite_eq_left hv] at hW
       obtain ⟨x, hx, hWx⟩ := mem_groupSCCGo_form cyclic vs covered W hW
       exact ⟨x, List.mem_cons_of_mem v hx, hWx⟩
-    · rw [if_neg hv] at hW
+    · rw [ite_eq_right hv] at hW
       rcases List.mem_cons.mp hW with rfl | hW'
       · exact ⟨v, List.mem_cons_self .., rfl⟩
       · obtain ⟨x, hx, hWx⟩ := mem_groupSCCGo_form cyclic vs _ W hW'
@@ -113,11 +113,11 @@ theorem groupSCCGo_covers (hsucc : ∀ x, succ x ⊆ s.presentIssues) (cyclic : 
     intro u hu hucyc
     simp only [groupSCCGo]
     by_cases hv : v ∈ covered
-    · rw [if_pos hv]
+    · rw [ite_eq_left hv]
       rcases List.mem_cons.mp hu with rfl | hu'
       · exact Or.inl hv
       · exact groupSCCGo_covers hsucc cyclic hcyc vs covered u hu' hucyc
-    · rw [if_neg hv, List.flatten_cons]
+    · rw [ite_eq_right hv, List.flatten_cons]
       rcases List.mem_cons.mp hu with rfl | hu'
       · refine Or.inr ?_
         rw [List.mem_append]; refine Or.inl ?_

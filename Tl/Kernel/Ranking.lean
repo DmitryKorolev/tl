@@ -29,32 +29,32 @@ theorem readyLe_eq_true_iff (s : State) (a b : IssueId) :
           ∧ s.createdAtOf a = s.createdAtOf b ∧ TotalOrd.le a b) := by
   unfold State.readyLe
   by_cases hp : (s.issueData a).priorityOf.val = (s.issueData b).priorityOf.val
-  · rw [if_neg (fun hne => hne hp)]
+  · rw [ite_eq_right (fun hne => hne hp)]
     by_cases hw : s.weight a = s.weight b
-    · rw [if_neg (fun hne => hne hw)]
+    · rw [ite_eq_right (fun hne => hne hw)]
       by_cases hc : s.createdAtOf a = s.createdAtOf b
-      · rw [if_neg (fun hne => hne hc), decide_eq_true_iff]
+      · rw [ite_eq_right (fun hne => hne hc), decide_eq_true_iff]
         exact ⟨fun hle => Or.inr (Or.inr (Or.inr ⟨hp, hw, hc, hle⟩)),
           fun h => by rcases h with h | ⟨_, h⟩ | ⟨_, _, h⟩ | ⟨_, _, _, h⟩
                       · exact absurd hp (Nat.ne_of_lt h)
                       · exact absurd hw (Ne.symm (Nat.ne_of_lt h))
                       · exact absurd hc (Nat.ne_of_lt h)
                       · exact h⟩
-      · rw [if_pos hc, decide_eq_true_iff]
+      · rw [ite_eq_left hc, decide_eq_true_iff]
         exact ⟨fun hlt => Or.inr (Or.inr (Or.inl ⟨hp, hw, hlt⟩)),
           fun h => by rcases h with h | ⟨_, h⟩ | ⟨_, _, h⟩ | ⟨_, _, h, _⟩
                       · exact absurd hp (Nat.ne_of_lt h)
                       · exact absurd hw (Ne.symm (Nat.ne_of_lt h))
                       · exact h
                       · exact absurd h hc⟩
-    · rw [if_pos hw, decide_eq_true_iff]
+    · rw [ite_eq_left hw, decide_eq_true_iff]
       exact ⟨fun hlt => Or.inr (Or.inl ⟨hp, hlt⟩),
         fun h => by rcases h with h | ⟨_, h⟩ | ⟨_, h, _⟩ | ⟨_, h, _, _⟩
                     · exact absurd hp (Nat.ne_of_lt h)
                     · exact h
                     · exact absurd h hw
                     · exact absurd h hw⟩
-  · rw [if_pos hp, decide_eq_true_iff]
+  · rw [ite_eq_left hp, decide_eq_true_iff]
     exact ⟨fun hlt => Or.inl hlt,
       fun h => by rcases h with h | ⟨h, _⟩ | ⟨h, _, _⟩ | ⟨h, _, _, _⟩
                   · exact h

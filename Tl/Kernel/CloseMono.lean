@@ -30,7 +30,7 @@ theorem setFields_issueData_ne (s : State) (i : IssueId) (st : Stamp) (w : Scala
     (apply s (Op.setFields i st w)).issueData k = s.issueData k := by
   show ((AMap.merge IssueData.merge s.data (AMap.singleton i (Op.scalarData st w))).find k).getD
       IssueData.empty = (s.data.find k).getD IssueData.empty
-  rw [AMap.find_merge, AMap.find_singleton, if_neg hk, optCombine_none_right]
+  rw [AMap.find_merge, AMap.find_singleton, ite_eq_right hk, optCombine_none_right]
 
 /-- A `setFields i` sets each of `i`'s registers to the merge of the old
     register and the written value — stated once for any register projection
@@ -45,7 +45,7 @@ theorem setFields_reg_i (s : State) (i : IssueId) (st : Stamp) (w : ScalarWrites
   show f (((AMap.merge IssueData.merge s.data (AMap.singleton i (Op.scalarData st w))).find i).getD
       IssueData.empty)
     = Reg.merge (f ((s.data.find i).getD IssueData.empty)) (f (Op.scalarData st w))
-  rw [AMap.find_merge, AMap.find_singleton, if_pos rfl]
+  rw [AMap.find_merge, AMap.find_singleton, ite_eq_left rfl]
   cases s.data.find i with
   | none =>
     rw [Option.getD_none, hempty, Reg.merge_none_left]
@@ -111,36 +111,36 @@ theorem effStatusAux_mono {s s' : State}
     intro hcl
     simp only [State.effStatusAux] at hcl ⊢
     by_cases hB : (s.issueData b).statusOf = Status.Cancelled
-    · rw [if_pos (hcanc b hB)]; rfl
-    · rw [if_neg hB] at hcl
+    · rw [ite_eq_left (hcanc b hB)]; rfl
+    · rw [ite_eq_right hB] at hcl
       by_cases hB' : (s'.issueData b).statusOf = Status.Cancelled
-      · rw [if_pos hB']; rfl
-      · rw [if_neg hB', hpc b]
+      · rw [ite_eq_left hB']; rfl
+      · rw [ite_eq_right hB', hpc b]
         by_cases hemp : (s.presentChildren b).isEmpty = true
-        · rw [if_pos hemp] at hcl ⊢; exact hmono b hcl
-        · rw [if_neg hemp] at hcl
+        · rw [ite_eq_left hemp] at hcl ⊢; exact hmono b hcl
+        · rw [ite_eq_right hemp] at hcl
           simp only [Status.closed] at hcl
           exact Bool.noConfusion hcl
   | fuel + 1, b => by
     intro hcl
     simp only [State.effStatusAux] at hcl ⊢
     by_cases hB : (s.issueData b).statusOf = Status.Cancelled
-    · rw [if_pos (hcanc b hB)]; rfl
-    · rw [if_neg hB] at hcl
+    · rw [ite_eq_left (hcanc b hB)]; rfl
+    · rw [ite_eq_right hB] at hcl
       by_cases hB' : (s'.issueData b).statusOf = Status.Cancelled
-      · rw [if_pos hB']; rfl
-      · rw [if_neg hB', hpc b]
+      · rw [ite_eq_left hB']; rfl
+      · rw [ite_eq_right hB', hpc b]
         by_cases hemp : (s.presentChildren b).isEmpty = true
-        · rw [if_pos hemp] at hcl ⊢; exact hmono b hcl
-        · rw [if_neg hemp] at hcl ⊢
+        · rw [ite_eq_left hemp] at hcl ⊢; exact hmono b hcl
+        · rw [ite_eq_right hemp] at hcl ⊢
           by_cases hall :
               (s.presentChildren b).all (fun c => Status.closed (s.effStatusAux fuel c)) = true
           · have hall' : (s.presentChildren b).all
                 (fun c => Status.closed (s'.effStatusAux fuel c)) = true := by
               rw [List.all_eq_true] at hall ⊢
               exact fun c hc => effStatusAux_mono hpc hmono hcanc fuel c (hall c hc)
-            rw [if_pos hall']; rfl
-          · rw [if_neg hall] at hcl
+            rw [ite_eq_left hall']; rfl
+          · rw [ite_eq_right hall] at hcl
             simp only [Status.closed] at hcl
             exact Bool.noConfusion hcl
 

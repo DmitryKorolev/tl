@@ -73,7 +73,7 @@ theorem merge_write_right {R : Reg V} {st : Stamp} {v : V}
   | some e =>
     show some (tmax e (st, v)) = some (st, v)
     unfold tmax
-    rw [if_pos (h e rfl)]
+    rw [ite_eq_left (h e rfl)]
 
 /-- The merged register holds exactly the write `(st, v)` iff one side holds it
     and neither side exceeds it — the join arbitrates a write's survival
@@ -146,11 +146,11 @@ theorem merge_eq_write_iff (R W : Reg V) (st : Stamp) (v : V) :
       · cases Option.some.inj h'
         unfold tmax
         by_cases hc : le (st, v) w
-        · rw [if_pos hc, le_antisymm h2 hc]
-        · rw [if_neg hc]
+        · rw [ite_eq_left hc, le_antisymm h2 hc]
+        · rw [ite_eq_right hc]
       · cases Option.some.inj h'
         unfold tmax
-        rw [if_pos h1]
+        rw [ite_eq_left h1]
 
 end Reg
 

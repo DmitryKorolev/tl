@@ -496,10 +496,10 @@ private theorem map_filter_eq_filterMap {α β : Type _} (p : α → Bool) (f : 
     by_cases h : p x = true
     · rw [List.filter_cons_of_pos h, List.map_cons, ih,
         List.filterMap_cons_some (f := fun a => if p a then some (f a) else none)
-          (show (if p x then some (f x) else none) = some (f x) from if_pos h)]
+          (show (if p x then some (f x) else none) = some (f x) from ite_eq_left h)]
     · rw [List.filter_cons_of_neg h, ih,
         List.filterMap_cons_none (f := fun a => if p a then some (f a) else none)
-          (show (if p x then some (f x) else none) = none from if_neg h)]
+          (show (if p x then some (f x) else none) = none from ite_eq_right h)]
 
 /-- The parent-by-child bucket lists exactly the spec candidate parents of a
     *present* child: the bucket is over `parentEdges` (child-present filtered),
@@ -522,15 +522,15 @@ theorem View.parents_eq (v : View) (i : IssueId)
          then some (f, t) else none)))
     = if decide (k = EdgeKind.Parent ∧ t = i) then some f else none
   by_cases hb : (decide (k = EdgeKind.Parent) && decide (v.state.hasIssue t)) = true
-  · rw [if_pos hb, Option.map_some, Option.filter_some,
+  · rw [ite_eq_left hb, Option.map_some, Option.filter_some,
       apply_ite (Option.map (fun p : IssueId × IssueId => p.2)), Option.map_some, Option.map_none]
     have hk : k = EdgeKind.Parent := of_decide_eq_true (Bool.and_eq_true .. |>.mp hb).1
     by_cases ht : t = i
-    · rw [if_pos (show ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
-        if_pos (decide_eq_true (show k = EdgeKind.Parent ∧ t = i from ⟨hk, ht⟩))]
-    · rw [if_neg (show ¬ ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
-        if_neg (fun hc => ht (of_decide_eq_true hc).2)]
-  · rw [if_neg hb, Option.map_none, Option.filter_none, Option.map_none, eq_comm, if_neg]
+    · rw [ite_eq_left (show ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
+        ite_eq_left (decide_eq_true (show k = EdgeKind.Parent ∧ t = i from ⟨hk, ht⟩))]
+    · rw [ite_eq_right (show ¬ ((t, f).1 == i) = true by simp only [beq_iff_eq]; exact ht),
+        ite_eq_right (fun hc => ht (of_decide_eq_true hc).2)]
+  · rw [ite_eq_right hb, Option.map_none, Option.filter_none, Option.map_none, eq_comm, ite_eq_right]
     intro hc
     obtain ⟨hck, hct⟩ := of_decide_eq_true hc
     exact hb (by rw [decide_eq_true hck, decide_eq_true (hct ▸ hi : v.state.hasIssue t), Bool.and_true])

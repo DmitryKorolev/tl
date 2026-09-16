@@ -483,17 +483,17 @@ private theorem stagingBlocker_eq_none_iff (staged : List String) (target : Targ
   rw [stagingBlocker]
   cases contained : staged.contains target.name with
   | true =>
-      rw [Bool.true_or, if_pos rfl]
+      rw [Bool.true_or, ite_eq_left rfl]
       exact Iff.intro (fun _ _ => rfl) (fun _ => rfl)
   | false =>
       cases blocking : target.tier.releaseBlocking with
       | true =>
-          rw [Bool.false_or, if_neg (fun impossible => Bool.noConfusion impossible)]
+          rw [Bool.false_or, ite_eq_right (fun impossible => Bool.noConfusion impossible)]
           constructor
           · intro impossible; cases impossible
           · intro implication; exact Bool.noConfusion (implication rfl)
       | false =>
-          rw [Bool.false_or, if_pos Bool.not_false]
+          rw [Bool.false_or, ite_eq_left Bool.not_false]
           exact Iff.intro (fun _ blocking => Bool.noConfusion blocking) (fun _ => rfl)
 
 /-- **The staged set is accepted exactly when every Supported target is in it.**

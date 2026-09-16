@@ -63,16 +63,16 @@ theorem find_foldl_insert {K V : Type _} [TotalOrd K] (val : K → V) :
     ∀ (l : List K) (m0 : AMap K V) (z : K),
       (l.foldl (fun m k => m.insert k (val k)) m0).find z =
         if z ∈ l then some (val z) else m0.find z
-  | [], m0, z => by rw [List.foldl_nil, if_neg List.not_mem_nil]
+  | [], m0, z => by rw [List.foldl_nil, ite_eq_right List.not_mem_nil]
   | a :: rest, m0, z => by
     show (rest.foldl (fun m k => m.insert k (val k)) (m0.insert a (val a))).find z = _
     rw [find_foldl_insert val rest (m0.insert a (val a)) z, AMap.find_insert]
     by_cases hz : z ∈ rest
-    · rw [if_pos hz, if_pos (List.mem_cons.mpr (Or.inr hz))]
-    · rw [if_neg hz]
+    · rw [ite_eq_left hz, ite_eq_left (List.mem_cons.mpr (Or.inr hz))]
+    · rw [ite_eq_right hz]
       by_cases hza : z = a
-      · rw [if_pos hza, if_pos (List.mem_cons.mpr (Or.inl hza)), hza]
-      · rw [if_neg hza, if_neg (fun h => (List.mem_cons.mp h).elim hza hz)]
+      · rw [ite_eq_left hza, ite_eq_left (List.mem_cons.mpr (Or.inl hza)), hza]
+      · rw [ite_eq_right hza, ite_eq_right (fun h => (List.mem_cons.mp h).elim hza hz)]
 
 /-- A discovering frontier predecessor of `y`: the first frontier node that lists
     `y` as a successor. -/
@@ -122,7 +122,7 @@ theorem getElem?_foldl_firstPredStep (y : IssueId) :
     rw [getElem?_foldl_firstPredStep y L' (firstPredStep m0 e), List.find?_cons]
     by_cases hc : m0.contains e.2 = true
     · -- m0 already maps e.2: the step is a no-op
-      have hfp : firstPredStep m0 e = m0 := by unfold firstPredStep; rw [if_pos hc]
+      have hfp : firstPredStep m0 e = m0 := by unfold firstPredStep; rw [ite_eq_left hc]
       rw [hfp]
       cases hm : m0[y]? with
       | some _ => rfl
@@ -136,7 +136,7 @@ theorem getElem?_foldl_firstPredStep (y : IssueId) :
       rw [Bool.not_eq_true] at hc
       have hfp : firstPredStep m0 e = m0.insert e.2 e.1 := by
         unfold firstPredStep
-        rw [if_neg (show ¬ (m0.contains e.2 = true) by rw [hc]; exact Bool.false_ne_true)]
+        rw [ite_eq_right (show ¬ (m0.contains e.2 = true) by rw [hc]; exact Bool.false_ne_true)]
       rw [hfp, Std.HashMap.getElem?_insert]
       by_cases hey : e.2 = y
       · subst hey
@@ -145,10 +145,10 @@ theorem getElem?_foldl_firstPredStep (y : IssueId) :
           cases hmm : m0[e.2]? with
           | none => rfl
           | some v => rw [hmm] at hc; exact Bool.noConfusion hc
-        rw [if_pos (beq_self_eq_true e.2), hm,
+        rw [ite_eq_left (beq_self_eq_true e.2), hm,
           show decide (e.2 = e.2) = true from decide_eq_true rfl]
         rfl
-      · rw [if_neg (show ¬ ((e.2 == y) = true) by rw [beq_iff_eq]; exact hey),
+      · rw [ite_eq_right (show ¬ ((e.2 == y) = true) by rw [beq_iff_eq]; exact hey),
           show decide (e.2 = y) = false from decide_eq_false hey]
 
 /-- The first frontier out-edge into `y` carries exactly `parentOf`'s predecessor. -/
@@ -165,12 +165,12 @@ theorem frontierEdges_find?_parentOf (succ : IssueId → List IssueId) (y : Issu
       cases h : (succ u).find? (fun s => decide (s = y)) with
       | none =>
         rw [List.find?_eq_none] at h
-        rw [Option.map_none, if_neg (fun hy => absurd (decide_eq_true (rfl : y = y)) (h y hy))]
+        rw [Option.map_none, ite_eq_right (fun hy => absurd (decide_eq_true (rfl : y = y)) (h y hy))]
       | some v =>
         have hmem : v ∈ succ u := List.mem_of_find?_eq_some h
         have hpv := List.find?_some h
         have hvy : v = y := of_decide_eq_true hpv
-        rw [if_pos (hvy ▸ hmem)]
+        rw [ite_eq_left (hvy ▸ hmem)]
         rfl
     have hLHS : ((frontierEdges succ (u :: fr')).find? (fun e => decide (e.2 = y))).map (·.1)
         = (if y ∈ succ u then some u else none).or
@@ -182,12 +182,12 @@ theorem frontierEdges_find?_parentOf (succ : IssueId → List IssueId) (y : Issu
       unfold parentOf
       rw [List.find?_cons]
       cases hy : decide (y ∈ succ u) with
-      | true => rw [if_pos (of_decide_eq_true hy)]
-      | false => rw [if_neg (of_decide_eq_false hy)]
+      | true => rw [ite_eq_left (of_decide_eq_true hy)]
+      | false => rw [ite_eq_right (of_decide_eq_false hy)]
     rw [hLHS, hpar, frontierEdges_find?_parentOf succ y fr']
     by_cases hy : y ∈ succ u
-    · rw [if_pos hy, if_pos hy, Option.some_or]
-    · rw [if_neg hy, if_neg hy, Option.none_or]
+    · rw [ite_eq_left hy, ite_eq_left hy, Option.some_or]
+    · rw [ite_eq_right hy, ite_eq_right hy, Option.none_or]
 
 /-- **The one-pass index equals `parentOf`.** -/
 theorem firstPred_getElem? (succ : IssueId → List IssueId) (fr : List IssueId) (y : IssueId) :
@@ -316,12 +316,12 @@ theorem parentSweep_inv (succ : IssueId → List IssueId) (seed : List IssueId) 
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · intro u hu
       show (seed.foldl (fun m y => m.insert y 0) AMap.empty).find u = some 0
-      rw [find_foldl_insert (fun _ => 0) seed AMap.empty u, if_pos (show u ∈ seed from hu)]
+      rw [find_foldl_insert (fun _ => 0) seed AMap.empty u, ite_eq_left (show u ∈ seed from hu)]
     · intro w u hw; rw [show (parentSweep succ seed 0).2.2.1 = AMap.empty from rfl, AMap.find_empty] at hw; exact nomatch hw
     · intro w u hw; rw [show (parentSweep succ seed 0).2.2.1 = AMap.empty from rfl, AMap.find_empty] at hw; exact nomatch hw
     · intro w hw
       show ((seed.foldl (fun m y => m.insert y 0) AMap.empty).find w).isSome
-      rw [find_foldl_insert (fun _ => 0) seed AMap.empty w, if_pos (show w ∈ seed from hw)]; rfl
+      rw [find_foldl_insert (fun _ => 0) seed AMap.empty w, ite_eq_left (show w ∈ seed from hw)]; rfl
     · intro w hw _; exact hw
     · intro w u hw; rw [show (parentSweep succ seed 0).2.2.1 = AMap.empty from rfl, AMap.find_empty] at hw; exact nomatch hw
     · intro w _; rfl
@@ -351,48 +351,48 @@ theorem parentSweep_inv (succ : IssueId → List IssueId) (seed : List IssueId) 
       intro u hu; rw [hacc, hsplit, List.mem_append]; exact Or.inr hu
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · -- frontier' = layer at depth k+1
-      intro u hu; rw [hfrnt] at hu; rw [hdepfind u, if_pos hu]
+      intro u hu; rw [hfrnt] at hu; rw [hdepfind u, ite_eq_left hu]
     · -- real edge
       intro w u hw
       rw [hparfind w] at hw
       by_cases hwl : w ∈ layer
-      · rw [if_pos hwl] at hw
+      · rw [ite_eq_left hwl] at hw
         obtain ⟨u', hu', hwu'⟩ := parentOf_layer succ acc fr w hwl
         rw [hu', Option.getD_some, Option.some.injEq] at hw; exact hw ▸ hwu'
-      · rw [if_neg hwl] at hw; exact ihR w u hw
+      · rw [ite_eq_right hwl] at hw; exact ihR w u hw
     · -- depth strictly decreases along the parent edge
       intro w u hw
       rw [hparfind w] at hw
       by_cases hwl : w ∈ layer
-      · rw [if_pos hwl] at hw
+      · rw [ite_eq_left hwl] at hw
         obtain ⟨u', hu', _⟩ := parentOf_layer succ acc fr w hwl
         rw [hu', Option.getD_some, Option.some.injEq] at hw
         subst hw
         have hu'fr : u' ∈ fr := List.mem_of_find?_eq_some hu'
         refine ⟨k + 1, k, ?_, ?_, Nat.lt_succ_self k⟩
-        · rw [hdepfind w, if_pos hwl]
-        · rw [hdepfind u', if_neg (fun hc => hlayer_notacc u' hc (hfr_acc u' hu'fr)), ihF u' hu'fr]
-      · rw [if_neg hwl] at hw
+        · rw [hdepfind w, ite_eq_left hwl]
+        · rw [hdepfind u', ite_eq_right (fun hc => hlayer_notacc u' hc (hfr_acc u' hu'fr)), ihF u' hu'fr]
+      · rw [ite_eq_right hwl] at hw
         obtain ⟨dw, du, hdw, hdu, hlt⟩ := ihD w u hw
         have huacc : u ∈ acc := ihAccP w u hw
         refine ⟨dw, du, ?_, ?_, hlt⟩
-        · rw [hdepfind w, if_neg hwl]; exact hdw
-        · rw [hdepfind u, if_neg (fun hc => hlayer_notacc u hc huacc)]; exact hdu
+        · rw [hdepfind w, ite_eq_right hwl]; exact hdw
+        · rw [hdepfind u, ite_eq_right (fun hc => hlayer_notacc u hc huacc)]; exact hdu
     · -- depth total over the accumulator
       intro w hw
       rw [hfst, List.mem_append] at hw
       rcases hw with hwa | hwl
       · have hwnl : w ∉ layer := fun hc => hlayer_notacc w hc hwa
-        rw [hdepfind w, if_neg hwnl]; exact ihT w hwa
-      · rw [hdepfind w, if_pos hwl]; rfl
+        rw [hdepfind w, ite_eq_right hwnl]; exact ihT w hwa
+      · rw [hdepfind w, ite_eq_left hwl]; rfl
     · -- a parentless accumulator node is a seed root
       intro w hw hnone
       rw [hfst, List.mem_append] at hw
       rcases hw with hwa | hwl
       · have hwnl : w ∉ layer := fun hc => hlayer_notacc w hc hwa
-        rw [hparfind w, if_neg hwnl] at hnone
+        rw [hparfind w, ite_eq_right hwnl] at hnone
         exact ihRoot w hwa hnone
-      · rw [hparfind w, if_pos hwl] at hnone
+      · rw [hparfind w, ite_eq_left hwl] at hnone
         obtain ⟨u', hu', _⟩ := parentOf_layer succ acc fr w hwl
         rw [hu', Option.getD_some] at hnone
         exact absurd hnone (Option.some_ne_none _)
@@ -401,12 +401,12 @@ theorem parentSweep_inv (succ : IssueId → List IssueId) (seed : List IssueId) 
       rw [hparfind w] at hw
       rw [hfst, List.mem_append]
       by_cases hwl : w ∈ layer
-      · rw [if_pos hwl] at hw
+      · rw [ite_eq_left hwl] at hw
         obtain ⟨u', hu', _⟩ := parentOf_layer succ acc fr w hwl
         rw [hu', Option.getD_some, Option.some.injEq] at hw
         subst hw
         exact Or.inl (hfr_acc u' (List.mem_of_find?_eq_some hu'))
-      · rw [if_neg hwl] at hw
+      · rw [ite_eq_right hwl] at hw
         exact Or.inl (ihAccP w u hw)
     · -- seeds are roots
       intro w hw
@@ -415,7 +415,7 @@ theorem parentSweep_inv (succ : IssueId → List IssueId) (seed : List IssueId) 
         exact (ihmem w).mpr (reachClosure_mono succ seed (Nat.zero_le k)
           (show w ∈ State.reachClosure succ 0 seed from hw))
       have hwnl : w ∉ layer := fun hc => hlayer_notacc w hc hwacc
-      rw [hparfind w, if_neg hwnl]; exact ihSeed w hw
+      rw [hparfind w, ite_eq_right hwnl]; exact ihSeed w hw
 
 /-- **Reconstruction soundness**: walking the parent map from a reachable `cur`
     (with fuel above its depth) yields a real `succ`-edge chain that starts at a
@@ -480,16 +480,16 @@ theorem parentSweep_depth_bound (succ : IssueId → List IssueId) (seed : List I
           = seed.foldl (fun m y => m.insert y 0) AMap.empty from rfl,
       find_foldl_insert (fun _ => 0) seed AMap.empty w] at hw
     by_cases hws : w ∈ seed
-    · rw [if_pos hws, Option.some.injEq] at hw; subst hw; exact Nat.le_refl 0
-    · rw [if_neg hws, AMap.find_empty] at hw; exact nomatch hw
+    · rw [ite_eq_left hws, Option.some.injEq] at hw; subst hw; exact Nat.le_refl 0
+    · rw [ite_eq_right hws, AMap.find_empty] at hw; exact nomatch hw
   | k + 1, w, d, hw => by
     rw [show (parentSweep succ seed (k + 1)).2.2.2
           = (State.bfsLayer succ (parentSweep succ seed k).1 (parentSweep succ seed k).2.1).foldl
               (fun m y => m.insert y (k + 1)) (parentSweep succ seed k).2.2.2 from rfl,
       find_foldl_insert (fun _ => k + 1) _ _ w] at hw
     by_cases hwl : w ∈ State.bfsLayer succ (parentSweep succ seed k).1 (parentSweep succ seed k).2.1
-    · rw [if_pos hwl, Option.some.injEq] at hw; subst hw; exact Nat.le_refl _
-    · rw [if_neg hwl] at hw
+    · rw [ite_eq_left hwl, Option.some.injEq] at hw; subst hw; exact Nat.le_refl _
+    · rw [ite_eq_right hwl] at hw
       exact Nat.le_succ_of_le (parentSweep_depth_bound succ seed k w d hw)
 
 /-- The witness path to `cur` after a `fuel`-round parent sweep (`none` if `cur`
@@ -510,7 +510,7 @@ theorem bfsPath_sound (succ : IssueId → List IssueId) (seed : List IssueId)
     List.IsChain (fun u v => v ∈ succ u) p := by
   unfold bfsPath at h
   by_cases hcur : cur ∈ (parentSweep succ seed fuel).1
-  · rw [if_pos hcur, Option.some.injEq] at h
+  · rw [ite_eq_left hcur, Option.some.injEq] at h
     subst h
     obtain ⟨_, _, _, ihT, _, _, _⟩ := parentSweep_inv succ seed fuel
     obtain ⟨d, hd⟩ := Option.isSome_iff_exists.mp (ihT cur hcur)
@@ -523,14 +523,14 @@ theorem bfsPath_sound (succ : IssueId → List IssueId) (seed : List IssueId)
     refine ⟨hne, ?_, ?_, hchain⟩
     · rw [hlast]; rfl
     · intro h hh; rw [hr, Option.some.injEq] at hh; exact hh ▸ hrseed
-  · rw [if_neg hcur] at h; exact nomatch h
+  · rw [ite_eq_right hcur] at h; exact nomatch h
 
 /-- **Completeness**: a node in the round-`k` closure has a witness path. -/
 theorem bfsPath_complete (succ : IssueId → List IssueId) (seed : List IssueId)
     (k : Nat) (cur : IssueId) (h : cur ∈ State.reachClosure succ k seed) :
     (bfsPath succ seed k cur).isSome := by
   unfold bfsPath
-  rw [if_pos (((parentSweep_reach succ seed k).1 cur).mpr h)]
+  rw [ite_eq_left (((parentSweep_reach succ seed k).1 cur).mpr h)]
   rfl
 
 /-! ## True O(V+E): the shipped `Std.HashSet` / `Std.HashMap` engine
@@ -665,7 +665,7 @@ theorem parentSweepH_eq (succ : IssueId → List IssueId) (seed : List IssueId) 
       have hfix : parentSweepH succ seed (k + 1) = parentSweepH succ seed k := by
         show (if (parentSweepH succ seed k).1.isEmpty then parentSweepH succ seed k else _)
           = parentSweepH succ seed k
-        rw [if_pos hfe]
+        rw [ite_eq_left hfe]
       refine ⟨?_, ?_, ?_⟩
       · rw [hfix, hp1, hL1, hlay0]
       · intro z; rw [hfix, hL2, hlay0, List.foldl_nil]; exact ih2 z
@@ -680,7 +680,7 @@ theorem parentSweepH_eq (succ : IssueId → List IssueId) (seed : List IssueId) 
               step.2.reverse.foldl (fun m y => m.insert y (((firstPred succ p.1)[y]?).getD y)) p.2.1,
               step.1)) := by
         show (if (parentSweepH succ seed k).1.isEmpty then parentSweepH succ seed k else _) = _
-        rw [if_neg (show ¬ (parentSweepH succ seed k).1.isEmpty = true by rw [hfe]; exact Bool.false_ne_true)]
+        rw [ite_eq_right (show ¬ (parentSweepH succ seed k).1.isEmpty = true by rw [hfe]; exact Bool.false_ne_true)]
       -- the shipped layer / visited set from the bfsStepFn fold matches the reference
       obtain ⟨hLay, hVis⟩ :=
         bfsStep_layer succ accL (parentSweepH succ seed k).1 (parentSweepH succ seed k).2.2 ih3
@@ -702,8 +702,8 @@ theorem parentSweepH_eq (succ : IssueId → List IssueId) (seed : List IssueId) 
           getElem?_foldl_insert_keys (fun y => ((firstPred succ frL)[y]?).getD y) _ _ z,
           find_foldl_insert (fun y => (parentOf succ frL y).getD y) _ _ z]
         by_cases hz : z ∈ State.bfsLayer succ accL frL
-        · rw [if_pos hz, if_pos hz, firstPred_getElem?]
-        · rw [if_neg hz, if_neg hz]; exact ih2 z
+        · rw [ite_eq_left hz, ite_eq_left hz, firstPred_getElem?]
+        · rw [ite_eq_right hz, ite_eq_right hz]; exact ih2 z
       · intro z
         rw [hH3, hVis z, hL3, ih1]
 
@@ -719,13 +719,13 @@ theorem bfsPathH_eq (succ : IssueId → List IssueId) (seed : List IssueId)
   unfold bfsPathH bfsPath
   obtain ⟨_, hpar, hvis⟩ := parentSweepH_eq succ seed fuel
   by_cases hc : cur ∈ (parentSweep succ seed fuel).1
-  · rw [if_pos (show (parentSweepH succ seed fuel).2.2.contains cur = true by
+  · rw [ite_eq_left (show (parentSweepH succ seed fuel).2.2.contains cur = true by
         rw [hvis cur, decide_eq_true_eq]; exact hc),
-      if_pos hc,
+      ite_eq_left hc,
       parentWalkH_eq (parentSweepH succ seed fuel).2.1 (parentSweep succ seed fuel).2.2.1 hpar]
-  · rw [if_neg (show ¬ (parentSweepH succ seed fuel).2.2.contains cur = true by
+  · rw [ite_eq_right (show ¬ (parentSweepH succ seed fuel).2.2.contains cur = true by
         rw [hvis cur, decide_eq_true_eq]; exact hc),
-      if_neg hc]
+      ite_eq_right hc]
 
 namespace State
 

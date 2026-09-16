@@ -34,14 +34,14 @@ theorem withClosed_issueData_i (s : State) (i : IssueId) :
       = { s.issueData i with status := Reg.write ⟨0, 0, 0⟩ Status.Cancelled } := by
   show (((s.data.insert i { s.issueData i with status := Reg.write ⟨0, 0, 0⟩ Status.Cancelled }).find i).getD
       IssueData.empty) = { s.issueData i with status := Reg.write ⟨0, 0, 0⟩ Status.Cancelled }
-  rw [AMap.find_insert, if_pos rfl, Option.getD_some]
+  rw [AMap.find_insert, ite_eq_left rfl, Option.getD_some]
 
 /-- Off `i`, `withClosed` changes nothing. -/
 theorem withClosed_issueData_ne (s : State) (i j : IssueId) (h : j ≠ i) :
     (s.withClosed i).issueData j = s.issueData j := by
   show (((s.data.insert i { s.issueData i with status := Reg.write ⟨0, 0, 0⟩ Status.Cancelled }).find j).getD
       IssueData.empty) = (s.data.find j).getD IssueData.empty
-  rw [AMap.find_insert, if_neg h]
+  rw [AMap.find_insert, ite_eq_right h]
 
 theorem withClosed_issues (s : State) (i : IssueId) : (s.withClosed i).issues = s.issues := rfl
 theorem withClosed_edges (s : State) (i : IssueId) : (s.withClosed i).edges = s.edges := rfl

@@ -3511,15 +3511,16 @@ the ones the shell performs — and that the three decisions over it (may a gate
 be skipped, did the run pass, what does a surface contribute) are the ones the
 theorems characterise, driven to every crossing. -/
 
-private def sampleGate (name : String) (requires : List Policy.ToolRequirement) : Policy.Gate :=
-  { name, requires, profiles := [.ci], onTag := .always
+private def sampleGate (name : String) (reqs : List Policy.ToolRequirement) : Policy.Gate :=
+  { name := name, requires := reqs, profiles := [.ci], onTag := .always
     invocation := .tool "true" [], summary := "" }
 
 /-- A registry carrying both tag behaviours. The real one carries only
     `always`, so this is what makes `gatesFrom`'s tag clause reachable. -/
 private def syntheticRegistry : List Policy.Gate :=
   [sampleGate "always" [],
-   { sampleGate "working tree" [] with onTag := .workingTreeOnly }]
+   { name := "working tree", requires := [], profiles := [.ci], onTag := .workingTreeOnly,
+     invocation := .tool "true" [], summary := "" }]
 
 private def presentOnly (tools : List String) : String → Bool := fun tool => tools.contains tool
 

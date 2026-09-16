@@ -194,7 +194,7 @@ theorem combFold_of_not_mem {f : V → V → V} {key : K} :
   | p :: ps, acc0, h => by
     rw [combFold_cons]
     have hp : keyOpt key p = none := by
-      unfold keyOpt; rw [if_neg (h p (List.mem_cons_self ..))]
+      unfold keyOpt; rw [ite_eq_right (h p (List.mem_cons_self ..))]
     rw [hp, optCombine_none_right]
     exact combFold_of_not_mem ps acc0 (fun q hq => h q (List.mem_cons_of_mem p hq))
 
@@ -220,37 +220,37 @@ theorem collapseGo_lookup {f : V → V → V} (key : K) :
     unfold collapseGo
     by_cases hkeq : k = k'
     · -- same run: the head folds into the k-group accumulator
-      rw [if_pos hkeq, collapseGo_lookup key hkrest' hp']
+      rw [ite_eq_left hkeq, collapseGo_lookup key hkrest' hp']
       congr 1
       by_cases hek : key = k
       · rw [hek]
         have hko : keyOpt k (k', v') = some v' := by
-          unfold keyOpt; exact if_pos hkeq.symm
-        rw [hko, if_pos rfl, if_pos rfl]
+          unfold keyOpt; exact ite_eq_left hkeq.symm
+        rw [hko, ite_eq_left rfl, ite_eq_left rfl]
         rfl
       · have hko : keyOpt key (k', v') = none := by
-          unfold keyOpt; exact if_neg (fun h => hek (hkeq.trans h).symm)
-        rw [hko, if_neg hek, if_neg hek, optCombine_none_right]
+          unfold keyOpt; exact ite_eq_right (fun h => hek (hkeq.trans h).symm)
+        rw [hko, ite_eq_right hek, ite_eq_right hek, optCombine_none_right]
     · -- k < k': emit (k, acc) and recurse into the k' run
-      rw [if_neg hkeq]
+      rw [ite_eq_right hkeq]
       have hltkk' : lt k k' := lt_of_le_of_ne hkk' hkeq
       by_cases hek : key = k
       · -- key = k < every key of rest', so the run beyond contributes nothing
         rw [hek]
         have hko : keyOpt k (k', v') = none := by
-          unfold keyOpt; exact if_neg (fun (h : k' = k) => hkeq h.symm)
+          unfold keyOpt; exact ite_eq_right (fun (h : k' = k) => hkeq h.symm)
         have hnm : ∀ p ∈ rest', p.1 ≠ k := fun p hp2 he =>
           ne_of_lt (lt_of_lt_of_le hltkk' (hk'rest' p hp2)) he.symm
-        rw [lookup_cons_eq, hko, if_pos rfl, optCombine_none_right,
+        rw [lookup_cons_eq, hko, ite_eq_left rfl, optCombine_none_right,
           combFold_of_not_mem rest' (some acc) hnm]
       · -- key ≠ k: skip the head, read the k' run by IH
         rw [lookup_cons_ne hek, collapseGo_lookup key hk'rest' hp']
         congr 1
-        rw [if_neg hek, optCombine_none_left]
+        rw [ite_eq_right hek, optCombine_none_left]
         unfold keyOpt
         by_cases h : k' = key
-        · rw [if_pos h, if_pos h.symm]
-        · rw [if_neg h, if_neg (fun he => h he.symm)]
+        · rw [ite_eq_left h, ite_eq_left h.symm]
+        · rw [ite_eq_right h, ite_eq_right (fun he => h he.symm)]
 
 /-- `lookup` on the collapsed sorted list is the per-key combine of the whole
     list — the LHS of the batched-construction bridge. -/
@@ -267,8 +267,8 @@ theorem collapse_lookup {f : V → V → V} (key : K) :
     rw [optCombine_none_left]
     unfold keyOpt
     by_cases h : k = key
-    · rw [if_pos h, if_pos h.symm]
-    · rw [if_neg h, if_neg (fun he => h he.symm)]
+    · rw [ite_eq_left h, ite_eq_left h.symm]
+    · rw [ite_eq_right h, ite_eq_right (fun he => h he.symm)]
 
 /-- The combine splits over an append (`foldl`/`map` over `++`). -/
 theorem combFold_append (f : V → V → V) (key : K) (A B : List (K × V)) (acc : Option V) :
@@ -287,10 +287,10 @@ theorem combFold_sorted_eq_lookup {f : V → V → V} {key : K} :
     rw [combFold_cons]
     by_cases hek : key = k
     · rw [hek]
-      have hko : keyOpt k (k, v) = some v := by unfold keyOpt; exact if_pos rfl
+      have hko : keyOpt k (k, v) = some v := by unfold keyOpt; exact ite_eq_left rfl
       have hnm : ∀ p ∈ rest, p.1 ≠ k := fun p hp he => ne_of_lt (hlb p hp) he.symm
       rw [hko, combFold_of_not_mem rest _ hnm, lookup_cons_eq]
-    · have hko : keyOpt key (k, v) = none := by unfold keyOpt; exact if_neg (fun h => hek h.symm)
+    · have hko : keyOpt key (k, v) = none := by unfold keyOpt; exact ite_eq_right (fun h => hek h.symm)
       rw [hko, optCombine_none_right, combFold_sorted_eq_lookup rest acc hsr,
         lookup_cons_ne hek]
 

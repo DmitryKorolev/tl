@@ -75,7 +75,7 @@ theorem lookup_eq_none_of_not_fst {K V : Type _} [TotalOrd K] {k : K} :
       rw [List.map_cons] at h
       exact h (he ▸ List.mem_cons_self ..)
     show (if k = p.1 then some p.2 else AssocList.lookup k ps) = none
-    rw [if_neg hne]
+    rw [ite_eq_right hne]
     exact lookup_eq_none_of_not_fst ps (fun hm => by
       rw [List.map_cons] at h
       exact h (List.mem_cons_of_mem _ hm))
@@ -98,20 +98,20 @@ theorem getElem?_foldl_insert {K V : Type _} [TotalOrd K] [BEq K] [LawfulBEq K]
         lookup_eq_none_of_not_fst ps (hk ▸ hp)
       have hlk : AssocList.lookup k (p :: ps) = some p.2 := by
         show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some p.2
-        rw [if_pos hk]
+        rw [ite_eq_left hk]
       rw [hnone, hlk]
       show (m0.insert p.1 p.2)[k]? = some p.2
-      rw [Std.HashMap.getElem?_insert, if_pos (beq_iff_eq.mpr hk.symm)]
+      rw [Std.HashMap.getElem?_insert, ite_eq_left (beq_iff_eq.mpr hk.symm)]
     · have hlk : AssocList.lookup k (p :: ps) = AssocList.lookup k ps := by
         show (if k = p.1 then some p.2 else AssocList.lookup k ps) = _
-        rw [if_neg hk]
+        rw [ite_eq_right hk]
       rw [hlk]
       cases hcase : AssocList.lookup k ps with
       | some v => rfl
       | none =>
         show (m0.insert p.1 p.2)[k]? = m0[k]?
         rw [Std.HashMap.getElem?_insert,
-          if_neg (fun h => hk (beq_iff_eq.mp h).symm)]
+          ite_eq_right (fun h => hk (beq_iff_eq.mp h).symm)]
 
 theorem getElem?_hashAssoc {K V : Type _} [TotalOrd K] [BEq K] [LawfulBEq K]
     [Hashable K] [LawfulHashable K] (l : List (K × V))
@@ -141,8 +141,8 @@ theorem lookup_map_val {V W : Type _} (g : V → W) (k : IssueId) :
     show (if k = p.1 then some (g p.2) else AssocList.lookup k (ps.map (fun q => (q.1, g q.2))))
        = (if k = p.1 then some p.2 else AssocList.lookup k ps).map g
     by_cases hk : k = p.1
-    · rw [if_pos hk, if_pos hk]; rfl
-    · rw [if_neg hk, if_neg hk, lookup_map_val g k ps]
+    · rw [ite_eq_left hk, ite_eq_left hk]; rfl
+    · rw [ite_eq_right hk, ite_eq_right hk, lookup_map_val g k ps]
 
 /-- The mapped-list instance of the bridge: a hash copy of an `AMap` whose values
     have been mapped by `g` looks up exactly `find`, with `g` applied — the
@@ -165,17 +165,17 @@ theorem getElem?_hashAssoc_map_amap {V W : Type _} (g : V → W) (m : AMap Issue
 theorem getElem?_foldl_insert_keys {V : Type _} (val : IssueId → V) :
     ∀ (l : List IssueId) (m0 : Std.HashMap IssueId V) (z : IssueId),
       (l.foldl (fun m k => m.insert k (val k)) m0)[z]? = if z ∈ l then some (val z) else m0[z]?
-  | [], m0, z => by rw [List.foldl_nil, if_neg List.not_mem_nil]
+  | [], m0, z => by rw [List.foldl_nil, ite_eq_right List.not_mem_nil]
   | a :: rest, m0, z => by
     show (rest.foldl (fun m k => m.insert k (val k)) (m0.insert a (val a)))[z]? = _
     rw [getElem?_foldl_insert_keys val rest (m0.insert a (val a)) z, Std.HashMap.getElem?_insert]
     by_cases hz : z ∈ rest
-    · rw [if_pos hz, if_pos (List.mem_cons.mpr (Or.inr hz))]
-    · rw [if_neg hz]
+    · rw [ite_eq_left hz, ite_eq_left (List.mem_cons.mpr (Or.inr hz))]
+    · rw [ite_eq_right hz]
       by_cases hza : z = a
-      · rw [if_pos (beq_iff_eq.mpr hza.symm), if_pos (List.mem_cons.mpr (Or.inl hza)), hza]
-      · rw [if_neg (fun h => hza (beq_iff_eq.mp h).symm),
-          if_neg (fun h => (List.mem_cons.mp h).elim hza hz)]
+      · rw [ite_eq_left (beq_iff_eq.mpr hza.symm), ite_eq_left (List.mem_cons.mpr (Or.inl hza)), hza]
+      · rw [ite_eq_right (fun h => hza (beq_iff_eq.mp h).symm),
+          ite_eq_right (fun h => (List.mem_cons.mp h).elim hza hz)]
 
 /-! ## The inverse: an `AMap` materialized from a `HashMap`
 
@@ -197,11 +197,11 @@ theorem lookup_of_mem_nodup {V : Type _} {k : IssueId} {v : V} :
     rcases List.mem_cons.mp hmem with heq | hmem'
     · subst heq
       show (if k = (k, v).1 then some (k, v).2 else AssocList.lookup k ps) = some v
-      rw [if_pos rfl]
+      rw [ite_eq_left rfl]
     · have hkfst : k ∈ ps.map Prod.fst := List.mem_map.mpr ⟨(k, v), hmem', rfl⟩
       have hkp : k ≠ p.1 := fun he => hp (he ▸ hkfst)
       show (if k = p.1 then some p.2 else AssocList.lookup k ps) = some v
-      rw [if_neg hkp]
+      rw [ite_eq_right hkp]
       exact lookup_of_mem_nodup ps hps hmem'
 
 /-- The hash map's `toList` keys are nodup. -/
@@ -310,11 +310,11 @@ theorem getElem?_foldl_bucket (l : List (IssueId × IssueId))
       rw [List.filter_cons_of_pos (p := fun q : IssueId × IssueId => q.1 == a)
           (beq_iff_eq.mpr rfl),
         List.map_cons, List.reverse_cons, Std.HashMap.getElem?_insert,
-        if_pos (beq_iff_eq.mpr rfl), Option.getD_some,
+        ite_eq_left (beq_iff_eq.mpr rfl), Option.getD_some,
         List.append_assoc, List.singleton_append]
     · rw [List.filter_cons_of_neg (p := fun q : IssueId × IssueId => q.1 == k)
           (fun h => hk (beq_iff_eq.mp h)),
-        Std.HashMap.getElem?_insert, if_neg (fun h => hk (beq_iff_eq.mp h))]
+        Std.HashMap.getElem?_insert, ite_eq_right (fun h => hk (beq_iff_eq.mp h))]
 
 theorem getD_bucketBy (l : List (IssueId × IssueId)) (k : IssueId) :
     ((bucketBy l)[k]?.getD []).reverse = (l.filter (fun p => p.1 == k)).map (·.2) := by

@@ -293,7 +293,7 @@ theorem removedOf_merge (s t : OrSet α) (e : α) :
 theorem tagsOf_singletonAdd_self (e : α) (st : Stamp) :
     (singletonAdd e st).tagsOf e = FinSet.singleton st := by
   unfold tagsOf singletonAdd
-  rw [AMap.find_singleton, if_pos rfl]
+  rw [AMap.find_singleton, ite_eq_left rfl]
   rfl
 
 /-- An add delta tombstones nothing. -/
@@ -308,7 +308,7 @@ theorem tagsOf_tombstonesAt (e0 : α) (obs : FinSet Stamp) (e : α) :
 theorem removedOf_tombstonesAt_self (e : α) (obs : FinSet Stamp) :
     (tombstonesAt e obs).removedOf e = obs := by
   unfold removedOf tombstonesAt
-  rw [AMap.find_singleton, if_pos rfl]
+  rw [AMap.find_singleton, ite_eq_left rfl]
   rfl
 
 /-- `Present` phrased over set membership instead of the enumeration list — the
@@ -375,7 +375,7 @@ theorem presentElements_mergeAdd_filter (se : OrSet α) (e0 : α) (st : Stamp)
     have hfind : (merge se (singletonAdd e0 st)).adds.find a = se.adds.find a := by
       show AMap.find (AMap.merge FinSet.union se.adds (AMap.singleton e0 (FinSet.singleton st))) a
         = se.adds.find a
-      rw [AMap.find_merge, AMap.find_singleton, if_neg ha, optCombine_none_right]
+      rw [AMap.find_merge, AMap.find_singleton, ite_eq_right ha, optCombine_none_right]
     have htag : (merge se (singletonAdd e0 st)).tagsOf a = se.tagsOf a := by
       unfold tagsOf; rw [hfind]
     have hremOf : (merge se (singletonAdd e0 st)).removedOf a = se.removedOf a := by
@@ -411,7 +411,7 @@ theorem presentElements_mergeTombstonesAt_filter (se : OrSet α) (e0 : α) (obs 
     have hfind : (merge se (tombstonesAt e0 obs)).removed.find a = se.removed.find a := by
       show AMap.find (AMap.merge FinSet.union se.removed (AMap.singleton e0 obs)) a
         = se.removed.find a
-      rw [AMap.find_merge, AMap.find_singleton, if_neg ha, optCombine_none_right]
+      rw [AMap.find_merge, AMap.find_singleton, ite_eq_right ha, optCombine_none_right]
     have hremOf : (merge se (tombstonesAt e0 obs)).removedOf a = se.removedOf a := by
       unfold removedOf; rw [hfind]
     have hiff : Present (merge se (tombstonesAt e0 obs)) a ↔ Present se a := by

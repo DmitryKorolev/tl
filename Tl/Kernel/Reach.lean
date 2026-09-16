@@ -351,10 +351,10 @@ theorem exists_onCycle_of_all_succ {s : State} {succ : IssueId → List IssueId}
   let f : IssueId → IssueId := fun x => if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x
   have hfS : ∀ x ∈ S, f x ∈ S := fun x hx => by
     show (if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x) ∈ S
-    rw [dif_pos (hsucc x hx)]; exact (hsucc x hx).choose_spec.1
+    rw [dite_eq_left (hsucc x hx)]; exact (hsucc x hx).choose_spec.1
   have hfsucc : ∀ x ∈ S, f x ∈ succ x := fun x hx => by
     show (if h : ∃ y, y ∈ S ∧ y ∈ succ x then h.choose else x) ∈ succ x
-    rw [dif_pos (hsucc x hx)]; exact (hsucc x hx).choose_spec.2
+    rw [dite_eq_left (hsucc x hx)]; exact (hsucc x hx).choose_spec.2
   have horbit : ∀ k, f^[k] v0 ∈ S := by
     intro k
     induction k with

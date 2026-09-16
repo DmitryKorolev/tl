@@ -500,7 +500,7 @@ def propagatedAxioms (constants : Std.HashMap Name ConstantInfo) :
 def replayConstantsError? (base : Environment)
     (constants : Std.HashMap Name ConstantInfo) : IO (Option String) := do
   try
-    let _ ← Lean.Environment.replay constants base
+    let _ ← Lean.Kernel.Environment.replay constants base.toKernelEnv
     return none
   catch error =>
     return some s!"independent kernel replay rejected the stored environment: {error}. Remove any kernel-checking bypass and fix the declaration the kernel names."

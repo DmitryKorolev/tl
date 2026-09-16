@@ -123,10 +123,10 @@ theorem tmax_comm [TotalOrd α] (a b : α) : tmax a b = tmax b a := by
   unfold tmax
   by_cases hab : le a b
   · by_cases hba : le b a
-    · rw [if_pos hab, if_pos hba]; exact (le_antisymm hab hba).symm
-    · rw [if_pos hab, if_neg hba]
+    · rw [ite_eq_left hab, ite_eq_left hba]; exact (le_antisymm hab hba).symm
+    · rw [ite_eq_left hab, ite_eq_right hba]
   · by_cases hba : le b a
-    · rw [if_neg hab, if_pos hba]
+    · rw [ite_eq_right hab, ite_eq_left hba]
     · rcases le_total a b with h | h
       · exact absurd h hab
       · exact absurd h hba

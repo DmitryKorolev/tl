@@ -351,9 +351,9 @@ theorem mem_seg_self (c : IssueId) :
   | p :: rest, hc => by
     unfold seg
     by_cases hpc : (p == c) = true
-    · rw [if_pos hpc]
+    · rw [ite_eq_left hpc]
       exact List.mem_singleton.mpr (eq_of_beq hpc).symm
-    · rw [if_neg hpc]
+    · rw [ite_eq_right hpc]
       rcases List.mem_cons.mp hc with rfl | hmem
       · exact absurd (beq_self_eq_true c) hpc
       · exact List.mem_cons_of_mem p (mem_seg_self c rest hmem)
@@ -367,12 +367,12 @@ theorem seg_liveSet (s : State) (c : IssueId) :
   | p :: rest, a, ⟨hap, hpnc, hrest⟩, hc => by
     unfold seg
     by_cases hpc : (p == c) = true
-    · rw [if_pos hpc]
+    · rw [ite_eq_left hpc]
       intro x hx
       rw [List.mem_singleton] at hx
       subst hx
       exact ⟨hpnc, a, List.mem_cons_self .., hap⟩
-    · rw [if_neg hpc]
+    · rw [ite_eq_right hpc]
       have hcrest : c ∈ rest := by
         rcases List.mem_cons.mp hc with rfl | hmem
         · exact absurd (beq_self_eq_true c) hpc
@@ -412,10 +412,10 @@ private theorem coherent_insert (s : State) {m : Std.HashMap IssueId Status}
   intro k w hkw
   rw [Std.HashMap.getElem?_insert] at hkw
   by_cases hki : k = i
-  · rw [if_pos (beq_iff_eq.mpr hki.symm)] at hkw
+  · rw [ite_eq_left (beq_iff_eq.mpr hki.symm)] at hkw
     rw [← Option.some.inj hkw, hki]
     exact hv
-  · rw [if_neg (fun h => hki (beq_iff_eq.mp h).symm)] at hkw
+  · rw [ite_eq_right (fun h => hki (beq_iff_eq.mp h).symm)] at hkw
     exact hcoh k w hkw
 
 private theorem isSome_insert_mono {m : Std.HashMap IssueId Status} {i : IssueId}
@@ -423,9 +423,9 @@ private theorem isSome_insert_mono {m : Std.HashMap IssueId Status} {i : IssueId
     ((m.insert i v)[k]?).isSome = true := by
   rw [Std.HashMap.getElem?_insert]
   by_cases hki : k = i
-  · rw [if_pos (beq_iff_eq.mpr hki.symm)]
+  · rw [ite_eq_left (beq_iff_eq.mpr hki.symm)]
     rfl
-  · rw [if_neg (fun h => hki (beq_iff_eq.mp h).symm)]
+  · rw [ite_eq_right (fun h => hki (beq_iff_eq.mp h).symm)]
     exact h
 
 mutual
@@ -450,18 +450,18 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
     rfl
   | none =>
     by_cases hcanc : (s.issueData i).statusOf = Status.Cancelled
-    · rw [if_pos hcanc]
+    · rw [ite_eq_left hcanc]
       exact ⟨coherent_insert s hcoh (effectiveStatus_cancelled s i hcanc).symm,
         (effectiveStatus_cancelled s i hcanc).symm,
         fun k hk => isSome_insert_mono k hk,
-        by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
-    · rw [if_neg hcanc, kidsBucket_eq hb i]
+        by rw [Std.HashMap.getElem?_insert, ite_eq_left (beq_self_eq_true i)]; rfl⟩
+    · rw [ite_eq_right hcanc, kidsBucket_eq hb i]
       have hkids_eq : kidsOfEdges pe i = s.presentChildren i := by
         rw [hpe]
         exact kidsOfEdges_parentEdges s i
       cases hkemp : (kidsOfEdges pe i).isEmpty with
       | true =>
-        rw [if_pos hkemp]
+        rw [ite_eq_left hkemp]
         have hepic : s.isEpic i = false := by
           unfold State.isEpic
           rw [← hkids_eq, hkemp]
@@ -469,9 +469,9 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
         exact ⟨coherent_insert s hcoh (effectiveStatus_nonEpic s i hepic).symm,
           (effectiveStatus_nonEpic s i hepic).symm,
           fun k hk => isSome_insert_mono k hk,
-          by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
+          by rw [Std.HashMap.getElem?_insert, ite_eq_left (beq_self_eq_true i)]; rfl⟩
       | false =>
-        rw [if_neg (by rw [hkemp]; exact Bool.false_ne_true)]
+        rw [ite_eq_right (by rw [hkemp]; exact Bool.false_ne_true)]
         have hcs : ∀ c ∈ kidsOfEdges pe i, c ∈ s.presentChildren i := by
           intro c hcm
           rw [← hkids_eq]
@@ -480,14 +480,14 @@ theorem rollupVisit_sound (s : State) (pe : List (IssueId × IssueId))
           rollupKids_sound s pe bucket hb hpe path i hchain hcanc memo (kidsOfEdges pe i) hcoh hcs
         have heff : (if (rollupKids s pe bucket hb (i :: path) memo (kidsOfEdges pe i)).2
             then Status.Done else Status.Open) = s.effectiveStatus i := by
-          rw [hval, hkids_eq, effectiveStatus_recurrence s i, if_neg hcanc]
+          rw [hval, hkids_eq, effectiveStatus_recurrence s i, ite_eq_right hcanc]
           have hpem : (s.presentChildren i).isEmpty = false := by
             rw [← hkids_eq]
             exact hkemp
-          rw [hpem, if_neg Bool.false_ne_true]
+          rw [hpem, ite_eq_right Bool.false_ne_true]
         exact ⟨coherent_insert s hcoh' heff, heff,
           fun k hk => isSome_insert_mono k (hmono k hk),
-          by rw [Std.HashMap.getElem?_insert, if_pos (beq_self_eq_true i)]; rfl⟩
+          by rw [Std.HashMap.getElem?_insert, ite_eq_left (beq_self_eq_true i)]; rfl⟩
 termination_by
   ((s.presentIssues.filter (fun x => !path.contains x && x != i)).length, pe.length + 1)
 decreasing_by
@@ -528,7 +528,7 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
     | none =>
       dsimp only
       by_cases hcon : (i :: path).contains c = true
-      · rw [dif_pos hcon]
+      · rw [dite_eq_left hcon]
         dsimp only
         obtain ⟨hcoh', hval', hmono'⟩ := rollupKids_sound s pe bucket hb hpe path i hchain hinc
           memo cs' hcoh (fun x hx => hcs x (List.mem_cons_of_mem c hx))
@@ -541,10 +541,10 @@ theorem rollupKids_sound (s : State) (pe : List (IssueId × IssueId))
           rfl
         rw [hopen]
         rfl
-      · rw [dif_neg hcon]
+      · rw [dite_eq_right hcon]
         have hpres : s.hasIssue c := (OrSet.mem_presentElements s.issues c).mp
           (presentChildren_subset_present s i hckid)
-        rw [dif_pos hpres]
+        rw [dite_eq_left hpres]
         have hchain' : ChainOk s (i :: path) c := ⟨hckid, hinc, hchain⟩
         obtain ⟨hcohV, hvalV, hmonoV, _⟩ :=
           rollupVisit_sound s pe bucket hb hpe (i :: path) memo c hcoh hchain'

@@ -311,14 +311,14 @@ theorem reachBFSgoTrace_flatten (succ : IssueId → List IssueId) :
                 (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
                 ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse).flatten
          = (reachExpandTrace succ (n + 1) accRev.reverse frontier).flatten
-      rw [if_pos hfe, hfnil]
+      rw [ite_eq_left hfe, hfnil]
       exact (reachExpandTrace_nil_flatten succ (n + 1) accRev.reverse).symm
     · show (if frontier.isEmpty then [] else
               frontier :: reachBFSgoTrace succ n ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).1
                 (((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2 ++ accRev)
                 ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2.reverse).flatten
          = (reachExpandTrace succ (n + 1) accRev.reverse frontier).flatten
-      rw [if_neg hfe]
+      rw [ite_eq_right hfe]
       obtain ⟨hout, hvis'⟩ := bfsFold_spec (frontier.flatMap succ) accRev.reverse [] vis
         (fun z => by rw [List.append_nil]; exact hvis z)
       have hlayer : ((frontier.flatMap succ).foldl bfsStepFn (vis, [])).2
