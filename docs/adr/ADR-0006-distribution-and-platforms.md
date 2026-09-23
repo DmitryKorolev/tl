@@ -290,8 +290,10 @@ gates and requires its separate packaging environment (ADR-0026).
   than assume; GitHub shows an SSH-signed commit as Verified only when the key
   is registered to the account that owns the committer email. The signature
   gives the formula's history a provenance anyone can check against the
-  recorded key, and it constrains this tool. It is not a control against
-  someone who holds the tap credential and pushes directly, and a dedicated key
+  recorded key. This publisher verifies newly published commits against the
+  configured release signer before pushing. That constrains publications made
+  through this implementation; it does not independently prevent another client
+  with tap write access from bypassing the publisher. A dedicated key
   separates signing from publication only while the key is kept out of reach
   of whoever holds that credential.
 - Prereleases reach each channel differently, and deliberately. GitHub marks

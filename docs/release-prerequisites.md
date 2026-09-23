@@ -195,8 +195,9 @@ also needs:
   committer identity and the public half:
   `{"name": "...", "email": "...", "publicKey": "ssh-ed25519 AAAA..."}` — the
   first two fields of `tap-signer.pub`, without its comment. GitHub shows the
-  commits as Verified only if the key is registered as a signing key on the
-  account that owns that email.
+  commits as Verified only if the key is registered as a GitHub **signing key
+  only** on the account that owns that email. Do not register it as an
+  authentication key or deploy key.
 - The private key as the `HOMEBREW_TAP_SIGNING_KEY` secret in the protected
   release environment. A stable release refuses a missing key before rendering.
 
