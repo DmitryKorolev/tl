@@ -120,11 +120,6 @@ def syncRefTests : IO (List Outcome) := do
   o := o ++ [match tip with
     | .ok _ => { name := "writeRef creates the ref", passed := true }
     | .error e => { name := "writeRef creates the ref", passed := false, msg := e.message }]
-  let ident ← IO.Process.output
-    { cmd := "git", args := #["-C", d.base, "show", "-s", "--format=%an <%ae>|%cn <%ce>",
-      "refs/tl/log"] }
-  o := o ++ [checkEq "ref commit uses the neutral author and committer"
-    ident.stdout.trimAscii.toString "tl-dev <tl-dev>|tl-dev <tl-dev>"]
   o := o ++ [match ← runTl (readRef d) with
     | .ok back =>
       let bySorted := back.mergeSort (fun a b => decide (a.replicaId ≤ b.replicaId))

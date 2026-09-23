@@ -66,7 +66,7 @@ semantics pinned in ADR-0008).
 Commits are **parent-chained** (each
 push's commit parents the prior tip), so a non-fast-forward push is
 detectable (§5) and the ref carries history. The author/committer is a
-**fixed neutral `tl-dev <tl-dev>`** set via `GIT_*` env, never the user's
+**fixed neutral `tl <tl@localhost>`** set via `GIT_*` env, never the user's
 git identity: the acting actor already rides each op's envelope as provenance
 (ADR-0013), so the ref's commit metadata needs none and leaks none. The
 message is a fixed `tl log`. `update-ref` is compare-and-set against the tip

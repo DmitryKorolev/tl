@@ -10,7 +10,7 @@ named `<replica-id>.jsonl` at the root, plus any carried-unknown entries
 (the tree is the `log/` contents *plus* reserved and unknown non-replica
 entries — the ADR-0008 transport preserve-unknown rule);
 commits are parent-chained (so a non-fast-forward push is detectable);
-the author/committer is a fixed neutral `tl-dev <tl-dev>` set via
+the author/committer is a fixed neutral `tl <tl@localhost>` set via
 `GIT_*` env, so a sync leaks no per-user git identity into ref metadata
 (the actor already rides each op's envelope as provenance, ADR-0013).
 
@@ -32,8 +32,8 @@ open Tl.Store
 private def repoOf (d : Dirs) : String := if d.base.isEmpty then "." else d.base
 
 private def fixedIdentity : List (String × Option String) :=
-  [("GIT_AUTHOR_NAME", some "tl-dev"), ("GIT_AUTHOR_EMAIL", some "tl-dev"),
-   ("GIT_COMMITTER_NAME", some "tl-dev"), ("GIT_COMMITTER_EMAIL", some "tl-dev")]
+  [("GIT_AUTHOR_NAME", some "tl"), ("GIT_AUTHOR_EMAIL", some "tl@localhost"),
+   ("GIT_COMMITTER_NAME", some "tl"), ("GIT_COMMITTER_EMAIL", some "tl@localhost")]
 
 /-- Environment variables scrubbed from every subprocess `tl` spawns
     (ADR-0012 "Sanitized git subprocess environment"). Once discovery selects
