@@ -215,7 +215,8 @@ def signingKeyFile (secret : String) : String :=
   if secret.endsWith "\n" then secret else secret ++ "\n"
 
 /-- Write the signing key where only this process's user can read it, run
-    `body` with its path, and remove it on every path out.
+    `body` with its path, and remove it on normal return and handled failure.
+    Uncatchable process termination and machine failure bypass cleanup.
 
     The file is created empty and restricted before the key is written, inside
     a fresh private directory, so the key is never readable by anyone else. -/

@@ -1043,13 +1043,16 @@ private def publishDecision (args : PublishArgs) : Decision String := do
         ((["-C", args.tapPath] ++ TapSigning.commitConfig prepared ++
           ["commit", "-S", "--only", "--no-verify",
            "-m", s!"tl {description.tag}: pin the released digests", "--", tapFormulaRelative]).toArray))
-    -- Verified again, now over what is actually about to be pushed.
-    TapSigning.verifyRange args.tapPath prepared range
+    -- Resolve the outgoing tip once. A concurrent change to the local branch
+    -- after verification must not replace the commit this command publishes.
+    let outgoing ← gitIn args.tapPath ["rev-parse", "--verify", "HEAD^{commit}"]
+    let outgoingRange := if published.present then s!"FETCH_HEAD..{outgoing}" else outgoing
+    TapSigning.verifyRange args.tapPath prepared outgoingRange
       s!"Every commit published to {description.homebrew.tap} must be signed by the release signer in {args.signerPath}, and this one was not, so nothing was pushed. Clone the tap fresh and re-run."
     -- Named explicitly. A bare `git push` consults `branch.<name>.remote` and
     -- `push.default`, so the destination would be configuration rather than the
     -- remote this command just checked.
-    let _ ← gitIn args.tapPath ["push", "origin", s!"HEAD:refs/heads/{branch}"]
+    let _ ← gitIn args.tapPath ["push", "origin", s!"{outgoing}:refs/heads/{branch}"]
     -- And read back. "Pushed" is a claim about the remote, and the only evidence
     -- for it is the remote: a push that reported success while the ref did not
     -- move is exactly the outcome this command exists to make impossible.

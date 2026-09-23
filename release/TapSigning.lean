@@ -158,13 +158,10 @@ structure Prepared where
     was being established. -/
 private def ranOk (what : String) (command : String) (args : Array String) :
     Decision ProcessOutput := do
-  match ← ofIO (do return .ok (← Release.run command args)) with
-  | .completed output =>
-      if output.exitCode == 0 then return output
-      else
-        let detail := if output.stderr.trimAscii.isEmpty then output.stdout else output.stderr
-        decline s!"{what}: '{command}' exited {output.exitCode}: {detail.trimAscii}"
-  | outcome => decline s!"{what}: {outcome.failureMessage.getD s!"'{command}' could not be run"}"
+  match ← ofIO (do return .ok (← Release.succeededWithEnv command args
+      #[("SSH_AUTH_SOCK", none), ("SSH_ASKPASS", none), ("SSH_ASKPASS_REQUIRE", some "never")])) with
+  | .ok output => return output
+  | .error reason => decline s!"{what}: {reason}"
 
 /-- Refuse unless the git on PATH can sign with an SSH key. -/
 def requireSigningGit : Decision Unit := do
@@ -212,7 +209,8 @@ def prepare (signerPath keyPath scratch : String) : Decision Prepared := do
   | _ =>
       decline s!"`ssh-keygen -l` did not print a fingerprint for the key recorded in {signerPath}."
 
-/-- A private directory for the signing material, removed on every path out. -/
+/-- A private directory for signing material, removed on normal return and
+    handled failure. Process termination or machine failure bypasses cleanup. -/
 def withScratch (body : String → Decision α) : Decision α := do
   let scratch ← attempt "creating a private directory for the signing material; check the temporary directory"
     IO.FS.createTempDir
@@ -231,14 +229,14 @@ def commitConfig (prepared : Prepared) : List String :=
    "-c", "gpg.ssh.program=ssh-keygen", "-c", "commit.gpgsign=true",
    "-c", s!"core.hooksPath={prepared.hooksPath}"]
 
-/-- The identity again, as the variables that outrank `-c user.*`.
-
-    `SSH_AUTH_SOCK` is left alone. `ssh-keygen -Y sign` consults an agent only
-    for the key the named file holds, so an agent can hold that key or not but
-    cannot substitute another; and the push needs the operator's credentials. -/
+/-- The identity again, as the variables that outrank `-c user.*`. Signing
+    uses the named unencrypted key file without an agent or prompt helper. The
+    separate push still receives the operator's authentication environment. -/
 def commitEnvironment (signer : Signer) : Array (String × Option String) :=
   #[("GIT_AUTHOR_NAME", some signer.name), ("GIT_AUTHOR_EMAIL", some signer.email),
-    ("GIT_COMMITTER_NAME", some signer.name), ("GIT_COMMITTER_EMAIL", some signer.email)]
+    ("GIT_COMMITTER_NAME", some signer.name), ("GIT_COMMITTER_EMAIL", some signer.email),
+    ("SSH_AUTH_SOCK", none), ("SSH_ASKPASS", none), ("SSH_ASKPASS_REQUIRE", some "never"),
+    ("GIT_TERMINAL_PROMPT", some "0")]
 
 /-! ## Verifying what the push would publish -/
 
