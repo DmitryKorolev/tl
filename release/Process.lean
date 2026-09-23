@@ -235,4 +235,10 @@ def succeededGit (args : Array String)
     (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) :=
   succeededWithEnv "git" args gitEnv timeoutMs
 
+/-- `succeededGit`, with further variables set or removed on top of the scrub.
+    The extra names must not repeat a scrubbed one. -/
+def succeededGitWith (extra : Array (String × Option String)) (args : Array String)
+    (timeoutMs : Nat := defaultTimeoutMs) : IO (Except String ProcessOutput) :=
+  succeededWithEnv "git" args (gitEnv ++ extra) timeoutMs
+
 end Release

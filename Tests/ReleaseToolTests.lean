@@ -2917,7 +2917,7 @@ that a second run of a job that already pushed produces no second commit. -/
     this is the same shape. -/
 private def gitFixture (cwd : String) (args : List String) : IO Unit := do
   let hermetic := ["-c", "commit.gpgsign=false", "-c", "user.email=ci@example.test",
-    "-c", "user.name=ci"]
+    "-c", "user.name=ci", "-c", "core.hooksPath=/nonexistent/tl-fixture-hooks"]
   match ← Release.run "git" ((["-C", cwd] ++ hermetic ++ args).toArray) with
   | .completed output =>
       unless output.exitCode == 0 do
@@ -2950,9 +2950,155 @@ private def commitCount (checkout : String) : IO String := do
   | .ok output => return output.stdout.trimAscii.toString
   | .error message => return message
 
+/-! #### The release signer
+
+Tap commits are signed by an explicitly selected signer, so the rows below
+generate one: an unencrypted ed25519 key recorded in a signer file, a second key
+standing for whatever the operator's own configuration selects, and a key that
+needs a passphrase. Signatures are then checked with git told to trust only the
+fixture's public key, independently of the command's own verification. -/
+
+/-- Run a fixture tool, throwing on any failure. -/
+private def toolFixture (command : String) (args : List String) : IO String := do
+  match ← Release.succeeded command args.toArray with
+  | .ok output => return output.stdout
+  | .error message => throw (IO.userError s!"fixture `{command}` failed: {message}")
+
+private structure SignerFixture where
+  signerPath : String
+  keyPath : String
+  otherKeyPath : String
+  lockedKeyPath : String
+  allowedPath : String
+  fingerprint : String
+  email : String
+  name : String
+
+private def signerFixture (base : System.FilePath) : IO SignerFixture := do
+  let keys := base / "keys"
+  IO.FS.createDirAll keys
+  let keyPath := (keys / "release").toString
+  let otherKeyPath := (keys / "ambient").toString
+  let lockedKeyPath := (keys / "locked").toString
+  let _ ← toolFixture "ssh-keygen" ["-q", "-t", "ed25519", "-N", "", "-C", "fixture", "-f", keyPath]
+  let _ ← toolFixture "ssh-keygen" ["-q", "-t", "ed25519", "-N", "", "-C", "fixture", "-f", otherKeyPath]
+  let _ ← toolFixture "ssh-keygen" ["-q", "-t", "ed25519", "-N", "passphrase", "-C", "fixture", "-f", lockedKeyPath]
+  let publicLine := String.intercalate " " (((← IO.FS.readFile (keyPath ++ ".pub")).trimAscii.toString.splitOn " ").take 2)
+  let name := "tl release"
+  let email := "tl-release@example.test"
+  let signerPath := (base / "tap-signer.json").toString
+  IO.FS.writeFile signerPath
+    s!"\{\"name\": \"{name}\", \"email\": \"{email}\", \"publicKey\": \"{publicLine}\"}\n"
+  let allowedPath := (keys / "allowed").toString
+  IO.FS.writeFile allowedPath s!"{email} {publicLine}\n"
+  let listed ← toolFixture "ssh-keygen" ["-l", "-f", keyPath ++ ".pub"]
+  let fingerprint := ((listed.trimAscii.toString.splitOn " ").drop 1).headD ""
+  return { signerPath, keyPath, otherKeyPath, lockedKeyPath, allowedPath, fingerprint, email, name }
+
+/-- How git, trusting only the fixture signer, reports each commit in `range`:
+    status, key, committer, author. -/
+private def signaturesIn (fixture : SignerFixture) (repo range : String) : IO (List String) := do
+  match ← Release.succeeded "git" #["-C", repo, "-c", "gpg.format=ssh",
+      "-c", "gpg.ssh.program=ssh-keygen", "-c", s!"gpg.ssh.allowedSignersFile={fixture.allowedPath}",
+      "-c", "log.showSignature=false", "log", "--format=%G? %GK %cn <%ce> %an <%ae>", range, "--"] with
+  | .ok output => return (output.stdout.splitOn "\n").filter (· != "")
+  | .error message => return [message]
+
+/-- The line `signaturesIn` gives a commit signed by the fixture signer. -/
+private def SignerFixture.signedLine (fixture : SignerFixture) : String :=
+  s!"G {fixture.fingerprint} {fixture.name} <{fixture.email}> {fixture.name} <{fixture.email}>"
+
+/-- Configuration a tap checkout may carry and the command must not obey:
+    signing forced on with another format, program and key, another identity,
+    and hooks that fail any commit they run for. Written where the fixture's
+    `commit.gpgsign=false` was, which is what previously kept these rows from
+    seeing the checkout's signing configuration at all. -/
+private def hostileSigningConfig (fixture : SignerFixture) (checkout : String) : IO Unit := do
+  let hooks := checkout ++ "-hostile-hooks"
+  IO.FS.createDirAll hooks
+  IO.FS.writeFile (hooks ++ "/prepare-commit-msg") "#!/bin/sh\necho 'a hook ran' >&2\nexit 1\n"
+  let _ ← toolFixture "chmod" ["755", hooks ++ "/prepare-commit-msg"]
+  for (key, value) in [("commit.gpgsign", "true"), ("gpg.format", "openpgp"),
+      ("gpg.program", "false"), ("gpg.ssh.program", "false"),
+      ("user.signingkey", fixture.otherKeyPath), ("user.name", "ambient"),
+      ("user.email", "ambient@example.test"), ("core.hooksPath", hooks)] do
+    let _ ← toolFixture "git" ["-C", checkout, "config", key, value]
+
+/-- Whether the git on PATH signs with SSH keys, which decides which half of the
+    publication suite applies. -/
+private def hostSignsWithSsh : IO Bool := do
+  match ← Release.succeeded "git" #["version"] with
+  | .ok output => return (TapSigning.parseGitVersion output.stdout).any TapSigning.signsWithSsh
+  | .error _ => return false
+
+/-- Below git 2.34 a signed publication is impossible, so the one behaviour to
+    establish is the refusal: before anything is written, naming the version,
+    and with the tap untouched. The CI git-floor job is where this runs; every
+    other job runs the full suite. -/
+private def tapPublishFloorTests (drive : CommandDriver) (label : String := "at the git floor")
+    (expected : List String := ["cannot sign a commit with an SSH key", "2.34"]) : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let fixture ← signerFixture base
+  let dist := base / "dist"
+  IO.FS.createDirAll dist
+  let manifestPath := (dist / "release-manifest.json").toString
+  IO.FS.writeFile manifestPath (okOr "<the fixture stopped assembling>" (do render (← describedManifest)))
+  IO.FS.writeFile (dist / "SHA256SUMS").toString "sums\n"
+  let owner := base / "Owner"
+  IO.FS.createDirAll owner
+  let remote := (owner / "homebrew-tap.git").toString
+  gitFixture base.toString ["init", "--bare", "--", remote]
+  gitFixture remote ["symbolic-ref", "HEAD", "refs/heads/main"]
+  let clone := (base / "tap").toString
+  gitFixture base.toString ["clone", "--quiet", "--", remote, clone]
+  gitFixture clone ["symbolic-ref", "HEAD", "refs/heads/main"]
+  IO.FS.createDirAll (clone ++ "/Formula")
+  IO.FS.writeFile (clone ++ "/README.md") "tap\n"
+  gitFixture clone ["add", "-A"]
+  gitFixture clone ["commit", "-q", "--no-verify", "-m", "init"]
+  gitFixture clone ["push", "--quiet", "origin", "HEAD:main"]
+  let (status, _, err) ← drive "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", clone,
+     "--signer", fixture.signerPath, "--signing-key", fixture.keyPath]
+  let remoteFormula ← Release.succeeded "git" #["-C", remote, "show", "main:Formula/tl.rb"]
+  let written ← System.FilePath.pathExists (clone ++ "/Formula/tl.rb")
+  IO.FS.removeDirAll base
+  return [
+    checkEq s!"homebrew-publish {label}: a git that cannot SSH-sign is refused" status 1,
+    check s!"homebrew-publish {label}: the refusal names the version signing needs"
+      (expected.all (contains err ·)) err,
+    check s!"homebrew-publish {label}: nothing was written"
+      (!written) "the formula was written before the refusal",
+    check s!"homebrew-publish {label}: the tap received nothing"
+      remoteFormula.toOption.isNone "an unsigned formula reached the tap"]
+
+/-- The same refusal everywhere rather than only in the git-floor job: a `git`
+    on PATH that reports an older version, or one that does not read as a
+    version, and otherwise defers to the real git. -/
+private def gitVersionGateTests : IO (List Outcome) := do
+  let base ← IO.FS.createTempDir
+  let realGit := (← toolFixture "sh" ["-c", "command -v git"]).trimAscii.toString
+  let path := (← IO.getEnv "PATH").getD ""
+  let reporting (name reply : String) : IO CommandDriver := do
+    let dir := base / name
+    IO.FS.createDirAll dir
+    IO.FS.writeFile (dir / "git")
+      s!"#!/bin/sh\nif [ \"$1\" = version ]; then echo '{reply}'; exit 0; fi\nexec {realGit} \"$@\"\n"
+    let _ ← toolFixture "chmod" ["755", (dir / "git").toString]
+    return commandWithEnv #[("PATH", some s!"{dir}:{path}")]
+  let older ← tapPublishFloorTests (← reporting "older" "git version 2.33.9") "under git 2.33"
+    ["cannot sign a commit with an SSH key", "git 2.33", "2.34 or newer"]
+  let garbled ← tapPublishFloorTests (← reporting "garbled" "git version banana") "under an unreadable git version"
+    ["does not read as a version", "2.34 or newer"]
+  IO.FS.removeDirAll base
+  return older ++ garbled
+
 private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Outcome) := do
+  if !(← hostSignsWithSsh) then return ← tapPublishFloorTests drive
   let runCommand := drive
   let base ← IO.FS.createTempDir
+  let fixture ← signerFixture base
+  let signing := ["--signer", fixture.signerPath, "--signing-key", fixture.keyPath]
   let manifestText := okOr "<the fixture stopped assembling>" (do render (← describedManifest))
   let prereleaseText := okOr "<the fixture stopped assembling>" (do render (← describedPrerelease))
   let dist := base / "dist"
@@ -2989,25 +3135,30 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture checkout ["add", "-A"]
   gitFixture checkout ["commit", "-q", "--no-verify", "-m", "init"]
   gitFixture checkout ["push", "--quiet", "origin", "HEAD:main"]
+  hostileSigningConfig fixture checkout
   let before ← commitCount checkout
   -- A prerelease first: the tap must be left exactly as it is.
   let (preStatus, preOut, preErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", prereleasePath, "--tap", checkout]
+    (["--dist", dist.toString, "--manifest", prereleasePath, "--tap", checkout] ++ signing)
   let afterPrerelease ← commitCount checkout
+  let (preKeylessStatus, _, preKeylessErr) ← runCommand "homebrew-publish"
+    ["--dist", dist.toString, "--manifest", prereleasePath, "--tap", checkout,
+     "--signer", fixture.signerPath, "--signing-key", (base / "absent-key").toString]
   let (dryStatus, dryOut, dryErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout, "--dry-run"]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout, "--dry-run"] ++ signing)
   let afterDry ← commitCount checkout
   let (firstStatus, firstOut, firstErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout] ++ signing)
   let afterFirst ← commitCount checkout
   let published ← if ← System.FilePath.pathExists (checkout ++ "/Formula/tl.rb") then
       IO.FS.readFile (checkout ++ "/Formula/tl.rb") else pure ""
   -- The bare repository received it, which is what "pushed" has to mean.
   let remoteHas ← Release.succeeded "git" #["-C", remotePath, "show", "main:Formula/tl.rb"]
+  let firstSignature ← signaturesIn fixture remotePath "-1"
   -- Twice. A job that failed after pushing and is retried must reach the
   -- comparison and stop, not add a second commit saying the same thing.
   let (againStatus, againOut, _) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout] ++ signing)
   let afterAgain ← commitCount checkout
   -- A tap whose *published branch* holds some other formula. Pushed, because
   -- the decision is about the remote: a local commit that never reached it is
@@ -3017,9 +3168,10 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture checkout ["commit", "-q", "--no-verify", "-m", "drift"]
   gitFixture checkout ["push", "--quiet", "origin", "HEAD:main"]
   let (changedStatus, changedOut, _) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", checkout] ++ signing)
   let afterChanged ← commitCount checkout
   let restored ← IO.FS.readFile (checkout ++ "/Formula/tl.rb")
+  let changedSignature ← signaturesIn fixture remotePath "-1"
   -- The two failures the working-tree comparison could not see.
   --
   -- (a) A run whose commit failed. The formula is written and staged, so a
@@ -3041,15 +3193,17 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture stranded ["add", "-A"]
   gitFixture stranded ["commit", "-q", "--no-verify", "-m", "init"]
   gitFixture stranded ["push", "--quiet", "origin", "HEAD:main"]
+  hostileSigningConfig fixture stranded
   -- Committed here and deliberately not pushed: the state a run whose `git
   -- push` failed leaves behind, and the one a working-tree comparison reads as
   -- "already carries this formula".
   IO.FS.writeFile (stranded ++ "/Formula/tl.rb") expected
   gitFixture stranded ["add", "-A"]
   gitFixture stranded ["commit", "-q", "--no-verify", "-m", "committed but never pushed"]
-  let (strandedStatus, strandedOut, strandedErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", stranded]
+  let (strandedStatus, _, strandedErr) ← runCommand "homebrew-publish"
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", stranded] ++ signing)
   let strandedRemote ← Release.succeeded "git" #["-C", secondRemote, "show", "main:Formula/tl.rb"]
+  let strandedCount ← commitCount stranded
   -- (b) A push url that is not the url the state was read from. `git push`
   -- honours `remote.origin.pushurl`, so a checkout can read the tap and publish
   -- somewhere else entirely.
@@ -3060,7 +3214,7 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture base.toString ["clone", "--quiet", "--", remotePath, diverted]
   gitFixture diverted ["config", "remote.origin.pushurl", decoy]
   let (divertedStatus, _, divertedErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", diverted]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", diverted] ++ signing)
   let decoyGot ← Release.succeeded "git" #["-C", decoy, "show", "main:Formula/tl.rb"]
   -- A checkout of the wrong repository.
   let wrongRemote := (base / "elsewhere.git").toString
@@ -3071,7 +3225,7 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture wrongCheckout ["symbolic-ref", "HEAD", "refs/heads/main"]
   IO.FS.createDirAll (wrongCheckout ++ "/Formula")
   let (wrongStatus, _, wrongErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", wrongCheckout]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", wrongCheckout] ++ signing)
   -- A tap with no Formula directory: a shape this command updates rather than
   -- decides.
   let bareCheckout := (base / "noformula").toString
@@ -3084,11 +3238,11 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   else
     throw (IO.userError s!"the fixture clone at {bareCheckout} has no Formula/ to remove")
   let (noDirStatus, _, noDirErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", bareCheckout]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", bareCheckout] ++ signing)
   let (absentSums, _, absentSumsErr) ← runCommand "homebrew-publish"
-    ["--dist", (base / "nowhere").toString, "--manifest", manifestPath, "--tap", checkout]
+    (["--dist", (base / "nowhere").toString, "--manifest", manifestPath, "--tap", checkout] ++ signing)
   let (notARepo, _, notARepoErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", base.toString]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", base.toString] ++ signing)
   -- (c) What a push carries that neither the write nor the staging decides.
   --
   -- `git push` sends a branch. This command writes one path and stages one
@@ -3112,6 +3266,7 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
     gitFixture clone ["add", "-A"]
     gitFixture clone ["commit", "-q", "--no-verify", "-m", "init"]
     gitFixture clone ["push", "--quiet", "origin", "HEAD:main"]
+    hostileSigningConfig fixture clone
     return (remote, clone)
   -- An index holding something this release has nothing to do with. The push is
   -- correct — the checkout is at the remote's tip — so this must publish, and
@@ -3120,7 +3275,7 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   IO.FS.writeFile (stagedTap ++ "/unrelated.txt") "a maintainer's half-finished edit\n"
   gitFixture stagedTap ["add", "--", "unrelated.txt"]
   let (stagedStatus, stagedOut, stagedErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", stagedTap]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", stagedTap] ++ signing)
   let stagedRemoteFormula ← Release.succeeded "git" #["-C", stagedRemote, "show", "main:Formula/tl.rb"]
   let stagedRemoteStranger ← Release.succeeded "git" #["-C", stagedRemote, "show", "main:unrelated.txt"]
   -- Still staged: this command publishes a formula, and discarding or
@@ -3134,12 +3289,12 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture aheadTap ["add", "-A"]
   gitFixture aheadTap ["commit", "-q", "--no-verify", "-m", "unrelated local work"]
   let (aheadStatus, _, aheadErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap] ++ signing)
   let aheadRemoteFormula ← Release.succeeded "git" #["-C", aheadRemote, "show", "main:Formula/tl.rb"]
   -- And the dry run, which is a rehearsal of exactly this and would otherwise
   -- report what the real run would do while the real run refuses.
   let (aheadDryStatus, _, aheadDryErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap, "--dry-run"]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", aheadTap, "--dry-run"] ++ signing)
   -- Added and taken away again. The tree diff against the tap's tip cancels to
   -- nothing, so only the per-commit listing sees this — the history is pushed
   -- too, and it is the history this file lands in.
@@ -3151,17 +3306,92 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
   gitFixture revertedTap ["add", "-A"]
   gitFixture revertedTap ["commit", "-q", "--no-verify", "-m", "remove"]
   let (revertedStatus, _, revertedErr) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath, "--tap", revertedTap]
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", revertedTap] ++ signing)
   let revertedRemoteFormula ← Release.succeeded "git"
     #["-C", revertedRemote, "show", "main:Formula/tl.rb"]
+  -- (d) The signer, and every way it can be absent or wrong. Each refusal
+  -- comes before anything is written, so the tap and the working tree are
+  -- untouched and the refusal says what to fix.
+  let refusedWith (name : String) (key : String) (signer : String := fixture.signerPath)
+      (extra : List String := []) : IO (UInt32 × String × Bool × Bool) := do
+    let (remote, clone) ← sideTap name
+    let (status, _, err) ← runCommand "homebrew-publish"
+      (["--dist", dist.toString, "--manifest", manifestPath, "--tap", clone,
+        "--signer", signer, "--signing-key", key] ++ extra)
+    let remoteFormula ← Release.succeeded "git" #["-C", remote, "show", "main:Formula/tl.rb"]
+    let written ← System.FilePath.pathExists (clone ++ "/Formula/tl.rb")
+    return (status, err, remoteFormula.toOption.isSome, written)
+  let (absentKeyStatus, absentKeyErr, absentKeyPushed, absentKeyWritten) ←
+    refusedWith "absent-key" (base / "no-such-key").toString
+  let (lockedStatus, lockedErr, lockedPushed, lockedWritten) ←
+    refusedWith "locked-key" fixture.lockedKeyPath
+  let (otherStatus, otherErr, otherPushed, otherWritten) ←
+    refusedWith "other-key" fixture.otherKeyPath
+  let (otherDryStatus, otherDryErr, _, otherDryWritten) ←
+    refusedWith "other-key-dry" fixture.otherKeyPath (extra := ["--dry-run"])
+  let rsaSigner := (base / "rsa-signer.json").toString
+  IO.FS.writeFile rsaSigner
+    "{\"name\": \"tl release\", \"email\": \"tl-release@example.test\", \"publicKey\": \"ssh-rsa AAAAB3NzaC1yc2E\"}\n"
+  let (recordStatus, recordErr, recordPushed, _) ←
+    refusedWith "rsa-record" fixture.keyPath (signer := rsaSigner)
+  let (absentRecordStatus, absentRecordErr, _, _) ←
+    refusedWith "absent-record" fixture.keyPath (signer := (base / "no-signer.json").toString)
+  -- (e) A pending commit signed, but by some other key — an operator's own,
+  -- say. Signed is not the policy; signed by the release signer is.
+  let (foreignRemote, foreignTap) ← sideTap "foreign"
+  IO.FS.writeFile (foreignTap ++ "/Formula/tl.rb") expected
+  gitFixture foreignTap ["add", "-A"]
+  gitFixture foreignTap ["-c", "gpg.format=ssh", "-c", "gpg.ssh.program=ssh-keygen",
+    "-c", s!"user.signingkey={fixture.otherKeyPath}", "-c", "core.hooksPath=/nonexistent/tl-fixture-hooks",
+    "commit", "-S", "-q", "--no-verify", "-m", "signed by someone else"]
+  let (foreignStatus, _, foreignErr) ← runCommand "homebrew-publish"
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", foreignTap] ++ signing)
+  let foreignRemoteFormula ← Release.succeeded "git" #["-C", foreignRemote, "show", "main:Formula/tl.rb"]
+  -- (f) A push that failed after a signed commit, then the retry. The remote
+  -- refuses the first push with a hook; the retry stages nothing and commits
+  -- nothing, and must push the signed commit it finds rather than a second one.
+  let (rejectingRemote, rejectingTap) ← sideTap "rejecting"
+  let hook := rejectingRemote ++ "/hooks/pre-receive"
+  IO.FS.writeFile hook "#!/bin/sh\necho 'rejected by the fixture' >&2\nexit 1\n"
+  let _ ← toolFixture "chmod" ["755", hook]
+  let rejectedBefore ← commitCount rejectingTap
+  let (rejectedStatus, _, rejectedErr) ← runCommand "homebrew-publish"
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", rejectingTap] ++ signing)
+  let rejectedAfter ← commitCount rejectingTap
+  IO.FS.removeFile hook
+  let (retryStatus, retryOut, retryErr) ← runCommand "homebrew-publish"
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", rejectingTap] ++ signing)
+  let retryAfter ← commitCount rejectingTap
+  let retryRemoteFormula ← Release.succeeded "git" #["-C", rejectingRemote, "show", "main:Formula/tl.rb"]
+  let retrySignature ← signaturesIn fixture rejectingRemote "-1"
+  -- (g) Signing that fails at commit time, after every check passed: an
+  -- `ssh-keygen` that answers everything but `-Y sign`. The commit fails, and
+  -- nothing unsigned is made or pushed in its place. Driven through the public
+  -- executable because it needs its own PATH.
+  let (failingRemote, failingTap) ← sideTap "failing-signer"
+  let shims := base / "shims"
+  IO.FS.createDirAll shims
+  let realKeygen := (← toolFixture "sh" ["-c", "command -v ssh-keygen"]).trimAscii.toString
+  IO.FS.writeFile (shims / "ssh-keygen")
+    ("#!/bin/sh\nif [ \"$1\" = \"-Y\" ]; then echo 'injected signing failure' >&2; exit 1; fi\nexec " ++
+      realKeygen ++ " \"$@\"\n")
+  let _ ← toolFixture "chmod" ["755", (shims / "ssh-keygen").toString]
+  let failingBefore ← commitCount failingTap
+  let path := (← IO.getEnv "PATH").getD ""
+  let (failingStatus, _, failingErr) ← commandWithEnv #[("PATH", some s!"{shims}:{path}")] "homebrew-publish"
+    (["--dist", dist.toString, "--manifest", manifestPath, "--tap", failingTap] ++ signing)
+  let failingAfter ← commitCount failingTap
+  let failingRemoteFormula ← Release.succeeded "git" #["-C", failingRemote, "show", "main:Formula/tl.rb"]
   let (publishUsage, _, _) ← runCommand "homebrew-publish"
-    ["--dist", dist.toString, "--manifest", manifestPath]
+    (["--dist", dist.toString, "--manifest", manifestPath] ++ signing)
   IO.FS.removeDirAll base
   return [
     check "homebrew-publish: a prerelease is an outcome, not a failure" (preStatus == 0) preErr,
     check "homebrew-publish: it says the tap keeps the formula it has"
       (contains preOut "prerelease" && contains preOut "carries one formula") preOut,
     checkEq "homebrew-publish: a prerelease adds no commit" afterPrerelease before,
+    check "homebrew-publish: a prerelease never reads the signing key, because it publishes nothing"
+      (preKeylessStatus == 0) preKeylessErr,
     check "homebrew-publish: a dry run reports what it would do" (dryStatus == 0) dryErr,
     check "homebrew-publish: the dry run names the state it found"
       (contains dryOut "no formula for tl yet" && contains dryOut "--dry-run") dryOut,
@@ -3179,6 +3409,14 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
       s!"the bare repository does not hold the formula: {errorOf remoteHas}",
     checkEq "homebrew-publish: publishing added exactly one commit"
       (before, afterFirst) ("1", "2"),
+    -- The signature, checked with git trusting only the fixture's public key.
+    -- The checkout configures another key, another format, a signing program
+    -- that fails, another identity and a failing hook; none of them decided
+    -- anything.
+    checkEq "homebrew-publish: the published commit is signed by the recorded signer, whatever the checkout configures"
+      firstSignature [fixture.signedLine],
+    checkEq "homebrew-publish: a replacement is signed by the recorded signer too"
+      changedSignature [fixture.signedLine],
     -- Idempotence, which is what makes a retried release job safe.
     check "homebrew-publish: an identical formula is a no-op" (againStatus == 0) againOut,
     check "homebrew-publish: it says the tap already carries this formula"
@@ -3203,15 +3441,16 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
     checkEq "homebrew-publish: a directory with no SHA256SUMS is refused" absentSums 1,
     check "homebrew-publish: that refusal names the file the fallback url needs"
       (contains absentSumsErr "SHA256SUMS") absentSumsErr,
-    -- The retry that used to report success over a tap with nothing in it.
-    check "homebrew-publish: a commit that was never pushed is published, not reported as done"
-      (strandedStatus == 0) strandedErr,
-    check "homebrew-publish: it says it pushed rather than that the tap already had it"
-      (contains strandedOut "pushed the formula" && !contains strandedOut "already carries")
-      strandedOut,
-    check "homebrew-publish: and the remote now has it"
-      (strandedRemote.toOption.map (·.stdout) == some expected)
-      s!"the tap still does not carry the formula: {errorOf strandedRemote}",
+    -- A commit an earlier run or a person left behind, unsigned. The push would
+    -- publish it, so it is refused even though this run would commit nothing.
+    checkEq "homebrew-publish: an unsigned commit waiting to be pushed is refused, not published"
+      strandedStatus 1,
+    check "homebrew-publish: the refusal names it as unsigned and says how to recover"
+      (contains strandedErr "is not signed" && contains strandedErr "Clone the tap fresh") strandedErr,
+    check "homebrew-publish: the tap did not receive it"
+      strandedRemote.toOption.isNone
+      s!"the unsigned commit reached the tap: {okOr "" (strandedRemote.map (·.stdout))}",
+    checkEq "homebrew-publish: and no commit was added on top of it" strandedCount "2",
     -- The push url that is not the url the state came from.
     checkEq "homebrew-publish: a diverted push url is refused" divertedStatus 1,
     check "homebrew-publish: the refusal names what a pushurl does"
@@ -3252,7 +3491,128 @@ private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Out
     check "homebrew-publish: and that tap received nothing either"
       revertedRemoteFormula.toOption.isNone
       s!"the tap received a formula: {okOr "" (revertedRemoteFormula.map (·.stdout))}",
+    -- The signer, absent or wrong: refused before anything is written.
+    checkEq "homebrew-publish: a signing key that is not there is refused" absentKeyStatus 1,
+    check "homebrew-publish: that refusal names the flag and that there is no unsigned mode"
+      (contains absentKeyErr "--signing-key" && contains absentKeyErr "no unsigned mode") absentKeyErr,
+    check "homebrew-publish: a missing key writes and pushes nothing"
+      (!absentKeyPushed && !absentKeyWritten) "the formula was written or pushed without a key",
+    checkEq "homebrew-publish: a key that needs a passphrase is refused rather than prompting" lockedStatus 1,
+    check "homebrew-publish: that refusal says the key must open non-interactively"
+      (contains lockedErr "without a passphrase") lockedErr,
+    check "homebrew-publish: a locked key writes and pushes nothing"
+      (!lockedPushed && !lockedWritten) "the formula was written or pushed with a locked key",
+    checkEq "homebrew-publish: a key that is not the recorded signer is refused" otherStatus 1,
+    check "homebrew-publish: that refusal says whose key it is not"
+      (contains otherErr "is not the release signer") otherErr,
+    check "homebrew-publish: a wrong key writes and pushes nothing"
+      (!otherPushed && !otherWritten) "the formula was written or pushed under the wrong key",
+    checkEq "homebrew-publish: the dry run refuses a wrong key too" otherDryStatus 1,
+    check "homebrew-publish: with the same reason, and without writing"
+      (contains otherDryErr "is not the release signer" && !otherDryWritten) otherDryErr,
+    checkEq "homebrew-publish: a signer record naming another key type is refused" recordStatus 1,
+    check "homebrew-publish: that refusal names the accepted type"
+      (contains recordErr "ssh-ed25519" && !recordPushed) recordErr,
+    checkEq "homebrew-publish: a signer record that is not there is refused" absentRecordStatus 1,
+    check "homebrew-publish: that refusal names the record"
+      (contains absentRecordErr "no-signer.json") absentRecordErr,
+    -- Signed by someone, not by the signer.
+    checkEq "homebrew-publish: a pending commit signed by another key is refused" foreignStatus 1,
+    check "homebrew-publish: the refusal says it is not the release signer's signature"
+      (contains foreignErr "not signed by the release signer") foreignErr,
+    check "homebrew-publish: and it was not pushed"
+      foreignRemoteFormula.toOption.isNone "a commit signed by another key reached the tap",
+    -- A failed push, then the retry.
+    checkEq "homebrew-publish: a push the remote rejects fails the publication" rejectedStatus 1,
+    check "homebrew-publish: the failure carries the remote's reason"
+      (contains rejectedErr "rejected by the fixture") rejectedErr,
+    checkEq "homebrew-publish: the signed commit was made before the push failed"
+      (rejectedBefore, rejectedAfter) ("1", "2"),
+    check "homebrew-publish: the retry publishes" (retryStatus == 0) retryErr,
+    check "homebrew-publish: it reports pushing, signed by the recorded signer"
+      (contains retryOut "pushed the formula" && contains retryOut fixture.email) retryOut,
+    checkEq "homebrew-publish: the retry adds no second commit" retryAfter rejectedAfter,
+    check "homebrew-publish: and the tap now carries the formula"
+      (retryRemoteFormula.toOption.map (·.stdout) == some expected)
+      s!"the tap does not hold the formula: {errorOf retryRemoteFormula}",
+    checkEq "homebrew-publish: the commit that arrived is the signed one" retrySignature [fixture.signedLine],
+    -- Signing that fails at commit time.
+    checkEq "homebrew-publish: a signing failure fails the publication" failingStatus 1,
+    check "homebrew-publish: the failure carries the signer's own reason"
+      (contains failingErr "injected signing failure") failingErr,
+    checkEq "homebrew-publish: no commit, signed or not, was made" failingAfter failingBefore,
+    check "homebrew-publish: and nothing reached the tap"
+      failingRemoteFormula.toOption.isNone "a formula reached the tap although signing failed",
     checkEq "homebrew-publish: a missing --tap is a usage error" publishUsage 2]
+
+/-- The pure halves of tap signing: which git can sign, what a signer record
+    may contain, and which commits may be published. -/
+private def tapSigningPureTests : List Outcome :=
+  let fixtureKey := "AAAAC3NzaC1lZDI1NTE5AAAAIDXueu+z5MDM0T8zpa2t7CfJsfVvwavOlm2zFxKYKYL2"
+  let record (name email key : String) :=
+    s!"\{\"name\": \"{name}\", \"email\": \"{email}\", \"publicKey\": \"{key}\"}"
+  let parsed (name email key : String) := TapSigning.Signer.parse "signer" (record name email key)
+  let refused (name email key : String) (needle : String) :=
+    match parsed name email key with
+    | .error message => contains message needle
+    | .ok _ => false
+  let signer : TapSigning.Signer :=
+    { name := "tl release", email := "tl-release@example.test", keyType := "ssh-ed25519", keyBody := fixtureKey }
+  let observed (status key committer : String) : TapSigning.Observed :=
+    { commit := "0123456789abcdef0123", status, key, committer }
+  [ checkEq "tap signing: a plain git version is read" (TapSigning.parseGitVersion "git version 2.37.2\n") (some (2, 37)),
+    checkEq "tap signing: Apple's suffix is ignored" (TapSigning.parseGitVersion "git version 2.39.3 (Apple Git-146)") (some (2, 39)),
+    checkEq "tap signing: a Windows build suffix is ignored" (TapSigning.parseGitVersion "git version 2.34.1.windows.1") (some (2, 34)),
+    checkEq "tap signing: a non-numeric version is not read" (TapSigning.parseGitVersion "git version banana") none,
+    checkEq "tap signing: a version with no minor is not read" (TapSigning.parseGitVersion "git version 3") none,
+    checkEq "tap signing: another program's answer is not read" (TapSigning.parseGitVersion "hub version 2.40.0") none,
+    check "tap signing: git 2.34 signs with SSH" (TapSigning.signsWithSsh (2, 34)) "",
+    check "tap signing: git 2.33 does not" (!TapSigning.signsWithSsh (2, 33)) "",
+    check "tap signing: the floor git 2.17 does not" (!TapSigning.signsWithSsh (2, 17)) "",
+    check "tap signing: a later major version does" (TapSigning.signsWithSsh (3, 0)) "",
+    check "tap signing: an earlier major version does not" (!TapSigning.signsWithSsh (1, 99)) "",
+    checkEq "tap signing: a complete record parses"
+      (parsed "tl release" "tl-release@example.test" s!"ssh-ed25519 {fixtureKey}").toOption (some signer),
+    checkEq "tap signing: the allowed-signers line names only this key, for git's namespace"
+      signer.allowedSigners s!"tl-release@example.test namespaces=\"git\" ssh-ed25519 {fixtureKey}\n",
+    check "tap signing: a name with an angle bracket is refused"
+      (refused "tl <release>" "tl-release@example.test" s!"ssh-ed25519 {fixtureKey}" "committer name") "",
+    check "tap signing: a name with surrounding spaces is refused"
+      (refused " tl release" "tl-release@example.test" s!"ssh-ed25519 {fixtureKey}" "surrounding spaces") "",
+    check "tap signing: an email that would widen the principal pattern is refused"
+      (refused "tl release" "a@example.test,*" s!"ssh-ed25519 {fixtureKey}" "pattern syntax") "",
+    check "tap signing: an email without an @ is refused"
+      (refused "tl release" "release" s!"ssh-ed25519 {fixtureKey}" "one '@'") "",
+    check "tap signing: another key type is refused, naming the accepted one"
+      (refused "tl release" "tl-release@example.test" "ssh-rsa AAAAB3NzaC1yc2E" "ssh-ed25519") "",
+    check "tap signing: a key with its comment is refused"
+      (refused "tl release" "tl-release@example.test" s!"ssh-ed25519 {fixtureKey} release" "without its comment") "",
+    check "tap signing: a key body that is not base64 is refused"
+      (refused "tl release" "tl-release@example.test" "ssh-ed25519 not*base64" "not base64") "",
+    check "tap signing: a record missing its key is refused"
+      (match TapSigning.Signer.parse "signer" "{\"name\": \"n\", \"email\": \"e@x\"}" with
+       | .error message => contains message "publicKey"
+       | .ok _ => false) "",
+    checkEq "tap signing: a git log line with four fields is read"
+      (TapSigning.parseObserved "abc\tG\tSHA256:k\tx@y") (some { commit := "abc", status := "G", key := "SHA256:k", committer := "x@y" }),
+    checkEq "tap signing: a line with a missing field is not"
+      (TapSigning.parseObserved "abc\tG\tSHA256:k") none,
+    check "tap signing: a good signature by the recorded key and committer is accepted"
+      (TapSigning.accepted signer "SHA256:k" (observed "G" "SHA256:k" signer.email)) "",
+    check "tap signing: an unsigned commit is not"
+      (!TapSigning.accepted signer "SHA256:k" (observed "N" "" signer.email)) "",
+    check "tap signing: a valid signature by a key the file does not name is not"
+      (!TapSigning.accepted signer "SHA256:k" (observed "U" "SHA256:other" signer.email)) "",
+    check "tap signing: a good signature reported for another fingerprint is not"
+      (!TapSigning.accepted signer "SHA256:k" (observed "G" "SHA256:other" signer.email)) "",
+    check "tap signing: the recorded key on another committer is not"
+      (!TapSigning.accepted signer "SHA256:k" (observed "G" "SHA256:k" "someone@example.test")) "",
+    check "tap signing: an unsigned commit is reported as unsigned"
+      (contains ((observed "N" "" signer.email).reason signer "SHA256:k") "is not signed") "",
+    check "tap signing: another key is reported as not the release signer"
+      (contains ((observed "U" "SHA256:other" signer.email).reason signer "SHA256:k") "not signed by the release signer") "",
+    check "tap signing: another committer is reported by address"
+      (contains ((observed "G" "SHA256:k" "someone@example.test").reason signer "SHA256:k") "committed by someone@example.test") ""]
 
 /-- Every url a remote may be written as, and the ones that are not this tap. -/
 private def tapRemoteTests : List Outcome :=
@@ -4041,8 +4401,8 @@ private def prerequisiteTests : List Outcome :=
      (kindsFor false false) ["always", "always", "always", "always", "always"],
    checkEq "prereqs: enabling npm adds exactly its two prerequisites"
      ((kindsFor true false).filter (· == "npm")).length 2,
-   checkEq "prereqs: enabling Homebrew adds exactly its two prerequisites"
-     ((kindsFor false true).filter (· == "homebrew")).length 2,
+   checkEq "prereqs: enabling Homebrew adds exactly its three prerequisites"
+     ((kindsFor false true).filter (· == "homebrew")).length 3,
    -- The tag ruleset predicate, which has been a proxy in three review rounds.
    check "prereqs: a ruleset covering every v* tag qualifies"
      (restrictsTagCreation (rulesetWith "active" ["refs/tags/v*"] [] ["creation"]))
@@ -5295,12 +5655,21 @@ private def prerequisiteIoTests : IO (List Outcome) := do
         && !auditPermits unauthenticated) "gh being unavailable was not reported as unchecked",
     -- Applicability, end to end rather than over the kind list alone.
     checkEq "audit: a GitHub-only release collects five rows" healthy.length 5,
-    checkEq "audit: enabling both channels collects four more" withChannels.length 9,
+    checkEq "audit: enabling both channels collects five more" withChannels.length 10,
     check "audit: Homebrew token guidance names the protected environment"
       (withChannels.any fun row => row.kind == .homebrewToken &&
         match row.outcome with
         | .carried text => (text.splitOn "protected release environment").length > 1
         | _ => false),
+    -- The signing key is carried, never verified: a secret is not readable here,
+    -- and the publication itself is what checks it against the signer record.
+    check "audit: the Homebrew signing key is a carried row naming the signer record"
+      (withChannels.any fun row => row.kind == .homebrewSigningKey &&
+        (row.summary.splitOn "release/tap-signer.json").length > 1 &&
+        match row.outcome with
+        | .carried text => (text.splitOn "protected release environment").length > 1
+        | _ => false)
+      "enabling Homebrew did not report the signing-key secret as a carried prerequisite",
     check "audit: the deferred channels are named, not silently dropped"
       (match planWith false false with
        | .ok plan => (deferredNotes plan).length == 2
@@ -6644,6 +7013,19 @@ private def gitRoutingTests : IO (List Outcome) := do
     let drive := commandWithEnv #[(name, some value)]
     let results := (← taskIdCommandTests drive) ++ (← stampTests drive) ++ (← tapPublishTests drive)
     rows := rows ++ results.map (fun row => { row with name := s!"inherited {name}: {row.name}" })
+  -- Ambient identity and a global signing configuration, which is where the
+  -- original failure came from: `commit.gpgsign` with a key that does not exist.
+  -- The identity variables outrank `-c user.*`, and HOME is not scrubbed, so
+  -- both reach the command's git; neither may decide the published commit.
+  let ambientHome := base / "ambient-home"
+  IO.FS.createDirAll ambientHome
+  IO.FS.writeFile (ambientHome / ".gitconfig")
+    "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = /nonexistent/ambient-key\n\tname = ambient\n\temail = ambient@example.test\n"
+  let ambient := #[("HOME", some ambientHome.toString),
+    ("GIT_AUTHOR_NAME", some "ambient"), ("GIT_AUTHOR_EMAIL", some "ambient@example.test"),
+    ("GIT_COMMITTER_NAME", some "ambient"), ("GIT_COMMITTER_EMAIL", some "ambient@example.test")]
+  rows := rows ++ (← tapPublishTests (commandWithEnv ambient)).map
+    (fun row => { row with name := s!"ambient identity and global signing: {row.name}" })
   -- Observe the whole bounded set at the actual subprocess boundary without
   -- dumping the caller's environment (which may contain credentials).
   let realGit ← IO.Process.output { cmd := "sh", args := #["-c", "command -v git"] }
@@ -6738,7 +7120,7 @@ def releaseToolTests : IO (List Outcome) := do
     check "tlrelease: every command has a distinct name"
       ((commands.map (·.name)).eraseDups.length == commands.length)
       s!"duplicate command names: {commands.map (·.name)}"]
-  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ policyTests ++ manifestVerdictTests
+  return jsonTests ++ modelTests ++ checkTests ++ optionTests ++ reportTestsForAudit ++ descriptionTests ++ homebrewTests ++ tapRemoteTests ++ tapSigningPureTests ++ policyTests ++ manifestVerdictTests
     ++ metadataVerdictTests ++ assemblyTests ++ prerequisiteTests ++ channelOutputTests ++ sbomTests ++ outs
     ++ (← measureTestFixture "release-tool/documentTests" documentTests)
     ++ (← measureTestFixture "release-tool/pinCommandTests" pinCommandTests)
@@ -6755,6 +7137,7 @@ def releaseToolTests : IO (List Outcome) := do
     ++ (← measureTestFixture "release-tool/formulaDriftTests" formulaDriftTests)
     ++ (← measureTestFixture "release-tool/homebrewCommandTests" homebrewCommandTests)
     ++ (← measureTestFixture "release-tool/tapPublishTests" tapPublishTests)
+    ++ (← measureTestFixture "release-tool/gitVersionGateTests" gitVersionGateTests)
     ++ (← measureTestFixture "release-tool/homebrewSyntaxTests" homebrewSyntaxTests)
     ++ (← measureTestFixture "release-tool/policyListTests" policyListTests)
     ++ (← measureTestFixture "release-tool/policyRunnerTests" policyRunnerTests)

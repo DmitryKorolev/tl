@@ -27,6 +27,7 @@ platform. `formulaCovers_iff` is what keeps the coverage rule from being one row
 that can be deleted.
 -/
 import release.Manifest
+import release.TapSigning
 
 namespace Release
 
@@ -775,13 +776,6 @@ def tapRemoteAccepts (tap : String) (url : String) : Bool :=
   let stripped := if withoutGit.endsWith "/" then (withoutGit.dropEnd 1).toString else withoutGit
   stripped.endsWith ("/" ++ tap) || stripped.endsWith (":" ++ tap)
 
-/-- The identity the tap commit is authored under. A repository the release
-    workflow writes to on nobody's behalf but its own, so it says so rather than
-    borrowing whichever identity the runner happens to have configured. -/
-private def commitAuthorName : String := "tl release"
-
-private def commitAuthorEmail : String := "tl-release@users.noreply.github.com"
-
 /-- Where a tap keeps its formula. Fixed by Homebrew, not by us. -/
 private def tapFormulaComponents : List String := ["Formula", "tl.rb"]
 
@@ -791,6 +785,8 @@ private def publishOptions : List OptionSpec :=
   [{ name := "dist", takesValue := true },
    { name := "manifest", takesValue := true },
    { name := "tap", takesValue := true },
+   { name := "signer", takesValue := true },
+   { name := "signing-key", takesValue := true },
    { name := "dry-run", takesValue := false }]
 
 private structure PublishArgs where
@@ -798,6 +794,10 @@ private structure PublishArgs where
   manifestPath : String
   tap : Write.OutputDirectory
   tapPath : String
+  /-- The tracked record of who signs tap commits. -/
+  signerPath : String
+  /-- The private half of that signer's key. -/
+  signingKey : String
   dryRun : Bool
 
 private def publishArgs (options : Options) : Except String PublishArgs := do
@@ -807,6 +807,8 @@ private def publishArgs (options : Options) : Except String PublishArgs := do
     manifestPath := ← options.required "manifest"
     tap := ← Write.OutputDirectory.parse "--tap" tapPath
     tapPath
+    signerPath := ← options.required "signer"
+    signingKey := ← options.required "signing-key"
     dryRun := options.given "dry-run" }
 
 /-- Run `git` inside the tap checkout, with its output as a value.
@@ -943,6 +945,15 @@ private def wouldPublishBeyondFormula (tapPath : String) (branch : RemoteBranch)
   let named := namedPaths carried ++ namedPaths touched
   return (named.filter (· != tapFormulaRelative)).eraseDups
 
+/-- Whether the checkout has any commit. A tap cloned before its first commit
+    has none, and `git log HEAD` would fail rather than list nothing. -/
+private def headExists (tap : String) : Decision Bool := do
+  let outcome ← ofIO (do return .ok (← Release.runGit
+    #["-C", tap, "rev-parse", "--verify", "--quiet", "HEAD"]))
+  match outcome with
+  | .completed output => return output.exitCode == 0
+  | outcome => decline (outcome.failureMessage.getD "git could not be run")
+
 private def publishDecision (args : PublishArgs) : Decision String := do
   let description ← readParsed args.manifestPath ManifestDescription.parse
   -- Rendered here rather than taken as a path. A `--formula` argument makes the
@@ -990,48 +1001,71 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   let strangers ← wouldPublishBeyondFormula args.tapPath published
   if !strangers.isEmpty then
     decline s!"the checkout at {args.tapPath} is ahead of {branch} on {description.homebrew.tap} by changes to {String.intercalate ", " strangers}, and pushing this release's formula would publish those too — a push sends the branch, not the file this command wrote. The tap is what `brew install tl` resolves through, so this would be published rather than kept locally. Clone the tap fresh and re-run; if those changes belong in the tap, push them deliberately first."
-  if args.dryRun then
-    return s!"{state.describe}, and this release would replace it with the formula for {description.tag} — not written, --dry-run"
-  let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
-  let disclosure ← ofIO (writeEvidence args.tap path formula)
-  let _ ← gitIn args.tapPath ["add", "--", tapFormulaRelative]
-  -- Committed only when there is something to commit. A previous run that
-  -- committed and then failed to push leaves the commit in place, and `git
-  -- commit` with an empty index is a non-zero status this must not read as a
-  -- failed publication — the publication decision was taken above, against the
-  -- remote.
-  if ← somethingStaged args.tapPath then
-    -- `--only <path>`, so the commit is this file whatever else the index holds.
-    -- The check above establishes that the *history* carries nothing unrelated;
-    -- this establishes that the commit about to join it does not either, and it
-    -- does so by construction rather than by having looked. A maintainer's
-    -- half-staged edit is left staged rather than committed or discarded: this
-    -- command publishes a formula, and rearranging someone's index is not
-    -- within that. `-m` precedes `--`, because after `--` git reads every word
-    -- as a pathspec.
-    let _ ← gitIn args.tapPath
-      ["-c", s!"user.name={commitAuthorName}", "-c", s!"user.email={commitAuthorEmail}",
-       "commit", "--only", "--no-verify",
-       "-m", s!"tl {description.tag}: pin the released digests", "--", tapFormulaRelative]
-  -- Named explicitly. A bare `git push` consults `branch.<name>.remote` and
-  -- `push.default`, so the destination would be configuration rather than the
-  -- remote this command just checked.
-  let _ ← gitIn args.tapPath ["push", "origin", s!"HEAD:refs/heads/{branch}"]
-  -- And read back. "Pushed" is a claim about the remote, and the only evidence
-  -- for it is the remote: a push that reported success while the ref did not
-  -- move is exactly the outcome this command exists to make impossible.
-  let landed ← remoteBranch args.tapPath branch
-  if tapDisposition formula landed.formula != .identical then
-    decline s!"the push to {description.homebrew.tap} reported success and {branch} there does not carry this release's formula. Nothing about the tap can be assumed from here; look at the branch before re-running."
-  return disclosing
-    s!"pushed the formula for {description.tag} to {description.homebrew.tap} on {branch}, and read it back ({state.describe})"
-    disclosure
+  -- The signer is checked before the dry run as well, for the same reason:
+  -- a rehearsal that passes over a key the real run would refuse answers the
+  -- wrong question.
+  TapSigning.withScratch fun scratch => do
+    let prepared ← TapSigning.prepare args.signerPath args.signingKey scratch
+    let signer := prepared.signer
+    -- Everything the push would publish: what the branch lacks, or the whole
+    -- history when the push creates the branch.
+    let range := if published.present then "FETCH_HEAD..HEAD" else "HEAD"
+    -- A commit already in the checkout travels with the push whether or not this
+    -- run commits. The retry after a failed push is the case that matters: it
+    -- stages nothing and commits nothing, so a check made only at commit time
+    -- would push whatever the earlier run left.
+    if ← headExists args.tapPath then
+      TapSigning.verifyRange args.tapPath prepared range
+        s!"The push would publish {if published.present then "these commits" else "this history"} to {description.homebrew.tap}, and every commit published there must be signed by the release signer in {args.signerPath}. Nothing was written or pushed. Clone the tap fresh and re-run; this publication then makes its own signed commit."
+    if args.dryRun then
+      return s!"{state.describe}, and this release would replace it with the formula for {description.tag}, signed by {signer.email} — not written, --dry-run"
+    let path ← ofExcept (Write.OutputPath.parse "the tap formula" tapFormulaRelative)
+    let disclosure ← ofIO (writeEvidence args.tap path formula)
+    let _ ← gitIn args.tapPath ["add", "--", tapFormulaRelative]
+    -- Committed only when there is something to commit. A previous run that
+    -- committed and then failed to push leaves the commit in place, and `git
+    -- commit` with an empty index is a non-zero status this must not read as a
+    -- failed publication — the publication decision was taken above, against the
+    -- remote.
+    if ← somethingStaged args.tapPath then
+      -- `--only <path>`, so the commit is this file whatever else the index holds.
+      -- The check above establishes that the *history* carries nothing unrelated;
+      -- this establishes that the commit about to join it does not either, and it
+      -- does so by construction rather than by having looked. A maintainer's
+      -- half-staged edit is left staged rather than committed or discarded: this
+      -- command publishes a formula, and rearranging someone's index is not
+      -- within that. `-m` precedes `--`, because after `--` git reads every word
+      -- as a pathspec.
+      --
+      -- `-S` and the settings before it sign with the recorded key and nothing
+      -- else. A signing failure fails the commit; there is no unsigned retry.
+      let _ ← ofIO (succeededGitWith (TapSigning.commitEnvironment signer)
+        ((["-C", args.tapPath] ++ TapSigning.commitConfig prepared ++
+          ["commit", "-S", "--only", "--no-verify",
+           "-m", s!"tl {description.tag}: pin the released digests", "--", tapFormulaRelative]).toArray))
+    -- Verified again, now over what is actually about to be pushed.
+    TapSigning.verifyRange args.tapPath prepared range
+      s!"Every commit published to {description.homebrew.tap} must be signed by the release signer in {args.signerPath}, and this one was not, so nothing was pushed. Clone the tap fresh and re-run."
+    -- Named explicitly. A bare `git push` consults `branch.<name>.remote` and
+    -- `push.default`, so the destination would be configuration rather than the
+    -- remote this command just checked.
+    let _ ← gitIn args.tapPath ["push", "origin", s!"HEAD:refs/heads/{branch}"]
+    -- And read back. "Pushed" is a claim about the remote, and the only evidence
+    -- for it is the remote: a push that reported success while the ref did not
+    -- move is exactly the outcome this command exists to make impossible.
+    let landed ← remoteBranch args.tapPath branch
+    if tapDisposition formula landed.formula != .identical then
+      decline s!"the push to {description.homebrew.tap} reported success and {branch} there does not carry this release's formula. Nothing about the tap can be assumed from here; look at the branch before re-running."
+    return disclosing
+      s!"pushed the formula for {description.tag} to {description.homebrew.tap} on {branch}, signed by {signer.email}, and read it back ({state.describe})"
+      disclosure
 
 private def publishCommand : Command :=
   optionCommand "homebrew-publish"
-    "--dist <dir> --manifest <path> --tap <dir> [--dry-run]"
+    "--dist <dir> --manifest <path> --tap <dir> --signer <signer.json> --signing-key <key> [--dry-run]"
     "Update the tap with this release's formula, once: an identical one is a no-op and a prerelease is not pushed."
-    ["--dist", "dist", "--manifest", "dist/release-manifest.json", "--tap", "tap", "--dry-run"]
+    ["--dist", "dist", "--manifest", "dist/release-manifest.json", "--tap", "tap",
+     "--signer", "release/tap-signer.json", "--signing-key", "tap-signing-key", "--dry-run"]
     publishOptions publishArgs publishDecision
 
 /-- Discover tracked render fixtures and ask Ruby to parse each one separately.

@@ -62,6 +62,7 @@ inductive PrerequisiteKind where
   | npmTrustedPublishing
   | homebrewTap
   | homebrewToken
+  | homebrewSigningKey
   deriving DecidableEq, Repr
 
 /-- Which channel a prerequisite belongs to, or `none` for the ones every
@@ -74,7 +75,7 @@ def PrerequisiteKind.channel : PrerequisiteKind → Option Channel
   | .repositoryPublic | .releaseEnvironment | .releaseReviewers
   | .deploymentPolicy | .tagRuleset => none
   | .npmPackages | .npmTrustedPublishing => some .npm
-  | .homebrewTap | .homebrewToken => some .homebrew
+  | .homebrewTap | .homebrewToken | .homebrewSigningKey => some .homebrew
 
 /-- Whether this release needs that prerequisite at all.
 
@@ -89,7 +90,8 @@ def PrerequisiteKind.applicable (plan : ReleasePlan) (kind : PrerequisiteKind) :
 
 def PrerequisiteKind.all : List PrerequisiteKind :=
   [.repositoryPublic, .releaseEnvironment, .releaseReviewers, .deploymentPolicy,
-   .tagRuleset, .npmPackages, .npmTrustedPublishing, .homebrewTap, .homebrewToken]
+   .tagRuleset, .npmPackages, .npmTrustedPublishing, .homebrewTap, .homebrewToken,
+   .homebrewSigningKey]
 
 /-- The prerequisites this release actually depends on. -/
 def applicableKinds (plan : ReleasePlan) : List PrerequisiteKind :=
@@ -555,6 +557,13 @@ private def carriedTokenRow : Row :=
     summary := "HOMEBREW_TAP_TOKEN grants write access to the tap",
     outcome := .carried "A secret's scope is not readable from a workflow, so this is recorded rather than checked. Confirm it by running the release once, or by testing the token by hand. Store it in the protected release environment, which publish-homebrew declares." }
 
+/-- The tap signing key is a secret too, and its match with the tracked signer
+    record is checked by the publication itself, before anything is written. -/
+private def carriedSigningKeyRow : Row :=
+  { kind := .homebrewSigningKey,
+    summary := "HOMEBREW_TAP_SIGNING_KEY holds the private key of the signer in release/tap-signer.json",
+    outcome := .carried "A secret is not readable from here, so this is recorded rather than checked. homebrew-publish refuses before writing anything when the key is absent, needs a passphrase, or is not the recorded signer; `tlrelease homebrew-publish --dry-run` with the key checks it in advance. Store it in the protected release environment, which publish-homebrew declares." }
+
 /-- Collect the tag-ruleset row.
 
     Every ruleset that could not be read is counted, because an unreadable one
@@ -652,6 +661,7 @@ def collectRows (ask : GithubClient) (reachable : IO (Except String Unit))
           s!"the Homebrew tap {tap} does not exist or is not visible. A release with this channel enabled pushes the generated formula there and fails if it cannot. Create the tap per docs/release-prerequisites.md, or defer the Homebrew channel in release/plan.json — that file is where the decision lives."
           fun _ => .verified)
         rows := rows.push carriedTokenRow
+        rows := rows.push carriedSigningKeyRow
       if wanted .npmPackages then
         -- The registry is npm's boundary, not gh's, and this release does not
         -- reach it: the npm channel is deferred for v0.1, so these rows are

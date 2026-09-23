@@ -259,6 +259,41 @@ gates and requires its separate packaging environment (ADR-0026).
   target is different: formula rendering refuses, because a stable spec with no
   URL for a Supported platform can fail while Homebrew loads the formula, before
   any install branch can explain the problem.
+  The tap commit that carries a formula is signed, and that is a separate
+  claim from the artifact checks above. The formula is installation code:
+  whoever can change it can change a url and its pinned digest together, or
+  remove the cosign step, so artifact verification says nothing about who
+  wrote the formula. Every tap commit `tlrelease homebrew-publish` publishes is
+  signed by one release signer recorded in `release/tap-signer.json` — the
+  committer name and email, and an ed25519 SSH public key. Its private key is a
+  dedicated release key, held as `HOMEBREW_TAP_SIGNING_KEY` in the protected
+  release environment, never a maintainer's personal key. CI and a manual
+  publish follow the same policy: the command takes the record (`--signer`)
+  and the key file (`--signing-key`) explicitly, and `workflow-homebrew`
+  writes the secret to an owner-only temporary file for the duration of the
+  publish. Every signing setting — format, key, program, identity, and an
+  empty hooks directory — is passed on the command line, so no configuration
+  file and no `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variable can change it. SSH
+  signing needs git 2.34 or newer, which is above tl's own git floor; the
+  release tool refuses an older git before writing anything. The key must open
+  without a passphrase and must be the recorded key; both are checked before
+  anything is written. A signing failure fails the commit, so there is no
+  unsigned publication and no interactive prompt. Before pushing, every commit
+  the push would publish is verified against an allowed-signers file holding
+  only the recorded key, which stops a retry from pushing an unsigned commit an
+  earlier run left behind. A prerelease, and a tap that already carries the
+  formula, publish nothing and need no key.
+  The signature is enforced at that pre-push check and nowhere else. Homebrew
+  does not verify tap commit signatures. A GitHub "require signed commits" rule
+  accepts any signature GitHub can verify, not this signer in particular, so
+  whether the tap carries one is a configuration dependency to inspect rather
+  than assume; GitHub shows an SSH-signed commit as Verified only when the key
+  is registered to the account that owns the committer email. The signature
+  gives the formula's history a provenance anyone can check against the
+  recorded key, and it constrains this tool. It is not a control against
+  someone who holds the tap credential and pushes directly, and a dedicated key
+  separates signing from publication only while the key is kept out of reach
+  of whoever holds that credential.
 - Prereleases reach each channel differently, and deliberately. GitHub marks
   them prerelease, so `install.sh`'s `/releases/latest` resolution skips them
   and a user must name one with `TL_VERSION`. npm publishes them under the

@@ -62,7 +62,7 @@
       "channel": "homebrew",
       "enabled": false,
       "plannedFor": "0.2.0",
-      "note": "Deferred. Requires the DmitryKorolev/homebrew-tap repository to exist and a HOMEBREW_TAP_TOKEN secret in the protected release environment granting write access to it. Formula/tl.rb remains a generated placeholder checked against the native renderer while the channel is off, so turning it on is a tap plus a credential rather than new code."
+      "note": "Deferred. Requires the DmitryKorolev/homebrew-tap repository to exist and a HOMEBREW_TAP_TOKEN secret in the protected release environment granting write access to it, plus the tap signer: release/tap-signer.json and its private key as HOMEBREW_TAP_SIGNING_KEY in the same environment. Formula/tl.rb remains a generated placeholder checked against the native renderer while the channel is off, so turning it on is a tap plus a credential rather than new code."
     }
   ]
 }

@@ -904,7 +904,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: ./tool/tlrelease workflow-homebrew --dist dist --output-dir out --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          HOMEBREW_TAP_SIGNING_KEY: ${{ secrets.HOMEBREW_TAP_SIGNING_KEY }}
+        run: ./tool/tlrelease workflow-homebrew --dist dist --output-dir out --signer release/tap-signer.json --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
       - name: upload the rendered formula
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

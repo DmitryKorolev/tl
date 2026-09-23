@@ -227,7 +227,9 @@ scripts/                -- gates that need no toolchain, each with a --selftest
                         -- homebrew-publish (the whole formula rendered from the
                         -- signed manifest, the tracked placeholder rendered
                         -- from release/identity.json + release/targets.json,
-                        -- and one idempotent tap update),
+                        -- and one idempotent tap update, its commit signed
+                        -- by the recorded release signer and every pushed
+                        -- commit verified against it — release/TapSigning.lean),
                         -- tlrelease npm-manifests / npm-stage / npm-publish /
                         -- npm-bootstrap / npm-selftest (the five package
                         -- manifests rendered from the identity and the target

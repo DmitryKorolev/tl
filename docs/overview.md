@@ -510,7 +510,9 @@ Two more become live only with the channels that need them, and are recorded
 now so enabling a channel is not also a silent widening of what is trusted:
 that each npm package's trusted publisher names this repository, this workflow
 and this environment, with no classic token still able to publish; and that
-`HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing more. The npm
+`HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing more, and that
+`HOMEBREW_TAP_SIGNING_KEY`, the tap signer's private key, is held only in the
+release environment and by whoever publishes by hand. The npm
 ones have no public API; a secret's scope is not readable from a workflow. Each is a *live*
 assumption — protection rules and trusted publishers can be reconfigured
 without any commit here — so the audit is re-run before every release and after

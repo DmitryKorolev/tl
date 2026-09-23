@@ -90,7 +90,7 @@ lean_lib ReleaseCore where
     `release.Workflow, `release.WorkflowPolicy, `release.WorkflowContracts, `release.WorkflowOutput, `release.WorkflowRelease, `release.Write, `release.Sys,
     `release.Certificate, `release.Consistency, `release.Identity, `release.Plan, `release.Sbom, `release.Process,
     `release.Digest, `release.Metadata, `release.Prerequisites, `release.Manifest,
-    `release.Homebrew, `release.Npm, `release.Platform, `release.Policy, `release.Stamp,
+    `release.TapSigning, `release.Homebrew, `release.Npm, `release.Platform, `release.Policy, `release.Stamp,
     `release.TaskId, `release.ShellInventory, `release.InstallerSuite, `release.VerifierSuite, `release.AdapterFixture,
     `release.HermeticPlan, `release.HermeticFixture, `release.Hermetic, `release.Cli]
 

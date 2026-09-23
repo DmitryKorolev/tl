@@ -186,6 +186,26 @@ and tag restrictions therefore apply before the credential becomes available.
 A prerelease renders its preview formula without cloning or pushing the tap;
 a stable release refuses a missing credential before either effect.
 
+Every tap commit is signed by the release signer (ADR-0006), so the channel
+also needs:
+
+- A dedicated, unencrypted ed25519 key generated for this purpose, not a
+  maintainer's personal key: `ssh-keygen -t ed25519 -N "" -f tap-signer`.
+- `release/tap-signer.json`, committed through review, recording the
+  committer identity and the public half:
+  `{"name": "...", "email": "...", "publicKey": "ssh-ed25519 AAAA..."}` — the
+  first two fields of `tap-signer.pub`, without its comment. GitHub shows the
+  commits as Verified only if the key is registered as a signing key on the
+  account that owns that email.
+- The private key as the `HOMEBREW_TAP_SIGNING_KEY` secret in the protected
+  release environment. A stable release refuses a missing key before rendering.
+
+A manual publish uses the same record and passes the key file itself:
+`tlrelease homebrew-publish --dist dist --manifest dist/release-manifest.json --tap tap --signer release/tap-signer.json --signing-key tap-signer --dry-run`
+checks the key against the record, and any commit already waiting to be pushed,
+without writing. Record which branch rules the tap enforces; a "require signed
+commits" rule is not an allowlist of this signer.
+
 ## Before every release
 
 When enabling npm or Homebrew, also split the hermetic policy evidence by
@@ -241,6 +261,7 @@ relying on it.
 | Each npm package's trusted publisher names *this* workflow and environment | npm exposes no public API for a package's trusted-publisher configuration | npm org owner | npm enabled |
 | No classic automation token can still publish the packages | Same | npm org owner | npm enabled |
 | `HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing else | A secret's scope is not readable from a workflow | repository admin | Homebrew enabled |
+| `HOMEBREW_TAP_SIGNING_KEY` is the private key of the signer in `release/tap-signer.json`, and is held nowhere a tap-token holder can reach | A secret is not readable from a workflow; the match is checked by the publication itself before anything is written | repository admin | Homebrew enabled |
 | GitHub Actions and Sigstore behave as documented | Third-party infrastructure (ADR-0014) | — | always |
 | npm behaves as documented | Third-party infrastructure (ADR-0014) | — | npm enabled |
 

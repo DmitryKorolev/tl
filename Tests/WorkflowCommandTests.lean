@@ -408,31 +408,83 @@ def workflowReleaseTests : IO (List Outcome) := do
   let renderFormula : WorkflowRelease.Action := ⟨.releaseTool,
     ["homebrew-render", "--dist", dist, "--manifest", dist ++ "/release-manifest.json",
       "--output", "tl.rb", "--output-dir", formulaDir]⟩
+  let signerPath := "release/tap-signer.json"
+  let secret := "-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n-----END OPENSSH PRIVATE KEY-----"
   let expectedBrew := expectedVerify ++ [renderFormula,
     ⟨.gh, ["auth", "setup-git", "--hostname", "github.com"]⟩,
     ⟨.gh, ["repo", "clone", "Owner/homebrew-tap", formulaDir ++ "/tap", "--", "--depth", "1"]⟩,
-    ⟨.releaseTool, ["homebrew-publish", "--dist", dist, "--manifest", dist ++ "/release-manifest.json", "--tap", formulaDir ++ "/tap"]⟩]
+    ⟨.releaseTool, ["homebrew-publish", "--dist", dist, "--manifest", dist ++ "/release-manifest.json",
+      "--tap", formulaDir ++ "/tap", "--signer", signerPath, "--signing-key", "<signing-key>"]⟩]
+  -- The key file's path is a fresh private directory, so the recorded argv
+  -- names it by role; the file itself is read at the moment the child would
+  -- read it — its bytes and its mode — and checked for afterwards.
+  let observedKeys ← IO.mkRef ([] : List (String × String × String))
+  let normalise (action : WorkflowRelease.Action) : IO WorkflowRelease.Action := do
+    let (before, after) := action.args.span (· != "--signing-key")
+    match after with
+    | flag :: path :: rest =>
+        let contents ← IO.FS.readFile path
+        let listing ← IO.Process.output { cmd := "ls", args := #["-ld", path] }
+        let mode := (listing.stdout.splitOn " ").headD ""
+        observedKeys.modify (· ++ [(path, contents, mode)])
+        return { action with args := before ++ [flag, "<signing-key>"] ++ rest }
+    | _ => return action
+  let keyGone : IO Bool := do
+    let paths : List System.FilePath := (← observedKeys.get).map fun (path, _, _) => ⟨path⟩
+    let mut gone := !paths.isEmpty
+    for path in paths do
+      if ← path.pathExists then gone := false
+      if ← (path.parent.getD path).pathExists then gone := false
+    return gone
   for failure in List.range 9 do
     recorded.set []
+    observedKeys.set []
     let runner : WorkflowRelease.Runner := ⟨fun action => do
       let seen ← recorded.get
-      recorded.set (seen ++ [action])
+      recorded.set (seen ++ [← normalise action])
       return if seen.length == failure then .error "injected refusal"
         else .ok { exitCode := 0, stdout := "", stderr := "" }⟩
-    let result ← (WorkflowRelease.homebrew runner dist formulaDir tag manifest.commit (some "fixture-token")).run
+    let result ← (WorkflowRelease.homebrew runner dist formulaDir signerPath tag manifest.commit
+      (some "fixture-token") (some secret)).run
     rows := rows ++ [checkEq s!"Homebrew orchestration: failure {failure} stops" result.toOption.isSome (failure == 8),
       checkEq s!"Homebrew orchestration: exact argv through {failure}" (← recorded.get) (expectedBrew.take (failure + 1))]
+    if failure ≥ 7 then
+      rows := rows ++ [
+        checkEq s!"Homebrew orchestration: the publisher reads the secret from an owner-only file ({failure})"
+          ((← observedKeys.get).map fun (_, contents, mode) => (contents, mode))
+          [(secret ++ "\n", "-rw-------")],
+        check s!"Homebrew orchestration: the key file and its directory are removed afterwards ({failure})"
+          (← keyGone) "the signing key outlived the publication"]
   for credential in [none, some ""] do
     recorded.set []
-    let result ← (WorkflowRelease.homebrew passing dist formulaDir tag manifest.commit credential).run
+    let result ← (WorkflowRelease.homebrew passing dist formulaDir signerPath tag manifest.commit
+      credential (some secret)).run
     rows := rows ++ [check "Homebrew orchestration: stable needs credential" result.toOption.isNone,
       checkEq "Homebrew orchestration: missing credential cannot render or publish" (← recorded.get) expectedVerify]
+  for signingKey in [none, some ""] do
+    recorded.set []
+    let result ← (WorkflowRelease.homebrew passing dist formulaDir signerPath tag manifest.commit
+      (some "fixture-token") signingKey).run
+    rows := rows ++ [
+      check "Homebrew orchestration: stable needs the signing key, with no unsigned fallback"
+        (match result with
+         | .error message => (message.splitOn "HOMEBREW_TAP_SIGNING_KEY").length > 1
+             && (message.splitOn "no unsigned publication").length > 1
+         | .ok _ => false),
+      checkEq "Homebrew orchestration: a missing signing key cannot render or publish" (← recorded.get) expectedVerify]
+  rows := rows ++ [
+    checkEq "Homebrew orchestration: a secret without a final newline gains one"
+      (WorkflowRelease.signingKeyFile "key") "key\n",
+    checkEq "Homebrew orchestration: a secret with one keeps exactly one"
+      (WorkflowRelease.signingKeyFile "key\n") "key\n"]
   recorded.set []
-  let badContext ← (WorkflowRelease.homebrew passing dist formulaDir wrongTag manifest.commit (some "fixture")).run
+  let badContext ← (WorkflowRelease.homebrew passing dist formulaDir signerPath wrongTag manifest.commit
+    (some "fixture") (some secret)).run
   rows := rows ++ [check "Homebrew orchestration: wrong signed tag refuses" badContext.toOption.isNone,
     checkEq "Homebrew orchestration: wrong context cannot render or publish" (← recorded.get) expectedVerify]
   recorded.set []
-  let badDirectory ← (WorkflowRelease.homebrew passing dist badStaging.toString tag manifest.commit (some "fixture")).run
+  let badDirectory ← (WorkflowRelease.homebrew passing dist badStaging.toString signerPath tag manifest.commit
+    (some "fixture") (some secret)).run
   rows := rows ++ [check "Homebrew orchestration: output directory failure refuses" badDirectory.toOption.isNone,
     checkEq "Homebrew orchestration: output failure cannot render or publish" (← recorded.get) expectedVerify]
   let prereleaseText := text.replace "\"1.2.3\"" "\"1.2.3-rc.1\"" |>.replace "v1.2.3" "v1.2.3-rc.1"
@@ -440,8 +492,9 @@ def workflowReleaseTests : IO (List Outcome) := do
   let _ ← fixtureValue (ManifestDescription.parse "prerelease fixture" prereleaseText)
   IO.FS.writeFile (base / "release-manifest.json") prereleaseText
   recorded.set []
-  let prereleaseResult ← (WorkflowRelease.homebrew passing dist formulaDir prerelease manifest.commit none).run
-  rows := rows ++ [check "Homebrew orchestration: prerelease renders without credentials" prereleaseResult.toOption.isSome,
+  let prereleaseResult ← (WorkflowRelease.homebrew passing dist formulaDir signerPath prerelease manifest.commit
+    none none).run
+  rows := rows ++ [check "Homebrew orchestration: prerelease renders without credentials or a signing key" prereleaseResult.toOption.isSome,
     checkEq "Homebrew orchestration: prerelease has no publication effects" (← recorded.get) (expectedVerify ++ [renderFormula])]
   return rows
 

@@ -401,7 +401,7 @@ def releaseContract : Contract := {
                                        Release.WorkflowPolicy.Argument.literal "release/identity.json"] } },
             { name := "authenticate, render, and publish the formula",
               fields := [("env",
-                          "\n          RELEASE_TAG: ${{ github.ref_name }}\n          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}\n          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}")],
+                          "\n          RELEASE_TAG: ${{ github.ref_name }}\n          RELEASE_COMMIT: ${{ needs.stamp.outputs.commit }}\n          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}\n          HOMEBREW_TAP_SIGNING_KEY: ${{ secrets.HOMEBREW_TAP_SIGNING_KEY }}")],
               run := Release.WorkflowPolicy.Run.command
                        { executable := "./tool/tlrelease",
                          arguments := [Release.WorkflowPolicy.Argument.literal "workflow-homebrew",
@@ -409,6 +409,8 @@ def releaseContract : Contract := {
                                        Release.WorkflowPolicy.Argument.literal "dist",
                                        Release.WorkflowPolicy.Argument.literal "--output-dir",
                                        Release.WorkflowPolicy.Argument.literal "out",
+                                       Release.WorkflowPolicy.Argument.literal "--signer",
+                                       Release.WorkflowPolicy.Argument.literal "release/tap-signer.json",
                                        Release.WorkflowPolicy.Argument.literal "--tag",
                                        Release.WorkflowPolicy.Argument.environment "RELEASE_TAG",
                                        Release.WorkflowPolicy.Argument.literal "--commit",

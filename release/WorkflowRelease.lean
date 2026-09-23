@@ -2,6 +2,7 @@
    failures stop the sequence before a later signing or publication effect. -/
 import release.Manifest
 import release.WorkflowOutput
+import release.TapSigning
 
 namespace Release.WorkflowRelease
 
@@ -195,29 +196,52 @@ def verifyContext (runner : Runner) (dist : String) (tag : Version) (commit : Co
     decline "the signed manifest belongs to another tag or commit; download the signed set from this release run"
   return description
 
-def homebrewPublication (push : Bool) (dist output tap : String) : List Action :=
+def homebrewPublication (push : Bool) (dist output tap signer signingKey : String) : List Action :=
   if push then [
     ⟨.gh, ["auth", "setup-git", "--hostname", "github.com"]⟩,
     ⟨.gh, ["repo", "clone", tap, output ++ "/tap", "--", "--depth", "1"]⟩,
     ⟨.releaseTool, ["homebrew-publish", "--dist", dist, "--manifest", dist ++ "/" ++ manifestName,
-      "--tap", output ++ "/tap"]⟩]
+      "--tap", output ++ "/tap", "--signer", signer, "--signing-key", signingKey]⟩]
   else []
 
-theorem homebrewPublication_nonempty_iff (push : Bool) (dist output tap : String) :
-    homebrewPublication push dist output tap ≠ [] ↔ push = true := by
+theorem homebrewPublication_nonempty_iff (push : Bool) (dist output tap signer signingKey : String) :
+    homebrewPublication push dist output tap signer signingKey ≠ [] ↔ push = true := by
   cases push <;> simp only [homebrewPublication, Bool.false_eq_true, ↓reduceIte,
     ne_eq, not_true_eq_false, List.cons_ne_nil, not_false_eq_true]
 
-def homebrew (runner : Runner) (dist output : String) (tag : Version) (commit : Commit)
-    (credential : Option String) : Decision Unit := do
+/-- The secret's text as an OpenSSH key file expects it. A secret store may
+    drop the final newline, and a key file without one is refused. -/
+def signingKeyFile (secret : String) : String :=
+  if secret.endsWith "\n" then secret else secret ++ "\n"
+
+/-- Write the signing key where only this process's user can read it, run
+    `body` with its path, and remove it on every path out.
+
+    The file is created empty and restricted before the key is written, inside
+    a fresh private directory, so the key is never readable by anyone else. -/
+def withSigningKey (secret : String) (body : String → Decision α) : Decision α :=
+  TapSigning.withScratch fun scratch => do
+    let keyPath := scratch ++ "/signing-key"
+    attempt "writing the tap signing key to a private file; check the temporary directory" (do
+      IO.FS.writeFile keyPath ""
+      IO.setAccessRights keyPath { user := { read := true, write := true } }
+      IO.FS.writeFile keyPath (signingKeyFile secret))
+    body keyPath
+
+def homebrew (runner : Runner) (dist output signer : String) (tag : Version) (commit : Commit)
+    (credential signingKey : Option String) : Decision Unit := do
   let description ← verifyContext runner dist tag commit
   if description.homebrew.push && (credential.getD "").isEmpty then
     decline "the stable Homebrew release needs GH_TOKEN; configure HOMEBREW_TAP_TOKEN for the protected release environment or defer the channel in release/plan.json"
+  if description.homebrew.push && (signingKey.getD "").isEmpty then
+    decline s!"the stable Homebrew release signs its tap commit and needs HOMEBREW_TAP_SIGNING_KEY; store the private key of the signer recorded in {signer} in the protected release environment (ADR-0006), or defer the channel in release/plan.json. There is no unsigned publication."
   let _ ← ofExcept (Write.OutputDirectory.parse "--output-dir" output)
   attempt "creating the formula output directory; choose a writable --output-dir" (IO.FS.createDirAll output)
   execute runner [⟨.releaseTool, ["homebrew-render", "--dist", dist,
     "--manifest", dist ++ "/" ++ manifestName, "--output", "tl.rb", "--output-dir", output]⟩]
-  execute runner (homebrewPublication description.homebrew.push dist output description.homebrew.tap)
+  if description.homebrew.push then
+    withSigningKey (signingKey.getD "") fun keyPath =>
+      execute runner (homebrewPublication true dist output description.homebrew.tap signer keyPath)
 
 private def valueOption (name : String) : OptionSpec := { name, takesValue := true }
 
@@ -253,14 +277,15 @@ def commands : List Command := [
     (fun options => do return (← options.required "dist", ← Version.parseTag "--tag" (← options.required "tag"),
       ← Commit.parse "--commit" (← options.required "commit")))
     (fun (dist, tag, commit) => do let _ ← verifyContext defaultRunner dist tag commit; return "authenticated the received release set"),
-  optionCommand "workflow-homebrew" "--dist <dir> --output-dir <dir> --tag <tag> --commit <sha>"
-    "Authenticate and render the formula; publish only when the signed manifest requests it."
-    ["--dist", "dist", "--output-dir", "out", "--tag", "v0.1.0", "--commit", String.ofList (List.replicate 40 'a')]
-    (["dist", "output-dir", "tag", "commit"].map valueOption)
-    (fun options => do return (← options.required "dist", ← options.required "output-dir",
+  optionCommand "workflow-homebrew" "--dist <dir> --output-dir <dir> --signer <signer.json> --tag <tag> --commit <sha>"
+    "Authenticate and render the formula; publish, signed, only when the signed manifest requests it."
+    ["--dist", "dist", "--output-dir", "out", "--signer", "release/tap-signer.json", "--tag", "v0.1.0", "--commit", String.ofList (List.replicate 40 'a')]
+    (["dist", "output-dir", "signer", "tag", "commit"].map valueOption)
+    (fun options => do return (← options.required "dist", ← options.required "output-dir", ← options.required "signer",
       ← Version.parseTag "--tag" (← options.required "tag"), ← Commit.parse "--commit" (← options.required "commit")))
-    (fun (dist, output, tag, commit) => do
-      homebrew defaultRunner dist output tag commit (← IO.getEnv "GH_TOKEN")
+    (fun (dist, output, signer, tag, commit) => do
+      homebrew defaultRunner dist output signer tag commit (← IO.getEnv "GH_TOKEN")
+        (← IO.getEnv "HOMEBREW_TAP_SIGNING_KEY")
       return "rendered the authenticated formula and completed its declared publication effects"),
   optionCommand "workflow-publish" "--dist <dir> --identity <identity.json> --tag <tag> --commit <sha>"
     "Authenticate, recheck source identity, and publish exactly the signed set to GitHub."
