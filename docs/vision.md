@@ -2,17 +2,16 @@
 
 `tl` ("task list") lets an agent track its work — tasks, epics, and the
 dependencies between them — in the same git repo as the code, without a separate
-service and without cluttering your code commits. Its job is to answer one
-question:
+service and without cluttering your code commits. Its job is to answer:
 
-> *"What can I work on right now, and is the dependency graph sane?"*
+> *"Which tasks are ready now? What is blocking the task I want to start?"*
 
-The answer survives an agent's context being cleared, and several agents can write
-to it at once without merge conflicts.
+The task state survives an agent's context being cleared, and several agents can
+write to it at once without merge conflicts.
 
-That question is a pure function over state, so `tl` proves it correct in a small
-verified kernel and confines everything that can't be proved (file I/O, the CLI,
-git transport, the one-time import) to a tested shell.
+Both answers are pure functions of state, so `tl` proves the core computations
+correct in a small verified kernel and confines everything that can't be proved
+(file I/O, the CLI, git transport, the one-time import) to a tested shell.
 
 This document is the front door: scope, architecture, and the
 proved-vs-tested boundary. The decisions behind each choice live in the
@@ -280,11 +279,11 @@ each stage shippable and testable on its own:
   `parent set/remove` verbs, not
   `update --parent`), `dep add/remove`, `why`, `dep cycles`, `show`,
   `list`, a minimal `doctor` (local clock/replica/log health + graph
-  diagnostics; remote sync depth grows in Stage 3), and `--json` everywhere. This is the
-  whole thesis — *"what can I work on, and is the graph sane"* — and is enough
-  for an agent (or several on one machine, sharing the local log) to run
-  autonomously. (That "one machine" case is a
-  single checkout; agents in separate worktrees are separate replicas that
+  diagnostics; remote sync depth grows in Stage 3), and `--json` everywhere.
+  This is the whole thesis (which tasks are ready now, and what is blocking
+  the one I want to start) and is enough for an agent (or several on one
+  machine, sharing the local log) to run autonomously. (That "one machine"
+  case is a single checkout; agents in separate worktrees are separate replicas that
   share through the common-`.git` ref and the cheap local-first sync leg
   (ADR-0016), so worktree-per-agent sharing wants that leg pulled forward.) Cross-clone coordination — the
   sync-bounded claim/"superseded" story — needs `tl sync` (Stage 3); pull a

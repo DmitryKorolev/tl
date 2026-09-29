@@ -6,25 +6,17 @@ An agent's plan does not survive its own session: task state kept in
 context is gone at the next compaction or clear, and task state kept in a
 shared TODO file turns into merge conflicts as soon as two agents write it.
 `tl` ("task list") keeps the tracker in the repo itself — an append-only
-operation log on a dedicated git ref — and answers the one question a
-tracker owes an agent:
+operation log on a dedicated git ref — and answers the questions an agent
+asks at the start of a session:
 
-> *What can I work on right now, and is the dependency graph sane?*
+> *Which tasks are ready now? What is blocking the task I want to start?*
 
-The answer survives a context clear, follows the repo to every agent and
-machine through ordinary git syncs, and is computed by a kernel proved
-correct in Lean 4 — including on the cyclic or dangling dependency graphs
-that concurrent, merge-reconciled edits can produce. There is no server, no
-daemon, and no database: git moves the bytes, and a CRDT makes concurrent
+The task state survives a context clear and follows the repo to every agent
+and machine through ordinary git syncs. A core proved correct in Lean 4
+computes ready work and reports dependency cycles, and stays correct on the
+cyclic or dangling graphs that concurrent edits can produce. There is no
+server, daemon, or database: git moves the bytes, and a CRDT makes concurrent
 writes merge without git conflicts or lost updates.
-
-> **Availability.** Every command in this README works in the current
-> binary; the shipped command surface is pinned — machine-checked against
-> the grammar — in [docs/vision.md](docs/vision.md#shipped-cli-surface).
-> Install is build-from-source ([below](#build-from-source)); prebuilt
-> binaries and the verified installer are planned for v0.1.0; npm and
-> Homebrew are deferred to v0.2.0. No release has shipped yet. See
-> [VERIFYING.md](VERIFYING.md) for the planned download and verification paths.
 
 ## The work loop
 
@@ -104,7 +96,7 @@ own state; a migration, not an ongoing integration
 
 - **Verified core.** The state merge, the ready-work computation, cycle
   detection, and epic rollup are proved correct in Lean 4 — theorems, not
-  tests (the boundary is drawn honestly below).
+  tests (see [What "verified" means](#what-verified-means)).
 - **Git-native and serverless.** State lives in the repo, moves between
   clones through your existing git remotes (`tl sync`), and merges without
   conflicts by construction. No daemon, no account, nothing to host;
@@ -120,9 +112,9 @@ own state; a migration, not an ongoing integration
 | GitHub Issues / a hosted tracker | a server, auth, rate limits; state lives outside the repo and the agent's git workflow | local, serverless, in-repo; works offline |
 | the agent's own context | task state is lost on compaction; nothing crosses sessions or agents | durable shared state; `tl ready` re-grounds an agent on waking |
 
-Candidly: `tl` earns its keep when you need the dependency-aware *"what can
-I work on"* loop across sessions, agents, or machines. For a handful of
-independent tasks, a TODO file is genuinely fine.
+`tl` is most useful when you need the dependency-aware *"what can I work
+on"* loop across sessions, agents, or machines. For a handful of independent
+tasks, a TODO file is enough.
 
 ## What "verified" means
 
@@ -167,26 +159,6 @@ Worktrees of one repo share the local ref automatically — a read absorbs a
 sibling's published ops without an explicit sync; syncing with a remote is
 an explicit `tl sync`.
 
-The gitignored `.tl/` directory does not make shared tasks private. A remote
-sync publishes task descriptions, notes, actor identities, and their history
-through `refs/tl/log`; readers with access to that ref can inspect them. Treat
-shared task content as repository data, especially before making a private
-repository public. Removing a note from the current view does not erase its
-operation from the shared history.
-
-Two quieter modes cover projects that are not sharing yet. State
-initialized outside any git repository (`tl init` before `git init`) is
-simply local-only: once the directory becomes a git repository with a
-remote, the next `tl sync` starts sharing it — same log, same ids, no
-conversion. Stealth mode (`tl init --stealth`) is the deliberate version of
-the same posture: task state with zero repo-visible trace, for a repo you
-can't or won't share into; `tl sync` there fails with a `stealth-mode`
-error rather than silently doing nothing. To start sharing later, delete
-the marker file `.tl/local/stealth` and run `tl sync` — the conversion
-migrates nothing (log format, ids, and history are unchanged), and an
-optional `tl init` re-run afterwards prints the sharing suggestions stealth
-had suppressed (the discovery pointer, the auto-sync default).
-
 The ref transport is
 [ADR-0001](docs/adr/ADR-0001-op-log-on-dedicated-ref.md), the CRDT
 construction (OR-Sets plus last-writer-wins registers) is
@@ -196,7 +168,31 @@ fold cache is
 [ADR-0022](docs/adr/ADR-0022-materialization-fold-cache.md);
 [docs/vision.md](docs/vision.md) ties them together.
 
+### What sync publishes
+
+`tl sync` publishes task descriptions, notes, actor identities, and their
+operation history through `refs/tl/log`, even though `.tl/` is gitignored.
+Anyone with access to that ref can inspect them; removing a note from the
+current view does not erase its logged operation, so review task data before
+making a repository public.
+
+### Local-only modes
+
+Two quieter modes cover projects that are not sharing yet. State
+initialized outside any git repository (`tl init` before `git init`) is
+simply local-only: once the directory becomes a git repository with a
+remote, the next `tl sync` starts sharing it — same log, same ids, no
+conversion. `tl init --stealth` deliberately keeps task state local, with no
+repo-visible trace; `tl sync` refuses to share it. To start sharing later,
+remove `.tl/local/stealth` and run `tl sync` (ADR-0001 §7).
+
 ## Build from source
+
+No release has shipped yet; build from source for now. Prebuilt binaries and
+the verified installer are planned for v0.1.0; npm and Homebrew are deferred
+to v0.2.0. See [VERIFYING.md](VERIFYING.md) for the planned download and
+verification paths. Current commands are listed in the
+[shipped CLI surface](docs/vision.md#shipped-cli-surface).
 
 Prerequisites: [elan](https://github.com/leanprover/elan) (installs the
 pinned Lean toolchain automatically), a C compiler, and `git` (needed at

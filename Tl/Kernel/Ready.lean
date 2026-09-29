@@ -2,7 +2,7 @@
 `Tl.Kernel.Ready` — `ready`, the critical-path `weight`, `why`, and `unblocks`
 (ADR-0004 thm 4/5/7/10, ADR-0010).
 
-`ready s now` answers the whole thesis — "what can I work on right now":
+`ready s now` answers "which tasks are ready now":
 `i` is ready iff it is a materialized, `open`, non-epic, non-deferred issue every
 one of whose blockers is discharged (closed by effective status, or dangling —
 inert, ADR-0003 §5). The list is returned in the total deterministic ranking
