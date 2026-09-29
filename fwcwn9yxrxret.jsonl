@@ -1,0 +1,4 @@
+{"v":1,"op":"claim","hlc":"019f5c826b0b0000","replica":"fwcwn9yxrxret","nonce":"0gj0zryj90dphf596ax9z7r9r4","actor":"tl-dev","assignee":"tl-dev","id":"w4tv66k5dgejzrvt"}
+{"v":1,"op":"close","hlc":"019f5c6083190000","replica":"fwcwn9yxrxret","nonce":"70473rk8vx4kkk28m12a36ztbv","actor":"tl-dev","closeResolution":"done","id":"w4tv66k5dgejzrvt","status":"done"}
+{"v":1,"op":"close","hlc":"019f5c8ae0590000","replica":"fwcwn9yxrxret","nonce":"2ptz2ghc64wv6ab6j2ht2vj2bg","actor":"tl-dev","closeResolution":"done","id":"w4tv66k5dgejzrvt","status":"done"}
+{"v":1,"op":"reopen","hlc":"019f5c8268b60000","replica":"fwcwn9yxrxret","nonce":"2b8bydq0fr0fa5zk5a7aa999yy","actor":"tl-dev","id":"w4tv66k5dgejzrvt"}
