@@ -521,7 +521,7 @@ def ciContract : Contract := {
   header := [("concurrency", "\n  group: ci-${{ github.ref }}\n  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}"),
  ("defaults", "\n  run:\n    shell: bash"),
  ("name", "CI"),
- ("on", "\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:"),
+ ("on", "\n  push:\n    branches: ['**']\n  pull_request:\n  workflow_dispatch:"),
  ("permissions", "\n  contents: read")]
   jobs := [
 { name := "release-policy",

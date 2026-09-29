@@ -23,6 +23,13 @@ report exactly.
 
 CI uses GitHub Actions hosted Ubuntu and macOS runners. Third-party actions are
 pinned to full commit hashes.
+Pushes to every branch run CI, so a candidate commit can receive required
+checks before it reaches protected `main` when pull requests are disabled. The
+branch filter excludes tag pushes; release tags use the separate release
+workflow. Only `main` pushes save the shared toolchain and dependency caches;
+protecting `main` is a repository-setting prerequisite, not something those
+save guards enforce. The git-floor job separately uses branch-scoped caching
+for its hash-pinned Git build.
 
 The graph is:
 

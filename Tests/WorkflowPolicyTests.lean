@@ -30,6 +30,10 @@ def workflowPolicyTests : IO (List Outcome) := do
         |>.replace "        run:" "        'run':") releaseContract)]
   rows := rows ++ refusal "native hermetic runner is required" ci
     (ci.replace "./.lake/build/bin/tlrelease hermetic --root ." "true") ciContract
+  rows := rows ++ refusal "candidate branch push checks are required" ci
+    (ci.replace "branches: ['**']" "branches: [main]") ciContract
+  rows := rows ++ refusal "CI must exclude tag pushes" ci
+    (ci.replace "    branches: ['**']\n" "") ciContract
   for (label, before, after) in [
       ("inherited write permission", "permissions:\n  contents: read", "permissions:\n  contents: write"),
       ("plan producer shell", "./.lake/build/bin/tlrelease workflow-plan", "echo plan; ./.lake/build/bin/tlrelease workflow-plan"),
