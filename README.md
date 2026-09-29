@@ -18,12 +18,13 @@ that concurrent, merge-reconciled edits can produce. There is no server, no
 daemon, and no database: git moves the bytes, and a CRDT makes concurrent
 writes merge without git conflicts or lost updates.
 
-> **Status: alpha.** Every command in this README works in the current
+> **Availability.** Every command in this README works in the current
 > binary; the shipped command surface is pinned — machine-checked against
 > the grammar — in [docs/vision.md](docs/vision.md#shipped-cli-surface).
 > Install is build-from-source ([below](#build-from-source)); prebuilt
-> binaries and package-manager installs are planned
-> ([ADR-0006](docs/adr/ADR-0006-distribution-and-platforms.md)).
+> binaries and the verified installer are planned for v0.1.0; npm and
+> Homebrew are deferred to v0.2.0. No release has shipped yet. See
+> [VERIFYING.md](VERIFYING.md) for the planned download and verification paths.
 
 ## The work loop
 
@@ -166,6 +167,13 @@ Worktrees of one repo share the local ref automatically — a read absorbs a
 sibling's published ops without an explicit sync; syncing with a remote is
 an explicit `tl sync`.
 
+The gitignored `.tl/` directory does not make shared tasks private. A remote
+sync publishes task descriptions, notes, actor identities, and their history
+through `refs/tl/log`; readers with access to that ref can inspect them. Treat
+shared task content as repository data, especially before making a private
+repository public. Removing a note from the current view does not erase its
+operation from the shared history.
+
 Two quieter modes cover projects that are not sharing yet. State
 initialized outside any git repository (`tl init` before `git init`) is
 simply local-only: once the directory becomes a git repository with a
@@ -245,6 +253,8 @@ distribution matrix is
   vs trusted, theorem by theorem
 - [docs/adr/](docs/adr/) — the design decisions and their rationale
 - [AGENTS.md](AGENTS.md) — the guide for building `tl` itself
+- [.agents/skills/tl/SKILL.md](.agents/skills/tl/SKILL.md) — the usage guide
+  for agents tracking work with `tl`
 
 ## License
 

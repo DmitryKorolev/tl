@@ -39,6 +39,32 @@ release. They are written up now because enabling a channel is exactly the
 moment its bootstrap has to be done, and a procedure discovered then is a
 procedure improvised.
 
+## Before a hosted rehearsal
+
+A branch `workflow_dispatch` run can rehearse a private repository. It needs
+GitHub Actions enabled, hosted runners available, and the intended commit on a
+remote branch. The workflow must also exist on the default branch for manual
+dispatch. Private repositories use the account's included Actions quota and
+paid usage; standard hosted runner usage in public repositories is free
+([GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+Visibility is a publication prerequisite below, not a rehearsal prerequisite.
+
+Run the required local gates and hosted CI on the intended candidate, then
+dispatch the full build rehearsal on its branch:
+
+```sh
+gh workflow run release.yml --repo DmitryKorolev/tl \
+  --ref <candidate-branch> -f handoff_only=false
+```
+
+Inspect the gates, validated release-tool handoff, stamp, four build legs,
+smoke tests, link audits, build metadata and uploaded candidate artifacts.
+`handoff_only=true` runs only the gates and tool handoff. Neither mode signs or
+publishes: the signing and publication jobs require a pushed tag. A branch
+rehearsal needs no publication secrets, protected release environment, npm
+bootstrap, or Homebrew tap. Live signing and final manifest assembly remain
+part of the first tagged release's verification.
+
 ## Before the first release, once
 
 ### 0. The repository must be public
@@ -65,10 +91,55 @@ Deployment protection rules are also a paid feature on private repositories
 `v*` deployment-tag rule — the whole of section 2 — may not be configurable at
 all while the repository is private. Confirm that before relying on them.
 
-So: make the repository public. This one has no alternative under the v0.1.0
-plan, because both enabled channels serve from the release assets — there is no
-release without it. It is the single prerequisite the audit cannot work around
-and the first thing to do.
+Before changing visibility, review the Git commit history, the shared
+`refs/tl/log` task history, closed pull requests, and Actions logs for material
+that should remain private. Decide whether commit author addresses and task
+provenance may be exposed. Confirm that hosted CI can run and define the
+protection and bypass policy for `main` and release tags; private-repository
+plan limits may prevent reading or configuring the detailed rules until the
+repository is public. After the visibility change, inspect the effective rules
+and bypass access, then run hosted gates before creating a release tag.
+
+If pull requests are disabled, leave a pull-request requirement out of the
+`main` rule. CI runs automatically on pushes to candidate branches. Required
+checks match the checked commit, check name and configured source, rather than
+the workflow's trigger type
+([GitHub required-check troubleshooting](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/troubleshooting-rules)).
+A manual release rehearsal does not produce all the CI check names below.
+Before requiring CI for direct pushes, exercise the candidate-to-`main` path
+with the chosen checks on GitHub.
+
+The repository must be public for the v0.1.0 release: both enabled channels
+serve from GitHub Release assets. The visibility change is a prerequisite of
+publication, not the first step of the readiness review.
+
+### Protect `main` before accepting public contributions
+
+Use an active branch ruleset targeting `main` (or equivalent branch
+protection) to require the CI checks, restrict deletion, and block force pushes.
+For the current workflow, the required check names are:
+
+- `build-and-test (ubuntu-latest)`
+- `build-and-test (macos-latest)`
+- `release-policy`
+- `hermetic-release`
+- `homebrew-formula`
+- `git-floor`
+
+Confirm these exact contexts on a successful candidate push and bind their
+source to GitHub Actions when configuring the requirement. With pull requests
+disabled, keep the pull-request requirement off: push the candidate branch,
+wait for checks, then advance `main` to that same checked commit. A new squash
+or merge commit has a different identity and needs its own checks. Prove this
+path against the actual rules before relying on it.
+
+Start with an empty bypass list so the owner and installed apps also follow
+the rules. Document any deliberate exception and inspect app access separately
+from collaborators. These rules gate writes; repository administrators retain
+the ability to edit the rules themselves. GitHub Free supports branch
+protection on public repositories; private repositories need a qualifying
+paid plan ([GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)).
+Release-tag and environment protections below are separate requirements.
 
 ### 1. Bootstrap the five npm packages — *only when the npm channel is enabled*
 
@@ -121,7 +192,9 @@ Then:
    account that owns the `@taskloop` scope. The `bootstrap` tag is deliberate —
    no user resolves it.
 2. On npmjs.com, for each package, add a trusted publisher: this repository,
-   the workflow `.github/workflows/release.yml`, and the `release` environment.
+   the workflow filename `release.yml`, and the `release` environment. Allow
+   direct `npm publish` for each connection; newly created publishers otherwise
+   allow staged publishing by default, while this workflow calls `npm publish`.
    The environment must match: both `sign` and `publish-npm` declare
    `environment: release`, and npm treats the environment as part of the
    trusted-publisher configuration, so a publisher registered without one — or
