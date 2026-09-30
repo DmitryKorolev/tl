@@ -47,15 +47,15 @@ defaults:
     shell: bash
 
 env:
-  # The Linux artifacts are built inside this image so they inherit its glibc
-  # rather than the runner's. Ubuntu 18.04 carries glibc 2.27, the floor
-  # ADR-0006 documents (Lean's own floors are 2.26 on x86-64 and 2.27 on
-  # aarch64). Pinned by multi-arch index digest, so both Linux legs resolve the
-  # same published image and a moved tag cannot change what we build against.
-  GLIBC_FLOOR_IMAGE: "ubuntu@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98"
+  # The build host must run Lean's bundled Clang/LLVM, which requires newer
+  # glibc than the binaries it produces using Lean's bundled SDK/sysroot.
+  # Ubuntu 24.04 is pinned by multi-arch index digest for both Linux legs.
+  # The produced binary's symbol check below independently enforces the
+  # ADR-0006 runtime floor; the build host's glibc does not define that floor.
+  LINUX_BUILD_IMAGE: "ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254"
   GLIBC_FLOOR: "2.27"
-  # elan installs the pinned Lean toolchain inside that image, where the
-  # node-based setup actions cannot run. Hash-pinned like the floor-git tarball
+  # elan installs the pinned Lean toolchain inside the build container rather
+  # than through setup actions on the host. Hash-pinned like the floor-git tarball
   # in ci.yml: the download is checked before it is executed. The per-target
   # digests are in the build matrix, next to the triple they belong to.
   ELAN_VERSION: "v4.2.3"
@@ -379,13 +379,12 @@ jobs:
           path: ~/.cache/mathlib
           key: trusted-main-v1-mathlib-${{ hashFiles('lake-manifest.json', 'lean-toolchain') }}
 
-      # --- Linux: build inside the glibc-floor image ---------------------------
+      # --- Linux: build inside the pinned image -------------------------------
       #
-      # The node-based setup actions cannot run in an image this old, so the
-      # whole build is one `docker run`: install elan from a hash-pinned
+      # The whole build is one `docker run`: install elan from a hash-pinned
       # tarball, fetch the mathlib olean cache, build the binary. The host's
       # ~/.cache/mathlib is mounted in so the restore above is not wasted.
-      - name: build inside the glibc ${{ env.GLIBC_FLOOR }} image
+      - name: build inside the pinned Linux image
         if: matrix.container
         env:
           ELAN_SHA256: ${{ matrix.elan_sha256 }}
@@ -399,14 +398,8 @@ jobs:
             -e ELAN_VERSION="${ELAN_VERSION}" \
             -e ELAN_SHA256="${ELAN_SHA256}" \
             -e ELAN_TRIPLE="${ELAN_TRIPLE}" \
-            "${GLIBC_FLOOR_IMAGE}" \
+            "${LINUX_BUILD_IMAGE}" \
             bash -euo pipefail -c '
-              # No sources rewrite. 18.04 is past end of standard support but
-              # has not moved to old-releases: archive.ubuntu.com,
-              # security.ubuntu.com and ports.ubuntu.com (the arm64 archive)
-              # all still serve bionic, while old-releases returns 404 for it.
-              # Rewriting to old-releases would break both Linux legs, and an
-              # arm64-blind rewrite would miss ports.ubuntu.com entirely.
               apt-get update -q
               apt-get install -y -q --no-install-recommends \
                 ca-certificates curl git gcc libc6-dev make xz-utils
@@ -502,7 +495,7 @@ jobs:
           fi
           echo "highest glibc symbol version required: ${highest} (floor ${GLIBC_FLOOR})"
           if [ "$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$highest" | sort -V | tail -1)" != "${GLIBC_FLOOR}" ]; then
-            echo "::error::${asset} requires glibc ${highest}, above the ADR-0006 floor of ${GLIBC_FLOOR}. The build image drifted upward: repin GLIBC_FLOOR_IMAGE to an image at or below the floor, or change the floor in ADR-0006 deliberately and update the docs and installer with it."
+            echo "::error::${asset} requires glibc ${highest}, above the ADR-0006 floor of ${GLIBC_FLOOR}. Inspect the pinned Lean SDK/sysroot and linker inputs for newer libc dependencies. Restore the runtime floor, or change it in ADR-0006 deliberately and update the docs and installer with it."
             exit 1
           fi
 
@@ -684,7 +677,7 @@ jobs:
             --output "build-metadata-${{ matrix.target }}.json"
           cat "dist/build-metadata-${{ matrix.target }}.json"
         env:
-          CONTAINER_IMAGE: ${{ matrix.container && env.GLIBC_FLOOR_IMAGE || '' }}
+          CONTAINER_IMAGE: ${{ matrix.container && env.LINUX_BUILD_IMAGE || '' }}
 
       - name: upload the release candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

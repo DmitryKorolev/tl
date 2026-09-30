@@ -61,9 +61,12 @@ sha256sum lake-manifest.json     # matches lakeManifestSha256 in release-manifes
 ```
 
 To reproduce the release's own build environment rather than your machine's,
-the Linux artifacts are built inside the glibc-floor container image pinned by
-digest in `.github/workflows/release.yml`; the macOS ones are built on the
-GitHub-hosted runner image named in `build-metadata-<target>.json`.
+the Linux artifacts are built inside the build container image pinned by
+digest in `.github/workflows/release.yml`, using the pinned Lean toolchain's
+bundled compiler and SDK/sysroot. The workflow checks the resulting binary's
+glibc requirements against the 2.27 runtime floor; that floor is independent of
+the build host's glibc. The macOS artifacts are built on the GitHub-hosted runner
+image named in `build-metadata-<target>.json`.
 
 ## Relinking GMP (LGPLv3 §4)
 

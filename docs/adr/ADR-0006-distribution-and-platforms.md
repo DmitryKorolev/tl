@@ -61,9 +61,13 @@ as the downstream `math/lean4` port (build-from-source).
 - Native per-target CI matrix (Lean cross-compile is weak): GitHub hosted
   runners cover the four distributed targets (`ubuntu-*`,
   `ubuntu-*-arm`, Apple-Silicon macOS, and Intel macOS).
-- Linux: build on an old-glibc base (manylinux-style container or an
-  old Ubuntu) to honor Lean's glibc 2.26/2.27 floors, so the binaries run
-  on any distro at or above that floor.
+- Linux: build in a container pinned by digest with the pinned
+  Lean toolchain's bundled compiler and SDK/sysroot. The host must run the
+  compiler: Lean 4.34's Clang/LLVM requires glibc 2.29 and cannot run on
+  Ubuntu 18.04's glibc 2.27. The SDK targets an older libc independently of
+  the host, and the workflow checks the produced binary's versioned glibc
+  symbols against our unchanged 2.27 runtime floor. A newer compiler host
+  therefore does not authorize a higher runtime requirement.
 - GMP is statically linked, mirroring Lean. The Lean
   toolchain ships GMP as a static archive (`lib/libgmp.a`) and links it into
   `libleanshared`/the binary on every platform — verified on the shipped
@@ -71,7 +75,7 @@ as the downstream `math/lean4` port (build-from-source).
   `libgmp.dylib`, and `otool -L libleanshared.dylib` shows no GMP dependency.
   Since `tl` is compiled by that toolchain, its binary inherits static GMP
   automatically; we do not fight it. (*Full static* is impossible only for
-  libc/libSystem on macOS, and finicky on glibc — old-glibc + dynamic
+  libc/libSystem on macOS, and finicky on glibc — an older glibc target + dynamic
   libc stays the portable baseline for the C library. GMP being static is
   independent of, and unaffected by, that libc choice.)
 
@@ -153,7 +157,7 @@ Three kinds of dependency, and the budget binds only the first:
   A Homebrew formula is a Ruby DSL; npm operations use `node` and `npm`. These
   belong to the channel and become reachable only when it is enabled.
 - **CI infrastructure** — what the release *runner* needs, which a user never
-  installs and this budget says nothing about: Docker for the two glibc-floor
+  installs and this budget says nothing about: Docker for the two containerized
   Linux legs, the Node runtime behind every JavaScript GitHub action, `gh`,
   `jq`, `cosign`, and the platform inspection tools the link audit uses.
 
@@ -769,7 +773,7 @@ checklist, not an unresolved licensing risk.
   Rejected: it forfeits verification — the run artifact would not be the
   proved artifact (ADR-0004). The whole premise dies here.
 - Truly-static musl Linux build. Deferred: finicky against the
-  glibc-based toolchain; old-glibc + dynamic libc meets Lean's stated floor
+  glibc-based toolchain; an older glibc target + dynamic libc meets our runtime floor
   with less risk.
 - Universal macOS binary (`lipo`). Rejected for now: effort
   disproportionate to a declining platform under the best-effort policy.

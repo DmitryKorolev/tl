@@ -7,7 +7,7 @@ def releaseContract : Contract := {
   header := [("concurrency", "\n  group: release-${{ github.ref }}\n  cancel-in-progress: false"),
  ("defaults", "\n  run:\n    shell: bash"),
  ("env",
-  "\n  GLIBC_FLOOR_IMAGE: \"ubuntu@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98\"\n  GLIBC_FLOOR: \"2.27\"\n  ELAN_VERSION: \"v4.2.3\""),
+  "\n  LINUX_BUILD_IMAGE: \"ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254\"\n  GLIBC_FLOOR: \"2.27\"\n  ELAN_VERSION: \"v4.2.3\""),
  ("name", "Release"),
  ("on",
   "\n  push:\n    tags:\n      - \"v[0-9]+.[0-9]+.[0-9]+\"\n      - \"v[0-9]+.[0-9]+.[0-9]+-*\"\n  workflow_dispatch:\n    inputs:\n      handoff_only:\n        description: Run the gates and capability-free tool handoff without the release matrix\n        type: boolean\n        default: false"),

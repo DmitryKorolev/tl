@@ -363,7 +363,7 @@ private def handoffInheritedExecution (workflow : String) : Bool :=
     && (header.filter (fun line => (handoffControl line).1 == "defaults")).length == 1
     && (header.filter (fun line => (handoffControl line).1 == "env")).all (· == "env:")
     && env.all (fun line => line.startsWith "  " && !line.startsWith "   " &&
-      ["GLIBC_FLOOR_IMAGE", "GLIBC_FLOOR", "ELAN_VERSION"].contains (handoffControl line).1)
+      ["LINUX_BUILD_IMAGE", "GLIBC_FLOOR", "ELAN_VERSION"].contains (handoffControl line).1)
 
 /-- Exact file-set transport shape, deliberately separate from the later
     migration of arbitrary publication commands into the typed policy grammar.
@@ -793,6 +793,50 @@ private def nativeBuildRows (lakefile : String) : List Outcome :=
 
 /-! ## The rows -/
 
+/-- Execute the workflow's actual glibc check with controlled readelf output.
+    The compiler host can be newer than the runtime floor; accepting it must
+    still depend on the produced binary's symbols, including refusal when the
+    symbol table cannot be read. -/
+private def glibcFloorRows (workflow : String) : IO (List Outcome) := do
+  let some (_, buildLines) := (jobsOf workflow).find? (fun (name, _) => name == "build")
+    | return [check "glibc floor: the build job is present" false]
+  let some step := (stepsOf buildLines).find? (·.name == "assert the glibc floor (Linux)")
+    | return [check "glibc floor: the binary check is present" false]
+  if step.runLines.isEmpty then
+    return [check "glibc floor: the binary check has executable lines" false]
+  let body := step.runLines.filter (fun line => !line.trimAscii.toString.startsWith "#")
+  let script := swap (String.intercalate "\n" (body.map (fun line => (line.drop 10).toString)))
+    "${{ matrix.target }}" "linux-fixture"
+  let base ← IO.FS.createTempDir
+  try
+    let reader := base / "readelf"
+    IO.FS.writeFile reader "#!/bin/sh\nprintf '%s\\n' \"$GLIBC_TEST_SYMBOLS\"\nexit \"$GLIBC_TEST_READELF_STATUS\"\n"
+    let mode ← IO.Process.output { cmd := "chmod", args := #["+x", reader.toString] }
+    if mode.exitCode != 0 then
+      return [check "glibc floor: the controlled reader is executable" false mode.stderr]
+    let ambient ← IO.getEnv "PATH"
+    let cases : List (String × String × String × UInt32 × String) := [
+      ("older runtime", "GLIBC_2.17", "0", 0, "highest glibc symbol version required: 2.17"),
+      ("exact runtime floor", "GLIBC_2.27", "0", 0, "highest glibc symbol version required: 2.27"),
+      ("numeric version ordering", "GLIBC_2.9\nGLIBC_2.10\nGLIBC_2.27", "0", 0,
+        "highest glibc symbol version required: 2.27"),
+      ("newer runtime", "GLIBC_2.27\nGLIBC_2.29", "0", 1, "Inspect the pinned Lean SDK/sysroot"),
+      ("no versioned symbols", "", "0", 1, "Do not publish an unchecked artifact"),
+      ("unreadable artifact", "", "1", 1, "Do not publish an unchecked artifact")]
+    let mut rows := []
+    for (name, symbols, readerStatus, expected, diagnostic) in cases do
+      let out ← IO.Process.output {
+        cmd := "bash", args := #["-c", script]
+        env := #[("PATH", some (base.toString ++ ":" ++ ambient.getD "")),
+          ("GLIBC_FLOOR", some "2.27"), ("GLIBC_TEST_SYMBOLS", some symbols),
+          ("GLIBC_TEST_READELF_STATUS", some readerStatus)] }
+      rows := rows ++ [
+        checkEq s!"glibc floor: {name} exit status" out.exitCode expected,
+        check s!"glibc floor: {name} explains its result"
+          ((out.stdout.splitOn diagnostic).length > 1) (out.stdout ++ out.stderr)]
+    return rows
+  finally IO.FS.removeDirAll base
+
 unsafe def releaseDriftTests : IO (List Outcome) := do
   let nativeRows ←
     match ← (findSysroot : IO FilePath).toBaseIO with
@@ -829,6 +873,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
      check "release errors: the scan read release sources to check"
        (releaseSources.size ≥ 10) s!"found {releaseSources.size} release source(s)"]
   let releaseWorkflow ← IO.FS.readFile ".github/workflows/release.yml"
+  let glibcRows ← glibcFloorRows releaseWorkflow
   let ciWorkflow ← IO.FS.readFile ".github/workflows/ci.yml"
   let lakefile ← IO.FS.readFile "lakefile.lean"
   let hermeticExecutionRows := ["if: false", "continue-on-error: true", "container: alpine", "environment: release"].flatMap fun field =>
@@ -838,7 +883,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
      check s!"hermetic release: step-level `{field}` is refused"
        ((hermeticReleaseShape (swap canonicalHermeticWorkflow "        run: ./.lake/build/bin/tlrelease hermetic"
          s!"        {field}\n        run: ./.lake/build/bin/tlrelease hermetic")).toOption.isNone)]
-  return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile ++ staticReleaseRecipeRows lakefile
+  return workflowParserTests ++ fileSetMutationTests ++ documentRows ++ formattedErrnoRows ++ nativeRows ++ nativeBuildRows lakefile ++ staticReleaseRecipeRows lakefile ++ glibcRows
     ++ hermeticExecutionRows ++ [
     -- The detector, on the shape it exists to catch and on the shapes it must
     -- leave alone. Without these a detector that matched nothing would report
