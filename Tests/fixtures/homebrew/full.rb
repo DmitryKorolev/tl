@@ -110,7 +110,7 @@ class Tl < Formula
     unless PINNED_TARGETS.include?(target_name)
       odie <<~MESSAGE
         tl #{version} publishes no #{target_name} binary.
-        That target is Best-effort (ADR-0006): it is built and smoke-tested, but a
+        That target is Best-effort: it is built and smoke-tested, but a
         failing leg does not block a release, and this release shipped without it.
         Install a later release once one is published, use the Supported build for
         another platform, or build from source with Lean 4:

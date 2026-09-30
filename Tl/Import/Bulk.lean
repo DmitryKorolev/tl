@@ -392,7 +392,7 @@ holds; supply createdAt ≤ claimedAt ≤ closedAt to keep the source instant"]
     -- clamps it, so a supplied value always reaches the log as given.
     let timeDisc :=
       instantDisc "claimedAt" r.claimedAt claimMs claimedAtReadable
-        "the stamp of a claim no later close supersedes (ADR-0008)"
+        "the stamp of a claim no later close supersedes"
         "set status to in_progress" ++
       instantDisc "closedAt" r.closedAt closedAtRecorded (!closeOps.isEmpty)
         "the close op's stamp" "set status to done or cancelled"

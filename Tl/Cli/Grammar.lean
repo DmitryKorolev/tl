@@ -100,7 +100,7 @@ def commandSpecs : List CommandSpec :=
   [ { command := "init", positionals := "", summary := "create the state directory (the repo toplevel, or --dir/TL_DIR)",
       flags :=
         [ { name := "stealth", value := false,
-            summary := "local-only state, never shared: no auto-sync, no discovery pointer; `tl sync` is disabled (ADR-0001 §7)" } ] },
+            summary := "local-only state, never shared: no auto-sync, no discovery pointer; `tl sync` is disabled" } ] },
     { command := "import", positionals := "<path>",
       summary := "one-shot bulk import of tl's JSONL format into a deterministic seed log",
       flags :=
@@ -185,7 +185,7 @@ def commandSpecs : List CommandSpec :=
                 { name := "stale", value := true,
                   summary := "only stale claims: in-progress, claimed longer ago than this window (e.g. 45m, 1h, 24h); no default" },
                 { name := "deferred", value := false,
-                  summary := "only deferred issues: open with a deferUntil still in the future (ADR-0010)" },
+                  summary := "only deferred issues: open with a deferUntil still in the future" },
                 { name := "status", value := true, repeatable := true,
                   summary := "only issues with this status: open | in_progress | done | cancelled (repeatable ⇒ OR; a named closed status self-includes)" },
                 assigneeFacetFlag,

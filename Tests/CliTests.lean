@@ -666,7 +666,9 @@ def cliUsageTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   let dir ← freshDir
   o := o ++
-    [← expectErr "unknown command is usage" ["frobnicate"] .usage,
+    [← expectErr "unknown command is usage, naming `tl help` once" ["frobnicate"] .usage
+       (fun e => e.message ==
+         "unknown command 'frobnicate' — run `tl help` for the command list"),
      ← expectErr "unknown flag is usage" ["ready", "--dir", dir, "--bogus"] .usage,
      ← expectErr "close without --as is usage" ["close", "tl-x", "--dir", dir] .usage,
      ← expectErr "close with a bad --as is usage"
@@ -2416,7 +2418,8 @@ def cliFreeVerbTests : IO (List Outcome) := do
      ← expectData "-v is a version alias" ["-v"] (fun _ => true),
      ← expectData "-h is a help alias" ["-h"] (fun j => (jArr j "commands").length > 0),
      ← expectErr "an unknown command suggests the closest" ["creat", "x"] .usage
-       (fun e => (e.message.splitOn "did you mean").length > 1)]
+       (fun e => e.message ==
+         "unknown command 'creat' — did you mean: create? — see `tl help`")]
   -- list defaults to open-only; --all includes closed
   let _ ← run' ["close", "tl-" ++ b, "--dir", dir, "--as", "done", "--actor", "t"]
   o := o ++

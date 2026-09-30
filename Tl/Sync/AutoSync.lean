@@ -73,10 +73,10 @@ def autoSyncInitDefault (d : Dirs) : TlM (List String) := do
   if (← gitConfig d "tl.autosync").isSome then return []
   if ← isLinkedWorktree d then
     if ← gitConfigSet d "tl.autosync" "true" then
-      return ["auto-sync on (linked worktree): writes publish to siblings automatically; turn off with `git config tl.autosync false` (ADR-0021)"]
+      return ["auto-sync on (linked worktree): writes publish to siblings automatically; turn off with `git config tl.autosync false`"]
     else return []
   else if ← inGitRepo d then
-    return ["auto-sync is off; enable publish-on-write to siblings with `git config tl.autosync true` (ADR-0021)"]
+    return ["auto-sync is off; enable publish-on-write to siblings with `git config tl.autosync true`"]
   else return []
 
 end Tl.Sync

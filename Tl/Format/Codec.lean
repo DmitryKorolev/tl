@@ -355,7 +355,7 @@ private def reqSingletonObserved (fs : List (String × Json)) :
   match arr.toList with
   | [tj] => parseObservedTag tj
   | _ => throw (malformed
-      s!"noteRemove's 'observed' must be exactly one add-tag — the note's own tag — got {arr.size}; a note removal tombstones exactly one entry (ADR-0027)")
+      s!"noteRemove's 'observed' must be exactly one add-tag — the note's own tag — got {arr.size}; a note removal tombstones exactly one entry")
 
 /-- Decode a scalar field set (the `create`/`update` payloads). `lifecycle`
     admits the lifecycle fields (`status`/`deferUntil`/`closeResolution`) — true
@@ -494,7 +494,7 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         pure (.labelRemove (← reqId fs) (← reqStr fs "label") (← reqObserved fs), [])
     | "noteAdd" => do
         unless r.v ≥ 2 do
-          throw (malformed "noteAdd requires v:2 (ADR-0027) — a v:1 note record was never written by a tl writer")
+          throw (malformed "noteAdd requires v:2 — a v:1 note record was never written by a tl writer")
         let id ← reqId fs
         let note ← reqStr fs "note"
         unless validId note do
@@ -509,11 +509,11 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         -- its own removal record would fail this very check and be unloadable.
         unless mintNoteId stamp == note do
           throw (malformed
-            s!"noteAdd's 'note' handle '{note}' is not the note id minted from its own add stamp — a note id is the hash of its add-tag (ADR-0027)")
+            s!"noteAdd's 'note' handle '{note}' is not the note id minted from its own add stamp — a note id is the hash of its add-tag")
         pure (.noteAdd id note (← reqStr fs "text"), [])
     | "noteRemove" => do
         unless r.v ≥ 2 do
-          throw (malformed "noteRemove requires v:2 (ADR-0027) — a v:1 note record was never written by a tl writer")
+          throw (malformed "noteRemove requires v:2 — a v:1 note record was never written by a tl writer")
         let id ← reqId fs
         let note ← reqStr fs "note"
         unless validId note do
@@ -529,7 +529,7 @@ def decode (r : Record) : Except Tl.Error ParsedOp := do
         let obs ← reqSingletonObserved fs
         unless mintNoteId obs == note do
           throw (malformed
-            s!"noteRemove's 'observed' tag does not mint to its 'note' handle '{note}' — a note removal must observe exactly its own add-tag (ADR-0027)")
+            s!"noteRemove's 'observed' tag does not mint to its 'note' handle '{note}' — a note removal must observe exactly its own add-tag")
         pure (.noteRemove id note (FinSet.singleton obs), [])
     | other =>
         throw (malformed s!"unknown op kind '{other}' (the enum is closed per version; a new kind requires a v bump)")

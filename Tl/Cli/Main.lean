@@ -461,9 +461,12 @@ def runVerb : List String → TlM CmdOut
         let near := cmds.filter (fun c =>
           c.startsWith other || other.startsWith c
             || (c.length ≥ 2 && other.length ≥ 2 && c.take 2 == other.take 2))
-        let hint := if near.isEmpty then "run `tl help` for the command list"
-                    else s!"did you mean: {String.intercalate ", " near.eraseDups}?"
-        throw (usageErr s!"unknown command '{other}' — {hint}")
+        -- `.mk'` directly when there is no suggestion: the hint already names
+        -- `tl help`, so the generic `usageErr` tail would just repeat it
+        if near.isEmpty then
+          throw (.mk' .usage s!"unknown command '{other}' — run `tl help` for the command list")
+        else
+          throw (usageErr s!"unknown command '{other}' — did you mean: {String.intercalate ", " near.eraseDups}?")
 
 /-- Sanitize a JSON tree's string leaves (error-context values can embed raw
     log bytes). Strings, array elements, *and object values* are sanitized

@@ -1951,10 +1951,10 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
 def validateUpdateNotes (notes appendNotes : Option String) : Except Tl.Error Unit := do
   if notes.isSome then
     throw (.mk' .usage
-      "--notes is retired (ADR-0027): notes are an append-only journal — append an entry with `tl note add <id> <text>`; a correction is a new note, and `tl note remove <id> <note-id>` deletes one")
+      "--notes is retired: notes are an append-only journal — append an entry with `tl note add <id> <text>`; a correction is a new note, and `tl note remove <id> <note-id>` deletes one")
   if appendNotes.isSome then
     throw (.mk' .usage
-      "--append-notes is retired (ADR-0027): `tl note add <id> <text>` appends an immutable entry with no lost-update race — concurrent appends are all retained")
+      "--append-notes is retired: `tl note add <id> <text>` appends an immutable entry with no lost-update race — concurrent appends are all retained")
 
 /-- `tl update` writes the mutable scalar fields. The notes scalar is retired
     (ADR-0027): notes are an append-only journal of immutable entries, so
@@ -2652,7 +2652,7 @@ def gitRoutingRow (routingVars : List String) (stateRoot : String)
   let mismatch := toplevel.elim false (· != stateRoot)
   let msgs :=
     (if routingVars.isEmpty then [] else
-      [s!"inherited git routing environment ({String.intercalate ", " routingVars}) — tl ignores it (ADR-0012) and operates on the repository found by filesystem discovery, but plain `git` in this shell binds elsewhere; unset the variable(s) to align them"])
+      [s!"inherited git routing environment ({String.intercalate ", " routingVars}) — tl ignores it and operates on the repository found by filesystem discovery, but plain `git` in this shell binds elsewhere; unset the variable(s) to align them"])
     ++ (if mismatch then
       [s!"the state directory ({stateRoot}) is not at the repository toplevel ({toplevel.getD ""}) — sharing binds that repository's refs/tl/log; this is expected under an explicit --dir, otherwise move the state directory to the toplevel"]
     else [])
