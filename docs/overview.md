@@ -1,29 +1,26 @@
 # Overview — what tl proves, tests, and trusts
 
-> Implementation underway. This is the claim table: what the verified core
-> proves, what tests cover, and what is trusted at the boundary. The kernel
-> (`Tl/Crdt/`, `Tl/Kernel/`) is fully defined and total, and the stated theorem
-> set is proved; the **Proof status** subsection below records each theorem
-> (and the closed-residual history — the one remaining discharge is carried as
-> a tier-3 assumption, never downgraded to a test, per AGENTS.md
-> Definition-of-Done #5).
-> The Stage-1 tested I/O shell is built, each piece with its tests in
-> `Tests/`: `Tl/Format` (Crockford, the record envelope, the record↔Op codec
-> over the full v1 verb enum, the ISO-8601 instant codec, ids), `Tl/Hash`
-> (SHA-256), `Tl/Store` (the ADR-0019 native shim + discovery, segments,
-> materialize, the locked write path, clock/replica recovery), `Tl/Clock`,
-> and `Tl/Cli` (the stage-1 verbs with `--json`, dispatch, init incl. its IO
-> tests). `Tl/Sync` is built — the `refs/tl/log` plumbing, the complete-line
-> union merge, the local-first worktree leg (`tl sync`), the read-time refresh,
-> the remote fetch/union/push leg, and **auto-sync** (ADR-0021: the best-effort
-> local-leg publish after every write, plus the symmetric pre-transact absorb
-> *before* a write's guards — ADR-0016 write-path freshness) are done and tested.
-> `Tl/Import` is built and tested — the ADR-0005 one-shot deterministic bulk
-> importer (JSONL records → a seed op-log under a deterministic single-writer
+> This is the claim table: what the verified core proves, what tests cover,
+> and what is trusted at the boundary. The kernel (`Tl/Crdt/`, `Tl/Kernel/`)
+> is fully defined and total, and its stated theorem set is proved; the
+> **Proof status** subsection below records each theorem. A provable property
+> is never replaced by a test (AGENTS.md Definition-of-Done #5): shell
+> behaviour outside the kernel is tested, and only what can be neither proved
+> nor tested is a carried assumption under **Trusted**.
+> The I/O shell is covered by the tests in `Tests/`: `Tl/Format` (Crockford,
+> the record envelope, the record↔Op codec over the full v1 verb enum, the
+> ISO-8601 instant codec, ids), `Tl/Hash` (SHA-256), `Tl/Store` (the ADR-0019
+> native shim and discovery, segments, materialize, the locked write path,
+> clock/replica recovery), `Tl/Clock`, `Tl/Cli` (the verbs with `--json`,
+> dispatch, `init`), `Tl/Sync` (the `refs/tl/log` plumbing, the complete-line
+> union merge, the local worktree leg `tl sync`, the read-time refresh, the
+> remote fetch/union/push leg, and ADR-0021 auto-sync: the best-effort local
+> publish after every write and the pre-transact absorb before a write's
+> guards, ADR-0016), and `Tl/Import` (the ADR-0005 one-shot deterministic bulk
+> importer: JSONL records → a seed op-log under a deterministic single-writer
 > import replica; ids and nonces derive from the source via SHA-256, fallback
-> timestamps from a fixed base plus a per-record ordinal, causality-clamped —
-> so re-import is byte-stable; dangling edge endpoints are skipped and
-> disclosed), covered by the differential import test.
+> timestamps from a fixed base plus a per-record ordinal, causality-clamped, so
+> re-import is byte-stable; dangling edge endpoints are skipped and disclosed).
 
 The discipline: prove inside the TCB, test outside it
 ([ADR-0004](adr/ADR-0004-verified-kernel-tcb-boundary.md)). A claim is
@@ -51,7 +48,7 @@ carried assumption (the Trusted section below) — never a vibe.
 | Completion explanation | Indexed `whyWork` reaches exactly the root and the live mixed dependency/unfinished-child relation, with no duplicate nodes. Labels identify the precise edge kind; missing or effectively closed endpoints are discharged. Existing dependency-only `why` is unchanged. | 0003, 0004, 0020 |
 | claim outcome | `ClaimWon d st actor ↔ status = (st, in_progress) ∧ assignee = (st, actor)` (both registers, stamp- and value-exact; decidable `claimWonB` is what the CLI branches on): a fresh-stamped claim establishes it, the register join arbitrates it exactly across any merge (an iff, so merges never blur won into superseded or back; supersession is stable), and a partial win (assignee kept, status lost) is distinguishable and never `won` | 0013, 0004 |
 
-### Proof status (current)
+### Proof status
 
 What is **proved** in `Tl/Kernel/Theorems.lean` (and the layer files). The
 `#print axioms`-clean claim below (only `propext` / `Classical.choice` /
@@ -158,6 +155,12 @@ deletion.
   ranked queue is exactly the readiness predicate (`rankSort_perm` shows the sort
   filters nothing). *Totality* is discharged by `ready`/`effectiveStatus`/`weight`/
   `cycles` being total Lean definitions (fuel / bounded `iterateN`), no `sorry`.
+- **Ready-queue sortedness** (`Tl/Kernel/Ranking.lean`). `ready_sorted`: the queue is
+  `readyLe`-sorted (`List.Pairwise`). `readyLe` is a total order (`readyLe_total` +
+  `readyLe_trans`, the lexicographic cascade priority↑/weight↓/createdAt↑/`id`, via a
+  per-level characterization), and insertion sort produces a sorted list
+  (`rankInsert_sorted`/`rankSort_sorted`, reusing `rankInsert_perm` for membership).
+  Mathlib-free.
 - **Thm 8 — CvRDT inflation + idempotent re-delivery.** `le_apply`,
   `fold_le_of_subset`, and `apply_idem`.
 - **Thm 6 — cycle-diagnostic correctness** (`Tl/Kernel/Reach.lean`).
@@ -165,7 +168,7 @@ deletion.
   structural, or `≺` readiness-deadlock) cycle iff a successor reaches it back.
   Both ride on `mem_reachClosure_iff` — that `reachClosure` computes the exact
   transitive closure (soundness `batteries`-only; completeness is the Mathlib
-  finite-graph saturation argument, ADR-0009 note). `kindSucc` now filters dangling
+  finite-graph saturation argument, ADR-0009 note). `kindSucc` filters dangling
   targets (ADR-0003 §5), keeping reachability present-bounded.
 - **Thm 10 — `why` correctness** (`Tl/Kernel/Reach.lean`). `mem_why_iff`: `j ∈ why
   s i` iff `j` is reachable from a direct live blocker through live blockers —
@@ -187,6 +190,12 @@ deletion.
   epic that is not manually cancelled is `Done` iff every present child is effectively
   closed (`effectiveStatus_epic`), via fuel-irrelevance above the descendant count
   (`effStatusAux_stable`, strong induction on the descendant-closure cardinality).
+  The unconditional branches are `effStatusAux_cancelled`, `effStatusAux_nonEpic` and
+  `effStatusAux_fuel_congr`. A parent *cycle* exhausts the fuel and falls back
+  conservatively: a manual `Cancelled` is honoured, a non-epic reads its stored status,
+  and an epic reads `Open`, never its possibly merge-injected stored `Done`
+  (`effStatusAux_epic_zero_ne_done`), so a cycle-trapped epic never discharges a
+  blocker; `dep cycles` reports it.
 - **The rollup recurrence, unconditional** (`Tl/Kernel/RollupSat.lean`; ADR-0003
   rollup recursion shape). With no acyclicity hypothesis, `effectiveStatus i` = cancel ▸
   `Cancelled` | childless ▸ stored | `Done` iff every present child effectively
@@ -238,7 +247,9 @@ deletion.
   two cyclic nodes share a witness iff `sameSCC` (`sccWitnesses_same_witness_iff`),
   and each witness is nonempty and absorbs any cyclic node `sameSCC` to a member
   (`sccWitnesses_ne_nil`, `mem_sccWitness_of_sameSCC`).
-  Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports).
+  Specialised to `cycles k` and `precCycles` (the `dep cycles` / deadlock reports) as
+  `mem_flatten_cycles_iff` / `cycles_same_witness_iff` and the `precCycles` pair, via
+  the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas.
 - **Cycle-repair termination** (`Tl/Kernel/CycleRepair.lean`). The
   `dep cycles` → `dep remove` loop is proved sound and terminating in the
   edge-count form: an `edgeRemove` (any observed set) never creates a kind-`k`
@@ -289,8 +300,7 @@ deletion.
   side condition: `j ∈ unblocks s i ↔ j ∈ ready (withClosed s i) ∧ j ∉ ready s`.
   `ready_withClosed_eq_cancel` grounds the projection in the real op (it agrees with
   `apply s (cancelOp i st)` on `ready` when the close wins LWW), giving the operational
-  `mem_unblocks_iff_cancel`. (This replaced an earlier *local* `unblocks` that
-  under-reported indirect unblocks through an epic ancestor — ADR-0004 thm 10.)
+  `mem_unblocks_iff_cancel`.
 - **Frame lemma** (`Tl/Kernel/Frame.lean`). `effectiveStatus` and `ready` are
   congruences over `(issues, edges, status/priority/defer registers)`, and a
   `metaSet`/`labelAdd`/`labelRemove`/`noteAdd`/`noteRemove` delta fixes all of
@@ -348,49 +358,6 @@ deletion.
   (`IssueData.updatedAtStamp`): max over the scalar registers' stamps and the
   journal's add-tags — a `noteAdd` bumps it, a `noteRemove` never does.
 
-**Residual history** — each was defined and total in the kernel with its
-soundness/completeness proof outstanding; all are now resolved. Three were
-proved as stated (struck through below); the fourth — the `unrelate` frame
-discharge, formerly a live tier-3 carried assumption — was *retired
-structurally* rather than proved in its old form: OR-Set tombstones became
-element-scoped, making `effectiveStatus_unrelate`/`ready_unrelate`
-unconditional theorems with nothing left to assume. None was downgraded to a
-test (Definition-of-Done #5):
-
-- ~~**Ready-queue sortedness (ADR-0004 thm 4).**~~ **Now proved** (`Tl/Kernel/Ranking.lean`).
-  Beyond determinism (free — `rankSort` is a pure function), `ready_sorted` shows the
-  queue is genuinely `readyLe`-sorted (`List.Pairwise`): `readyLe` is a total order
-  (`readyLe_total` + `readyLe_trans`, the lexicographic cascade priority↑/weight↓/
-  createdAt↑/`id`, via a per-level characterization), and insertion sort produces a
-  sorted list (`rankInsert_sorted`/`rankSort_sorted`, reusing `rankInsert_perm` for
-  membership). Mathlib-free.
-- ~~**Epic rollup correctness (ADR-0003).**~~ **Now proved.** The unconditional
-  branches are in `Tl/Kernel/RollupSpec.lean` (`effStatusAux_cancelled` — manual-cancel
-  precedence; `effStatusAux_nonEpic` — non-epic equals stored status; `effStatusAux_fuel_congr`
-  — one-step fuel congruence). The fuel-adequacy step is in `Tl/Kernel/RollupAcyclic.lean`:
-  on an acyclic parent graph (`ParentAcyclic` — no present child reaches its own parent)
-  the rollup is fuel-irrelevant above an issue's descendant count (`effStatusAux_stable`,
-  by strong induction on the descendant-closure cardinality — a child's descendant set is
-  a strict subset of its parent's), so `effectiveStatus_epic` gives the full spec (an epic,
-  not manually cancelled, is Done iff every present child is effectively closed). A parent
-  *cycle* exhausts the fuel and falls back *conservatively* (matching ADR-0003): a manual
-  `Cancelled` is honoured, a non-epic reads its stored status, and an epic falls back to
-  `Open` — never its (possibly merge-injected `Done`) stored status (`effStatusAux_epic_zero_ne_done`),
-  so a cycle-trapped epic never spuriously discharges a blocker; `dep cycles` also reports it.
-- ~~**Thm 6/10 — SCC-witness enumeration & `unblocks`.**~~ **Now proved.** *(a)*
-  `Tl/Kernel/SccProps.lean`: `sameSCC` is an equivalence on present nodes
-  (`sameSCC_refl/symm/trans`, via the `reachClosure` characterization), the witnesses
-  cover exactly the cyclic present nodes (`mem_flatten_sccWitnesses_iff`), and two
-  cyclic nodes share a witness iff they are `sameSCC` (`sccWitnesses_same_witness_iff`)
-  — i.e. exactly one witness per cyclic SCC. Instantiated for the real diagnostics
-  (`mem_flatten_cycles_iff` / `cycles_same_witness_iff` and the `precCycles` pair) via
-  the proved `kindSucc`/`precSucc` ⊆ `presentIssues` lemmas. *(b)* `unblocks` is now
-  **exact and unconditional** (`Tl/Kernel/Unblocks.lean`): redefined as the ready-set
-  diff `ready (withClosed s i) \ ready s`, so `mem_unblocks_iff` is soundness *and*
-  completeness with no side condition (the force-closed projection captures the
-  epic-rollup ripple a local check missed), and `ready_withClosed_eq_cancel` /
-  `mem_unblocks_iff_cancel` ground it in the real `cancelOp` when the close wins LWW.
-
 Reserved (proved when its feature is built). The destructive-GC set, pinned
 with the compaction design (ADR-0008): *fold-preservation* —
 `fold ops = snapshot(F) ⊕ fold(ops above F)` for a causally-stable
@@ -417,11 +384,11 @@ serviceable (ADR-0025).
 | SHA-256 / id mint | NIST CAVP short-message vectors + padding-boundary lengths (0/1/55/56/63/64/65 bytes, multi-block) + one worked end-to-end `(replica, hlc, nonce)` → digest → leftmost-80-bits → 16-char-id vector (0018); import-path vectors ride the differential fixtures (0005) |
 | native shim (fsync, no-follow open, fd lock, entropy) | per-branch tests: symlink refusal at final and intermediate components, `O_EXCL` collision, append+sync round-trips, lock contention, hostile fixtures at the Store layer (0019/0015). The **durability barrier** is one mechanism shared by the product and release paths, and its policy — retry an interrupted attempt, fall back only on a named "this filesystem does not implement that" (`ENOTSUP`/`EOPNOTSUPP`, `EINVAL`, `ENOTTY`), propagate every other errno — is covered by scripted-fault rows for each of those branches on both platform shapes, since no filesystem produces `EINTR`/`EIO`/`ENOSPC` on request (`Tests/SysTests.lean`). A shape observation shares the production selector, so accidentally compiling Darwin without `F_FULLFSYNC` cannot hide behind plain `fsync` also reporting `fullBarrier`; the scripted probe decodes through the shipped strength function rather than a test copy (`Tests/SyncBarrierProbe.lean`). The product policy (`syncBestEffort`: accept either barrier, propagate operational failure — ADR-0015 §2) is then exercised through public Store write seams: `ENOSPC`/`EIO`, a segment already visible when the later clock barrier fails, and temporary-file cleanup, alongside direct rows for the four teaching messages (`Tests/StoreTests.lean`) |
 | encoding order-preservation | the kernel proves the LWW/OR-Set order over the *decoded* `(hlc, replica, nonce)` integer triple (`Tl.Crdt.Stamp`) and delegates to the shell that the canonical wire strings (16-hex / 13 / 26 Crockford chars) compare bytewise/lexicographically in the *same* order — the linchpin that ties the proved kernel order to the on-disk bytes. Covered: all pairs of seeded + crafted near-tie triples (`Tests/CrossTests.lean`); the compiled-kernel-vs-spec property cross-check rides the same file, where every sampled property carries the kind of evidence its sample is — `proved` naming the statement as a `Name` resolved at elaboration, `tested` for this delegation, `observed` for which branch ran — and that registry is checked against ADR-0004's `tl:cross-evidence` block in both directions, so a retired theorem, a dropped property, or a corpus narrowed below the dimensions ADR-0004 names fails rather than leaving a claim standing (0007/0008, 0004) |
-| CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008). The notes journal verbs (`note add`/`note list`/`note remove`, ADR-0027) are covered end-to-end in `Tests/CliTests.lean`: the add echo (the `{id, tag, time, actor, text}` entry object), the oldest-first list with `show --json` parity, prefix-handle removal carrying the no-secure-deletion disclosure, `--all` removed-placeholders (text hidden), the canonical-tag `<note-id>` fallback, a handle-collision refusal listing the colliding tags, and the retired `update --notes`/`--append-notes` usage errors that teach `tl note add`. The shared read-filter facet algebra (`Tl/Cli/Commands.lean`) is the exception in this row: it is a pure total fold, so it is **proved** rather than sampled. One characterization carries it — `applyFacets_eq_filter`: the fold is exactly a `List.filter` by the conjunction of every *active* facet's predicate. ADR-0020's "different facets compose with AND" and the `ListFacet` reading that an absent/empty flag is a no-op rather than a false-matching filter are then corollaries (`mem_applyFacets_iff`; `applyFacets_eq_self_of_inactive` at list-identity strength, instantiated at `ready`'s own facet pair by `applyFacets_readyFacets_nil`), as are order and multiplicity preservation (`applyFacets_sublist` — the characterization is what additionally rules out a fold that dropped duplicate survivors, which the sublist law alone permits) and independence from the facet list's order (`applyFacets_of_perm`). The other half of the composition rule, how a *repeated* facet composes with itself, is `labelFacet_pred_eq_true_iff` (AND, exact membership — an issue carries many labels) and `assigneeFacet_pred_eq_true_iff` (OR over the single held value, with `assigneeFacet_pred_unassigned` for the unassigned case), with `labelFacet_active_iff`/`assigneeFacet_active_iff` as the dual that a *supplied* flag is in play at all, and `mem_readyFacets_iff` composing the pair into one statement; the list-only `--status`/`--priority` facets are inline literals in `cmdList` and stay sampled. The cross-layer bound is stated at the named expression `cmdReady` evaluates (`readyRanked`), not at a copy of its derivation, and it is a characterization rather than a one-way bound: `mem_readyRanked_iff` says a row is on the queue exactly when the kernel calls it ready and every supplied facet accepts it, which rules out under-reporting as well as over-reporting — the narrowing laws alone are all satisfied by a queue that returned nothing. `readyRanked_cannot_widen` is its forward half, composing the fold laws with the kernel bridge `State.readyFast_eq` so no facet can surface a row outside the proved `ready` set (`readyFacets_isReady` reads it through `mem_ready_iff`); `readyRanked_sorted` carries `ready_sorted` through the filter so the survivors are still ranked. `--limit` is inside the perimeter too: the cap is the named `readyPage`, and `readyPage_prefix` makes `items` a prefix of that filtered ranked list whose length is `count` — including the uncapped `--limit 0` branch, which a bare `take` law does not reach — and `readyPage_length` pins how long that prefix is, so the pair says exactly "uncapped, or the first `limit` rows": the prefix law alone is satisfied by an empty page, and the length law alone by the *bottom* `limit` rows. `mem_readyPage_ready` and `readyPage_sorted` carry the bound and the ranking to the rendered page. `facetsBypassGate_eq_true_iff` pins the closed-gate stand-down to an *active* bypassing facet — which `labelFacet_no_bypass`/`assigneeFacet_no_bypass` discharge per facet, so sharing the two with `list` (the only surface that consults the gate, and one whose facet list holds five more of its own) cannot introduce a bypass; `readyFacets_bypassGate_false` is the corollary at `ready`'s pair. The bound needs the view's `rollup` to be the batched rollup of the view's own state; that is no longer an inspection over three hand-copied construction blocks but a property of the single pure constructor production builds through (`View.ofLoaded` / `View.rollup_ofLoaded`, with `View.issueData_ofLoaded` for the indexed field the facet predicates read), so `readyRanked_cannot_widen_ofLoaded` states the bound with its hypothesis discharged. `View` keeps a public structure constructor — the test suite builds views field-by-field — so "one constructor" is a property of the production call graph, not of the type. The `cliReadyFacetTests`/`cliListFacetComposeTests` rows remain as end-to-end wiring checks over the compiled binary — that the flags reach these functions at all — and `readyRankedTests` pins the compiled `readyRanked`/`View.ofLoaded` in-process, neither being the evidence for the algebra |
+| CLI contract | exit codes, JSON envelope (`schemaVersion`/`ok`/`data`\|`error`), command dispatch, the verb→delta mapping (0008). The notes journal verbs (`note add`/`note list`/`note remove`, ADR-0027) are covered end-to-end in `Tests/CliTests.lean`: the add echo (the `{id, tag, time, actor, text}` entry object), the oldest-first list with `show --json` parity, prefix-handle removal carrying the no-secure-deletion disclosure, `--all` removed-placeholders (text hidden), the canonical-tag `<note-id>` fallback, a handle-collision refusal listing the colliding tags, and the retired `update --notes`/`--append-notes` usage errors that teach `tl note add`. The shared read-filter facet algebra (`Tl/Cli/Commands.lean`) is the exception in this row: it is a pure total fold, so it is **proved** rather than sampled. One characterization carries it — `applyFacets_eq_filter`: the fold is exactly a `List.filter` by the conjunction of every *active* facet's predicate. ADR-0020's "different facets compose with AND" and the `ListFacet` reading that an absent/empty flag is a no-op rather than a false-matching filter are then corollaries (`mem_applyFacets_iff`; `applyFacets_eq_self_of_inactive` at list-identity strength, instantiated at `ready`'s own facet pair by `applyFacets_readyFacets_nil`), as are order and multiplicity preservation (`applyFacets_sublist` — the characterization is what additionally rules out a fold that dropped duplicate survivors, which the sublist law alone permits) and independence from the facet list's order (`applyFacets_of_perm`). The other half of the composition rule, how a *repeated* facet composes with itself, is `labelFacet_pred_eq_true_iff` (AND, exact membership — an issue carries many labels) and `assigneeFacet_pred_eq_true_iff` (OR over the single held value, with `assigneeFacet_pred_unassigned` for the unassigned case), with `labelFacet_active_iff`/`assigneeFacet_active_iff` as the dual that a *supplied* flag is in play at all, and `mem_readyFacets_iff` composing the pair into one statement; the list-only `--status`/`--priority` facets are inline literals in `cmdList` and stay sampled. The cross-layer bound is stated at the named expression `cmdReady` evaluates (`readyRanked`), not at a copy of its derivation, and it is a characterization rather than a one-way bound: `mem_readyRanked_iff` says a row is on the queue exactly when the kernel calls it ready and every supplied facet accepts it, which rules out under-reporting as well as over-reporting — the narrowing laws alone are all satisfied by a queue that returned nothing. `readyRanked_cannot_widen` is its forward half, composing the fold laws with the kernel bridge `State.readyFast_eq` so no facet can surface a row outside the proved `ready` set (`readyFacets_isReady` reads it through `mem_ready_iff`); `readyRanked_sorted` carries `ready_sorted` through the filter so the survivors are still ranked. `--limit` is inside the perimeter too: the cap is the named `readyPage`, and `readyPage_prefix` makes `items` a prefix of that filtered ranked list whose length is `count` — including the uncapped `--limit 0` branch, which a bare `take` law does not reach — and `readyPage_length` pins how long that prefix is, so the pair says exactly "uncapped, or the first `limit` rows": the prefix law alone is satisfied by an empty page, and the length law alone by the *bottom* `limit` rows. `mem_readyPage_ready` and `readyPage_sorted` carry the bound and the ranking to the rendered page. `facetsBypassGate_eq_true_iff` pins the closed-gate stand-down to an *active* bypassing facet — which `labelFacet_no_bypass`/`assigneeFacet_no_bypass` discharge per facet, so sharing the two with `list` (the only surface that consults the gate, and one whose facet list holds five more of its own) cannot introduce a bypass; `readyFacets_bypassGate_false` is the corollary at `ready`'s pair. The bound needs the view's `rollup` to be the batched rollup of the view's own state; that is a property of the single pure constructor production builds through (`View.ofLoaded` / `View.rollup_ofLoaded`, with `View.issueData_ofLoaded` for the indexed field the facet predicates read), so `readyRanked_cannot_widen_ofLoaded` states the bound with its hypothesis discharged. `View` keeps a public structure constructor — the test suite builds views field-by-field — so "one constructor" is a property of the production call graph, not of the type. The `cliReadyFacetTests`/`cliListFacetComposeTests` rows remain as end-to-end wiring checks over the compiled binary — that the flags reach these functions at all — and `readyRankedTests` pins the compiled `readyRanked`/`View.ofLoaded` in-process, neither being the evidence for the algebra |
 | ref sync transport | **Built + tested** (`Tests/SyncTests.lean`, `Tests/CliTests.lean`): `refs/tl/log` plumbing (read/write, CAS, parent-chaining, byte-faithful non-UTF-8 blob round-trip), the complete-line union merge, the local-first worktree leg (`syncLocal` — publish the own segment with CAS-retry and no churn commit, absorb siblings via atomic rename, recover missing own-replica lines by locked append), and the **read-time refresh** (`refreshFromRef` — an O(1) ref-OID trigger against the `.tl/local/ref-mark` that materializes a sibling's published change before a fold; best-effort, normally lock-free with a lock for same-replica recovery, degrading on a read-only FS without ever failing the read). Covered branches: no-ref skip, moved-materialize, unchanged-skip, read-only degrade, and a read absorbing a sibling end-to-end; proven with two linked worktrees sharing one ref (0001/0016). The **remote leg** (`syncRemote`, ADR-0001 §5) is also built + tested: remote resolution (`tl.remote`/branch-upstream/`origin`, detached-HEAD), `fetch → union → push` with a merge commit parented on both tips (fast-forward), non-fast-forward rejection detection, retry-once-then-`push-rejected`, and `no-upstream` (reported, not fatal). Covered against a bare remote: push-to-fresh, a second clone pulling, converged no-op, divergence recovery (fetch+union+re-push), the single non-fast-forward `pushRefLog` rejection signal, the retry-exhaustion `push-rejected` *throw* (an injected push that signals non-fast-forward on every attempt drives `reconcileRemote` through both attempts to its fuel-0 arm — the real fetch/union/CAS legs still run — asserting the `push-rejected` code, exit 10, and the "moved during the push … run `tl sync` again" message), and that a hook/policy decline is not misreported as `push-rejected` (`Tests/SyncTests.lean`). **Auto-sync** (ADR-0021) is built + tested: a write verb publishes the own segment into `refs/tl/log` after `transact` when `tl.autosync` is on (best-effort — a publish failure is a non-fatal `notes` entry, never failing the write; off by default, on for a linked worktree at `init`), and every write first absorbs the ref *before* its guards (the pre-transact local absorb, ADR-0016 write-path freshness — a directed write by id is never staler than a read). Covered: off/on/publish-failure-disclosed/no-git, and a directed close finding a sibling-only task (`Tests/CliTests.lean`) |
-| "superseded by …" signal | the outcome verdict is kernel-derived: the CLI branches on the decidable `claimWonB` (`Tl/Kernel/Claim.lean`) — a claim holds iff BOTH the `status` and `assignee` winning entries are its exact stamped writes (the assignee alone would misreport a concurrent close as a win). `tl claim`'s echo stays binary won/superseded; the `ended` reading is `show`-only, on both its surfaces (the JSON claim block and the human `claim:` provenance entry, one derivation — parity): `won` for the actor's *current* claim (a same-actor cross-replica re-claim is not a loss); `ended` when the claim ran its course by the claimant's own successor write with no lost race underneath — three conditions checked only off the won path: no `status`/`assignee` write the claimant did not author — a foreign `claim`/`close`/`reopen`/`create` (the ops that touch either register) — is stamped above the surfaced own claim (a *contest scan* of the op log, because a register winner cannot carry contest history — the claimant's own later close or reopen buries a losing write, claim *or* close alike), the winning status write is the claimant's, and the assignee winner is the claimant's value or a clear the claimant authored; `superseded` otherwise. Authorship is the envelope `actor` **only** (one predicate; the contest scan is its negation) — an actor-less op, or an absent origin under compaction, is unattributable ⇒ conservative `superseded`; the replica id is not an authorship proxy (the shared-replica footgun), so even an actor-less *own* close reads `superseded`, the honest "can't prove it was you" reading (own ops carrying the actor — the `TL_ACTOR` convention — read `ended`). What stays shell and replica-relative is *which* claim is this replica's latest own `claim` op (0013). The enum growth/re-mapping shipped as `schemaVersion: 2` (0008 §ledger). Covered: a foreign claim at a later HLC supersedes the local one; a foreign close outstamping a fresh claim supersedes it; the partial win (assignee kept, status lost) reads superseded through both `claim` and `show` with an explanatory, per-status self-consistent human line; own-close and own-reopen endings (own actor present) read `ended` (JSON block + pinned human `claim: ended` line); the masking repros — a foreign claim buried under the claimant's own later close *and* under an own reopen, a foreign *close* buried under the claimant's own reopen, and an actor-less foreign claim above the own claim — stay superseded, as do another actor's close on a shared replica and an actor-less own close; the same actor's cross-replica re-claim reads `won` and its own close afterwards `ended`; a nil-claim issue emits neither surface; the `opAuthoredByOwn` / `stampAuthoredByOwn` branches (envelope-actor / actor-less / foreign / absent) are unit-pinned; an exhaustive pin holds the outcome set to exactly {won, ended, superseded} (`Tests/CliTests.lean`). **Close-side mirror** (same discipline, CLI-only — value semantics need no kernel predicate): `tl close`'s `--json` carries an additive `close: {outcome, resolution}` block, `outcome` = `won` iff terminal *as requested* (winning `closeResolution` == requested, and for `--as duplicate` the winning `duplicate-of` == requested), else `superseded` — so a concurrent foreign close with a different resolution that outstamps the local write reads `superseded` (naming the winner) instead of the old terminality-only "Closed as `<losing-resolution>`" lie; human and JSON agree; typed `CloseOutcome` at the wire boundary; additive field ⇒ no `schemaVersion` bump. Covered: a different-resolution foreign close (terminal, superseded, winner named), the duplicate-target mismatch, the not-closed reopen supersession, and a clean close (`won`) (`Tests/CliTests.lean`) |
+| "superseded by …" signal | the outcome verdict is kernel-derived: the CLI branches on the decidable `claimWonB` (`Tl/Kernel/Claim.lean`) — a claim holds iff BOTH the `status` and `assignee` winning entries are its exact stamped writes (the assignee alone would misreport a concurrent close as a win). `tl claim`'s echo stays binary won/superseded; the `ended` reading is `show`-only, on both its surfaces (the JSON claim block and the human `claim:` provenance entry, one derivation — parity): `won` for the actor's *current* claim (a same-actor cross-replica re-claim is not a loss); `ended` when the claim ran its course by the claimant's own successor write with no lost race underneath — three conditions checked only off the won path: no `status`/`assignee` write the claimant did not author — a foreign `claim`/`close`/`reopen`/`create` (the ops that touch either register) — is stamped above the surfaced own claim (a *contest scan* of the op log, because a register winner cannot carry contest history — the claimant's own later close or reopen buries a losing write, claim *or* close alike), the winning status write is the claimant's, and the assignee winner is the claimant's value or a clear the claimant authored; `superseded` otherwise. Authorship is the envelope `actor` **only** (one predicate; the contest scan is its negation) — an actor-less op, or an absent origin under compaction, is unattributable ⇒ conservative `superseded`; the replica id is not an authorship proxy (the shared-replica footgun), so even an actor-less *own* close reads `superseded`, the honest "can't prove it was you" reading (own ops carrying the actor — the `TL_ACTOR` convention — read `ended`). What stays shell and replica-relative is *which* claim is this replica's latest own `claim` op (0013). The enum growth/re-mapping shipped as `schemaVersion: 2` (0008 §ledger). Covered: a foreign claim at a later HLC supersedes the local one; a foreign close outstamping a fresh claim supersedes it; the partial win (assignee kept, status lost) reads superseded through both `claim` and `show` with an explanatory, per-status self-consistent human line; own-close and own-reopen endings (own actor present) read `ended` (JSON block + pinned human `claim: ended` line); the masking repros — a foreign claim buried under the claimant's own later close *and* under an own reopen, a foreign *close* buried under the claimant's own reopen, and an actor-less foreign claim above the own claim — stay superseded, as do another actor's close on a shared replica and an actor-less own close; the same actor's cross-replica re-claim reads `won` and its own close afterwards `ended`; a nil-claim issue emits neither surface; the `opAuthoredByOwn` / `stampAuthoredByOwn` branches (envelope-actor / actor-less / foreign / absent) are unit-pinned; an exhaustive pin holds the outcome set to exactly {won, ended, superseded} (`Tests/CliTests.lean`). **Close-side mirror** (same discipline, CLI-only — value semantics need no kernel predicate): `tl close`'s `--json` carries an additive `close: {outcome, resolution}` block, `outcome` = `won` iff terminal *as requested* (winning `closeResolution` == requested, and for `--as duplicate` the winning `duplicate-of` == requested), else `superseded` — so a concurrent foreign close with a different resolution that outstamps the local write reads `superseded` (naming the winner), never "Closed as `<losing-resolution>`"; human and JSON agree; typed `CloseOutcome` at the wire boundary; additive field ⇒ no `schemaVersion` bump. Covered: a different-resolution foreign close (terminal, superseded, winner named), the duplicate-target mismatch, the not-closed reopen supersession, and a clean close (`won`) (`Tests/CliTests.lean`) |
 | performance scaling | **Built + tested** (`Tests/PerfTests.lean`): every covered command path (cold batched fold, warm cached materialize, batched rollup, ready queue, cycle-diagnostics SCC machinery, provenance map, sync line-union) is ratio-asserted in CI — ×4 synthetic ops may grow ≤ ×12 (quadratic is ×16), with floors against timer noise. Native `String` equality and order both route through core comparators. The cold fold is near-linear: `Tl.Kernel.foldFast` builds each component map by batched canonical construction (mergeSort + adjacent collapse, O(N log N)) and is proved equal to the per-op `fold` (`foldFast_eq_fold`), so it ships on the cache-miss path with every fold theorem intact; the ready queue merge-sorts cached keys, and the cycle diagnostics run the checked-certificate Tarjan path (near-linear machinery, ratio-asserted on an acyclic fixture *and* a giant-SCC blocks ring; the certificate-accepted branch is itself test-pinned). The OR-Set `presentElements` view scan is near-linear on any log, tombstone-heavy included. Two sorted merge-joins retire the two quadratics: the *cross-element* tombstone probe co-traverses the add map and the per-element tombstone map (`AssocList.zipLookup`, O(#adds + #removed) — retiring the per-entry `removedOf` find), and the *within-element* liveness test co-traverses one entry's tag list against its own tombstone set (`AssocList.anyNotIn`, O(#tags + #tombstones) — retiring the per-tag membership scan, the residual an element re-added and removed n times would otherwise cost Θ(n²)). Each ships with a proved reference bridge to its per-`find`/per-tag form (`presentElements_eq_ref`, `entryLive_eq_ref`), so the enumeration and journal-liveness theorems transfer unchanged, and each is ratio-pinned by a fixture that would fail quadratically on a revert — a cross-element one (`tombstoneOps`, n edges with n/2 removed) and a within-element one (`repeatReAddOps`, one edge re-added and removed n times). The one accepted superlinear residual is SCC witness *grouping*, Θ(cyclic-nodes × cycle-components) — zero on healthy graphs, quadratic only when the cyclic set shatters into many components; an explicitly accepted cost compromise per the ADR-0023 discipline, not open work. The full diagnostics command path stays pinned by an explicit absolute-ceiling row (a backstop over that accepted residual) rather than a ratio. The human tree render shares nodes (a multi-parent diamond expands once; later encounters and re-encountered roots are marked; a parent cycle keeps its distinct "↺" marker) — pinned by the diamond, cycle, and shared-root fixtures (`Tests/CliTests.lean`) |
-| materialization fold cache | **Built + tested** (`Tests/CacheTests.lean`, 0022): `.tl/local/cache` holds the folded `State` keyed per segment on `(byteLen, checksum(prefix), lineCount, refused, deferredLines)` (the checksum is the non-crypto `ByteArray.hash`, not a security digest); valid ⇒ reads/writes fold only appended suffixes plus newly-admissible skew-deferred lines on top (anchored on the **proved** `fold_append` + `fold_perm`/`fold_eq_of_mem_iff`; `AMap.ofAscList?` re-establishes canonical sortedness on decode, with `ascending_of_sorted` proving an encode is never rejected); anything stale/absent/corrupt/**wrong-version** (`cacheVersion` is now **5** — the notes-journal retype, ADR-0027, moved both the fold semantics and the codec's `notes` leg to the two-leg journal encoding) rebuilds from the segments, never repairs — including *value* corruption: the file is a non-crypto checksum line (`ByteArray.hash`; the cache is a discardable rot-check, not a security surface — tampering is the segments' trust domain, ADR-0014) over its payload, so a shape-preserving flipped digit rebuilds too. Everything a command discloses (`ops`, refusals, skips, deferrals, HLC maxima, warnings) is recomputed live per invocation — the cache changes how the state is computed, never what is reported. Covered: codec round-trip + one fail-closed row per corrupt-input shape (incl. checksum-caught value flips); every validity branch with the path taken observed directly (a marker poisoned into the cache survives iff the cache was used) — unchanged/append/new-segment/shrink/same-length-rewrite/suffix-refusal/refused-at-snapshot/deferral-admission/backwards-clock/skew-off; a seeded property pinning `materializeCached ≡ materialize` across random prefix splits and `now` advances; file lifecycle (transact warms it, corrupt caches heal on persisted reads, doctor's `persist := false` mutates nothing, `--skip-bad` bypasses, symlinked cache names refused on read and replaced—not followed—on write) |
+| materialization fold cache | **Built + tested** (`Tests/CacheTests.lean`, 0022): `.tl/local/cache` holds the folded `State` keyed per segment on `(byteLen, checksum(prefix), lineCount, refused, deferredLines)` (the checksum is the non-crypto `ByteArray.hash`, not a security digest); valid ⇒ reads/writes fold only appended suffixes plus newly-admissible skew-deferred lines on top (anchored on the **proved** `fold_append` + `fold_perm`/`fold_eq_of_mem_iff`; `AMap.ofAscList?` re-establishes canonical sortedness on decode, with `ascending_of_sorted` proving an encode is never rejected); anything stale/absent/corrupt/**wrong-version** (`cacheVersion`, currently **5**, is bumped for any change to per-line classification, `WireOp.toOp`, or kernel `apply`/`merge`) rebuilds from the segments, never repairs — including *value* corruption: the file is a non-crypto checksum line (`ByteArray.hash`; the cache is a discardable rot-check, not a security surface — tampering is the segments' trust domain, ADR-0014) over its payload, so a shape-preserving flipped digit rebuilds too. Everything a command discloses (`ops`, refusals, skips, deferrals, HLC maxima, warnings) is recomputed live per invocation — the cache changes how the state is computed, never what is reported. Covered: codec round-trip + one fail-closed row per corrupt-input shape (incl. checksum-caught value flips); every validity branch with the path taken observed directly (a marker poisoned into the cache survives iff the cache was used) — unchanged/append/new-segment/shrink/same-length-rewrite/suffix-refusal/refused-at-snapshot/deferral-admission/backwards-clock/skew-off; a seeded property pinning `materializeCached ≡ materialize` across random prefix splits and `now` advances; file lifecycle (transact warms it, corrupt caches heal on persisted reads, doctor's `persist := false` mutates nothing, `--skip-bad` bypasses, symlinked cache names refused on read and replaced—not followed—on write) |
 
 ## Trusted (carried assumptions)
 
@@ -433,7 +400,7 @@ entries: verifier-bootstrap integrity — protected review ensures
 reviewed checks and do not deliberately forge the public completion verdict; a
 process cannot authenticate which of its own initializers printed an in-band
 string, so the verdict detects accidental early exits rather than
-self-authenticating the gate. What review no longer carries is the wiring: an
+self-authenticating the gate. Review does not carry the wiring: an
 observation and the loaded environment it is built from each carry their audited
 scope in their *type*, so passing one scope's evidence as another's — the
 mistake that would leave an environment uninspected under a name saying it was
@@ -442,15 +409,12 @@ are read against, the roots and source directories each scope owns; a mismatch
 there is reported by the module arms rather than passed over (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
 total even then, so this guards segment-ownership, not convergence, ADR-0007;
-minting draws from the ADR-0019 shim's OS CSPRNG — the earlier `IO.rand`
-defect is closed);
+minting draws from the ADR-0019 shim's OS CSPRNG);
 the deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
-SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness: issue-id derivation hashes the stamp, and add-wins *distinctness* (two concurrent adds of one element staying distinct live tags) rests on it (`Tl/Crdt/OrSet.lean`); it no longer backs any frame lemma — the `unrelate` case is proved unconditionally now that tombstones are element-scoped; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007) — and the read-time skew window (ADR-0007) rests on this same system-clock assumption for its *timeliness* (how promptly a future-dated foreign op becomes visible), but **not** for convergence, which is clock-independent: deferral is monotone in `now`, so every replica converges as its clock advances regardless of the clock's accuracy;
-git ref transport (`tl sync` moves the `refs/tl/log` bytes; the old
-branch-tracked history-rewrite hazard — force-push/amend dropping log ops — is
-moot now that the log lives in its own ref, not the user's commits,
+SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness: issue-id derivation hashes the stamp, and add-wins *distinctness* (two concurrent adds of one element staying distinct live tags) rests on it (`Tl/Crdt/OrSet.lean`); it backs no frame lemma — tombstones are element-scoped, so the `unrelate` case is proved unconditionally; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007) — and the read-time skew window (ADR-0007) rests on this same system-clock assumption for its *timeliness* (how promptly a future-dated foreign op becomes visible), but **not** for convergence, which is clock-independent: deferral is monotone in `now`, so every replica converges as its clock advances regardless of the clock's accuracy;
+git ref transport (`tl sync` moves the `refs/tl/log` bytes; force-push/amend of the user's branches cannot drop log ops, because the log lives in its own ref, not the user's commits,
 ADR-0001; inherited repository-routing, config-injection, and
 config-relocation variables — `GIT_DIR`, the `GIT_CONFIG_*` family,
 `XDG_CONFIG_HOME` — are scrubbed from every spawn, so they cannot repoint the
@@ -507,7 +471,7 @@ see is carried here rather than assumed silently: that the required reviewer
 is somebody other than whoever pushes the tag (the API exposes who may approve,
 not who will push, and on a single-maintainer repository the two coincide).
 Two more become live only with the channels that need them, and are recorded
-now so enabling a channel is not also a silent widening of what is trusted:
+here so enabling a channel is not also a silent widening of what is trusted:
 that each npm package's trusted publisher names this repository, this workflow
 and this environment, with no classic token still able to publish; and that
 `HOMEBREW_TAP_TOKEN` grants write access to the tap and nothing more, and that
@@ -552,41 +516,34 @@ Distinct from ADR-0015 §6's product discipline, which anchors on `.tl` rather
 than on an operator-named directory.
 
 **A tagged release has not run.** A capability-free
-[hosted handoff rehearsal](https://github.com/DmitryKorolev/tl/actions/runs/34411221089)
-passed on 2026-09-09, before the raw-digest handoff was removed. It executed
-gates, uploaded and downloaded the staged release tool, compared the one-file
-`hashFiles` values, restored executable permission, and entered the tool with
-`--help`. Stamping, the build matrix, signing and publication were skipped.
-This establishes same-run tool transport, not provenance or the behavior of
-privileged release effects. A local rehearsal covers the whole darwin-arm64 Supported leg on a
-developer machine: stamping a clean checkout, `lake build tl`, staging,
-ad-hoc codesigning, the provenance assertions and the real task round-trip in
-the smoke test, the link-time dependency audit, the build-metadata record, and
-then the manifest generator, `SHA256SUMS` and
-`scripts/verify-release-artifacts.sh` over the result. The SBOM is covered per
-commit rather than by that rehearsal, in two rows that do different jobs:
-`lake exe tltest` renders it from this repository's own `lean-toolchain` and
-`lake-manifest.json` and checks that every dependency is described at the
-revision the manifest pins, and separately renders it from a committed pair of
-fixture inputs and compares the result byte for byte against a committed
-golden. That rehearsal is what
-found the audit reporting every third-party component as absent on both macOS
-legs, so it is not a formality. What it cannot reach stays untested rather than
-implied working: both Linux legs, which build inside the pinned glibc-floor
-container on the runner, and with them the glibc-floor assertion; the remaining
-cross-job artifact handoffs, including the stamp the build legs compare by
-digest and the binaries the sign job re-verifies; the release tool's execution
-with signing authority to write the SBOM; the OIDC token, the Sigstore certificate and every
-`cosign` call against a real transparency log; `actions/attest-build-provenance`;
-the GitHub Release creation itself; and the `release` environment's approval
-gate. Each of those is exercised only by a real tagged run, and until one
-happens the pipeline's behaviour past the artifact boundary is asserted by
-review and by drift guards over YAML, not by execution. The tool handoff's
+[hosted rehearsal](https://github.com/DmitryKorolev/tl/actions/runs/36666081491)
+of the release workflow, dispatched on `main` without a tag, exercises
+everything up to the signing boundary: the release-tool handoff between jobs,
+stamping, stamp transport to every build leg (each confirms the shared stamp
+landed unchanged), and all four builds — both Linux legs inside the pinned
+glibc-floor container with the glibc-floor assertion, both macOS legs with
+ad-hoc codesigning — each followed by the smoke test, the link-time dependency
+audit, the build-metadata record and the candidate upload. A local rehearsal
+additionally runs the manifest generator, `SHA256SUMS` and
+`scripts/verify-release-artifacts.sh` over a darwin-arm64 build. The SBOM is
+covered per commit rather than by either rehearsal, in two rows that do
+different jobs: `lake exe tltest` renders it from this repository's own
+`lean-toolchain` and `lake-manifest.json` and checks that every dependency is
+described at the revision the manifest pins, and separately renders it from a
+committed pair of fixture inputs and compares the result byte for byte against
+a committed golden. The sign job and everything after it stay unexercised
+rather than implied working: the sign job's re-verification of the uploaded
+binaries; the release tool's execution with signing authority to write the
+SBOM; the OIDC token, the Sigstore certificate and every `cosign` call against
+a real transparency log; `actions/attest-build-provenance`; the GitHub Release
+creation itself; the npm and Homebrew publication jobs; and the `release`
+environment's approval gate. Each of those is exercised only by a real tagged
+run, and until one happens the pipeline's behaviour past the signing boundary
+is asserted by review and by drift guards over YAML, not by execution. The tool handoff's
 missing/mismatched-value refusal expression is pinned and mutation-tested;
-the hosted rehearsal exercised the matching-value path, not injected transport
-failures. The structural guard also pins the inherited shell, the contiguous
+the hosted rehearsal exercises the matching-value path, not injected transport failures. The structural guard also pins the inherited shell, the contiguous
 prefix, and success-only sequencing through later invocations. Interpretation
-of publication commands is now guarded separately by the typed workflow policy:
+of publication commands is guarded separately by the typed workflow policy:
 closed privileged step schemas and explicit argv, pinned producer/output/consumer
 bindings, and rejection of unregistered secret consumers and output writers.
 Its parser and subprocess seams are tested locally; that evidence does not
@@ -594,13 +551,10 @@ claim execution of hosted OIDC or publication.
 
 Both policy profiles enforce `tlrelease shell-inventory --root .`: the union of
 tracked `.sh` paths and recognized shell shebangs must equal the three reviewed
-adapters, each with exact `#!/bin/sh`, and unreadable candidates refuse. The
-migration lexer, spelling corpus, PATH-shim harness and profile-parity snapshot
-are removed. The native policy and workflow schemas, adapter action budgets and
-public process tests now own the release decisions and their evidence.
+adapters, each with exact `#!/bin/sh`, and unreadable candidates refuse. The native policy and workflow schemas, adapter action budgets and
+public process tests own the release decisions and their evidence.
 
-ADR-0028's completed shell cutover carries one additional platform-scoped
-assumption. The pinned
+The shell policy carries one additional platform-scoped assumption. The pinned
 inner Linux container can establish that no forbidden interpreter exists for
 the Linux-exercised GitHub-only policy and adapter paths. It cannot establish
 the same fact for an actual macOS-only branch of `install.sh`: hosted macOS has
@@ -615,15 +569,14 @@ criterion is actual Darwin-only reachability of a **forbidden** runtime, not
 whether an adapter also runs on macOS.
 
 The `hermetic-release` CI job is configured to collect that Linux evidence.
-Local and CI runs now share `tlrelease hermetic --root .`, whose native runner
+Local and CI runs share `tlrelease hermetic --root .`, whose native runner
 owns preparation, the restricted Podman argv, and supervised completion.
 Preparation uses a separate pinned Ubuntu builder with the actual Lake
 configuration. Its configured package repositories and Lean toolchain download
 remain trusted build inputs; this is not a reproducible-build claim. The
-evidence container remains network-free. The shared native command passed
-end to end locally on 2026-09-10 using Podman 6.1.1 in a
-rootless Linux VM, executing the pinned linux/amd64 image. Hosted CI remains
-a separate check of runner integration. Its pinned
+evidence container remains network-free. The shared native command runs locally under rootless Podman in a Linux VM,
+executing the pinned linux/amd64 image; hosted CI is a separate check of
+runner integration. Its pinned
 inner image receives only a read-only checkout and separate writable scratch
 and libc-observation mounts, with no network, container-engine socket, ambient
 credentials, capabilities, or privilege gain. It proves the six forbidden
@@ -651,8 +604,7 @@ Injected-platform installer tests exercise its branch bodies and
 permitted-action contract, but the claim that
 no unobserved Darwin-only installer branch invokes `/usr/bin/python3`,
 `/usr/bin/ruby`, or another preinstalled interpreter remains protected-review
-evidence, not a proved or hermetic fact. This carried assumption is active now
-that the migration lexer has been deleted.
+evidence, not a proved or hermetic fact.
 
 This is intentionally scoped by ADR-0028's threat model. The release controls
 are a regression boundary over protected-reviewed source, not a sandbox against
@@ -680,8 +632,8 @@ post-rename directory-sync error as a reportable durability observation on a
 committed write, not as a false assertion that nothing landed. Operational file
 sync failures still refuse before commit. The barrier and its fall-back rule are
 one mechanism shared with the product (ADR-0019 `sync fd`); what differs is the
-policy above it, and the product's is now stated in ADR-0015 §2 — accept either
-barrier, propagate every operational failure — rather than left open. Public-command and
+policy above it, and the product's, stated in ADR-0015 §2, is to accept either
+barrier and propagate every operational failure. Public-command and
 injected-fault fixtures cover the cross-product of hostile path shapes, both
 sync strengths, write, close, rename, directory-sync, and cleanup phases.
 
@@ -718,7 +670,7 @@ A user-facing claim the binary makes also enters here. `tl version` reporting
 source commit, and nothing in the artifact can establish that: the stamp is
 generated from git state before compilation, and reproducibility of the binary
 payload — which would let a third party check binary-to-source correspondence —
-remains the open item ADR-0006 records, now with its boundary fixed there:
+remains the open item ADR-0006 records, with its boundary fixed there:
 payload reproduces, evidence about a particular run does not and is not asked
 to. What the claim rests on is the release workflow stamping
 a clean checkout of the tagged commit and the Sigstore certificate identity
@@ -732,12 +684,11 @@ On the efficiency axis (ADR-0023/0024), the analogous tier-3 carried assumption 
 allocator behaviour, the constant in front of an `O(N)`, `Std.HashSet`/`HashMap`
 amortized-O(1) (hash distribution, resizing), and per-syscall wall-clock are
 neither proved nor pinned by the ratio tests (which bound growth, not absolutes).
-For the shared reachability engine the operation *structure* is now proved, not
-merely tested: `Tl/Kernel/ReachFrontier.lean` shows the BFS frontiers partition
+For the shared reachability engine the operation *structure* is proved: `Tl/Kernel/ReachFrontier.lean` shows the BFS frontiers partition
 the reachable set — pairwise disjoint, union = the closure, each ⊆ `presentIssues`
 — so every reachable node lands in exactly one frontier. That partition
 characterizes any correct engine's output, so the guard against an
-output-changing regression is the pre-existing `reachBFSgo_eq`. The *work-shape*
+output-changing regression is `reachBFSgo_eq`. The *work-shape*
 tooth on top is over the engine's actual per-round `flatMap succ` input list:
 `reachExpandTrace_eq` proves it equals those disjoint frontiers for the
 list-reference engine, and `reachBFSgoTrace_flatten_nodup` carries the same to the
@@ -794,8 +745,7 @@ is telling the truth rather than a device lying about a flush it did not perform
 — none of which is observable from inside the process, on any platform. Second,
 that the named unsupported set (`ENOTSUP`/`EOPNOTSUPP`, `EINVAL`, `ENOTTY`) is
 the *complete* set of ways a filesystem says "I do not implement this": an
-unlisted one is now propagated as an operational failure, which is a refusal
-where the old code silently continued — fail-closed, but it would be a refusal
+unlisted one is propagated as an operational failure — fail-closed, but it would be a refusal
 on a placement that is actually fine, and only a filesystem that does this would
 reveal it. The real-syscall success path is exercised on whatever filesystem
 CI's temporary directory happens to use; the suite does not assume that
