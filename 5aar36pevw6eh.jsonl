@@ -506,6 +506,7 @@
 {"v":1,"op":"close","hlc":"01a0d04217aa0000","replica":"5aar36pevw6eh","nonce":"6zapg3wt9qwb99rc65wr29hzvz","actor":"tl-dev","closeResolution":"done","id":"fe3mgpryhkp4tcen","status":"done"}
 {"v":1,"op":"close","hlc":"01a0ef2d212c0000","replica":"5aar36pevw6eh","nonce":"00ajj1wsqjnanrfsa43v0z08eg","actor":"tl-dev","closeResolution":"done","id":"6az7b6jpbtj9p5kr","status":"done"}
 {"v":1,"op":"close","hlc":"01a0f0bb070f0000","replica":"5aar36pevw6eh","nonce":"585vpvtvkh9n5zrxk7k90m2jd3","actor":"tl-dev","closeResolution":"done","id":"10ny906t92qnvnh0","status":"done"}
+{"v":1,"op":"close","hlc":"01a0f397a0050000","replica":"5aar36pevw6eh","nonce":"4ghkv6dat2g6xwhneqmw8r2h82","actor":"tl-dev","closeResolution":"done","id":"5v88eehqye27z1kc","status":"done"}
 {"v":1,"op":"create","hlc":"019eb6a1b8f30000","replica":"5aar36pevw6eh","nonce":"6m9kh1rjpz8awwmv3sy7yvp6m2","actor":"tl-dev","id":"jfjg3dbpmwhh402k","title":"Agent surface: discovery pointer + the skill"}
 {"v":1,"op":"create","hlc":"019eb6a1b9340000","replica":"5aar36pevw6eh","nonce":"14g76g9p1fpq49x97w84t8v83e","actor":"tl-dev","id":"smqcm27sh44v5315","title":"Free verbs: reopen, stats, log"}
 {"v":1,"op":"create","hlc":"019eb6a1b95f0000","replica":"5aar36pevw6eh","nonce":"1kg4hhc7m0emygqe46m5rmy84w","actor":"tl-dev","id":"ns9kxht0j57tf37t","title":"Sharing: refs/tl/log sync transport"}
