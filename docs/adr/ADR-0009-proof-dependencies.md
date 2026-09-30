@@ -42,7 +42,7 @@ default.
 
 ### Mathlib adopted under the escape hatch, scoped
 
-Mathlib is a pinned dependency (`mathlib4 @ v4.33.1`, matching the
+Mathlib is a pinned dependency (`mathlib4 @ v4.34.1`, matching the
 toolchain), taken under the escape hatch above for a genuine need: the
 remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
 correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
@@ -90,20 +90,24 @@ proof file (Mathlib zone), at the cost of some duplication of private helpers.
 
 ## Toolchain and test harness (pinned)
 
+- Lean and Mathlib are pinned to v4.34.1. Mathlib's immutable revision is
+  `d13f23b723b8a846827a245b89c10fc7d3f11612`; its dependency revisions match
+  the project's resolved manifest, including batteries
+  at `f2effa3d803fda822b1f97b806c47cf2adfbcbc2`. License notices and development
+  provenance are generated from these pins, and validation checks that the
+  resolved dependencies match Mathlib's cache inputs.
 - Pinned toolchain. A committed `lean-toolchain` pins an exact
   `leanprover/lean4` release; `lakefile.lean` requires `batteries` (std4) at a
   pinned git rev (an immutable commit, not a branch/tag); `lake-manifest.json`
   is checked in. CI installs that exact toolchain via `elan` on every target.
-  Bumping any pin is a deliberate, reviewed change (recorded by a note here),
+  Bumping any pin is a deliberate, reviewed change (documented here),
   and part of the bump is verifying that `lake exe cache get` still reports a
   full hit — every dependency rev in `lake-manifest.json` must byte-match
   mathlib's own manifest at the pinned mathlib rev, or CI falls off the olean
   cache and cold-builds the dependency cone
   ([ADR-0026](ADR-0026-continuous-integration.md)).
   This is what makes "a green `lake build` proves the theorems" reproducible, and
-  it is the floor for the reproducible-build goal (ADR-0006). *(The concrete
-  version/rev strings are set when the project is scaffolded; the policy is fixed
-  here.)*
+  it is the floor for the reproducible-build goal (ADR-0006).
 - Test harness, off Mathlib. Tests live under `Tests/` on a
   dependency-free, in-repo harness — a thin assertion runner plus
   deterministic, seeded `List`-based generators for property tests — rather

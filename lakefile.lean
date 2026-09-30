@@ -21,15 +21,15 @@ package tl where
 meta if (get_config? releaseOnly) != some "true" then
   require batteries from git
     "https://github.com/leanprover-community/batteries" @
-    -- v4.34.0, the rev mathlib's own v4.34.0 manifest pins
+    -- The rev mathlib's v4.34.1 manifest pins
     "f2effa3d803fda822b1f97b806c47cf2adfbcbc2"
 
 meta if (get_config? releaseOnly) != some "true" then
   require mathlib from git
     "https://github.com/leanprover-community/mathlib4" @
-    -- v4.34.0 (matching the toolchain); ADR-0009 escape hatch, scoped to the
+    -- v4.34.1 (matching the toolchain); ADR-0009 escape hatch, scoped to the
     -- finite-graph lemmas for thms 5/6/10 + rollup fuel-adequacy
-    "5ed2965256430c3649e86755f9576b54eca72435"
+    "d13f23b723b8a846827a245b89c10fc7d3f11612"
 
 @[default_target] lean_lib Tl
 
