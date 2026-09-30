@@ -7165,12 +7165,17 @@ private def gitRoutingTests : IO (List Outcome) := do
   rows := rows ++ combined.map (fun row => { row with name := s!"combined routing: {row.name}" })
   let observed ← IO.FS.readFile log
   let observations := (observed.splitOn "\n").filter (· != "")
+  -- Git below 2.34 refuses before the signing commit. Every call it does
+  -- reach must still scrub routing and preserve the authentication agent.
+  let signingExpected ← hostSignsWithSsh
   rows := rows ++ [
     checkEq "release git: combined hostile routing still inspects the explicit repository" status 0,
     check "release git: scrubbed routing stays absent, while only signing commits omit the agent"
-      (observations.length > 10 && observations.any (· == "signing-no-agent") &&
+      (observations.length > 10 &&
         observations.all (fun row => row == "preserved" || row == "signing-no-agent"))
       (observed ++ stderr),
+    checkEq "release git: an agent-free signing commit is reached exactly when git supports SSH signing"
+      (observations.any (· == "signing-no-agent")) signingExpected,
     check "release git: no public command mutates the foreign index"
       ((← IO.FS.readBinFile (decoy ++ "/.git/index")) == decoyIndex)]
   IO.FS.removeDirAll base
