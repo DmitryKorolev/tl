@@ -111,7 +111,7 @@ def verificationActions (dist : String) (names : List String) : List Action :=
    ⟨.releaseTool, ["manifest-verify", "--dist", dist, "--manifest", dist ++ "/" ++ manifestName]⟩]
 
 def verify (runner : Runner) (dist : String) : Decision ManifestDescription := do
-  execute runner [⟨.verifier, ["--selftest"]⟩,
+  execute runner [⟨.releaseTool, ["artifact-verifier-selftest", "--root", "."]⟩,
     ⟨.verifier, ["--require-signature", dist, manifestName]⟩]
   let description ← readParsed (dist ++ "/" ++ manifestName) ManifestDescription.parse
   let names ← ofExcept (assetNames description)

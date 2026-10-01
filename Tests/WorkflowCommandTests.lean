@@ -222,7 +222,7 @@ def workflowReleaseTests : IO (List Outcome) := do
   IO.FS.writeFile (base / "release-manifest.json") text
   for name in names.filter (· != "release-manifest.json") do IO.FS.writeFile (base / name) ("bytes of " ++ name)
   let expectedVerify : List WorkflowRelease.Action := [
-    ⟨.verifier, ["--selftest"]⟩,
+    ⟨.releaseTool, ["artifact-verifier-selftest", "--root", "."]⟩,
     ⟨.verifier, ["--require-signature", dist, "release-manifest.json"]⟩,
     ⟨.verifier, ["--require-signature", dist, "LICENSE", "release-manifest.json", "tl-linux-arm64", "tl-linux-x64"]⟩,
     ⟨.releaseTool, ["manifest-verify", "--dist", dist, "--manifest", dist ++ "/release-manifest.json"]⟩]
@@ -333,30 +333,83 @@ def workflowReleaseTests : IO (List Outcome) := do
     rows := rows ++ [checkEq s!"prepare: {name} copied exactly" (← IO.FS.readFile (staging / name)) (← IO.FS.readFile name)]
   let publicRoot ← IO.FS.createTempDir
   IO.FS.createDirAll (publicRoot / "scripts")
+  IO.FS.createDirAll (publicRoot / "release")
+  IO.FS.createDirAll (publicRoot / "bin")
+  let publicDist := publicRoot / "dist"
+  IO.FS.createDirAll publicDist
   let verifier := publicRoot / "scripts/verify-release-artifacts.sh"
-  IO.FS.writeFile verifier "#!/bin/sh\nprintf '%s\\n' \"$*\" >> verifier-calls\nexit 0\n"
-  let mode ← IO.Process.output { cmd := "chmod", args := #["755", verifier.toString] }
+  IO.FS.writeFile verifier (← IO.FS.readFile "scripts/verify-release-artifacts.sh")
+  let pin ← IO.FS.readFile "release/identity.pin"
+  IO.FS.writeFile (publicRoot / "release/identity.pin") pin
+  let pinLines := pin.splitOn "\n"
+  let cosign := publicRoot / "bin/cosign"
+  -- Only the cryptographic collaborator is simulated; the workflow command,
+  -- native preflight, retained adapter and manifest checker are real processes.
+  IO.FS.writeFile cosign r#"#!/bin/sh
+set -eu
+[ "$#" -eq 8 ] && [ "$1" = verify-blob ] && [ "$3" = --bundle ] &&
+[ "$5" = --certificate-oidc-issuer ] && [ "$6" = "$WORKFLOW_ISSUER" ] &&
+[ "$7" = --certificate-identity-regexp ] && [ "$8" = "$WORKFLOW_IDENTITY" ] || exit 91
+[ "$4" = "$2.sigstore.json" ] && [ -f "$2" ] && [ -f "$4" ] || exit 92
+printf '%s\n' "${2##*/}" >> "$WORKFLOW_SIGNATURES"
+[ "${WORKFLOW_SIGNATURE_FAILURE-0}" = 0 ] || exit 17
+"#
+  let mode ← IO.Process.output { cmd := "chmod", args := #["755", verifier.toString, cosign.toString] }
   if mode.exitCode != 0 then throw (IO.userError "could not make the verifier fixture executable")
+  IO.FS.writeFile (publicDist / "LICENSE") (← IO.FS.readFile (base / "LICENSE"))
+  for name in ["tl-linux-arm64", "tl-linux-x64"] do IO.FS.writeFile (publicDist / name) "binary fixture"
+  let binaryDigest ← fixtureValue (← digester.digest (publicDist / "tl-linux-x64").toString)
+  let noticeDigest ← fixtureValue (← digester.digest (publicDist / "LICENSE").toString)
+  let validText := (text.replace (String.ofList (List.replicate 64 'a')) binaryDigest.hex).replace
+    (String.ofList (List.replicate 64 'c')) noticeDigest.hex
+  let writePublicManifest (contents : String) : IO Unit := do
+    IO.FS.writeFile (publicDist / "release-manifest.json") contents
+    let mut sums : List String := []
+    for name in names do
+      let digest ← fixtureValue (← digester.digest (publicDist / name).toString)
+      sums := sums ++ [digest.hex ++ "  " ++ name ++ "\n"]
+    IO.FS.writeFile (publicDist / "SHA256SUMS") (String.join sums)
+    for name in "SHA256SUMS" :: names do IO.FS.writeFile (publicDist / (name ++ ".sigstore.json")) "bundle fixture"
+  writePublicManifest validText
+  let ambientPath ← IO.getEnv "PATH"
+  let signatureLog := publicRoot / "signatures"
+  let publicEnv := #[("PATH", some ((cosign.parent.getD publicRoot).toString ++ ":" ++ ambientPath.getD "")),
+    ("TL_INSTALL_SKIP_SIGNATURE", none),
+    ("WORKFLOW_ISSUER", some (pinLines.headD "")),
+    ("WORKFLOW_IDENTITY", some ((pinLines.drop 1).headD "")),
+    ("WORKFLOW_SIGNATURES", some signatureLog.toString)]
   let binary ← IO.FS.realPath ".lake/build/bin/tlrelease"
   let publicVerify ← IO.Process.output {
-    cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
-  let observed ← IO.FS.readFile (publicRoot / "verifier-calls")
+    cmd := binary.toString, cwd := some publicRoot, env := publicEnv,
+    args := #["workflow-verify", "--dist", publicDist.toString, "--tag", tag.tag, "--commit", hash] }
+  let observed ← IO.FS.readFile signatureLog
   rows := rows ++ [
-    checkEq "public verification: real manifest checker rejects invented fixture digests" publicVerify.exitCode 1,
-    checkEq "public verification: default runner executes verifier before self command" observed
-      ("--selftest\n--require-signature " ++ dist ++ " release-manifest.json\n--require-signature " ++ dist ++
-       " LICENSE release-manifest.json tl-linux-arm64 tl-linux-x64\n")]
-  IO.FS.writeFile verifier "#!/bin/sh\nexit 17\n"
+    checkEq "public verification: real adapter and native preflight accept the complete set" publicVerify.exitCode 0,
+    check "public verification: native verifier corpus actually ran"
+      ((publicVerify.stdout.splitOn "standalone verifier public-process corpus passed").length > 1),
+    check "public verification: native manifest checker actually ran"
+      ((publicVerify.stdout.splitOn "matches the manifest").length > 1),
+    checkEq "public verification: manifest authenticated before the complete set" observed
+      "SHA256SUMS\nrelease-manifest.json\nSHA256SUMS\nLICENSE\nrelease-manifest.json\ntl-linux-arm64\ntl-linux-x64\n"]
+  writePublicManifest text
+  let publicMismatch ← IO.Process.output {
+    cmd := binary.toString, cwd := some publicRoot, env := publicEnv,
+    args := #["workflow-verify", "--dist", publicDist.toString, "--tag", tag.tag, "--commit", hash] }
+  rows := rows ++ [checkEq "public verification: real manifest checker rejects invented fixture digests" publicMismatch.exitCode 1,
+    check "public verification: rejection comes from manifest checking"
+      ((publicMismatch.stderr.splitOn "does not match the manifest").length > 1)]
+  writePublicManifest validText
   let publicFailure ← IO.Process.output {
     cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
+    env := publicEnv.push ("WORKFLOW_SIGNATURE_FAILURE", some "1"),
+    args := #["workflow-verify", "--dist", publicDist.toString, "--tag", tag.tag, "--commit", hash] }
   IO.FS.removeFile verifier
   let publicMissing ← IO.Process.output {
     cmd := binary.toString, cwd := some publicRoot,
-    args := #["workflow-verify", "--dist", dist, "--tag", tag.tag, "--commit", hash] }
+    args := #["workflow-verify", "--dist", publicDist.toString, "--tag", tag.tag, "--commit", hash] }
   rows := rows ++ [checkEq "public verification: child refusal propagates" publicFailure.exitCode 1,
     checkEq "public verification: missing verifier refuses" publicMissing.exitCode 1]
+  IO.FS.removeDirAll publicRoot
   let recorded ← IO.mkRef ([] : List WorkflowRelease.Action)
   let passing : WorkflowRelease.Runner := ⟨fun action => do
     recorded.modify (· ++ [action])
