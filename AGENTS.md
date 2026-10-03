@@ -323,6 +323,11 @@ that explanation, never a replacement for it. What stays out of commit messages
 is bookkeeping that decays: test counts, session or attribution trailers, and
 review-round narration.
 
+User guides and overviews describe current behavior, guarantees, verification,
+and carried assumptions. Keep session dates, failed attempts, migration
+narratives, and release chronology in task notes; link to evidence where it
+supports a current claim.
+
 ## Commit incrementally
 
 Commit helper lemmas and infrastructure as you go — don't wait for the main

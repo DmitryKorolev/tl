@@ -1,46 +1,25 @@
 /-
-`release.Write` — what a release-evidence write *is*, stated before anything
-performs one.
+`release.Write` models release-evidence destinations and write outcomes.
 
-Three things live here, and each exists because the interim writer in
-`release/Command.lean` cannot express it.
+The operator supplies an output directory and a relative output name made from
+validated components. `Component` refuses the empty string, `.`, `..`, an
+embedded `/` and an embedded NUL; `OutputPath` refuses an absolute name and
+cannot be empty by construction. NUL validation matters at the FFI boundary:
+Lean's `String` admits NUL, but `lean_string_cstr` stops at it.
 
-**Where the bytes may land.** That writer takes one path string and hands it to
-`IO.FS`, so "which directory" and "which file" are the same value, and the only
-thing standing between a caller and an absolute path or a `..` is that no caller
-has written one yet. ADR-0028 replaces that with a directory the operator names
-once and a *relative* output name that is a sealed, non-empty list of validated
-components. `Component` refuses the empty string, `.`, `..`, an embedded `/` and
-an embedded NUL; `OutputPath` refuses an absolute name and cannot be empty by
-construction. The NUL check is not decoration: Lean's `String` admits one and
-`lean_string_cstr` stops at it, so `dist\x00/../../etc` reaches C as `dist`.
+`WriteOutcome` separates commit from durability. A successful rename makes the
+replacement visible even if the directory sync then fails. Outcomes carry sync
+strength and cleanup disposition so callers can distinguish that committed
+write from a failure before replacement and report any staging file left behind.
 
-**What the mechanism observed.** That writer returns `IO Unit`, so every way a
-write can end collapses into "threw" or "did not". Two of those endings are not
-the same fact: a rename that succeeded and a directory sync that then failed is
-a write a later reader in this run *will* see, and reporting it as a failure
-sends an operator to repair something that already happened. `WriteOutcome`
-therefore separates commit from durability, and carries the sync strength and
-the cleanup disposition alongside — because "the staging sibling is still
-there" is the difference between a path a rerun can use and one it cannot.
+The native mechanism reports small integer rows, decoded here into structured
+operation, errno and outcome fields. `Tests.ReleaseDriftTests` rejects prose
+matching for error classification. Injected rows cover the phase matrix;
+native fault tests compare destination and staging effects with the same
+outcome model.
 
-**How that observation crosses the FFI boundary.** As a row of small integers,
-decoded here. The prototype recovered the error class by matching the shim's
-formatted prose — the errno name, spelled between colons, inside the message C
-builds — which makes a sentence part of the contract: reword the message and
-the classification silently stops matching, with no build failing. Operation and
-errno are structured fields instead, and `Tests.ReleaseDriftTests` refuses the
-prose form anywhere under `release/` permanently.
-
-The decoder is also the seam. Every phase failure the native writer can report
-is a row a test can hand to `decodeRow` without a filesystem that can produce
-it, so the phase matrix is exercised here and the native implementation is
-checked against the *same* expectations later — including the destination and
-staging effects each outcome predicts, which is what a real fault test then
-compares the directory against.
-
-Nothing in this module does I/O; `Mechanism` is where the I/O would be, as a
-parameter.
+Filesystem I/O is supplied through the `Mechanism` parameter;
+`release/Sys.lean` provides the native implementation.
 -/
 
 namespace Release.Write
@@ -511,8 +490,7 @@ inductive WriteOutcome where
   | failedBeforeCommit (error : NativeError) (cleanup : CleanupDisposition)
   deriving DecidableEq, Repr
 
-/-- Did the bytes replace the destination? The one question every caller asks,
-    and the one the interim writer answered by whether it threw. -/
+/-- Did the bytes replace the destination, even if directory sync failed? -/
 def WriteOutcome.landed : WriteOutcome → Bool
   | .committed _ _ => true
   | .failedBeforeCommit _ _ => false
@@ -883,8 +861,8 @@ theorem accept_isOk_iff_landed (destination staging : String) (outcome : WriteOu
 The mechanism is a parameter, so every phase failure is reachable from a test
 without a filesystem that can produce it — an `EIO` from a dying disk, a
 `syncDirectory` failure after a successful rename, a cleanup that could not
-remove what it created. The real one arrives with the native writer and is the
-only thing that changes here. -/
+remove what it created. `release/Sys.lean` supplies the native mechanism through
+the same interface. -/
 
 /-- Perform one write and report what happened, as a row.
 

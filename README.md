@@ -188,10 +188,11 @@ remove `.tl/local/stealth` and run `tl sync` (ADR-0001 §7).
 
 ## Build from source
 
-No release has shipped yet; build from source for now. Prebuilt binaries and
-the verified installer are planned for v0.1.0; npm and Homebrew are deferred
-to v0.2.0. See [VERIFYING.md](VERIFYING.md) for the planned download and
-verification paths. Current commands are listed in the
+Prebuilt binaries and the verified installer are available in the
+[v0.1.0 GitHub Release](https://github.com/DmitryKorolev/tl/releases/tag/v0.1.0).
+See [VERIFYING.md](VERIFYING.md) for download and verification instructions,
+or build from source below.
+Current commands are listed in the
 [shipped CLI surface](docs/vision.md#shipped-cli-surface).
 
 Prerequisites: [elan](https://github.com/leanprover/elan) (installs the

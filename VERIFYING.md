@@ -1,8 +1,8 @@
 # Verifying tl releases
 
 GitHub Releases from `DmitryKorolev/tl` are the source of truth for native
-artifacts. No release has shipped yet. The commands below pin the identity the
-first release will use.
+artifacts. [v0.1.0](https://github.com/DmitryKorolev/tl/releases/tag/v0.1.0)
+is published. The commands below pin the identity used by its release workflow.
 
 ## How you can get tl in v0.1.0, and how you check it
 
@@ -15,11 +15,9 @@ of which channels a release publishes; for v0.1.0 it enables these two:
   it installs anything.
 
 npm and Homebrew are **not published in v0.1.0**. `@taskloop/tl` and the
-`DmitryKorolev/homebrew-tap` formula are implemented and CI-covered here but
-deferred to v0.2.0 (ADR-0006 records why: each needs a manual bootstrap
-unrelated to whether the binaries are ready). If you find a `tl` package on
-either of those in the meantime, it is not this project's — check the GitHub
-Release, which is the only thing signed with the identity below.
+`DmitryKorolev/homebrew-tap` formula are implemented and CI-covered here.
+Enabling either channel requires a manual bootstrap (ADR-0006). For v0.1.0,
+obtain published artifacts from the GitHub Release.
 
 Each release publishes, besides the per-target binaries: `SHA256SUMS` and its
 Sigstore bundle, a bundle per asset, `release-manifest.json` (the canonical
@@ -33,6 +31,11 @@ one *except* the Sigstore bundles, which are deliberately not listed: a bundle
 is the signature over its asset, so listing it in the file it authenticates
 would be circular. A bundle is checked by verifying with it, not by digesting
 it.
+
+Valid `v0.1.0` signatures also exist over artifacts that were never published.
+Certificate identity alone does not establish publication: use the published
+`SHA256SUMS` and signed `release-manifest.json` from the same GitHub Release
+to identify its artifacts.
 
 ## Required checks
 
@@ -89,8 +92,8 @@ scripts/verify-release-artifacts.sh <download-dir> tl-linux-x64
 
 It is the code the release workflow itself runs, over the candidate artifacts
 before creating the GitHub Release, so nothing is published that this procedure
-would reject; `--selftest` runs it
-against fabricated missing, malformed, mismatched, and rejected-signature
+would reject. `lake exe tlrelease artifact-verifier-selftest --root .` runs the
+script against fabricated missing, malformed, mismatched, and rejected-signature
 inputs on every commit. A procedure that is documented but never executed is a
 procedure nobody has tested.
 

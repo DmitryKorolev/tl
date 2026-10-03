@@ -113,7 +113,7 @@ the same assets. A v0.1.0 release publishes the signed binaries, `SHA256SUMS`,
 a Sigstore bundle per asset, `release-manifest.json`, the SBOM, the compliance
 set, and per-target build metadata and link audits.
 
-**Deferred to v0.2.0**: npm and Homebrew. Neither is missing work in this
+**Not published in v0.1.0**: npm and Homebrew. Neither is missing work in this
 repository — both channels are implemented — and both are blocked on a manual
 bootstrap that is unrelated to publishing a GitHub Release:
 
@@ -129,9 +129,10 @@ bootstrap that is unrelated to publishing a GitHub Release:
   the identity drift guard. Enabling the channel is a tap plus a secret rather
   than new decision code.
 
-Deferring them is what makes the first release reachable at all. It is recorded
-here rather than left implicit because three separate mechanisms were treating
-their absence as a fault.
+`release/plan.json` records a `plannedFor` target for each disabled channel.
+The target is an internal deadline: at that version or later, the release gate
+requires enabling the channel or moving its target forward. A channel can be
+enabled in an earlier release once its prerequisites are met.
 
 ### Dependency budget for the enabled channels
 

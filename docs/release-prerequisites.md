@@ -34,7 +34,7 @@ nobody could parse is not evidence of one.
 
 For **v0.1.0** — the GitHub Release and the installer (ADR-0006) — that means
 sections 0, 2 and 3 apply. Section 1 (npm) and section 4 (the Homebrew tap)
-belong to channels deferred to v0.2.0 and are not prerequisites of the first
+belong to channels not published in v0.1.0 and are not prerequisites of that
 release. They are written up now because enabling a channel is exactly the
 moment its bootstrap has to be done, and a procedure discovered then is a
 procedure improvised.
