@@ -229,6 +229,7 @@
 {"v":1,"op":"claim","hlc":"01a0f3c701cb0000","replica":"5aar36pevw6eh","nonce":"4gnqwfh8mwy613f0kjrq226n6a","actor":"tl-dev","assignee":"tl-dev","id":"pg9enatc1t2845n9"}
 {"v":1,"op":"claim","hlc":"01a0f47ab3d80000","replica":"5aar36pevw6eh","nonce":"1pb3dmyyqke05f1e6kzhqxztvg","actor":"dmitry.korolyov@gmail.com","assignee":"dmitry.korolyov@gmail.com","id":"8g2wy4gb39psp0tk"}
 {"v":1,"op":"claim","hlc":"01a0ff3b82920000","replica":"5aar36pevw6eh","nonce":"555xs0qvn5ppjb36npqgdqhbxh","actor":"tl-dev","assignee":"tl-dev","id":"8g2wy4gb39psp0tk"}
+{"v":1,"op":"claim","hlc":"01a102bf58b20000","replica":"5aar36pevw6eh","nonce":"4ry42yrvvadvrwyn5epv609ea5","actor":"tl-dev","assignee":"tl-dev","id":"8g2wy4gb39psp0tk"}
 {"v":1,"op":"close","hlc":"019eb6a711920000","replica":"5aar36pevw6eh","nonce":"63873p1b0a78t4xensnaxm0r2k","actor":"tl-dev","closeResolution":"done","id":"f01vn6s6n79wmqa8","status":"done"}
 {"v":1,"op":"close","hlc":"019eb6b09ecf0000","replica":"5aar36pevw6eh","nonce":"40zsgqed6zs2wgjsp0gdwp3f16","actor":"tl-dev","closeResolution":"done","id":"vkgk8bxw1n74kx20","status":"done"}
 {"v":1,"op":"close","hlc":"019eb6bb44d20000","replica":"5aar36pevw6eh","nonce":"1kcmxfw26s9c38c86bpjw0xawy","actor":"tl-dev","closeResolution":"done","id":"mxw0awh97fdchw6s","status":"done"}
