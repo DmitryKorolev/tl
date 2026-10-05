@@ -18,6 +18,37 @@ cyclic or dangling graphs that concurrent edits can produce. There is no
 server, daemon, or database: git moves the bytes, and a CRDT makes concurrent
 writes merge without git conflicts or lost updates.
 
+## Install
+
+Install the latest stable release on macOS or Linux (including WSL2):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DmitryKorolev/tl/main/install.sh | sh
+```
+
+Apple silicon and Linux arm64/x86-64 are supported; Intel macOS is best-effort.
+
+The installer needs `curl`, [cosign](https://github.com/sigstore/cosign/releases)
+on your `PATH`, and either `sha256sum` or `shasum`. It selects the binary for
+your platform, verifies its Sigstore signatures and SHA-256 digest, and installs
+it to `~/.local/bin`. When available, the companion `THIRD-PARTY-LICENSES`
+file goes in `~/.local/share/tl` by default; `tl licenses` also prints the
+notices. Using `tl` requires `git`.
+
+If `~/.local/bin` is not on your `PATH`, add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
+
+To choose a release or destination, set the variables on `sh`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DmitryKorolev/tl/main/install.sh | \
+  TL_VERSION=v0.1.0 TL_INSTALL_DIR="$HOME/bin" sh
+```
+
+You can also download binaries from [GitHub Releases](https://github.com/DmitryKorolev/tl/releases).
+See [VERIFYING.md](VERIFYING.md) for manual verification, or
+[build from source](#build-from-source).
+
 ## The work loop
 
 A session with the current binary (only `init`'s one-time setup hints are
@@ -85,7 +116,8 @@ surface instead of guessing it
 ([ADR-0011](docs/adr/ADR-0011-agent-consumption.md)). The rest of the
 surface — epics and `defer`, labels and metadata, `dep cycles`/`path`/
 `critical`, `unblocks`, `log --since` (a resumable change feed), `stats`,
-`doctor` — is inventoried in [docs/vision.md](docs/vision.md).
+`doctor` — is inventoried in the
+[shipped CLI surface](docs/vision.md#shipped-cli-surface).
 
 Coming from another tracker: transform its export into `tl`'s documented
 JSONL import format and run `tl import` once — after that, `tl` owns its
@@ -184,16 +216,9 @@ simply local-only: once the directory becomes a git repository with a
 remote, the next `tl sync` starts sharing it — same log, same ids, no
 conversion. `tl init --stealth` deliberately keeps task state local, with no
 repo-visible trace; `tl sync` refuses to share it. To start sharing later,
-remove `.tl/local/stealth` and run `tl sync` (ADR-0001 §7).
+remove `.tl/local/stealth` and run `tl sync`.
 
 ## Build from source
-
-Prebuilt binaries and the verified installer are available in the
-[v0.1.0 GitHub Release](https://github.com/DmitryKorolev/tl/releases/tag/v0.1.0).
-See [VERIFYING.md](VERIFYING.md) for download and verification instructions,
-or build from source below.
-Current commands are listed in the
-[shipped CLI surface](docs/vision.md#shipped-cli-surface).
 
 Prerequisites: [elan](https://github.com/leanprover/elan) (installs the
 pinned Lean toolchain automatically), a C compiler, and `git` (needed at
