@@ -14,6 +14,9 @@ open Lake DSL
 
 package tl where
   version := v!"0.1.0"
+  -- Mathlib requires module-system consumers as of 4.35.0. Keep this
+  -- project's existing visibility semantics until a deliberate migration.
+  allowNonModules := true
 
 -- The standalone release tool imports only Lean core. Its isolated Linux
 -- build uses -KreleaseOnly=true to avoid fetching unrelated proof dependencies.
@@ -21,15 +24,15 @@ package tl where
 meta if (get_config? releaseOnly) != some "true" then
   require batteries from git
     "https://github.com/leanprover-community/batteries" @
-    -- The rev mathlib's v4.34.1 manifest pins
-    "f2effa3d803fda822b1f97b806c47cf2adfbcbc2"
+    -- The rev mathlib's v4.35.0 manifest pins
+    "66e469188fe07963e5cf666c7d4433f45b8131c5"
 
 meta if (get_config? releaseOnly) != some "true" then
   require mathlib from git
     "https://github.com/leanprover-community/mathlib4" @
-    -- v4.34.1 (matching the toolchain); ADR-0009 escape hatch, scoped to the
+    -- v4.35.0 (matching the toolchain); ADR-0009 escape hatch, scoped to the
     -- finite-graph lemmas for thms 5/6/10 + rollup fuel-adequacy
-    "d13f23b723b8a846827a245b89c10fc7d3f11612"
+    "56a005855ea17e0b0958f73ec801ae140b0a1679"
 
 @[default_target] lean_lib Tl
 

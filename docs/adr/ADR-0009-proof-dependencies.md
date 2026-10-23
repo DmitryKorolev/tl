@@ -42,7 +42,7 @@ default.
 
 ### Mathlib adopted under the escape hatch, scoped
 
-Mathlib is a pinned dependency (`mathlib4 @ v4.34.1`, matching the
+Mathlib is a pinned dependency (`mathlib4 @ v4.35.0`, matching the
 toolchain), taken under the escape hatch above for a genuine need: the
 remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
 correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
@@ -90,12 +90,16 @@ proof file (Mathlib zone), at the cost of some duplication of private helpers.
 
 ## Toolchain and test harness (pinned)
 
-- Lean and Mathlib are pinned to v4.34.1. Mathlib's immutable revision is
-  `d13f23b723b8a846827a245b89c10fc7d3f11612`; its dependency revisions match
+- Lean and Mathlib are pinned to v4.35.0. Mathlib's immutable revision is
+  `56a005855ea17e0b0958f73ec801ae140b0a1679`; its dependency revisions match
   the project's resolved manifest, including batteries
-  at `f2effa3d803fda822b1f97b806c47cf2adfbcbc2`. License notices and development
+  at `66e469188fe07963e5cf666c7d4433f45b8131c5`. License notices and development
   provenance are generated from these pins, and validation checks that the
   resolved dependencies match Mathlib's cache inputs.
+  Mathlib now marks its API as designed for Lean's module system; the project
+  explicitly sets Lake's `allowNonModules` compatibility option to retain its
+  existing declaration visibility. A module-system migration is separate from
+  the toolchain upgrade.
 - Pinned toolchain. A committed `lean-toolchain` pins an exact
   `leanprover/lean4` release; `lakefile.lean` requires `batteries` (std4) at a
   pinned git rev (an immutable commit, not a branch/tag); `lake-manifest.json`
