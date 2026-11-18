@@ -2618,6 +2618,37 @@ def cliAutoSyncTests : IO (List Outcome) := do
   o := o ++ [← expectData "auto-sync on: a sibling sees the write with no explicit sync"
     ["list", "--dir", bDir, "--json"]
     (fun j => (jArr j "items").any (fun it => jStr it "id" == some onId))]
+  -- The pre-write refresh sees no identity here. The transaction mints the
+  -- identity that the very first post-transaction publish must use.
+  let replicaFile := root / ".tl" / "local" / "replica"
+  let oldReplica ← IO.FS.readFile replicaFile
+  IO.FS.removeFile replicaFile
+  let remintedTitle := "first write after replica re-mint"
+  let remintedId ← match ← run' ["create", remintedTitle, "--dir", aDir, "--actor", "a"] with
+    | .ok out => pure ((jStr out.data "id").getD "")
+    | .error e => throw (IO.userError s!"create after re-mint failed: {e.message}")
+  let newReplica ← IO.FS.readFile replicaFile
+  let published ← gitC ["show", s!"refs/tl/log:{newReplica.trimAscii.toString}.jsonl"]
+  o := o ++ [check "auto-sync publishes the first write under the re-minted replica"
+    (oldReplica != newReplica && published.exitCode == 0 && published.stdout.contains remintedTitle)
+    published.stderr,
+    ← expectData "a sibling immediately sees the first write after a re-mint"
+      ["list", "--dir", bDir, "--json"]
+      (fun j => (jArr j "items").any (fun it => jStr it "id" == some remintedId))]
+  -- Unreadable publication configuration fails after the append. Its
+  -- decode error must follow the same best-effort disclosure contract.
+  let gitConfigFile := root / ".git" / "config"
+  let configBytes ← IO.FS.readBinFile gitConfigFile
+  IO.FS.writeBinFile gitConfigFile
+    (configBytes ++ "\n[tl]\n\tautosync = ".toUTF8 ++ ByteArray.mk #[255, 10])
+  let invalidConfig ← try run' ["create", "write with invalid auto-sync config", "--dir", aDir, "--actor", "a"]
+    finally IO.FS.writeBinFile gitConfigFile configBytes
+  o := o ++ [match invalidConfig with
+    | .ok out => check "invalid auto-sync configuration discloses a skipped publish after a successful write"
+        ((jStr out.data "id").isSome
+          && out.notes.any (fun note => note.contains "auto-sync skipped" && note.contains "non-UTF-8"))
+        s!"notes={out.notes}"
+    | .error e => { name := "write outlives invalid auto-sync configuration", passed := false, msg := e.message }]
   -- (c) a publish failure is disclosed and never fails the write (ADR-0021 §4):
   -- the object store is read-only, so update-ref fails but the append already
   -- landed. Root bypasses permissions, so only assert the survive-invariant there.

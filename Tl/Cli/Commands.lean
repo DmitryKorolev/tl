@@ -1629,7 +1629,7 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
     (blockedBy blocks parents related : List String) : TlM CmdOut := do
   let edgeCount := blockedBy.length + blocks.length + parents.length + related.length
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor)
     (1 + edgeCount) (fun ctx stamps => do
       let some st := stamps.head? | .error (.mk' .internal "no stamp")
@@ -1656,7 +1656,7 @@ def cmdCreate (dirOverride : Option String) (title : String) (priority : Option 
     | throw (.mk' .internal "create wrote no create record")
   return { data := issueObj v newId
            human := s!"Created {displayId newId}  {sanitizeSingle title}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- After a durable claim, re-derive the echo from the freshly-synced state via
     `reload`; if that reload fails (a transient FS / clock-read error), fall back to
@@ -1713,7 +1713,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
         else
           pure [s!"claimed against local state — could not reconcile with the remote first ({e.message}); run `tl sync`"])
     else pure []
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   -- the staleness window for --steal: inline --stale wins over tl.staleAfter.
   -- Inline (explicit input) fails fast on a bad value; the config is LENIENT — a
   -- malformed tl.staleAfter never blocks a plain/ready/own claim (only the
@@ -1783,7 +1783,7 @@ def cmdClaim (dirOverride : Option String) (tok : String) (actor : String)
   let some (i, claimStamp) := parsed.head?.bind (fun p =>
       match p.op with | .claim ci _ => some (ci, p.stamp) | _ => none)
     | throw (.mk' .internal "claim wrote no claim record")
-  let auto ← Tl.Sync.autoSyncLocal d replica
+  let auto ← Tl.Sync.autoSyncLocal d ctx.replica
   -- publish-around-claim (ADR-0001 §5): with --sync, push the take to the remote
   -- right away (after it is in the local ref), closing the cross-clone race
   -- window. Best-effort — the take is already recorded locally, so a publish
@@ -1841,7 +1841,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
   -- duplicate's canonical issue and means nothing for done/cancelled
   if ofTok.isSome && res != .Duplicate then
     throw (.mk' .usage "--of names the canonical issue of a duplicate — it only pairs with --as duplicate")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 2 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -1944,7 +1944,7 @@ def cmdClose (dirOverride : Option String) (tok : String) (asStr : String)
         | some r => resolutionWire r
         | none => statusWire dPost.statusOf
       s!"close of {displayId i} was superseded by a later concurrent write — it is closed as {heldAs}, not {asStr}; rerun if still intended"
-  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- Reject retired note flags before dispatch can request stdin. The command
     repeats this guard for callers that bypass argument dispatch. -/
@@ -1969,7 +1969,7 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
     throw (.mk' .usage
       "update needs at least one of --title, --priority, --description, --slug (notes moved to `tl note add`)")
   let prio : Option (Fin 5) := priority.map (fun p => ⟨min p 4, Nat.lt_succ_of_le (Nat.min_le_right p 4)⟩)
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     .ok [.update i { title, priority := prio,
@@ -1979,7 +1979,7 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
       match p.op with | .update ui _ => some ui | _ => none)
     | throw (.mk' .internal "update wrote no record")
   return { data := issueObj v i, human := s!"Updated {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl reopen <id>`: a terminal issue back to `open`, clearing both
     `closeResolution` and the `assignee` as part of the closed→open transition
@@ -1995,7 +1995,7 @@ def cmdUpdate (dirOverride : Option String) (tok : String)
     No write-time guard can forbid that merge (CLAUDE.md §2). Firing reopen on it
     restores the claim-only invariant — the only CLI path back to open+unassigned. -/
 def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     let dta := ctx.loaded.state.issueData i
@@ -2007,7 +2007,7 @@ def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : Tl
   return { data := issueObj v i
            human := if parsed.isEmpty then s!"{displayId i} is already open"
                     else s!"Reopened {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- Where a `defer` lands: an absolute instant (`--until`, resolved before the
     lock) or a delay applied to the under-lock `now` (`--for`, so the deferral
@@ -2048,7 +2048,7 @@ def cmdDefer (dirOverride : Option String) (tok : String)
       | some 0 => throw (.mk' .usage s!"--for needs a positive duration, not zero (got '{f}')")
       | some ms => pure (DeferTarget.after ms)
       | none => throw (.mk' .usage s!"--for wants a duration like 36h, 7d, or 90m (got '{f}')")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     let untilMs := match target with
@@ -2075,13 +2075,13 @@ def cmdDefer (dirOverride : Option String) (tok : String)
   return { data := issueObj v i
            human := if parsed.isEmpty then s!"{displayId i} is already deferred until {untilIso}"
                     else s!"Deferred {displayId i} until {untilIso}"
-           notes := freshNotes ++ writeNotes ctx ++ elapsedNote ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ elapsedNote ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl undefer <id>`: clear the `deferUntil`, making the issue workable now
     (ADR-0010). Idempotent — a no-op (and an honest "is not deferred") when no
     deferral is set, mirroring `reopen`'s already-open path. -/
 def cmdUndefer (dirOverride : Option String) (tok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     match (ctx.loaded.state.issueData i).deferUntilOf with
@@ -2092,10 +2092,10 @@ def cmdUndefer (dirOverride : Option String) (tok : String) (actor : String) : T
   return { data := issueObj v i
            human := if parsed.isEmpty then s!"{displayId i} is not deferred"
                     else s!"Undeferred {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -2108,10 +2108,10 @@ def cmdDepAdd (dirOverride : Option String) (aTok bTok : String) (actor : String
             [("type", Json.str "blocks"), ("from", Json.str (displayId f)),
              ("to", Json.str (displayId t)), ("status", Json.str "added")]
            human := s!"{displayId t} is now blocked by {displayId f}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -2134,7 +2134,7 @@ def cmdDepRemove (dirOverride : Option String) (aTok bTok : String) (actor : Str
            human :=
              if parsed.isEmpty then s!"{displayId a} was not blocked by {displayId b} — nothing to do"
              else s!"{displayId a} is no longer blocked by {displayId b}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `dep critical` — rank open issues by transitive dependent-count (the proved
     critical-path `weight`, ADR-0004 thm 4): the most-unblocking work first. Only
@@ -2189,7 +2189,7 @@ def cmdDepPath (dirOverride : Option String) (aTok bTok : String) (skipBad : Boo
     sorted endpoint pair, since `related` is undirected). Drives nothing (frame
     lemma); filter/display only. -/
 def cmdDepRelate (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -2204,12 +2204,12 @@ def cmdDepRelate (dirOverride : Option String) (aTok bTok : String) (actor : Str
             [("type", Json.str "related"), ("from", Json.str (displayId a)),
              ("to", Json.str (displayId b)), ("status", Json.str "added")]
            human := s!"{displayId a} and {displayId b} are now related"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `dep unrelate A B` — retract the `related` link. A noop (nothing appended)
     when the pair is not currently related (ADR-0020). -/
 def cmdDepUnrelate (dirOverride : Option String) (aTok bTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let a ← resolveToken s aTok
@@ -2227,7 +2227,7 @@ def cmdDepUnrelate (dirOverride : Option String) (aTok bTok : String) (actor : S
            human :=
              if parsed.isEmpty then s!"{displayId a} and {displayId b} were not related — nothing to do"
              else s!"{displayId a} and {displayId b} are no longer related"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-! ## parent verbs (reparenting) -/
 
@@ -2282,14 +2282,14 @@ def cmdParentSet (dirOverride : Option String) (childTok parentTok : String)
     if parsed.isEmpty then s!"{displayId child} is already under {displayId parent} — nothing to do"
     else s!"Moved {displayId child} under {displayId parent}"
       ++ (if replaced.isEmpty then "" else s!" (was under {String.intercalate ", " replaced})")
-  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl parent remove <child> <parent>`: detach `<child>` from `<parent>` —
     retract that one parent edge if present, else a no-op (mirrors
     `dep remove`). To drop a child's only parent is to make it a root. -/
 def cmdParentRemove (dirOverride : Option String) (childTok parentTok : String)
     (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let child ← resolveToken s childTok
@@ -2307,14 +2307,14 @@ def cmdParentRemove (dirOverride : Option String) (childTok parentTok : String)
   let human :=
     if parsed.isEmpty then s!"{displayId child} was not a child of {displayId parent} — nothing to do"
     else s!"{displayId child} is no longer a child of {displayId parent}"
-  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+  return { data, human, notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-! ## label verbs -/
 
 def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
   if label.trimAscii.isEmpty then
     throw (.mk' .usage "a label must be non-empty — `tl label add <id> <label>`")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -2328,12 +2328,12 @@ def cmdLabelAdd (dirOverride : Option String) (tok label : String) (actor : Stri
              ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} already has label '{sanitizeSingle label}'"
                     else s!"Labeled {displayId i} '{sanitizeSingle label}'"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : String) : TlM CmdOut := do
   if label.trimAscii.isEmpty then
     throw (.mk' .usage "a label must be non-empty — `tl label remove <id> <label>`")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -2348,7 +2348,7 @@ def cmdLabelRemove (dirOverride : Option String) (tok label : String) (actor : S
              ("label", Json.str (sanitizeSingle label)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} had no label '{sanitizeSingle label}' — nothing to do"
                     else s!"Unlabeled {displayId i} '{sanitizeSingle label}'"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 
 /-! ## The notes journal verbs (ADR-0027) -/
@@ -2408,7 +2408,7 @@ def cmdNoteAdd (dirOverride : Option String) (tok text : String) (actor : String
   if text.trimAscii.isEmpty then
     throw (.mk' .usage
       "a note needs text — `tl note add <id> <text>` (`-` reads it from stdin)")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx stamps => do
     let i ← resolveToken ctx.loaded.state tok
     let some st := stamps.head?
@@ -2423,7 +2423,7 @@ def cmdNoteAdd (dirOverride : Option String) (tok text : String) (actor : String
   let data := Json.mkObj
     [("id", Json.str (displayId i)), ("note", entry), ("status", Json.str "added")]
   return { data, human := s!"Added note [{handle}] to {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl note list <id> [--all]`: the visible journal, oldest first
     (stamp-ascending — the proved kernel order); `--all` adds removed-entry
@@ -2450,7 +2450,7 @@ def cmdNoteList (dirOverride : Option String) (tok : String) (all skipBad : Bool
     theorem). The output carries the honesty disclosure: removal hides the
     entry from materialized views only (ADR-0027, no secure deletion). -/
 def cmdNoteRemove (dirOverride : Option String) (tok noteTok : String) (actor : String) : TlM CmdOut := do
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -2475,7 +2475,7 @@ def cmdNoteRemove (dirOverride : Option String) (tok noteTok : String) (actor : 
       s!"note [{handle}] in {displayId i} is already removed — nothing to do"
     else s!"Removed note [{handle}] from {displayId i}") ++ s!" ({noteRemovalDisclosure})"
   return { data, human
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl label list`: the label vocabulary — every present label with how many
     issues carry it (sorted by name, a deterministic read). -/
@@ -2511,7 +2511,7 @@ def cmdLabelList (dirOverride : Option String) (skipBad : Bool) : TlM CmdOut := 
 def cmdMetaSet (dirOverride : Option String) (tok key value : String) (actor : String) : TlM CmdOut := do
   if key.trimAscii.isEmpty then
     throw (.mk' .usage "a meta key must be non-empty — `tl meta set <id> <key> <value>`")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, _) ← transact d (some actor) 1 (fun ctx _ => do
     let i ← resolveToken ctx.loaded.state tok
     .ok [.metaSet i key (some value)])
@@ -2520,14 +2520,14 @@ def cmdMetaSet (dirOverride : Option String) (tok key value : String) (actor : S
             [("id", Json.str (displayId i)), ("key", Json.str (sanitizeSingle key)),
              ("value", Json.str (sanitizeSingle value)), ("status", Json.str "set")]
            human := s!"set {sanitizeSingle key} on {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl meta clear <id> <key>`: tombstone a metadata key. A disclosed noop when
     the key carries no current value. -/
 def cmdMetaClear (dirOverride : Option String) (tok key : String) (actor : String) : TlM CmdOut := do
   if key.trimAscii.isEmpty then
     throw (.mk' .usage "a meta key must be non-empty — `tl meta clear <id> <key>`")
-  let (d, replica, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
+  let (d, _, freshNotes) ← Tl.Sync.preWriteRefresh dirOverride
   let (ctx, parsed) ← transact d (some actor) 1 (fun ctx _ => do
     let s := ctx.loaded.state
     let i ← resolveToken s tok
@@ -2539,7 +2539,7 @@ def cmdMetaClear (dirOverride : Option String) (tok key : String) (actor : Strin
             [("id", Json.str (displayId i)), ("key", Json.str (sanitizeSingle key)), ("status", Json.str status)]
            human := if parsed.isEmpty then s!"{displayId i} had no {sanitizeSingle key} — nothing to do"
                     else s!"cleared {sanitizeSingle key} on {displayId i}"
-           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d replica) }
+           notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- `tl meta get <id> [<key>]`: read one metadata value, or all of an issue's. -/
 def cmdMetaGet (dirOverride : Option String) (tok : String) (key : Option String) (skipBad : Bool) : TlM CmdOut := do

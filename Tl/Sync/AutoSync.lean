@@ -33,8 +33,8 @@ open Tl.Store
 open Tl.Clock (Replica)
 
 /-- Absorb the shared ref before a write's guards (the pre-transact local
-    absorb, ADR-0016 write-path freshness). Returns the located dirs, the loaded replica
-    (reused by `autoSyncLocal`), and a degrade note if the refresh could not run
+    absorb, ADR-0016 write-path freshness). Returns the located dirs, the replica used for the read,
+    and a degrade note if the refresh could not run
     (the write proceeds a moment stale, never failing). -/
 def preWriteRefresh (dirOverride : Option String) :
     TlM (Dirs × Option Replica × List String) := do
@@ -46,18 +46,20 @@ def preWriteRefresh (dirOverride : Option String) :
   return (d, replica, notes)
 
 /-- Auto-sync (ADR-0021): if `tl.autosync` is on, publish this replica's segment
-    into the shared ref (and absorb siblings) so a worktree sibling sees the
+    into the shared ref (and absorb siblings). The replica comes from the
+    completed transaction, which may have minted it. A worktree sibling sees the
     write with no explicit `tl sync`. Best-effort and lock-free — runs after the
     write's lock is released; any failure (no git, read-only FS, ref contention
     surviving the CAS retry) is swallowed and disclosed as a non-fatal note,
     never failing the write. Catches both thrown `Tl.Error`s and raw
     `IO.Error`s, mirroring `refreshFromRef`. The remote leg stays explicit. -/
-def autoSyncLocal (d : Dirs) (replica : Option Replica) : TlM (List String) := do
-  if (← gitConfig d "tl.autosync") != some "true" then return []
-  -- stealth (ADR-0001 §7) never publishes, even if a user set tl.autosync by hand:
-  -- the marker is the authority on "never shared" (reached only when autosync is on)
-  if ← isStealth d then return []
-  match ← ((syncLocal d (replica.map (·.id))).run.toBaseIO : IO _) with
+def autoSyncLocal (d : Dirs) (replica : Replica) : TlM (List String) := do
+  let publish : TlM Unit := do
+    if (← gitConfig d "tl.autosync") != some "true" then return
+    -- The stealth marker takes precedence over the Git config setting.
+    if ← isStealth d then return
+    let _ ← syncLocal d (some replica.id)
+  match ← (publish.run.toBaseIO : IO _) with
   | .ok (.ok _) => return []
   | .ok (.error e) =>
     return [s!"auto-sync skipped ({e.message}) — run `tl sync` to publish this write to siblings"]
