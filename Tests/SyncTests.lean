@@ -576,6 +576,9 @@ private def treeRecord (name : ByteArray) (kind : String := "100644 blob")
     (oid : String := String.ofList (List.replicate 40 'a')) : ByteArray :=
   (s!"{kind} {oid}\t".toUTF8 ++ name).push 0
 
+private def awkwardTreeNames : List ByteArray :=
+  [" leading".toUTF8, "\"quoted\\name".toUTF8, "m-é".toUTF8, "zz-reserved ".toUTF8]
+
 def syncTreeListingTests : List Outcome := Id.run do
   let replica := "0123456789abc"
   let segmentName := s!"{replica}.jsonl".toUTF8
@@ -604,6 +607,10 @@ def syncTreeListingTests : List Outcome := Id.run do
        | .ok ([segment], [entry]) =>
            segment == { replicaId := replica, oid }
              && entry == { name := unknown, raw := raw.extract 0 (raw.size - 1) }
+       | _ => false),
+     check "tree parser preserves leading and trailing name whitespace"
+      (match parseTreeListing (treeRecord " space ".toUTF8) with
+       | .ok ([], [entry]) => entry.name == " space ".toUTF8
        | _ => false),
      check "Git text decode accepts UTF-8 and preserves text"
       (match decodeGitStdout "message\n".toUTF8 with
@@ -641,10 +648,13 @@ def syncRawTreeNameTests : IO (List Outcome) := do
     let _ ← rawFixtureGit d ["config", "core.quotePath", quotePath]
     let _ ← rawFixtureGit d ["config", "user.name", "Fixture"]
     let _ ← rawFixtureGit d ["config", "user.email", "fixture@example.test"]
-    let tree ← rawFixtureGit d ["mktree", "-z"] (treeRecord nameA (oid := oid) ++
-      treeRecord unknown (oid := oid))
+    let names := unknown :: awkwardTreeNames
+    let listing := names.foldl (fun acc name => acc ++ treeRecord name (oid := oid))
+      (treeRecord nameA (oid := oid))
+    let tree ← rawFixtureGit d ["mktree", "-z"] listing
     let tip ← rawFixtureGit d ["commit-tree", (String.fromUTF8! tree).trimAscii.toString, "-m", "plant tree"]
     let _ ← rawFixtureGit d ["update-ref", "refs/tl/log", (String.fromUTF8! tip).trimAscii.toString]
+    let before ← rawFixtureGit d ["ls-tree", "-z", "refs/tl/log"]
     let logDir := System.FilePath.mk d.base / ".tl" / "log"
     IO.FS.createDirAll logDir
     IO.FS.createDirAll (logDir.parent.get! / "local")
@@ -653,14 +663,22 @@ def syncRawTreeNameTests : IO (List Outcome) := do
     let persisted ← rawFixtureGit d ["ls-tree", "-z", "refs/tl/log"]
     results := results ++ [check s!"publish preserves other segments and a raw tree name (quotePath={quotePath})"
       (match published, parseTreeListing persisted with
-       | .ok outcome, .ok ([a, b], [entry]) =>
+       | .ok outcome, .ok ([a, b], foreign) =>
          outcome.published && a.replicaId == ridA && a.oid == oid && b.replicaId == ridB
-           && entry.name == unknown
-           && entry.raw.push 0 == treeRecord unknown (oid := oid)
+           && foreign.any (fun entry =>
+             entry.name == unknown && entry.raw.push 0 == treeRecord unknown (oid := oid))
        | _, _ => false)
       (match published with
       | .ok outcome => s!"local publish: {repr outcome}, expected new segment {ridB}"
-      | .error e => e.message)]
+      | .error e => e.message),
+      check s!"publishing carries awkward tree entries byte-for-byte (quotePath={quotePath})"
+        (match parseTreeListing before, parseTreeListing persisted with
+         | .ok (_, original), .ok (_, current) =>
+           original == current &&
+             (awkwardTreeNames.all fun name =>
+               current.any (fun entry => entry.name == name
+                 && entry.raw.push 0 == treeRecord name (oid := oid)))
+         | _, _ => false)]
   return results
 
 /-- The repo's empty tree object (written so `mktree` can reference it). -/
