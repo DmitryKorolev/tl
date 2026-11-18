@@ -272,7 +272,8 @@ def unionSegments (xs ys : List SegmentData) : List SegmentData :=
   unionSegmentsGo (xs.length + ys.length)
     (xs.mergeSort segmentLe) (ys.mergeSort segmentLe)
 
-/-- The bytes of a replica in a segment snapshot, with empty bytes when absent. -/
+/-- The first segment's bytes for a replica, with empty bytes when absent.
+    With unique replica IDs this is the entire segment for that replica. -/
 def replicaBytes (segments : List SegmentData) (replica : String) : ByteArray :=
   ((segments.find? (fun s => s.replicaId == replica)).map (·.bytes)).getD .empty
 
@@ -415,7 +416,127 @@ private theorem replicaBytes_mergeSort (segments : List SegmentData) (replica : 
     ((segments.find? keeps).map (·.bytes)).getD .empty
   rw [← List.head?_filter, ← List.head?_filter, same]
 
-/-- The segment merge implements the canonical line union independently for each replica. -/
+private theorem unionSegmentsGo_id_mem (fuel : Nat) (xs ys : List SegmentData) (replica : String)
+    (bound : xs.length + ys.length ≤ fuel) :
+    replica ∈ (unionSegmentsGo fuel xs ys).map (·.replicaId) ↔
+      replica ∈ xs.map (·.replicaId) ∨ replica ∈ ys.map (·.replicaId) := by
+  cases xs with
+  | nil =>
+    simp only [unionSegmentsGo, List.map_map, Function.comp_def, List.map_nil, List.not_mem_nil, false_or]
+  | cons x xs =>
+    cases ys with
+    | nil =>
+      simp only [unionSegmentsGo, List.map_map, Function.comp_def, List.map_nil, List.not_mem_nil, or_false]
+    | cons y ys =>
+      cases fuel with
+      | zero => exact False.elim (Nat.not_succ_le_zero _ bound)
+      | succ fuel =>
+        have leftBound : xs.length + (y :: ys).length ≤ fuel := by
+          apply Nat.le_of_succ_le_succ
+          simpa only [List.length_cons, Nat.succ_add] using bound
+        have rightBound : (x :: xs).length + ys.length ≤ fuel := Nat.le_of_succ_le_succ bound
+        rw [unionSegmentsGo]
+        by_cases same : x.replicaId = y.replicaId
+        · simp only [beq_iff_eq, same, ite_true, List.map_cons, List.mem_cons,
+            unionSegmentsGo_id_mem fuel xs ys replica (Nat.le_trans (Nat.le_succ _) leftBound)]
+          constructor
+          · intro h
+            exact h.elim (fun eq => Or.inl (Or.inl eq))
+              (fun tail => tail.elim (fun hx => Or.inl (Or.inr hx)) (fun hy => Or.inr (Or.inr hy)))
+          · intro h
+            exact h.elim (fun hx => hx.imp id Or.inl) (fun hy => hy.imp id Or.inr)
+        · by_cases le : x.replicaId ≤ y.replicaId
+          · simp only [beq_iff_eq, same, ite_false, le, decide_true, ite_true,
+              List.map_cons, List.mem_cons,
+              unionSegmentsGo_id_mem fuel xs (y :: ys) replica leftBound, or_assoc]
+          · simp only [beq_iff_eq, same, le, decide_false, Bool.false_eq_true, ite_false,
+              List.map_cons, List.mem_cons,
+              unionSegmentsGo_id_mem fuel (x :: xs) ys replica rightBound]
+            exact or_left_comm
+termination_by fuel
+
+private theorem id_absent_before (x : SegmentData) (xs : List SegmentData) (replica : String)
+    (sorted : (x :: xs).Pairwise (fun a b => segmentLe a b = true))
+    (earlier : ¬ x.replicaId ≤ replica) :
+    replica ∉ (x :: xs).map (·.replicaId) := by
+  intro found
+  obtain ⟨s, present, eq⟩ := List.mem_map.mp found
+  rcases List.mem_cons.mp present with head | tail
+  · exact earlier (by rw [← eq, head]; exact String.le_refl _)
+  · exact earlier (eq ▸ of_decide_eq_true ((List.pairwise_cons.mp sorted).1 s tail))
+
+private theorem unionSegmentsGo_ids_nodup (fuel : Nat) (xs ys : List SegmentData)
+    (bound : xs.length + ys.length ≤ fuel)
+    (sx : xs.Pairwise (fun a b => segmentLe a b = true))
+    (sy : ys.Pairwise (fun a b => segmentLe a b = true))
+    (nx : (xs.map (·.replicaId)).Nodup) (ny : (ys.map (·.replicaId)).Nodup) :
+    ((unionSegmentsGo fuel xs ys).map (·.replicaId)).Nodup := by
+  cases xs with
+  | nil => simpa only [unionSegmentsGo, List.map_map, Function.comp_def] using ny
+  | cons x xs =>
+    cases ys with
+    | nil => simpa only [unionSegmentsGo, List.map_map, Function.comp_def] using nx
+    | cons y ys =>
+      cases fuel with
+      | zero => exact False.elim (Nat.not_succ_le_zero _ bound)
+      | succ fuel =>
+        obtain ⟨xAbsent, nxTail⟩ := List.nodup_cons.mp nx
+        obtain ⟨yAbsent, nyTail⟩ := List.nodup_cons.mp ny
+        have leftBound : xs.length + (y :: ys).length ≤ fuel := by
+          apply Nat.le_of_succ_le_succ
+          simpa only [List.length_cons, Nat.succ_add] using bound
+        have rightBound : (x :: xs).length + ys.length ≤ fuel := Nat.le_of_succ_le_succ bound
+        rw [unionSegmentsGo]
+        by_cases same : x.replicaId = y.replicaId
+        · have tailBound := Nat.le_trans (Nat.le_succ (xs.length + ys.length)) leftBound
+          simp only [beq_iff_eq, same, ite_true, List.map_cons, List.nodup_cons,
+            unionSegmentsGo_id_mem fuel xs ys y.replicaId tailBound]
+          exact ⟨fun h => h.elim (same ▸ xAbsent) yAbsent,
+            unionSegmentsGo_ids_nodup fuel xs ys tailBound sx.tail sy.tail nxTail nyTail⟩
+        · by_cases le : x.replicaId ≤ y.replicaId
+          · have earlier : ¬ y.replicaId ≤ x.replicaId := fun rev => same (String.le_antisymm le rev)
+            simp only [beq_iff_eq, same, ite_false, le, decide_true, ite_true, List.map_cons,
+              List.nodup_cons, unionSegmentsGo_id_mem fuel xs (y :: ys) x.replicaId leftBound]
+            exact ⟨fun h => h.elim xAbsent (id_absent_before y ys x.replicaId sy earlier),
+              unionSegmentsGo_ids_nodup fuel xs (y :: ys) leftBound sx.tail sy nxTail ny⟩
+          · simp only [beq_iff_eq, same, le, decide_false, Bool.false_eq_true, ite_false,
+              List.map_cons, List.nodup_cons,
+              unionSegmentsGo_id_mem fuel (x :: xs) ys y.replicaId rightBound]
+            exact ⟨fun h => h.elim (id_absent_before x xs y.replicaId sx le) yAbsent,
+              unionSegmentsGo_ids_nodup fuel (x :: xs) ys rightBound sx sy.tail nx nyTail⟩
+termination_by fuel
+
+/-- The production merge emits exactly the replica IDs present in either input. -/
+theorem unionSegments_id_mem_iff (xs ys : List SegmentData) (replica : String) :
+    replica ∈ (unionSegments xs ys).map (·.replicaId) ↔
+      replica ∈ xs.map (·.replicaId) ∨ replica ∈ ys.map (·.replicaId) := by
+  let px := List.mergeSort_perm xs segmentLe
+  let py := List.mergeSort_perm ys segmentLe
+  have bound : (xs.mergeSort segmentLe).length + (ys.mergeSort segmentLe).length ≤
+      xs.length + ys.length := by
+    rw [px.length_eq, py.length_eq]
+    exact Nat.le_refl _
+  rw [unionSegments, unionSegmentsGo_id_mem _ _ _ replica bound, (px.map (·.replicaId)).mem_iff,
+    (py.map (·.replicaId)).mem_iff]
+
+/-- One segment per replica on each side gives one segment per replica after merging. -/
+theorem unionSegments_ids_nodup (xs ys : List SegmentData)
+    (nx : (xs.map (·.replicaId)).Nodup) (ny : (ys.map (·.replicaId)).Nodup) :
+    ((unionSegments xs ys).map (·.replicaId)).Nodup := by
+  let px := List.mergeSort_perm xs segmentLe
+  let py := List.mergeSort_perm ys segmentLe
+  have bound : (xs.mergeSort segmentLe).length + (ys.mergeSort segmentLe).length ≤
+      xs.length + ys.length := by
+    rw [px.length_eq, py.length_eq]
+    exact Nat.le_refl _
+  exact unionSegmentsGo_ids_nodup _ _ _ bound
+    (List.pairwise_mergeSort segmentLe_trans segmentLe_total xs)
+    (List.pairwise_mergeSort segmentLe_trans segmentLe_total ys)
+    ((px.map (·.replicaId)).symm.nodup nx) ((py.map (·.replicaId)).symm.nodup ny)
+
+/-- The segment merge computes the canonical union of the first segment for
+    each replica on both sides. For unique input IDs, this covers every segment
+    for that replica, and `unionSegments_ids_nodup` preserves that invariant. -/
 theorem unionSegments_replicaBytes (xs ys : List SegmentData) (replica : String) :
     replicaBytes (unionSegments xs ys) replica =
       unionLines (replicaBytes xs replica) (replicaBytes ys replica) := by
@@ -429,6 +550,8 @@ theorem unionSegments_replicaBytes (xs ys : List SegmentData) (replica : String)
     (List.pairwise_mergeSort segmentLe_trans segmentLe_total ys),
     replicaBytes_mergeSort, replicaBytes_mergeSort]
 
+/-- Exact line membership for the selected segment of a replica. When the input
+    ID lists are unique, this covers all lines for that replica. -/
 theorem unionSegments_mem_iff (xs ys : List SegmentData) (replica : String) (line : ByteArray) :
     line ∈ completeLines (replicaBytes (unionSegments xs ys) replica) ↔
       line ∈ completeLines (replicaBytes xs replica) ∨ line ∈ completeLines (replicaBytes ys replica) := by

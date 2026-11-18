@@ -57,6 +57,8 @@ def landmarkTheorems : Array Name := #[
   `Tl.Sync.unionLines_mem_iff,
   `Tl.Sync.unionLines_comm,
   `Tl.Sync.unionLines_idem,
+  `Tl.Sync.unionSegments_id_mem_iff,
+  `Tl.Sync.unionSegments_ids_nodup,
   `Tl.Sync.unionSegments_mem_iff,
   `Tl.Sync.unionSegments_comm,
   `Tl.Sync.unionSegments_idem,

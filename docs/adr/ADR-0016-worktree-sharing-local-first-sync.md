@@ -200,7 +200,10 @@ on-disk content until the ref next moves; `tl sync` re-materializes
 unconditionally (it ignores the marker), and `doctor` can reconcile marker vs
 on-disk. Crash safety is intact regardless: the foreign write is an atomic
 rename and the marker is written *after* it, so a crash leaves a stale (never
-ahead-of-disk) marker that the next read corrects.
+ahead-of-disk) marker that the next read corrects. Stop writers to the state
+directory before manually removing or replacing `.tl/local/replica`. An
+in-flight transaction can still append under the old identity, and a refresh
+can apply a snapshot captured before that append.
 
 ### 4. Auto-sync defaults on for worktrees
 

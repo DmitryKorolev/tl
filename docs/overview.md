@@ -33,7 +33,7 @@ carried assumption (the Trusted section below) — never a vibe.
 |---|---|---|
 | CRDT convergence | the state join (issues/edges/labels OR-Sets, scalar LWW-registers, and the per-key-LWW `meta` map) is commutative, associative, idempotent ⇒ replicas with the same op-set materialize identical state | 0002, 0004 |
 | Fold order/dup-insensitivity | `fold (π ops) = fold ops`; `fold (ops ++ ops) = fold ops` (the git-concat requirement) | 0001, 0004 |
-| Canonical transport union | For each replica, the production merge preserves exactly the complete lines from either segment. Opposite merge directions and replay of an already merged segment leave the canonical bytes equal. Byte framing, byte order and adjacent deduplication are proved in `Tl/Store/Lines.lean` and `Tl/Sync/Merge.lean`. | 0001, 0004, 0008 |
+| Canonical transport union | The production merge emits exactly the union of the input replica IDs. With one segment per replica ID in each input, the output has one segment per ID and preserves exactly the complete lines from either side. Opposite merge directions and replay preserve the canonical bytes per replica. Disk enumeration supplies at most one file per canonical replica ID, and the Git tree reader rejects duplicate names. Byte framing and the merge laws are proved in `Tl/Store/Lines.lean` and `Tl/Sync/Merge.lean`. | 0001, 0004, 0008 |
 | `ready` soundness + completeness | `i ∈ ready s now ↔ open ∧ ¬epic ∧ (deferUntil).all (·≤now) ∧ every blocker's effectiveStatus ∈ {done,cancelled}` (epic blockers discharge by rollup, not stored status) | 0004, 0003, 0010 |
 | Totality on cyclic/dangling graphs | `ready` / `apply` / `effectiveStatus` / cycle detection total with no acyclicity precondition; dangling edges inert | 0003, 0004 |
 | Honest liveness (deadlock-freedom) | one-directional: an open non-epic non-deferred issue with all blockers closed ⇒ `ready` non-empty; a stuck live working set ⇒ a cycle in the readiness-dependency relation `≺` (blocks edges + epic-rollup-on-open-children; pure or mixed-kind) — the only tool-pathological stall | 0003, 0004 |
@@ -411,8 +411,11 @@ are read against, the roots and source directories each scope owns; a mismatch
 there is reported by the module arms rather than passed over (ADR-0026); replica-id uniqueness (scoped: holds absent a sub-git byte-copy
 of `.tl/local/` — `cp -r`, an image snapshot, a CI cache; the nonce keeps LWW
 total even then, so this guards segment-ownership, not convergence, ADR-0007;
-minting draws from the ADR-0019 shim's OS CSPRNG);
-the deterministic import replica-id is explicitly scoped out of live
+minting draws from the ADR-0019 shim's OS CSPRNG). Snapshot uniqueness
+relies on the filesystem enumerating each directory entry once and on the
+Git tree parser's duplicate-name check. Manual replica-file repair assumes
+local writers are stopped (ADR-0016 §3).
+The deterministic import replica-id is explicitly scoped out of live
 replica ownership and used only for one-shot seed logs (ADR-0005);
 issue-id uniqueness (negligible ~4e-13 birthday collision at 80-bit
 SHA-256, sibling to the above, ADR-0007); nonce uniqueness within a `(HLC, replica-id)` (128-bit CSPRNG, negligible collision in that tiny space, ADR-0007) — equivalently, per-op `Stamp` (OR-Set add-tag) uniqueness: issue-id derivation hashes the stamp, and add-wins *distinctness* (two concurrent adds of one element staying distinct live tags) rests on it (`Tl/Crdt/OrSet.lean`); it backs no frame lemma — tombstones are element-scoped, so the `unrelate` case is proved unconditionally; HLC monotonic persistence (its recovery path is pinned so a reseed cannot break it: an absent clock file reseeds, under the mutation lock, from `max(max HLC over all local segments, now())`, a corrupt one fails closed — ADR-0007) — and the read-time skew window (ADR-0007) rests on this same system-clock assumption for its *timeliness* (how promptly a future-dated foreign op becomes visible), but **not** for convergence, which is clock-independent: deferral is monotone in `now`, so every replica converges as its clock advances regardless of the clock's accuracy;
