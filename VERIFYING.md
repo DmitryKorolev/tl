@@ -41,11 +41,13 @@ to identify its artifacts.
 
 For an asset named `$asset`, download the asset, `SHA256SUMS`,
 `SHA256SUMS.sigstore.json`, and the matching `$asset.sigstore.json` bundle from
-the same GitHub Release. Pin the verifier inputs once:
+the same GitHub Release. Set `tag` to the release you intend to verify and
+derive the exact certificate identity.
 
 ```sh
 issuer='https://token.actions.githubusercontent.com'
-identity='^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
+tag='v0.1.0'
+identity="https://github.com/DmitryKorolev/tl/.github/workflows/release.yml@refs/tags/$tag"
 ```
 
 Verify the sums file itself before using it:
@@ -54,7 +56,7 @@ Verify the sums file itself before using it:
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore.json \
   --certificate-oidc-issuer "$issuer" \
-  --certificate-identity-regexp "$identity"
+  --certificate-identity "$identity"
 ```
 
 Select the asset's exact filename, verify its digest, and then verify its own
@@ -65,26 +67,26 @@ awk -v name="$asset" '$2 == name { print }' SHA256SUMS | shasum -a 256 -c -
 cosign verify-blob "$asset" \
   --bundle "$asset.sigstore.json" \
   --certificate-oidc-issuer "$issuer" \
-  --certificate-identity-regexp "$identity"
+  --certificate-identity "$identity"
 ```
 
-The expression is deliberately anchored. It accepts SemVer release and
-pre-release tags, but only when GitHub's OIDC certificate names the direct
-`.github/workflows/release.yml` workflow in this repository. The bundle must
-contain the artifact signature, certificate, and Rekor transparency-log
+The exact identity binds both signatures to the direct
+`.github/workflows/release.yml` workflow and the selected release tag. The bundle must contain the artifact signature, certificate, and Rekor transparency-log
 inclusion proof; a missing or invalid proof is a verification failure, not a
 reason to query the log and continue.
 
-The normal installer verifies both checks. Its explicit
+The installer verifies both signatures against the exact tag it is installing
+and checks the asset digest. Its explicit
 `TL_INSTALL_SKIP_SIGNATURE=1` escape skips only the Sigstore check: SHA-256
 verification remains mandatory. This is for an environment where cosign cannot
 run, not a weaker default.
 
-## The same checks, scripted
+## Standalone verifier
 
-`scripts/verify-release-artifacts.sh` in this repository performs exactly the
-steps above, reading the issuer and identity from `release/identity.pin` so
-there is no second copy of the pin to drift:
+`scripts/verify-release-artifacts.sh` in this repository checks the
+signatures and digests using the release-family expression from
+`release/identity.pin`. Use the commands above when you need to verify a
+specific tag.
 
 ```sh
 scripts/verify-release-artifacts.sh <download-dir> tl-linux-x64
@@ -105,8 +107,9 @@ hand cosign a pattern meaning "a backslash followed by any character", matching
 no real certificate and rejecting every genuine signature while looking exactly
 like tampering. The pin is data — never sourced, never evaluated, read with
 `IFS= read -r` from one opened descriptor and passed to cosign as arguments. It
-is generated from `release/identity.json` by `tlrelease write-pin` and a test
-fails if the two disagree, so there is still one place the pin is decided.
+is generated from `release/identity.json` by `tlrelease write-pin`. Its
+release-family expression is
+`^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$`. A test detects drift between the two files.
 
 It honours the same `TL_INSTALL_SKIP_SIGNATURE=1` escape as the installer —
 one hatch, one name, so a reader who sets the documented variable cannot end up
@@ -115,8 +118,8 @@ variable, it refuses rather than quietly degrading to a digest-only check.
 
 `install.sh` performs the same checks but does not call this script: it is
 piped straight into a shell with no checkout to read, so it embeds its own copy
-of the issuer and the certificate expression. `Tests/ReleaseTests.lean` fails if
-that copy drifts from `release/identity.json`.
+of the issuer, repository and workflow path. The release tests check those
+values against `release/identity.json` and exercise the tag binding.
 
 ## Identity history and rotation
 

@@ -431,7 +431,10 @@ Binary distribution is gated on a verifiable release pipeline:
 
   The expression permits SemVer release and pre-release tags, but is anchored
   to this repository and workflow. A valid certificate from any other GitHub
-  repository, workflow path, branch, or non-SemVer tag fails verification.
+  repository, workflow path, branch, or non-SemVer tag fails this
+  release-family check. The installer and manual per-tag procedure pin
+  the exact certificate identity for the selected tag, for both the sums
+  and the asset. The standalone verifier uses the release-family expression.
 - Each asset has a Sigstore bundle containing its signature, Fulcio
   certificate, and Rekor inclusion proof. Verification requires the proof in
   the bundle; it never repairs a missing proof by trusting an unbound live-log

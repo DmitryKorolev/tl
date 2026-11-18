@@ -4,6 +4,7 @@ This module imports no product or test code, so the release policy can run it
 inside the runtime-stripped container. -/
 import release.AdapterFixture
 import release.Command
+import release.Model
 
 namespace Release.InstallerSuite
 
@@ -16,6 +17,7 @@ private structure InstallCase where
   os : String := "Linux"
   arch : String := "x86_64"
   target : String := "linux-x64"
+  version : String := "v1.2.3"
   skip : String := "0"
   fault : String := ""
   notice : String := "absent"
@@ -31,6 +33,8 @@ private structure InstallCase where
 
 private def installCases : List InstallCase := [
   { name := "signed" },
+  { name := "signed-latest", fault := "latest", reached := ["latest"] },
+  { name := "signed-prerelease", version := "v1.2.3-rc.1" },
   { name := "replace", fault := "existing" },
   { name := "uppercase", fault := "uppercase" },
   { name := "binary-marker", fault := "binary-marker" },
@@ -63,6 +67,8 @@ private def installCases : List InstallCase := [
     diagnostic := "TL_VERSION is not", signatures := [], absent := ["curl"] },
   { name := "http-refused", fault := "http", status := 1, installed := false,
     diagnostic := "could not download", signatures := [], reached := ["curl"] },
+  { name := "file-redirect-refused", fault := "file-redirect", status := 1, installed := false,
+    diagnostic := "Redirects must use HTTPS", signatures := [], reached := ["curl", "file-redirect"] },
   { name := "missing-binary", fault := "missing-asset", status := 1, installed := false,
     diagnostic := "could not download", signatures := [], reached := ["curl"] },
   { name := "missing-sums", fault := "missing-SHA256SUMS", status := 1, installed := false,
@@ -73,6 +79,9 @@ private def installCases : List InstallCase := [
     installed := false, diagnostic := "could not download", signatures := ["SHA256SUMS"] },
   { name := "sums-signature", fault := "signature-SHA256SUMS", status := 1, installed := false,
     diagnostic := "signature on SHA256SUMS", signatures := ["SHA256SUMS"] },
+  { name := "wrong-release-tag", fault := "wrong-tag", version := "v2.0.0", status := 1,
+    installed := false, diagnostic := "certificate identity from a different release tag",
+    signatures := ["SHA256SUMS"] },
   { name := "asset-signature", fault := "signature-asset", status := 1, installed := false,
     diagnostic := "did not verify against" },
   { name := "cosign-broken", fault := "cosign-broken", status := 1, installed := false,
@@ -132,14 +141,27 @@ private def installCases : List InstallCase := [
 private def installCurl : String := r#"#!/bin/sh
 set -eu
 printf 'curl\n' >> "$PROBE_EVENTS"
+if [ "$1" = -fsSLI ]; then
+  [ "$#" -eq 10 ] && [ "$PROBE_FAULT" = latest ] &&
+  [ "$2" = -o ] && [ "$3" = /dev/null ] && [ "$4" = -w ] && [ "$5" = '%{url_effective}' ] &&
+  [ "$6" = --proto ] && [ "$7" = '=https' ] && [ "$8" = --proto-redir ] && [ "$9" = '=https' ] &&
+  [ "${10}" = "$PROBE_LATEST" ] || exit 90
+  printf 'latest\n' >> "$PROBE_EVENTS"
+  printf '%s\n' "$PROBE_EFFECTIVE"
+  exit 0
+fi
 [ "$#" -eq 10 ] && [ "$1" = -fsSL ] && [ "$2" = --retry ] &&
 [ "$3" = 3 ] && [ "$4" = --proto ] && [ "$5" = '=https,file' ] &&
-[ "$6" = --proto-redir ] && [ "$7" = '=https,file' ] && [ "$8" = -o ] || exit 91
+[ "$6" = --proto-redir ] && [ "$7" = '=https' ] && [ "$8" = -o ] || exit 91
 url=${10}
 name=${url##*/}
 [ "$url" = "$PROBE_BASE/$name" ] || exit 92
 printf '%s\n' "$name" >> "$PROBE_FETCHES"
 case $url in https://*|file://*) ;; *) exit 93 ;; esac
+if [ "$PROBE_FAULT" = file-redirect ]; then
+  printf 'file-redirect\n' >> "$PROBE_EVENTS"
+  exit 1
+fi
 case $name in
   "$PROBE_ASSET"|SHA256SUMS|SHA256SUMS.sigstore.json|"$PROBE_ASSET.sigstore.json"|THIRD-PARTY-LICENSES) ;;
   *) exit 94 ;;
@@ -170,8 +192,9 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
     let realCp ← resolve "cp"
     let realMv ← resolve "mv"
     let realMkdir ← resolve "mkdir"
-    let pin ← IO.FS.readFile (root / "release/identity.pin")
-    let pinLines := pin.splitOn "\n"
+    let identityPath := root / "release/identity.json"
+    let signingIdentity ← requireResult
+      (Release.Identity.parse identityPath.toString (← IO.FS.readFile identityPath))
     -- Resolve and prepare immutable tool manifests once per suite, rather
     -- than spawning tool-discovery processes for every corpus row.
     let modes := (cases.map fun row =>
@@ -249,13 +272,21 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
           rows := rows ++ [{ name := "installer readonly: skipped because this user bypasses write permissions", passed := true, skipped := true }]
           continue
       if row.fault == "occupied" then IO.FS.createDirAll (dest / "tl/occupied")
-      let url := if row.fault == "http" then "http://invalid.example/release" else "file://" ++ release.toString
+      let releases := s!"https://github.com/{signingIdentity.repository}/releases"
+      let url := match row.fault with
+        | "latest" => s!"{releases}/download/{row.version}"
+        | "http" => "http://invalid.example/release"
+        | "file-redirect" => "https://mirror.example/release"
+        | _ => "file://" ++ release.toString
+      let certificatePrefix :=
+        s!"https://github.com/{signingIdentity.repository}/{signingIdentity.releaseWorkflow}@refs/tags/"
+      let certificate := certificatePrefix ++ row.version
       let events := root / "events"
       let signatures := root / "signatures"
       let digests := root / "digests"
       let fetches := root / "fetches"
       let args := #["-i", s!"PATH={bin}{if row.fault == "on-path" then ":" ++ dest.toString else ""}",
-        s!"HOME={root}", s!"TMPDIR={root / "tmp"}", s!"TL_INSTALL_SKIP_SIGNATURE={row.skip}", s!"TL_INSTALL_BASE_URL={url}",
+        s!"HOME={root}", s!"TMPDIR={root / "tmp"}", s!"TL_INSTALL_SKIP_SIGNATURE={row.skip}",
         s!"PROBE_BASE={url}", s!"PROBE_RELEASE={release}", s!"PROBE_ASSET={asset}",
         s!"PROBE_EVENTS={events}", s!"PROBE_SIGNATURES={signatures}", s!"PROBE_FETCHES={fetches}",
         s!"PROBE_DIGESTS={digests}", s!"PROBE_OS={row.os}", s!"PROBE_ARCH={row.arch}",
@@ -263,8 +294,11 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
         s!"PROBE_REAL_CP={realCp}", s!"PROBE_REAL_MV={realMv}", s!"PROBE_REAL_MKDIR={realMkdir}",
         s!"PROBE_DEST={dest}", s!"PROBE_SHARE={share}", s!"PROBE_BACKEND={backend}",
         s!"PROBE_DIGEST_MODE={row.digestMode}", s!"PROBE_BACKEND_SHASUM={if digester.command == "shasum" then "1" else "0"}",
-        s!"PROBE_ISSUER={pinLines[0]!}", s!"PROBE_IDENTITY={pinLines[1]!}"] ++
-        (if row.fault == "no-version" then #[] else #["TL_VERSION=v1.2.3"]) ++
+        s!"PROBE_ISSUER={signingIdentity.certificateOidcIssuer}", s!"PROBE_IDENTITY={certificate}",
+        "PROBE_IDENTITY_FLAG=--certificate-identity", s!"PROBE_SIGNED_IDENTITY={certificatePrefix}v1.2.3",
+        s!"PROBE_LATEST={releases}/latest", s!"PROBE_EFFECTIVE={releases}/tag/{row.version}"] ++
+        (if row.fault == "latest" then #[] else #[s!"TL_INSTALL_BASE_URL={url}"]) ++
+        (if ["no-version", "latest"].contains row.fault then #[] else #[s!"TL_VERSION={row.version}"]) ++
         (if row.fault == "default-install" then #[] else #[s!"TL_INSTALL_DIR={dest}"]) ++
         (if row.fault == "default-share" then #[] else #[s!"TL_INSTALL_SHARE_DIR={share}"]) ++
         #["/bin/sh", script.toString] ++ (if row.fault == "argument" then #["--bogus"] else #[])

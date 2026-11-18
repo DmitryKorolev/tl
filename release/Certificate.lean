@@ -305,7 +305,7 @@ private def identityCheckDecision (identityPath : String) : Decision String := d
   | failures =>
       decline (s!"the pinned signing identity does not hold.\n"
         ++ String.join (failures.map fun failure => s!"  {failure}\n")
-        ++ "Every verifier of this project — VERIFYING.md, the installer, the standalone artifact verifier and the Homebrew formula — is pinned to this expression, so an identity that is wrong here makes genuine releases unverifiable, and one that is too wide makes forged ones verifiable.")
+        ++ "The standalone artifact verifier and Homebrew formula use this release-family expression. The installer and the manual commands in VERIFYING.md bind the same repository and workflow to a selected tag.")
 
 private def identityCheckCommand : Command :=
   optionCommand "identity-check" "--identity <identity.json>"

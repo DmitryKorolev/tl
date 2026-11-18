@@ -1,6 +1,6 @@
 #!/bin/sh
-# Verify downloaded tl release artifacts exactly as VERIFYING.md tells a user
-# to, against the identity pinned in release/identity.json.
+# Verify downloaded tl release artifacts against the release-family identity
+# pinned in release/identity.json. VERIFYING.md describes both verification modes.
 #
 #   scripts/verify-release-artifacts.sh [--require-signature] <dir> <asset>...
 #
@@ -14,9 +14,9 @@
 #
 # `install.sh` performs the same checks but does not call this script — it is
 # piped into a shell with no checkout to read, so it carries its own copy of
-# the pinned issuer and expression. `Tests/ReleaseTests.lean` fails if that
-# copy drifts from `release/identity.json`. The digest and reporting helpers it
-# uses are defined here and tested through its public process interface.
+# the pinned issuer, repository and workflow. It checks the exact tag it will
+# install. This verifier checks the release family in the two-line pin.
+# The digest and reporting helpers here are tested through the public interface.
 #
 # Order matters and is not an accident. The signature on `SHA256SUMS` is
 # checked *first*, because every digest comparison afterwards trusts that file;

@@ -20,14 +20,13 @@
 # issuer below are pinned: without them a "valid Sigstore signature" means only
 # that *somebody* signed this, which is not a check.
 #
-# These two values are a copy of release/identity.json. That copy is
-# deliberate — a piped installer cannot read a file out of the repository — and
-# Tests/ReleaseTests.lean fails if it ever drifts from the canonical pin.
+# The issuer, repository and workflow path come from release/identity.json.
+# A piped installer carries those values and binds them to the requested tag.
 set -eu
 
 TL_ISSUER='https://token.actions.githubusercontent.com'
-TL_IDENTITY='^https://github\.com/DmitryKorolev/tl/\.github/workflows/release\.yml@refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
 TL_REPO='DmitryKorolev/tl'
+TL_RELEASE_WORKFLOW='.github/workflows/release.yml'
 
 die() {
   echo "tl-install: $1" >&2
@@ -51,7 +50,7 @@ verify_signature() {
   out=$(cosign verify-blob "$blob" \
           --bundle "$bundle" \
           --certificate-oidc-issuer "$TL_ISSUER" \
-          --certificate-identity-regexp "$TL_IDENTITY" 2>&1) && return 0
+          --certificate-identity "$certificate_identity" 2>&1) && return 0
   printf '%s\n' "$out" >&2
   case $out in
     *"no matching signatures"* | *"none of the expected identities matched"* | \
@@ -147,12 +146,10 @@ fetch() {
   # $1 url, $2 destination. Fails loudly: a partial or 404 download that is
   # later "verified" against a sums file from the same source proves nothing,
   # so nothing continues past a failed fetch.
-  # --proto and --proto-redir together, so neither the request nor a redirect
-  # can drop to cleartext. There is no unrestricted retry: a fallback that
-  # permits what the first call refuses would make the restriction decorative.
-  curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https,file' \
+  # Allow direct local mirrors. Every redirect must stay on HTTPS.
+  curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https' \
        -o "$2" "$1" \
-    || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets. Only https (and file:// for a local mirror) is accepted, including after a redirect."
+    || die "could not download $1. Check the network and that the release exists; if you passed TL_VERSION, confirm that tag has published assets. Use HTTPS or a direct file:// mirror. Redirects must use HTTPS."
 }
 
 # Turn the effective URL of /releases/latest into a tag, or refuse.
@@ -160,18 +157,19 @@ fetch() {
 # declared curl fixture, including transport failure and the redirect outcomes.
 version_from_effective_url() {
   effective=$1
-  case $effective in
-    */releases)
-      # GitHub answers /releases/latest with the releases index when every
-      # release is a prerelease, so this is "nothing stable yet", not a broken
-      # redirect.
-      die "https://github.com/${TL_REPO} has no stable release yet — /releases/latest resolved to the releases index, which is what GitHub returns when only prereleases exist. Pick one explicitly, for example TL_VERSION=v0.1.0-rc.1, from https://github.com/${TL_REPO}/releases."
-      ;;
-  esac
-  version=${effective##*/}
+  releases="https://github.com/${TL_REPO}/releases"
+  if [ "$effective" = "$releases" ]; then
+    die "${releases} has no stable release yet — /releases/latest resolved to the releases index, which is what GitHub returns when only prereleases exist. Pick one explicitly, for example TL_VERSION=v0.1.0-rc.1, from ${releases}."
+  fi
+  prefix="$releases/tag/"
+  version=${effective#"$prefix"}
+  if [ "$version" = "$effective" ]; then
+    die "could not work out the latest version from '${effective}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this at https://github.com/${TL_REPO}/issues."
+  fi
   case $version in
+    *[!a-zA-Z0-9.-]*) die "invalid release tag in '${effective}' — set TL_VERSION to a published tag" ;;
     v[0-9]*) ;;
-    *) die "could not work out the latest version from '${effective}' — GitHub's redirect changed shape. Set TL_VERSION to a tag such as v0.1.0 and report this at https://github.com/${TL_REPO}/issues." ;;
+    *) die "invalid release tag in '${effective}' — set TL_VERSION to a published tag" ;;
   esac
   printf '%s\n' "$version"
 }
@@ -218,7 +216,7 @@ install_notice() {
     echo "tl-install: the SHA256SUMS entry for ${notice} is ${#expected} characters, not the 64 of a SHA-256 digest, so the notice was not installed. The file is corrupt or truncated; the binary is installed and verified." >&2
     return 1
   fi
-  if ! curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https,file' \
+  if ! curl -fsSL --retry 3 --proto '=https,file' --proto-redir '=https' \
          -o "$work/$notice" "${base}/${notice}" 2>/dev/null; then
     echo "tl-install: could not download ${notice}, so it was not installed. The binary is installed and verified; 'tl licenses' prints the same content." >&2
     return 1
@@ -244,6 +242,7 @@ main() {
   need curl "curl not found — this installer downloads over HTTPS and needs it. Install curl, or download the binary manually from https://github.com/${TL_REPO}/releases and verify it per VERIFYING.md."
   detect_target
   resolve_version
+  certificate_identity="https://github.com/${TL_REPO}/${TL_RELEASE_WORKFLOW}@refs/tags/${version}"
 
   base=${TL_INSTALL_BASE_URL:-"https://github.com/${TL_REPO}/releases/download/${version}"}
   install_dir=${TL_INSTALL_DIR:-"$HOME/.local/bin"}

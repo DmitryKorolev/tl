@@ -78,35 +78,24 @@ def releaseIdentityTests : IO (List Outcome) := do
     check "release identity: certificate expression is end-anchored" (identity.endsWith "$") identity,
     check "release identity: certificate expression fixes repository and workflow"
       (has identity "DmitryKorolev/tl/\\.github/workflows/release\\.yml@refs/tags/v") identity ]
-  -- The installer is a piped shell script: it cannot read release/identity.json
-  -- out of a checkout, so it carries its own copy of the issuer and the
-  -- certificate expression. That copy is the one users actually verify
-  -- against, which makes drift here a silent downgrade of the check rather
-  -- than a documentation lapse.
   let installerRaw ← readRequired (installerPath : FilePath)
   outs := outs ++ [check "release identity: the installer exists" installerRaw.isOk s!"{installerRaw}"]
-  -- Per-file expectations rather than one list applied everywhere. The prose
-  -- documents describe the whole arrangement, so they carry every pin; the
-  -- installer is a verifier, so it carries the values a verifier acts on. It
-  -- has no reason to name the npm package, and it holds the workflow path only
-  -- inside the (escaped) certificate expression, so demanding the plain string
-  -- there would be a coincidence to satisfy rather than an invariant to keep.
   let allPins := [("repository", repository), ("npm package", npmPackage),
     ("workflow", workflow), ("OIDC issuer", issuer), ("certificate identity", identity)]
   let verifierPins := [("repository", repository), ("OIDC issuer", issuer),
     ("certificate identity", identity)]
+  let installerPins := [("repository", repository), ("workflow", workflow), ("OIDC issuer", issuer)]
   -- The Homebrew formula is the fourth home of the same pin, and the one a
-  -- `brew install` user relies on. Like the installer it is a verifier, so it
-  -- carries the verifier pins.
+  -- `brew install` user relies on. It carries the release-family expression.
   let formulaRaw ← readRequired ("Formula/tl.rb" : FilePath)
   outs := outs ++ [check "release identity: the Homebrew formula exists" formulaRaw.isOk s!"{formulaRaw}"]
   -- The fifth home of the pin, and the one the scripted verifier actually
   -- reads: two inert lines a POSIX shell can take without a JSON parser. It
-  -- carries the verifier pins for the same reason install.sh does.
+  -- carries the release-family expression for the standalone verifier.
   let pinRaw ← readRequired ("release/identity.pin" : FilePath)
   outs := outs ++ [check "release identity: the two-line pin exists" pinRaw.isOk s!"{pinRaw}"]
   let docs := [("VERIFYING.md", verifyingRaw, allPins), ("ADR-0006", distributionRaw, allPins),
-    ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, verifierPins),
+    ("ADR-0014", threatRaw, allPins), ("install.sh", installerRaw, installerPins),
     ("Formula/tl.rb", formulaRaw, verifierPins),
     ("release/identity.pin", pinRaw, verifierPins)]
   for (name, raw, pins) in docs do

@@ -34,7 +34,7 @@ case $1 in
   -fsSL)
     [ "$2" = --retry ] && [ "$3" = 3 ] && [ "$4" = --proto ] &&
     [ "$5" = '=https,file' ] && [ "$6" = --proto-redir ] &&
-    [ "$7" = '=https,file' ] && [ "$8" = -o ] || exit 93
+    [ "$7" = '=https' ] && [ "$8" = -o ] || exit 93
     url=${10}
     case $url in
       "$PROBE_DOWNLOAD_BASE/"*) ;;
@@ -75,6 +75,9 @@ def installerProcessTests (script : System.FilePath := "install.sh") : IO (List 
         ("prerelease", "https://github.com/DmitryKorolev/tl/releases/tag/v0.1.0-rc.1", "0", 0, "v0.1.0-rc.1"),
         ("no-stable", "https://github.com/DmitryKorolev/tl/releases", "0", 1, "no stable release yet"),
         ("changed-redirect", "https://github.com/DmitryKorolev/tl/something/else", "0", 1, "redirect changed shape"),
+        ("wrong-repository", "https://github.com/other/tl/releases/tag/v1.2.3", "0", 1, "redirect changed shape"),
+        ("extra-path", "https://github.com/DmitryKorolev/tl/releases/tag/v1.2.3/v1.2.2", "0", 1, "invalid release tag"),
+        ("invalid-tag", "https://github.com/DmitryKorolev/tl/releases/tag/main", "0", 1, "invalid release tag"),
         ("transport", "https://github.com/DmitryKorolev/tl/releases/tag/v1.2.3", "37", 1, "could not reach GitHub")]
       do
       IO.FS.createDirAll (base / "tmp")

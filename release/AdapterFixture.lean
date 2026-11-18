@@ -29,13 +29,19 @@ set -eu
 printf 'cosign\n' >> "$PROBE_EVENTS"
 [ "$#" -eq 8 ] && [ "$1" = verify-blob ] && [ "$3" = --bundle ] &&
 [ "$5" = --certificate-oidc-issuer ] && [ "$6" = "$PROBE_ISSUER" ] &&
-[ "$7" = --certificate-identity-regexp ] && [ "$8" = "$PROBE_IDENTITY" ] || exit 91
+[ "$7" = "${PROBE_IDENTITY_FLAG:---certificate-identity-regexp}" ] && [ "$8" = "$PROBE_IDENTITY" ] || exit 91
 blob=$2
 [ "$4" = "$blob.sigstore.json" ] && [ -f "$blob" ] && [ -f "$4" ] || exit 92
 name=${blob##*/}
 printf '%s\n' "$name" >> "$PROBE_SIGNATURES"
 case $name in SHA256SUMS|"$PROBE_ASSET"|"${PROBE_SECOND_ASSET-}") ;; *) exit 93 ;; esac
 case $PROBE_FAULT in
+  wrong-tag)
+    if [ "$name" = SHA256SUMS ] && [ "$8" != "$PROBE_SIGNED_IDENTITY" ]; then
+      echo 'certificate identity from a different release tag'
+      exit 1
+    fi
+    ;;
   signature-SHA256SUMS) [ "$name" != SHA256SUMS ] || { echo 'invalid signature'; exit 1; } ;;
   signature-asset) [ "$name" != "$PROBE_ASSET" ] || { echo 'invalid signature'; exit 1; } ;;
   signature-second) [ "$name" != "${PROBE_SECOND_ASSET-}" ] || { echo 'invalid signature'; exit 1; } ;;
