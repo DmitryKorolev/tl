@@ -180,14 +180,14 @@ def installerSuiteCommandTests : IO (List Outcome) := do
   try
     let bad := base / "bad-adapter"
     IO.FS.createDirAll (bad / "release")
-    IO.FS.writeFile (bad / "release/identity.pin") (← IO.FS.readFile "release/identity.pin")
+    IO.FS.writeFile (bad / "release/identity.json") (← IO.FS.readFile "release/identity.json")
     IO.FS.writeFile (bad / "install.sh") "#!/bin/sh\nexit 0\n"
     let mut rows : List Outcome := []
     for (name, args, status, diagnostic) in [
         ("success", #["--root", "."], 0, "installer public-process corpus passed"),
         ("missing-root", #[], 2, "--root"),
         ("unknown-option", #["--root", ".", "--unknown"], 2, "unknown"),
-        ("unreadable-input", #["--root", base.toString], 1, "identity.pin"),
+        ("unreadable-input", #["--root", base.toString], 1, "identity.json"),
         ("failed-observations", #["--root", bad.toString], 1, "Repair the installer")]
       do
       let result ← IO.Process.output {
