@@ -559,8 +559,8 @@ def syncRefNameValidationTests : IO (List Outcome) := do
       (back.length == 1 && back.head?.map (·.replicaId) == some "0123456789abc")
       s!"got {back.map (·.replicaId)}",
      check "the non-canonical name is instead a carried-unknown entry"
-      (foreign.map (·.name) == ["tooshort.jsonl"])
-      s!"got {foreign.map (·.name)}"]
+      (foreign.map (·.name) == ["tooshort.jsonl".toUTF8])
+      s!"got {foreign.map (·.name.data)}"]
   | .error e => return [{ name := "readRef junk-name filter", passed := false, msg := e.message }]
 
 /-- Blob-write helper: hash `content` into the repo's object store, returning
@@ -571,6 +571,97 @@ private def hashBlob (d : Dirs) (content : String) : IO String := do
   let o ← IO.Process.output { cmd := "git", args := #["-C", d.base, "hash-object", "-w", src.toString] }
   IO.FS.removeFile src
   return o.stdout.trimAscii.toString
+
+private def treeRecord (name : ByteArray) (kind : String := "100644 blob")
+    (oid : String := String.ofList (List.replicate 40 'a')) : ByteArray :=
+  (s!"{kind} {oid}\t".toUTF8 ++ name).push 0
+
+def syncTreeListingTests : List Outcome := Id.run do
+  let replica := "0123456789abc"
+  let segmentName := s!"{replica}.jsonl".toUTF8
+  let oid := String.ofList (List.replicate 64 'a')
+  let unknown := ByteArray.mk #[255, 9, 10]
+  let raw := treeRecord unknown
+  let valid := parseTreeListing
+    (treeRecord segmentName (oid := oid) ++ treeRecord "0123456789abd.jsonl".toUTF8 "040000 tree" ++ raw)
+  let malformed :=
+    [("missing NUL", "100644 blob aaaa\tname".toUTF8),
+     ("empty record", ByteArray.mk #[0]),
+     ("no tab", "100644 blob aaaa".toUTF8.push 0),
+     ("invalid metadata encoding", ByteArray.mk #[255, 9, 97, 0]),
+     ("truncated metadata", treeRecord "x".toUTF8 "100644"),
+     ("invalid mode", treeRecord "x".toUTF8 "100648 blob"),
+     ("invalid type", treeRecord "x".toUTF8 "100644 file"),
+     ("invalid oid", treeRecord "x".toUTF8 (oid := "bogus")),
+     ("empty name", treeRecord ByteArray.empty),
+     ("duplicate name", raw ++ raw)]
+  return [check "an empty tree listing parses as an empty tree"
+      (match parseTreeListing ByteArray.empty with
+       | .ok ([], []) => true
+       | _ => false),
+     check "tree parser classifies segment blobs and carries arbitrary name bytes"
+      (match valid with
+       | .ok ([segment], [entry]) =>
+           segment == { replicaId := replica, oid }
+             && entry == { name := unknown, raw := raw.extract 0 (raw.size - 1) }
+       | _ => false),
+     check "Git text decode accepts UTF-8 and preserves text"
+      (match decodeGitStdout "message\n".toUTF8 with
+       | .ok "message\n" => true
+       | _ => false),
+     check "Git text decode refuses undecodable output with recovery guidance"
+      (match decodeGitStdout (ByteArray.mk #[255]) with
+       | .error e => (toString e).contains "then retry"
+       | .ok _ => false)] ++
+    malformed.map fun (name, bytes) =>
+      check s!"tree listing refuses {name}"
+        (match parseTreeListing bytes with
+         | .error e => e.code == .internal && e.message.contains "then retry"
+         | .ok _ => false)
+
+private def rawFixtureGit (d : Dirs) (args : List String)
+    (stdin : ByteArray := .empty) : IO ByteArray := do
+  let (status, out, err) ← runBounded
+    { cmd := "git", args := #["-C", d.base] ++ args.toArray }
+    stdin 5000
+  unless status == 0 do throw (IO.userError s!"git {args} failed: {err}")
+  return out
+
+/-- Plant the tree using Git independently of the writer under test. Publishing
+    with a fresh local replica preserves existing blobs under either quote mode. -/
+def syncRawTreeNameTests : IO (List Outcome) := do
+  let mut results := []
+  for quotePath in ["false", "true"] do
+    let d ← gitRepo
+    let ridA := (Tl.Clock.Replica.ofNat 1).id
+    let ridB := (Tl.Clock.Replica.ofNat 2).id
+    let nameA := s!"{ridA}.jsonl".toUTF8
+    let unknown := ByteArray.mk #[106, 255, 9, 10]
+    let oid ← hashBlob d "original\n"
+    let _ ← rawFixtureGit d ["config", "core.quotePath", quotePath]
+    let _ ← rawFixtureGit d ["config", "user.name", "Fixture"]
+    let _ ← rawFixtureGit d ["config", "user.email", "fixture@example.test"]
+    let tree ← rawFixtureGit d ["mktree", "-z"] (treeRecord nameA (oid := oid) ++
+      treeRecord unknown (oid := oid))
+    let tip ← rawFixtureGit d ["commit-tree", (String.fromUTF8! tree).trimAscii.toString, "-m", "plant tree"]
+    let _ ← rawFixtureGit d ["update-ref", "refs/tl/log", (String.fromUTF8! tip).trimAscii.toString]
+    let logDir := System.FilePath.mk d.base / ".tl" / "log"
+    IO.FS.createDirAll logDir
+    IO.FS.createDirAll (logDir.parent.get! / "local")
+    IO.FS.writeBinFile (logDir / s!"{ridB}.jsonl") "new\n".toUTF8
+    let published ← runTl (syncLocal d (some ridB))
+    let persisted ← rawFixtureGit d ["ls-tree", "-z", "refs/tl/log"]
+    results := results ++ [check s!"publish preserves other segments and a raw tree name (quotePath={quotePath})"
+      (match published, parseTreeListing persisted with
+       | .ok outcome, .ok ([a, b], [entry]) =>
+         outcome.published && a.replicaId == ridA && a.oid == oid && b.replicaId == ridB
+           && entry.name == unknown
+           && entry.raw.push 0 == treeRecord unknown (oid := oid)
+       | _, _ => false)
+      (match published with
+      | .ok outcome => s!"local publish: {repr outcome}, expected new segment {ridB}"
+      | .error e => e.message)]
+  return results
 
 /-- The repo's empty tree object (written so `mktree` can reference it). -/
 private def emptyTree (d : Dirs) : IO String := do
@@ -592,14 +683,14 @@ private def treeOf (d : Dirs) (ref : String) : IO String := do
     an identical tree (no churn). -/
 def syncForeignEntryTests : IO (List Outcome) := do
   let mut o : List Outcome := []
-  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  let fe := fun (name raw : String) => ({ name := name.toUTF8, raw := raw.toUTF8 } : ForeignEntry)
   -- unionForeign (pure): disjoint names, dedup, deterministic symmetric conflict pick
   let a := fe "alpha" "100644 blob aaaa\talpha"
   let b := fe "beta" "100644 blob bbbb\tbeta"
   let b' := fe "beta" "100644 blob cccc\tbeta"
   o := o ++
     [checkEq "unionForeign unions disjoint names, name-sorted"
-      ((unionForeign [b] [a]).map (·.name)) ["alpha", "beta"],
+      ((unionForeign [b] [a]).map (·.name.data)) ["alpha".toUTF8.data, "beta".toUTF8.data],
      checkEq "unionForeign dedups an identical entry" (unionForeign [a, b] [b]) [a, b],
      checkEq "unionForeign picks the greater raw line on a same-name conflict"
       (unionForeign [b] [b']) [b'],
@@ -614,7 +705,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   o := o ++ [match ← runTl (readRefEntries d) with
     | .ok (segs, foreign) => check "readRefEntries returns the foreign entry verbatim beside the segment"
         (segs.map (·.replicaId) == [ridA] && foreign == [fe "snapshot" snapRaw])
-        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw)}"
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "readRefEntries verbatim", passed := false, msg := e.message }]
   -- the local publish leg carries it: a new own op republishes; the snapshot
   -- entry survives with its oid untouched and never lands in .tl/log/
@@ -630,7 +721,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
     | .ok (segs, foreign) => check "the local leg carries the foreign entry through the publish verbatim"
         (foreign == [fe "snapshot" snapRaw]
           && segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n{\"a\":2}\n"))
-        s!"foreign={foreign.map (·.raw)}"
+        s!"foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "local leg carries foreign", passed := false, msg := e.message }]
   o := o ++ [check "the foreign entry is never materialized into .tl/log/"
       (!(← (logDir / "snapshot").pathExists)) ""]
@@ -662,7 +753,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
           let _ ← writeRef d segs (unionForeign foreign [fe "future-dir" subRaw]) t
           readRefEntries d) with
       | .ok (_, foreign) => pure (check "a tree-typed (subtree) foreign entry is carried verbatim"
-          (foreign.any (· == fe "future-dir" subRaw)) s!"foreign={foreign.map (·.raw)}")
+          (foreign.any (· == fe "future-dir" subRaw)) s!"foreign={foreign.map (·.raw.data)}")
       | .error e => pure { name := "subtree entry carried", passed := false, msg := e.message }
     | .error e => pure { name := "subtree entry carried", passed := false, msg := e.message }]
   -- the collision guard: a segment-*named* non-blob entry is dropped outright
@@ -676,7 +767,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   o := o ++ [match ← runTl (readRefEntries dTrap) with
     | .ok (segs, foreign) => check "a segment-named non-blob entry is dropped (collision guard)"
         (segs.map (·.replicaId) == [ridA] && foreign.isEmpty)
-        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw)}"
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "segment-named non-blob dropped", passed := false, msg := e.message }]
   -- the remote leg: a foreign entry travels push → bare → second clone's pull
   let (dr, bare) ← repoWithRemote
@@ -689,7 +780,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   let dBare : Dirs := { base := bare, tlRel := ".tl" }
   o := o ++ [match ← runTl (readRefEntriesAt dBare "refs/tl/log") with
     | .ok (_, foreign) => check "the pushed remote carries the foreign entry verbatim"
-        (foreign == [fe "snapshot" snapRawR]) s!"foreign={foreign.map (·.raw)}"
+        (foreign == [fe "snapshot" snapRawR]) s!"foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "remote carries foreign", passed := false, msg := e.message }]
   let work2 ← IO.FS.createTempDir
   let _ ← IO.Process.output { cmd := "git", args := #["-C", work2.toString, "init", "-q"] }
@@ -699,7 +790,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   o := o ++ [match ← runTl (do let _ ← syncRemote d2; readRefEntries d2) with
     | .ok (segs, foreign) => check "a second clone's pull carries the foreign entry into its local ref"
         (foreign == [fe "snapshot" snapRawR] && segs.map (·.replicaId) == [ridA])
-        s!"foreign={foreign.map (·.raw)}"
+        s!"foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "pull carries foreign", passed := false, msg := e.message }]
   -- same-name conflict across clones: both sides converge on the greater raw
   -- line, whichever direction merges first (no ping-pong churn)
@@ -717,12 +808,12 @@ def syncForeignEntryTests : IO (List Outcome) := do
           let _ ← syncRemote d2
           readRefEntriesAt dBare "refs/tl/log") with
       | .ok (_, foreign) => pure (check "a same-name conflict pushes the deterministic pick to the remote"
-          (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw)} expected={expected}")
+          (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw.data)} expected={expected}")
       | .error e => pure { name := "conflict pick pushed", passed := false, msg := e.message }
     | .error e => pure { name := "conflict pick pushed", passed := false, msg := e.message }]
   o := o ++ [match ← runTl (do let _ ← syncRemote dr; readRefEntries dr) with
     | .ok (_, foreign) => check "the other clone converges to the same pick on its next sync"
-        (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw)}"
+        (foreign == [fe "snapshot" expected]) s!"foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "conflict convergence", passed := false, msg := e.message }]
   -- push/CAS retry exhaustion: even when every push attempt loses the race
   -- (injected), the locally CASed merge commits keep carrying the entry
@@ -733,7 +824,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
   let _ ← runTl (syncRemote dh (push := fun _ _ _ => pure false)) -- throws push-rejected
   o := o ++ [match ← runTl (readRefEntries dh) with
     | .ok (_, foreign) => check "the foreign entry survives push-retry exhaustion in the local ref"
-        (foreign == [fe "snapshot" snapRawH]) s!"foreign={foreign.map (·.raw)}"
+        (foreign == [fe "snapshot" snapRawH]) s!"foreign={foreign.map (·.raw.data)}"
     | .error e => { name := "foreign survives retry exhaustion", passed := false, msg := e.message }]
   return o
 
@@ -744,7 +835,7 @@ def syncForeignEntryTests : IO (List Outcome) := do
     clobber of either. -/
 def syncCasRetryForeignTests : IO (List Outcome) := do
   let mut o : List Outcome := []
-  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  let fe := fun (name raw : String) => ({ name := name.toUTF8, raw := raw.toUTF8 } : ForeignEntry)
   -- (A) local leg: the publish loses its CAS to a sibling that also rewrote
   -- the carried entries; the retry re-reads and preserves both writers' work
   let d ← gitRepo
@@ -779,7 +870,7 @@ def syncCasRetryForeignTests : IO (List Outcome) := do
         (foreign == [snap, extra]
           && segs.any (fun s => s.replicaId == ridA && segStr s == "{\"a\":1}\n{\"a\":2}\n")
           && segs.any (fun s => s.replicaId == ridB && segStr s == "{\"b\":1}\n"))
-        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name)}"
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name.data)}"
     | .error e => { name := "local CAS retry carries foreign", passed := false, msg := e.message }]
   -- (B) remote leg: the merge CAS loses to a concurrent local publisher; the
   -- retry's merge commit reaches the remote with both writers' entries
@@ -809,7 +900,7 @@ def syncCasRetryForeignTests : IO (List Outcome) := do
     | .ok (segs, foreign) => check "the pushed retry merge carries both writers' segments and foreign entries"
         (foreign == [snapR, sib2]
           && segs.any (·.replicaId == ridA) && segs.any (·.replicaId == ridC))
-        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name)}"
+        s!"segs={segs.map (·.replicaId)} foreign={foreign.map (·.name.data)}"
     | .error e => { name := "remote CAS retry carries foreign", passed := false, msg := e.message }]
   return o
 
@@ -819,7 +910,7 @@ def syncCasRetryForeignTests : IO (List Outcome) := do
     divergence that only the next segment-driven merge reconciles. -/
 def syncForeignNoOpTests : IO (List Outcome) := do
   let mut o : List Outcome := []
-  let fe := fun (name raw : String) => ({ name, raw } : ForeignEntry)
+  let fe := fun (name raw : String) => ({ name := name.toUTF8, raw := raw.toUTF8 } : ForeignEntry)
   let ridA := (Tl.Clock.Replica.ofNat 7).id
   let ridB := (Tl.Clock.Replica.ofNat 8).id
   let (d, bare) ← repoWithRemote
@@ -842,10 +933,10 @@ def syncForeignNoOpTests : IO (List Outcome) := do
     | _, _ => { name := "foreign-only no-op", passed := false, msg := "unexpected error" }]
   o := o ++ [match ← runTl (readRefEntries d), ← runTl (readRefEntriesAt dBare "refs/tl/log") with
     | .ok (_, lf), .ok (_, rf) => check "the no-op deletes neither side's entry (a stable divergence)"
-        (lf == [fA] && rf == [fB]) s!"local={lf.map (·.raw)} remote={rf.map (·.raw)}"
+        (lf == [fA] && rf == [fB]) s!"local={lf.map (·.raw.data)} remote={rf.map (·.raw.data)}"
     | _, _ => { name := "no-op preserves both sides", passed := false, msg := "unexpected error" }]
   -- the next segment-driven merge reconciles the divergence to the one pick
-  let expected := if decide (fA.raw ≤ fB.raw) then fB else fA
+  let expected := if lexLeBytes fA.raw fB.raw then fB else fA
   let _ ← runTl (do
     let tip ← refTip d
     let (segs, foreign) ← readRefEntries d
@@ -857,7 +948,7 @@ def syncForeignNoOpTests : IO (List Outcome) := do
   o := o ++ [match ← runTl (readRefEntries d), ← runTl (readRefEntriesAt dBare "refs/tl/log") with
     | .ok (_, lf), .ok (_, rf) => check "the segment-driven merge reconciles both sides to the deterministic pick"
         (lf == [expected] && rf == [expected])
-        s!"local={lf.map (·.raw)} remote={rf.map (·.raw)} expected={expected.raw}"
+        s!"local={lf.map (·.raw.data)} remote={rf.map (·.raw.data)} expected={expected.raw}"
     | _, _ => { name := "merge reconciles divergence", passed := false, msg := "unexpected error" }]
   return o
 
@@ -910,7 +1001,7 @@ def syncFetchIsolationTests : IO (List Outcome) := do
     let branchListing ← fixtureGit remote ["ls-tree", firstBranch]
     let branchOid := (((branchListing.stdout.splitOn "\t").head!).splitOn " ")[2]!
     let ordinaryFile : ForeignEntry :=
-      { name := "ordinary-file", raw := s!"100644 blob {branchOid}\tordinary-file" }
+      { name := "ordinary-file".toUTF8, raw := (s!"100644 blob {branchOid}\tordinary-file").toUTF8 }
     let branch ← writeRef remote [seg "0123456789abd" "branch\n"] [ordinaryFile] (some firstBranch)
     let _ ← fixtureGit remote ["update-ref", "refs/heads/main", branch]
     let _ ← fixtureGit remote ["update-ref", "-d", "refs/tl/log"]
@@ -1137,7 +1228,8 @@ def syncTests : IO (List Outcome) := do
     ++ (← syncRecoveryTests) ++ (← syncInheritedPipeTests)
     ++ (← syncSnapshotTests) ++ (← syncFetchIsolationTests)
     ++ (← syncEnvScrubTests)
-    ++ (← syncRefNameValidationTests) ++ (← syncForeignEntryTests)
+    ++ (← syncRefNameValidationTests) ++ syncTreeListingTests ++ (← syncRawTreeNameTests)
+    ++ (← syncForeignEntryTests)
     ++ (← syncCasRetryForeignTests) ++ (← syncForeignNoOpTests)
 
 end Tl.Tests

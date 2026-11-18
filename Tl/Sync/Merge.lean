@@ -38,7 +38,7 @@ private def lexLeBytesAux (a b : ByteArray) : Nat → Nat → Bool
       else if y < x then false
       else lexLeBytesAux a b (i + 1) fuel
 
-private def lexLeBytes (a b : ByteArray) : Bool := lexLeBytesAux a b 0 (a.size + 1)
+def lexLeBytes (a b : ByteArray) : Bool := lexLeBytesAux a b 0 (a.size + 1)
 
 /-- Adjacent dedup — on a sorted list duplicates are adjacent, so this equals
     `eraseDups` (which rescans its accumulator per element, Θ(L²)) and stays

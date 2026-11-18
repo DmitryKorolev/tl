@@ -22,7 +22,8 @@ one discovery selected. Tested I/O shell; no Mathlib. The full `tl sync`
 orchestration (local writeback + the legs) is a separate command atop
 these primitives.
 -/
-import Tl.Store.Segment
+import Tl.Sync.Merge
+import Std.Data.HashSet
 
 namespace Tl.Sync
 
@@ -214,24 +215,32 @@ private def resolveTimeouts (d : Dirs) : IO (Nat × Nat) := do
     timeoutCache.modify (fun c => (key, lo, re) :: c)
     return (lo, re)
 
+/-- Decode only textual Git commands. Tree listings and blobs use the byte path. -/
+def decodeGitStdout (out : ByteArray) : Except IO.Error String :=
+  match String.fromUTF8? out with
+  | some decoded => .ok decoded
+  | none => .error (IO.userError
+      "Git returned non-UTF-8 text — check the Git executable and repository configuration, then retry")
+
 /-- Run `git -C <repo> <args>` (optional stdin / extra env). The wall-clock bound
     is the configured local timeout, or the remote one when `remote` is set (the
     network legs). -/
-private def git (d : Dirs) (args : List String) (stdin : String := "")
+private def git (d : Dirs) (args : List String) (stdin : ByteArray := .empty)
     (env : List (String × Option String) := []) (remote : Bool := false) :
     IO IO.Process.Output := do
   let (lo, re) ← resolveTimeouts d
   let (code, out, err) ← runBounded
     { cmd := "git", args := #["-C", repoOf d] ++ args.toArray, env := env.toArray }
-    stdin.toUTF8 (if remote then re else lo)
-  return { exitCode := code, stdout := (String.fromUTF8? out).getD "", stderr := err }
+    stdin (if remote then re else lo)
+  let stdout ← IO.ofExcept (decodeGitStdout out)
+  return { exitCode := code, stdout, stderr := err }
 
 /-- A git plumbing failure that isn't an expected condition is `internal`
     (the caller maps "not a repo" / "no remote" to no-upstream itself). -/
 private def gitErr (op : String) (o : IO.Process.Output) : Tl.Error :=
   .mk' .internal s!"git {op} failed (exit {o.exitCode}): {o.stderr.trimAscii.toString} — repair Git/repository access, then retry `tl sync`"
 
-private def run (d : Dirs) (op : String) (args : List String) (stdin : String := "")
+private def run (d : Dirs) (op : String) (args : List String) (stdin : ByteArray := .empty)
     (env : List (String × Option String) := []) (remote : Bool := false) : TlM String := do
   let o ← (git d args stdin env remote : IO _)
   if o.exitCode == 0 then return o.stdout.trimAscii.toString
@@ -252,7 +261,7 @@ private def runBytes (d : Dirs) (op : String) (args : List String)
     (stdin : ByteArray := .empty) : TlM ByteArray := do
   let (code, out, err) ← (gitBytes d args stdin : IO _)
   if code == 0 then return out
-  else throw (.mk' .internal s!"git {op} failed (exit {code}): {err.trimAscii.toString}")
+  else throw (gitErr op { exitCode := code, stdout := "", stderr := err })
 
 /-- Is the `.tl` directory inside a usable git repository? (The override /
     repo-less case has no ref transport — the caller reports `no-upstream`.) -/
@@ -282,20 +291,64 @@ def pinLogRef (d : Dirs) : TlM (Option PinnedRef) := pinRef d "refs/tl/log"
 def refTip (d : Dirs) : TlM (Option String) :=
   return (← pinLogRef d).map (·.oid)
 
-/-- A `refs/tl/log` tree entry the transport does not recognize as a replica
-    segment — any name that is not a canonical `<replica-id>.jsonl`. Carried
-    verbatim (the exact `ls-tree` line, blob bytes untouched by oid) into
-    every commit this transport builds, per the ADR-0008 transport
-    preserve-unknown rule, and never materialized into `.tl/log/`: this is
-    what lets a future format place a reserved entry (e.g. a compaction
-    snapshot) in the ref without old binaries stripping it on every sync. -/
+/-- An unrecognized tree entry, carried as the exact bytes between NUL
+    delimiters in `git ls-tree -z`. The raw name is its cross-tree union key. -/
 structure ForeignEntry where
-  /-- The entry's tree name — the `ls-tree` line's tab-suffix, possibly
-      C-quoted; the cross-tree union key. -/
-  name : String
-  /-- The verbatim `ls-tree` line, re-fed to `mktree` unchanged. -/
-  raw : String
-deriving Repr, Inhabited, BEq, DecidableEq
+  name : ByteArray
+  raw : ByteArray
+deriving Inhabited, BEq, DecidableEq
+
+instance : Repr ForeignEntry where
+  reprPrec entry _ := repr (entry.name.data, entry.raw.data)
+
+/-- A recognized root segment and the blob containing its bytes. -/
+structure SegmentBlob where
+  replicaId : String
+  oid : String
+deriving Repr, Inhabited, BEq
+
+private def invalidTreeListing : Tl.Error :=
+  .mk' .internal "Git returned a malformed ls-tree record — check the Git executable and repository, then retry `tl sync`"
+
+/-- Classify complete NUL-delimited records before reading any blobs.
+    Only the ASCII metadata and candidate replica names need decoding. -/
+def parseTreeListing (listing : ByteArray) :
+    Except Tl.Error (List SegmentBlob × List ForeignEntry) := do
+  let mut start := 0
+  let mut tab := none
+  let mut segments : Array SegmentBlob := #[]
+  let mut foreign : Array ForeignEntry := #[]
+  let mut names : Std.HashSet ByteArray := {}
+  let mut i := 0
+  for byte in listing do
+    if byte == 0 then
+      let some separator := tab | throw invalidTreeListing
+      let some header := String.fromUTF8? (listing.extract start separator)
+        | throw invalidTreeListing
+      let [mode, kind, oid] := header.splitOn " " | throw invalidTreeListing
+      unless mode.length == 6 && mode.toList.all (fun c => '0' ≤ c && c ≤ '7')
+        && (kind == "blob" || kind == "tree" || kind == "commit")
+        && (oid.length == 40 || oid.length == 64) && oid.toList.all Char.isHexDigit
+        && separator + 1 < i do
+        throw invalidTreeListing
+      let name := listing.extract (separator + 1) i
+      if names.contains name then throw invalidTreeListing
+      names := names.insert name
+      let replica := (String.fromUTF8? name).bind fun text =>
+        let id := (text.dropEnd 6).toString
+        if text.endsWith ".jsonl" && (Tl.Clock.Replica.mk id).valid then some id else none
+      match replica with
+      | some id =>
+        if kind == "blob" then segments := segments.push { replicaId := id, oid }
+      | none =>
+        foreign := foreign.push { name, raw := listing.extract start i }
+      start := i + 1
+      tab := none
+    else if byte == 9 && tab.isNone then
+      tab := some i
+    i := i + 1
+  unless start == listing.size do throw invalidTreeListing
+  return (segments.toList, foreign.toList)
 
 /-- A linear walk of two name-sorted entry lists (fuel is `|a| + |b|`; the
     zero arm is dead). Within a git tree names are unique, so each side is
@@ -306,8 +359,8 @@ private def unionForeignGo : Nat → List ForeignEntry → List ForeignEntry →
   | 0, xs, ys => xs ++ ys
   | fuel + 1, x :: xs, y :: ys =>
     if x.name == y.name then
-      (if decide (x.raw ≤ y.raw) then y else x) :: unionForeignGo fuel xs ys
-    else if decide (x.name ≤ y.name) then x :: unionForeignGo fuel xs (y :: ys)
+      (if lexLeBytes x.raw y.raw then y else x) :: unionForeignGo fuel xs ys
+    else if lexLeBytes x.name y.name then x :: unionForeignGo fuel xs (y :: ys)
     else y :: unionForeignGo fuel (x :: xs) ys
 
 /-- Union two carried-unknown entry sets by name. A name on both sides with
@@ -319,7 +372,7 @@ private def unionForeignGo : Nat → List ForeignEntry → List ForeignEntry →
     is line-unioned by that binary and never reaches this rule.) Output is
     name-sorted. -/
 def unionForeign (a b : List ForeignEntry) : List ForeignEntry :=
-  let le := fun (x y : ForeignEntry) => decide (x.name ≤ y.name)
+  let le := fun (x y : ForeignEntry) => lexLeBytes x.name y.name
   unionForeignGo (a.length + b.length) (a.mergeSort le) (b.mergeSort le)
 
 /-- The segments plus carried-unknown entries stored at `ref` (both empty when
@@ -335,31 +388,12 @@ def unionForeign (a b : List ForeignEntry) : List ForeignEntry :=
     later tree build. -/
 def readPinnedEntries (d : Dirs) (ref : PinnedRef) :
     TlM (List SegmentData × List ForeignEntry) := do
-  let listing ← run d "ls-tree" ["ls-tree", ref.oid]
-  let entries := listing.splitOn "\n" |>.filter (· ≠ "")
-  let mut segs : Array SegmentData := #[]
-  let mut foreign : Array ForeignEntry := #[]
-  for line in entries do
-    -- "<mode> <type> <oid>\t<name>" — the name is everything after the first
-    -- tab (a C-quoted name carries any further tab as a `\t` escape, but the
-    -- verbatim carry must survive even a raw one)
-    match line.splitOn "\t" with
-    | [] => pure ()
-    | [_] => pure ()  -- ls-tree always emits a tab; an untabbed line is not carryable
-    | info :: rest =>
-      let name := String.intercalate "\t" rest
-      let rid := (name.dropEnd 6).toString
-      if name.endsWith ".jsonl" && (Tl.Clock.Replica.mk rid).valid then
-        match info.splitOn " " with
-        | [_, "blob", oid] =>
-          -- the blob is the raw segment bytes (may be non-UTF-8) — read them
-          -- byte-faithfully, never through a String stdout
-          let bytes ← runBytes d "cat-file" ["cat-file", "blob", oid]
-          segs := segs.push { replicaId := rid, bytes }
-        | _ => pure ()  -- segment-named non-blob: the collision guard above
-      else
-        foreign := foreign.push { name, raw := line }
-  return (segs.toList, foreign.toList)
+  let listing ← runBytes d "ls-tree" ["ls-tree", "-z", ref.oid]
+  let (blobs, foreign) ← MonadExcept.ofExcept (parseTreeListing listing)
+  let segments ← blobs.mapM fun s => do
+    let bytes ← runBytes d "cat-file" ["cat-file", "blob", s.oid]
+    pure { replicaId := s.replicaId, bytes }
+  return (segments, foreign)
 
 /-- Read an optional captured snapshot; an absent ref contributes no entries. -/
 def readPinnedEntries? (d : Dirs) (ref : Option PinnedRef) :
@@ -396,14 +430,12 @@ def readRef (d : Dirs) : TlM (List SegmentData) := readRefAt d "refs/tl/log"
     Returns the commit oid. -/
 private def buildCommit (d : Dirs) (segs : List SegmentData) (foreign : List ForeignEntry)
     (parents : List String) : TlM String := do
-  -- a blob per segment (raw bytes via stdin — never String.fromUTF8!, which
-  -- panics on a non-UTF-8 segment line; the oid out is plain ASCII hex)
   let entries ← segs.mapM fun s => do
-    let oidRaw ← runBytes d "hash-object" ["hash-object", "-w", "--stdin"] s.bytes
-    let oid := ((String.fromUTF8? oidRaw).getD "").trimAscii.toString
-    pure s!"100644 blob {oid}\t{s.replicaId}.jsonl"
-  let tree ← run d "mktree" ["mktree"]
-    (stdin := String.intercalate "\n" (entries ++ foreign.map (·.raw)))
+    let oid ← run d "hash-object" ["hash-object", "-w", "--stdin"] s.bytes
+    pure (s!"100644 blob {oid}\t{s.replicaId}.jsonl".toUTF8)
+  let listing := (entries ++ foreign.map (·.raw)).foldl
+    (fun acc entry => (acc ++ entry).push 0) ByteArray.empty
+  let tree ← run d "mktree" ["mktree", "-z"] listing
   let commitArgs := ["commit-tree", tree, "-m", "tl log"]
     ++ parents.flatMap (fun p => ["-p", p])
   run d "commit-tree" commitArgs (env := fixedIdentity)
