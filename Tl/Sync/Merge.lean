@@ -14,7 +14,7 @@ git blob/tree), making a re-sync a no-op. Re-sorting a replica's own
 append-only segment is harmless: the kernel fold is order-insensitive
 (ADR-0004), and `tl log` orders by HLC regardless of on-disk order.
 
-Pure; no I/O. Tested I/O-shell tier (ADR-0004); no Mathlib (ADR-0009).
+Pure byte and segment operations with exact membership and canonicality proofs.
 -/
 import Tl.Store.Segment
 import Init.Data.List.Lex
@@ -260,6 +260,8 @@ private def unionSegmentsGo : Nat → List SegmentData → List SegmentData → 
     else
       { replicaId := y.replicaId, bytes := unionLines ByteArray.empty y.bytes } :: unionSegmentsGo fuel (x :: xs) ys
 
+private def segmentLe (a b : SegmentData) : Bool := decide (a.replicaId ≤ b.replicaId)
+
 /-- Union two sets of per-replica segments (ADR-0001 §5): each replica id
     present on either side yields one segment whose bytes are the line-union of
     that replica's copies (an absent side contributes nothing). Sort each side
@@ -267,7 +269,178 @@ private def unionSegmentsGo : Nat → List SegmentData → List SegmentData → 
     `eraseDups` (Θ(S²)) plus a `find?` per id (Θ(S²)); this is O(S log S). The
     result is the same ascending-by-id segment list as before. -/
 def unionSegments (xs ys : List SegmentData) : List SegmentData :=
-  let le := fun (a b : SegmentData) => decide (a.replicaId ≤ b.replicaId)
-  unionSegmentsGo (xs.length + ys.length) (xs.mergeSort le) (ys.mergeSort le)
+  unionSegmentsGo (xs.length + ys.length)
+    (xs.mergeSort segmentLe) (ys.mergeSort segmentLe)
+
+/-- The bytes of a replica in a segment snapshot, with empty bytes when absent. -/
+def replicaBytes (segments : List SegmentData) (replica : String) : ByteArray :=
+  ((segments.find? (fun s => s.replicaId == replica)).map (·.bytes)).getD .empty
+
+private theorem replicaBytes_cons_match (x : SegmentData) (xs : List SegmentData) (replica : String)
+    (keeps : x.replicaId = replica) : replicaBytes (x :: xs) replica = x.bytes := by
+  simp only [replicaBytes, List.find?_cons, keeps, beq_self_eq_true, Option.map_some, Option.getD_some]
+
+private theorem replicaBytes_cons_miss (x : SegmentData) (xs : List SegmentData) (replica : String)
+    (miss : x.replicaId ≠ replica) : replicaBytes (x :: xs) replica = replicaBytes xs replica := by
+  simp only [replicaBytes, List.find?_cons, beq_eq_false_iff_ne.mpr miss]
+
+private theorem replicaBytes_map (segments : List SegmentData) (replica : String)
+    (f : ByteArray → ByteArray) (empty : f .empty = .empty) :
+    replicaBytes (segments.map (fun s => { s with bytes := f s.bytes })) replica =
+      f (replicaBytes segments replica) := by
+  simp only [replicaBytes, List.find?_map, Option.map_map]
+  change (((segments.find? (fun s => s.replicaId == replica)).map (fun s => f s.bytes)).getD .empty)
+    = f (((segments.find? (fun s => s.replicaId == replica)).map (·.bytes)).getD .empty)
+  cases segments.find? (fun s => s.replicaId == replica) with
+  | none => exact empty.symm
+  | some s => rfl
+
+private theorem replicaBytes_before (x : SegmentData) (xs : List SegmentData) (replica : String)
+    (sorted : (x :: xs).Pairwise (fun a b => segmentLe a b = true))
+    (earlier : ¬ x.replicaId ≤ replica) :
+    replicaBytes (x :: xs) replica = .empty := by
+  have absent : (x :: xs).find? (fun s => s.replicaId == replica) = none := by
+    apply List.find?_eq_none.mpr
+    intro other found hit
+    have eq := beq_iff_eq.mp hit
+    rw [List.mem_cons] at found
+    rcases found with h | h
+    · exact earlier (by rw [← eq, h]; exact String.le_refl _)
+    · exact earlier (eq ▸ of_decide_eq_true ((List.pairwise_cons.mp sorted).1 other h))
+  simp only [replicaBytes, absent, Option.map_none, Option.getD_none]
+
+private theorem unionLines_empty_empty : unionLines .empty .empty = .empty := by
+  have noLines : completeLines .empty = [] := by
+    rw [completeLines_eq_splitOn]
+    rfl
+  rw [unionLines, noLines, List.nil_append]
+  simp only [canonicalLines, List.mergeSort_nil, dedupAdjacent, joinLines, List.foldl_nil]
+
+private theorem unionSegmentsGo_replicaBytes (fuel : Nat) (xs ys : List SegmentData) (replica : String)
+    (bound : xs.length + ys.length ≤ fuel)
+    (sx : xs.Pairwise (fun a b => segmentLe a b = true))
+    (sy : ys.Pairwise (fun a b => segmentLe a b = true)) :
+    replicaBytes (unionSegmentsGo fuel xs ys) replica =
+      unionLines (replicaBytes xs replica) (replicaBytes ys replica) := by
+  cases xs with
+  | nil =>
+    rw [unionSegmentsGo]
+    change replicaBytes (ys.map (fun s => { s with bytes := unionLines .empty s.bytes })) replica = _
+    exact replicaBytes_map ys replica _ unionLines_empty_empty
+  | cons x xs =>
+    cases ys with
+    | nil =>
+      rw [unionSegmentsGo]
+      change replicaBytes ((x :: xs).map (fun s => { s with bytes := unionLines s.bytes .empty })) replica = _
+      exact replicaBytes_map (x :: xs) replica (unionLines · .empty) unionLines_empty_empty
+    | cons y ys =>
+      cases fuel with
+      | zero => exact False.elim (Nat.not_succ_le_zero _ bound)
+      | succ fuel =>
+        have leftBound : xs.length + (y :: ys).length ≤ fuel := by
+          apply Nat.le_of_succ_le_succ
+          simpa only [List.length_cons, Nat.succ_add] using bound
+        have rightBound : (x :: xs).length + ys.length ≤ fuel := Nat.le_of_succ_le_succ bound
+        rw [unionSegmentsGo]
+        by_cases same : x.replicaId = y.replicaId
+        · simp only [beq_iff_eq, same, ite_true]
+          by_cases hit : x.replicaId = replica
+          · have hitY := same.symm.trans hit
+            rw [replicaBytes_cons_match ⟨y.replicaId, unionLines x.bytes y.bytes⟩ _ _ hitY,
+              replicaBytes_cons_match x xs replica hit,
+              replicaBytes_cons_match y ys replica hitY]
+          · have missY : y.replicaId ≠ replica := fun eq => hit (same.trans eq)
+            rw [replicaBytes_cons_miss ⟨y.replicaId, unionLines x.bytes y.bytes⟩ _ _ missY,
+              replicaBytes_cons_miss x xs replica hit,
+              replicaBytes_cons_miss y ys replica missY]
+            exact unionSegmentsGo_replicaBytes fuel xs ys replica
+              (Nat.le_trans (Nat.le_succ _) leftBound) sx.tail sy.tail
+        · simp only [beq_iff_eq, same, ite_false]
+          by_cases le : x.replicaId ≤ y.replicaId
+          · simp only [le, decide_true, ite_true]
+            by_cases hit : x.replicaId = replica
+            · have earlier : ¬ y.replicaId ≤ replica := fun rev =>
+                same (String.le_antisymm le (hit.symm ▸ rev))
+              rw [replicaBytes_cons_match ⟨x.replicaId, unionLines x.bytes .empty⟩ _ _ hit,
+                replicaBytes_cons_match x xs replica hit,
+                replicaBytes_before y ys replica sy earlier]
+            · rw [replicaBytes_cons_miss ⟨x.replicaId, unionLines x.bytes .empty⟩ _ _ hit,
+                replicaBytes_cons_miss x xs replica hit]
+              exact unionSegmentsGo_replicaBytes fuel xs (y :: ys) replica leftBound sx.tail sy
+          · simp only [le, decide_false, Bool.false_eq_true, ite_false]
+            by_cases hit : y.replicaId = replica
+            · have earlier : ¬ x.replicaId ≤ replica := fun h => le (hit.symm ▸ h)
+              rw [replicaBytes_cons_match ⟨y.replicaId, unionLines .empty y.bytes⟩ _ _ hit,
+                replicaBytes_before x xs replica sx earlier,
+                replicaBytes_cons_match y ys replica hit]
+            · rw [replicaBytes_cons_miss ⟨y.replicaId, unionLines .empty y.bytes⟩ _ _ hit,
+                replicaBytes_cons_miss y ys replica hit]
+              exact unionSegmentsGo_replicaBytes fuel (x :: xs) ys replica rightBound sx sy.tail
+termination_by fuel
+
+private theorem segmentLe_trans (x y z : SegmentData) (xy : segmentLe x y = true) (yz : segmentLe y z = true) :
+    segmentLe x z = true :=
+  decide_eq_true (String.le_trans (of_decide_eq_true xy) (of_decide_eq_true yz))
+
+private theorem segmentLe_total (x y : SegmentData) : (segmentLe x y || segmentLe y x) = true :=
+  Bool.or_eq_true_iff.mpr ((String.le_total x.replicaId y.replicaId).imp decide_eq_true decide_eq_true)
+
+private theorem filteredReplica_sorted (segments : List SegmentData) (replica : String) :
+    (segments.filter (fun s => s.replicaId == replica)).Pairwise (fun a b => segmentLe a b = true) := by
+  induction segments with
+  | nil => exact List.Pairwise.nil
+  | cons x xs ih =>
+    cases hit : (x.replicaId == replica) with
+    | false => simpa only [List.filter_cons, hit, Bool.false_eq_true, ite_false] using ih
+    | true =>
+      simp only [List.filter_cons, hit, ite_true, List.pairwise_cons]
+      refine ⟨?_, ih⟩
+      intro y found
+      have h := (List.mem_filter.mp found).2
+      exact decide_eq_true (by rw [beq_iff_eq.mp hit, beq_iff_eq.mp h]; exact String.le_refl _)
+
+private theorem replicaBytes_mergeSort (segments : List SegmentData) (replica : String) :
+    replicaBytes (segments.mergeSort segmentLe) replica = replicaBytes segments replica := by
+  let keeps : SegmentData → Bool := fun s => s.replicaId == replica
+  have stable : List.Sublist (segments.filter keeps) (segments.mergeSort segmentLe) :=
+    List.sublist_mergeSort segmentLe_trans segmentLe_total (filteredReplica_sorted segments replica)
+      List.filter_sublist
+  have stableFiltered := stable.filter keeps
+  rw [List.filter_filter,
+    show (fun x => keeps x && keeps x) = keeps from funext (fun s => Bool.and_self (keeps s))] at stableFiltered
+  have lengthEq := ((List.mergeSort_perm segments segmentLe).filter keeps).length_eq
+  have same := stableFiltered.eq_of_length lengthEq.symm
+  unfold replicaBytes
+  change (((segments.mergeSort segmentLe).find? keeps).map (·.bytes)).getD .empty =
+    ((segments.find? keeps).map (·.bytes)).getD .empty
+  rw [← List.head?_filter, ← List.head?_filter, same]
+
+/-- The segment merge implements the canonical line union independently for each replica. -/
+theorem unionSegments_replicaBytes (xs ys : List SegmentData) (replica : String) :
+    replicaBytes (unionSegments xs ys) replica =
+      unionLines (replicaBytes xs replica) (replicaBytes ys replica) := by
+  unfold unionSegments
+  have bound : (xs.mergeSort segmentLe).length + (ys.mergeSort segmentLe).length ≤
+      xs.length + ys.length := by
+    rw [(List.mergeSort_perm xs segmentLe).length_eq, (List.mergeSort_perm ys segmentLe).length_eq]
+    exact Nat.le_refl _
+  rw [unionSegmentsGo_replicaBytes _ _ _ _ bound
+    (List.pairwise_mergeSort segmentLe_trans segmentLe_total xs)
+    (List.pairwise_mergeSort segmentLe_trans segmentLe_total ys),
+    replicaBytes_mergeSort, replicaBytes_mergeSort]
+
+theorem unionSegments_mem_iff (xs ys : List SegmentData) (replica : String) (line : ByteArray) :
+    line ∈ completeLines (replicaBytes (unionSegments xs ys) replica) ↔
+      line ∈ completeLines (replicaBytes xs replica) ∨ line ∈ completeLines (replicaBytes ys replica) := by
+  rw [unionSegments_replicaBytes, unionLines_mem_iff]
+
+theorem unionSegments_comm (xs ys : List SegmentData) (replica : String) :
+    replicaBytes (unionSegments xs ys) replica = replicaBytes (unionSegments ys xs) replica := by
+  rw [unionSegments_replicaBytes, unionSegments_replicaBytes, unionLines_comm]
+
+theorem unionSegments_idem (xs ys : List SegmentData) (replica : String) :
+    replicaBytes (unionSegments (unionSegments xs ys) ys) replica =
+      replicaBytes (unionSegments xs ys) replica := by
+  rw [unionSegments_replicaBytes, unionSegments_replicaBytes, unionLines_idem]
 
 end Tl.Sync
