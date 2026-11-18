@@ -126,8 +126,8 @@ on every read, and without the agent having to remember to `sync`.
 A read may therefore perform a foreign-cache write (atomic rename, no
 mutation lock — the same write `sync` already does). On a read-only filesystem a
 read skips the refresh and folds what it has (a moment stale), never failing.
-Concurrent readers racing to refresh are safe: the materialized content is a pure
-function of the ref OID, and atomic rename makes last-writer-wins harmless.
+Atomic rename gives concurrent readers complete files. Reconciliation takes
+the union of the captured ref and the complete lines already on disk.
 
 **Built form (read-time refresh).** Implemented as `Tl/Sync/Local.refreshFromRef`,
 run by `loadView` before every read fold and — per the write-path freshness
@@ -136,9 +136,9 @@ lock (not by `doctor`, which stays a pure diagnostic). The marker is
 `.tl/local/ref-mark`
 (gitignored, no `v` bump). The trigger is one `git rev-parse refs/tl/log`
 compared against the mark: equal ⇒ fold the local files, git untouched;
-different ⇒ materialize the changed foreign segments (the §3 atomic-rename
-writeback, reusing `writeForeignSegment`), record the new OID, then fold. The
-whole refresh is best-effort; the normal unique-replica path is lock-free — it catches both thrown `Tl.Error`s
+different ⇒ combine the captured ref and local segments with the transport
+union, materialize changes through the §3 writeback, record the new OID, then
+fold. The whole refresh is best-effort; the normal unique-replica path is lock-free — it catches both thrown `Tl.Error`s
 and raw `IO.Error`s (git absent, a read-only FS) and degrades to "fold what is
 on disk," never failing the read; a genuine path-safety/corruption problem is
 still surfaced by the subsequent fold. It does **not** publish — that is the
@@ -184,14 +184,15 @@ Hardening notes (review-driven): the marker write reuses the atomic-replace
 refreshers in one `.tl/` never collide on a temp inode (matching
 `writeForeignSegment`). The materialize never overwrites the own segment; when
 the own replica id is *unknown* (the `.tl/local/replica` file was removed) it
-will not overwrite *any* existing on-disk segment, only create absent ones, so
-an orphaned own segment's unpublished ops are never clobbered. A worktree whose
+creates absent segments and leaves every existing segment alone. After a
+new identity is minted, the transport union retains the orphaned segment's
+unpublished complete lines so the next publish can deliver them. A worktree whose
 only segments are foreign-and-refused **discloses** rather than fails (the
 all-refused error fires only with no own replica to anchor a partial read —
 ADR-0008 × this §3), so a single bad sibling segment cannot take down a reader.
 
-**Boundary.** The marker keys off the *ref OID*, not the on-disk bytes, so its
-safety ("materialized content is a pure function of the ref OID") assumes the
+**Boundary.** The marker records the *ref OID*. A marked segment on disk
+can also contain unpublished lines. Detecting a changed ref by OID assumes the
 gitignored cache under `.tl/log/` is tl-managed and not edited by hand
 (`.tl/README.md` says so). If a foreign cache file is *externally* deleted or
 truncated while the ref stays put, the matching marker pins the read to the

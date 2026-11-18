@@ -333,6 +333,8 @@ Tl/Store/               -- I/O shell: local persistence (tested)
                         --   inside the lock) → build (guards refuse before any
                         --   byte) → append → fsync → persist clock → release
                         --   (ADR-0015 §1)
+  Lines.lean            --   single-pass complete-line scan and LF framing,
+                        --   with split, delimiter exclusion and round-trip proofs
   Segment.lean          --   segment append/enumerate/read; torn-tail skip;
                         --   crash-fragment closing; one O_APPEND write per
                         --   record + fsync (ADR-0008 §corruption, ADR-0015

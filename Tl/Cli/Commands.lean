@@ -2837,10 +2837,9 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
                      ("pulled", Json.bool r.pulled)]
         | none => [])
     ++ [("message", Json.str syncMsg)], false)
-  -- read-refresh marker vs on-disk segments (ADR-0016 §3 boundary): the marker
-  -- keys off the ref OID, so an externally deleted/truncated foreign cache file
-  -- under .tl/log/ stays unfixed until the ref next moves. Warn on a mismatch (a
-  -- `tl sync` re-materializes unconditionally). Low-pri: .tl/ is managed by tl.
+  -- The marker keys off the ref OID. An externally removed cache segment
+  -- can stay absent until the next refresh. Extra local lines are valid and
+  -- may be unpublished operations from a previous replica identity.
   let refMarkRow ← try
       match ← loadRefMark d with
       | none => pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "ok")], false)
@@ -2848,18 +2847,18 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
         let refSegs ← Tl.Sync.readRefAt d mark
         let (diskSegs, _) ← readSegments d
         let ownId := own.map (·.id)
-        -- a foreign ref segment whose on-disk copy is missing or byte-differs
+        let diskIndex := diskSegs.foldl (fun index segment =>
+          index.insert segment.replicaId segment.bytes) ({} : Std.HashMap String ByteArray)
         let stale := refSegs.filter (fun rs =>
-          ownId != some rs.replicaId &&
-            (match diskSegs.find? (·.replicaId == rs.replicaId) with
-             | some ds => ByteArray.hash ds.bytes != ByteArray.hash rs.bytes
-             | none => true))
+          let bytes := diskIndex[rs.replicaId]?.getD .empty
+          ownId != some rs.replicaId && bytes != rs.bytes &&
+            !(Tl.Sync.recoveryDelta (completeLines bytes) (completeLines rs.bytes)).isEmpty)
         pure (Json.mkObj
           [("name", Json.str "refMark"),
            ("status", Json.str (if stale.isEmpty then "ok" else "warn")),
            ("staleSegments", jnum stale.length),
-           ("message", Json.str (if stale.isEmpty then "on-disk segments match the refresh marker"
-             else s!"{stale.length} on-disk segment(s) differ from the marked ref — run `tl sync` to re-materialize"))], false)
+           ("message", Json.str (if stale.isEmpty then "on-disk segments contain the marked ref lines"
+             else s!"{stale.length} on-disk segment(s) lack lines from the marked ref — run `tl sync` to re-materialize"))], false)
     catch e =>
       pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)

@@ -2553,6 +2553,51 @@ def cliReadRefreshTests : IO (List Outcome) := do
     ["list", "--dir", bDir, "--json"] (fun j => jNat j "count" == some 1)]
   return o
 
+/-- An orphaned segment can contain local operations missing from its ref
+    copy. Refresh after a sibling publishes must preserve them for the next sync. -/
+def cliOrphanRefreshTests : IO (List Outcome) := do
+  let root ← IO.FS.createTempDir
+  let gitC (args : List String) : IO _ :=
+    IO.Process.output { cmd := "git", args := #["-C", root.toString] ++ args.toArray }
+  let _ ← gitC ["init", "-q"]
+  let _ ← gitC ["config", "tl.autosync", "false"]
+  let a := (root / ".tl").toString
+  let b := (root / ".tlB").toString
+  let _ ← run' ["init", "--dir", a]
+  let _ ← run' ["init", "--dir", b]
+  let _ ← run' ["create", "Published under old replica", "--dir", a, "--actor", "a"]
+  let _ ← run' ["sync", "--dir", a]
+  let privateTitle := "Unpublished under old replica"
+  let _ ← run' ["create", privateTitle, "--dir", a, "--actor", "a"]
+  let replicaFile := root / ".tl" / "local" / "replica"
+  let oldReplica := (← IO.FS.readFile replicaFile).trimAscii.toString
+  let path := s!"{oldReplica}.jsonl"
+  let oldRef ← gitC ["show", s!"refs/tl/log:{path}"]
+  IO.FS.removeFile replicaFile
+  let _ ← run' ["create", "Created under new replica", "--dir", a, "--actor", "a"]
+  let _ ← run' ["create", "Published by sibling", "--dir", b, "--actor", "b"]
+  let _ ← run' ["sync", "--dir", b]
+  let refreshed ← expectData "read refresh sees sibling work and retains the unpublished orphan operation"
+    ["list", "--dir", a, "--json"]
+    (fun data => jNat data "count" == some 4 &&
+      (jArr data "items").any (fun item => jStr item "title" == some privateTitle))
+  let disk ← IO.FS.readFile (root / ".tl" / "log" / path)
+  let refOnly ← gitC ["show", s!"refs/tl/log:{path}"]
+  let doctor ← expectData "doctor accepts an orphan segment with extra local lines"
+    ["doctor", "--dir", a, "--json"]
+    (fun data => (jArr data "checks").any (fun row =>
+      jStr row "name" == some "refMark" && jStr row "status" == some "ok"))
+  let _ ← run' ["sync", "--dir", a]
+  let recovered ← gitC ["show", s!"refs/tl/log:{path}"]
+  return [check "the orphan operation was absent from the ref throughout read refresh"
+      (oldRef.exitCode == 0 && refOnly.exitCode == 0 &&
+        !oldRef.stdout.contains privateTitle && !refOnly.stdout.contains privateTitle),
+    refreshed,
+    check "read refresh kept the orphan operation on disk" (disk.contains privateTitle),
+    doctor,
+    check "explicit sync publishes the retained orphan operation"
+      (recovered.exitCode == 0 && recovered.stdout.contains privateTitle) recovered.stderr]
+
 /-- Degraded-refresh disclosure (ADR-0008 loud-not-silent × ADR-0016 §3): when a
     read-time refresh cannot run (here, B's log dir is read-only so the foreign
     materialize fails), the read still serves — a moment stale — and discloses
@@ -6624,7 +6669,7 @@ def cliTests : IO (List Outcome) := do
     ++ (← cliDepTests) ++ (← cliReparentTests) ++ (← cliResolutionTests) ++ (← cliUsageTests)
     ++ (← cliReviewTests) ++ (← cliDescriptionTests) ++ (← cliUpdateDescriptionTests) ++ (← cliConsistencyTests)
     ++ (← cliReviewBatchTests) ++ (← cliFreeVerbTests) ++ (← cliRenderTests)
-    ++ (← cliCopiedReplicaTests) ++ (← cliReadRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
+    ++ (← cliCopiedReplicaTests) ++ (← cliReadRefreshTests) ++ (← cliOrphanRefreshTests) ++ (← cliDegradedRefreshTests) ++ (← cliRefreshRefusalTests)
     ++ (← cliAutoSyncTests) ++ (← cliPreWriteAbsorbTests)
     ++ (← cliDoctorSkewTests) ++ (← cliDoctorRoutingTests) ++ (← cliDoctorStaleTests) ++ (← cliClaimStealTests) ++ (← cliListStaleTests) ++ (← cliGitFloorTests) ++ (← cliLabelTests) ++ (← cliNoteTests) ++ (← cliDefaultLimitTests)
     ++ provenanceAgreementTests

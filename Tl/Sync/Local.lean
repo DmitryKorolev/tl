@@ -146,7 +146,7 @@ private def markTip (d : Dirs) : Option String → TlM Unit
     written yet, or the own replica id is unknown). -/
 private def ownBytesOf (ownReplica : Option String) (localSegs : List SegmentData) : ByteArray :=
   match ownReplica with
-  | some own => ((localSegs.find? (·.replicaId == own)).map (·.bytes)).getD ByteArray.empty
+  | some own => replicaBytes localSegs own
   | none => ByteArray.empty
 
 /-- Record the publish marker after a reconcile that left our own segment in
@@ -253,17 +253,20 @@ private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOut
     if (← loadRefMark d) == some tip then
       -- unchanged (the common case): fold the local files, git untouched
       return { refreshed := false, absorbed := [], tip := some tip, degraded := none }
-    -- the ref moved: materialize the changed foreign segments, record the OID
+    -- A previously owned segment may now be foreign after a re-mint.
+    -- Materialize the union so its unpublished complete lines survive.
     let (refSegs, _) ← readPinnedEntries d pinned
     let (localSegs, _) ← readSegments d
-    let absorbed ← absorbForeign d ownReplica localSegs refSegs
+    let absorbed ← absorbForeign d ownReplica localSegs (unionSegments refSegs localSegs)
     storeRefMark d tip
     return { refreshed := true, absorbed, tip := some tip, degraded := none }
 
 /-- Read-time refresh: before a read folds `.tl/log/`, cheaply detect whether a
     sibling published to the shared `refs/tl/log` (an O(1) OID compare against
     the `ref-mark`) and, only if it moved, materialize the changed foreign
-    segments into `.tl/log/` (atomic foreign replace or locked own append). So a worktree sees its siblings without an explicit `tl sync`,
+    segments into `.tl/log/` (atomic foreign replace or locked own append),
+    preserving complete lines already on disk. A worktree sees its siblings
+    without an explicit `tl sync`,
     while git stays off the steady-state read path (an unchanged ref costs one
     `rev-parse` + one small file read).
 
