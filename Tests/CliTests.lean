@@ -6426,12 +6426,14 @@ def cliShapePinTests : IO (List Outcome) := do
             "status", "title", "unblocked", "updatedAt"]
       && (jGet j "close").bind (fun c => jStr c "outcome") == some "won"
       && (jGet j "close").bind (fun c => jStr c "resolution") == some "done"),
-   ← expectData "reopen restores the bare echo (no closeResolution/closedAt)"
+   ← expectData "reopen restores the open issue fields and adds its outcome"
       ["reopen", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
-    (fun j => jKeys j == echoKeys && jStr j "status" == some "open"),
+    (fun j => (jKeys j).erase "reopen" == echoKeys && jStr j "status" == some "open"
+      && (jGet j "reopen").map jKeys == some ["outcome", "status"]),
    ← expectData "reopening an open issue is the idempotent no-op, same echo"
       ["reopen", "tl-" ++ solo, "--dir", dir, "--actor", "t"]
-    (fun j => jKeys j == echoKeys)]
+    (fun j => (jKeys j).erase "reopen" == echoKeys
+      && (jGet j "reopen").bind (jStr · "outcome") == some "won")]
   -- meta: set/clear acks, keyed and keyless get, per-id and global list
   o := o ++ [← expectData "meta set pins {id, key, status, value}"
       ["meta", "set", "tl-" ++ solo, "owner", "carol", "--dir", dir, "--actor", "t"]
