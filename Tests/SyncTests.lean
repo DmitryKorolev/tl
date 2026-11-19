@@ -1047,8 +1047,16 @@ def syncFetchIsolationTests : IO (List Outcome) := do
     let _ ← fixtureGit remote ["update-ref", "-d", "refs/tl/log"]
     let expected ← writeRef remote [seg "0123456789abc" "task\n"] [] none
     let _ ← fixtureGit d ["config", "--add", "remote.origin.fetch", "+refs/tl/log:refs/tl/log"]
+    let seed ← fixtureGit d ["fetch", "origin", "refs/heads/main"]
+    unless seed.exitCode == 0 do throw (.mk' .internal seed.stderr)
+    let headFile := System.FilePath.mk d.base / ".git/FETCH_HEAD"
+    let previous ← IO.FS.readBinFile headFile
+    let legacy ← fetchRemoteLog d "origin" (version := pure (some (2, 17)))
+    let legacyOK := legacy.1 == some expected && (← IO.FS.readBinFile headFile) == previous
     let overlap ← IO.mkRef false
     let (tip, segments, foreign) ← fetchRemoteLog d "origin" (afterFetch := do
+      unless (← IO.FS.readBinFile headFile) == previous do
+        throw (.mk' .internal "transport changed the ordinary fetch result")
       let outerRefs ← refs
       let (innerTip, innerSegs, _) ← fetchRemoteLog d "origin" (afterFetch := do
         let both ← refs
@@ -1062,6 +1070,7 @@ def syncFetchIsolationTests : IO (List Outcome) := do
     let remaining ← refs
     let localPinned ← pinLogRef d
     let mut rows := [
+      check "Git floor fetch preserves ordinary FETCH_HEAD bytes" legacyOK,
       check "overlapping fetches use distinct live private refs" (← overlap.get),
       check "ordinary FETCH_HEAD replacement cannot change transport evidence"
         (tip == some expected && segments.map segStr == ["task\n"] && foreign.isEmpty
