@@ -498,15 +498,20 @@ def storeAdversityTests : IO (List Outcome) := do
           (ctx.replica.id != fixedReplica && ctx.replica.valid) ctx.replica.id)]
   -- The final LF commits a record, even when the fragment already parses.
   IO.FS.writeFile (root / ".tl" / "local" / "replica") (fixedReplica ++ "\n")
-  for fragment in ["{\"v\":1,", "{}"] do
+  let committed := completeLines (← IO.FS.readBinFile ownSeg)
+  let some validRecord := committed.head?
+    | throw (IO.userError "expected an existing committed record in the crash-tail fixture")
+  for fragment in ["{\"v\":1,".toUTF8, validRecord] do
     let pre ← IO.FS.readBinFile ownSeg
-    IO.FS.writeBinFile ownSeg (pre ++ fragment.toUTF8)
+    IO.FS.writeBinFile ownSeg (pre ++ fragment)
     outcomes := outcomes ++
       [← expectOk "first write after a torn tail succeeds" (transact d none 1 (buildCreate "after-crash"))
           (fun (_, parsed) => check "first write appends one record" (parsed.length == 1))]
     let bytes ← IO.FS.readBinFile ownSeg
     outcomes := outcomes ++
       [check "trim preserves committed bytes" (bytes.extract 0 pre.size == pre),
+       check "only the newly appended record gains a commit newline"
+         ((completeLines bytes).length == (completeLines pre).length + 1),
        ← expectOk "after-crash issue can be read" (readState d)
          (fun loaded => check "own segment remains readable"
            (loaded.refused.all (·.replicaId != fixedReplica))),
