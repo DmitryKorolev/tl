@@ -4997,13 +4997,16 @@ private partial def treeFiles (base : String) (parent : String) :
 /-- Plant the `npm pack --dry-run --json` answer for a directory by listing what
     is in it. Which files npm *would* include is npm's decision and the second
     net's subject; here the stub reports the tree so the rows exercise the
-    command's own branches. -/
-private def plantListing (root key directory : String) : IO Unit := do
+    command's own branches. `keyed` lists the names npm 12 keys its answer by;
+    empty means the array answer of earlier npm. -/
+private def plantListing (root key directory : String) (keyed : List String := []) : IO Unit := do
   let files ← treeFiles directory ""
   let rows := files.map fun path =>
     Json.mkObj [("path", Json.str path), ("size", Json.num 1),
                 ("mode", Json.num (if path.endsWith "bin/tl" then 493 else 420))]
-  let document := Json.arr #[Json.mkObj [("name", Json.str "x"), ("files", Json.arr rows.toArray)]]
+  let record := Json.mkObj [("name", Json.str "x"), ("files", Json.arr rows.toArray)]
+  let document := if keyed.isEmpty then Json.arr #[record]
+    else Json.mkObj (keyed.map fun name => (name, record))
   IO.FS.writeFile s!"{root}/registry/pack-{key}.json" (okOr "<unrenderable>" (render document))
 
 /-- A planted release: four binaries and a manifest describing them, built the
@@ -5246,6 +5249,14 @@ private def npmPublishTests : IO (List Outcome) := do
                     ("mode", Json.num 420)]).toArray)]])))
   let (modeStatus, _, modeErr) ← runCommand "npm-publish"
     ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  -- npm 12 keys the same answer by package name. One key reads as the array
+  -- did; two keys are two packages and are refused as the array form is.
+  plantListing root "served" packageRoot (keyed := ["@taskloop/tl-bin-linux-x64"])
+  let (keyedStatus, keyedOut, _) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
+  plantListing root "served" packageRoot (keyed := ["@taskloop/tl-bin-linux-x64", "@taskloop/other"])
+  let (twoKeyedStatus, _, twoKeyedErr) ← runCommand "npm-publish"
+    ["--staging", staging, "--manifest", manifestPath, "--npm", client, "--plan"]
   plantListing root "served" packageRoot
   -- The same version, published, matching — and a dist-tag that lags it.
   IO.FS.writeFile (root ++ "/registry/_taskloop_tl-bin-linux-x64.tag-latest") "0.0.9\n"
@@ -5372,6 +5383,12 @@ private def npmPublishTests : IO (List Outcome) := do
     checkEq "npm-publish: a dist-tag pointing elsewhere stops the release" lagStatus 1,
     check "npm-publish: that refusal names the tag, where it points, and the 2FA repair"
       (contains lagErr "0.0.9" && contains lagErr "npm dist-tag add") lagErr,
+    checkEq "npm-publish: npm 12's name-keyed pack answer is read" keyedStatus 0,
+    check "npm-publish: and the keyed answer matches the published package"
+      (contains keyedOut "already published, matches this staging tree") keyedOut,
+    checkEq "npm-publish: a keyed answer naming two packages is refused" twoKeyedStatus 1,
+    check "npm-publish: that refusal says exactly one package was expected"
+      (contains twoKeyedErr "described 2 packages") twoKeyedErr,
     checkEq "npm-publish: --plan reports a lagging dist-tag rather than refusing" lagPlanStatus 0,
     check "npm-publish: and says a manual repair would be needed"
       (contains lagPlanOut "manual dist-tag repair") lagPlanOut,

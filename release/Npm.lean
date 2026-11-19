@@ -603,13 +603,21 @@ private def Client.must (client : Client) (what : String) (args : List String) :
 
     Asked of npm rather than derived, which is the whole point: this is the
     published entry list by construction, including the `bin/tl` that ships only
-    because `files` names it. -/
+    because `files` names it.
+
+    npm before 12 answers with an array of package records; npm 12 answers with
+    an object keyed by package name whose values are the same records. Both are
+    read as the list of records, so the one-package check below covers each. -/
 private def packedEntries (client : Client) (what : String) (spec : String) :
     Decision (List PackedEntry) := do
   let stdout ← client.must what ["pack", spec, "--dry-run", "--json"]
   let cursor : Cursor := { document := s!"`{client.program} pack {spec} --dry-run --json`" }
   let root ← ofExcept (parseDocument cursor stdout)
-  let rows ← ofExcept (asArray cursor root)
+  let rows ← ofExcept (match root with
+    | .obj _ => do
+        let keyed ← getObj cursor root
+        pure (keyed.map fun (name, record) => (cursor.at name, record))
+    | _ => asArray cursor root)
   match rows with
   | [(packageCursor, package)] =>
       let (filesCursor, files) ← ofExcept (field packageCursor package "files")
