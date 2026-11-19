@@ -435,7 +435,13 @@ def syncRemoteTests : IO (List Outcome) := do
   -- (F) a remote pre-receive hook that declines every push is a policy decline,
   -- not a non-fast-forward race: the leg must not retry-then-misreport it as
   -- push-rejected ("remote moved, retry") — it surfaces the real reason instead
-  let (df, baref) ← repoWithRemote
+  let (df, originalRemote) ← repoWithRemote
+  let baref := originalRemote ++ "/non-fast-forward"
+  let bareDir := originalRemote ++ "-with-hook"
+  IO.FS.rename originalRemote bareDir
+  IO.FS.createDir originalRemote
+  IO.FS.rename bareDir baref
+  let _ ← IO.Process.output { cmd := "git", args := #["-C", df.base, "remote", "set-url", "origin", baref] }
   IO.FS.writeFile (System.FilePath.mk baref / "hooks" / "pre-receive") "#!/bin/sh\nexit 1\n"
   let _ ← (IO.Process.output { cmd := "chmod", args := #["+x", (System.FilePath.mk baref / "hooks" / "pre-receive").toString] } : IO _)
   -- pin the receiving repo's hooks dir in its own (local) config: a developer's

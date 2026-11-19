@@ -669,7 +669,13 @@ def pushRefLog (d : Dirs) (remote : String) (commit : String) : TlM Bool := do
   -- retryable race (a hook decline reads "(... hook declined)", an auth/transport
   -- failure has no porcelain status line at all)
   let status := o.stdout
-  if (status.splitOn "non-fast-forward").length > 1 || (status.splitOn "fetch first").length > 1 then
+  let rejected := (status.splitOn "\n").any fun line =>
+    match line.splitOn "\t" with
+    | ["!", refs, reason] =>
+      refs.endsWith ":refs/tl/log" &&
+        (reason == "[rejected] (non-fast-forward)" || reason == "[rejected] (fetch first)")
+    | _ => false
+  if rejected then
     return false
   else throw (.mk' .internal
     s!"git push to '{remote}' failed (exit {o.exitCode}): {(status ++ o.stderr).trimAscii.toString}")
