@@ -90,7 +90,7 @@ def appendSegmentRawLocked (d : Dirs) (replicaId : String) (lines : List ByteArr
     try
       let stop := committedEnd previous
       if stop < previous.size then
-        Sys.truncate fd stop.toUInt64
+        Sys.truncate fd stop.toUInt64 previous.size.toUInt64
       for line in lines do
         Sys.writeAll fd (line ++ "\n".toUTF8)
       Sys.syncBestEffortWith syncMechanism fd

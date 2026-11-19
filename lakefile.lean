@@ -45,11 +45,17 @@ meta if (get_config? releaseOnly) != some "true" then
     clang ships no system-header sysroot on macOS (`stdio.h` unresolvable
     even via `leanc`/`SDKROOT`), and a host C toolchain is already a
     build-from-source prerequisite for linking. -/
-target tlsys.o pkg : System.FilePath := do
-  let oFile := pkg.buildDir / "ffi" / "tlsys.o"
+private def buildSysObject (pkg : Package) (name : String) (flags : Array String) : FetchM (Job System.FilePath) := do
+  let oFile := pkg.buildDir / "ffi" / name
   let srcJob ← inputTextFile <| pkg.dir / "ffi" / "tlsys.c"
   let leanInclude := (← getLeanIncludeDir).toString
-  buildO oFile srcJob #["-I", leanInclude] #["-fPIC", "-O2"]
+  buildO oFile srcJob #["-I", leanInclude] (#["-fPIC", "-O2"] ++ flags)
+
+target tlsys.o pkg : System.FilePath := do
+  buildSysObject pkg "tlsys.o" #[]
+
+target tlsysTest.o pkg : System.FilePath := do
+  buildSysObject pkg "tlsysTest.o" #["-DTL_TEST_HOOKS"]
 
 @[default_target] lean_exe tl where
   root := `Main
@@ -64,7 +70,7 @@ lean_lib VerifyFixtures where
     a minimal supervisor so an initializer cannot exit zero before the harness. -/
 lean_exe tltestWorker where
   root := `Tests.Main
-  moreLinkObjs := #[`@/tlsys.o]
+  moreLinkObjs := #[`@/tlsysTest.o]
 
 /-- Lean-native trust-boundary verifier. The audited roots are dynamic imports
     because separately compiled roots can share declaration names. `needs`

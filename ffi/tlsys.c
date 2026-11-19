@@ -44,20 +44,23 @@ static lean_obj_res tl_sys_unsupported(const char *op) {
     return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string(buf)));
 }
 
+#ifdef TL_TEST_HOOKS
 LEAN_EXPORT lean_obj_res tl_test_unowned_truncate(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
     (void)base; (void)rel; (void)w; return tl_sys_unsupported("unowned_truncate");
 }
 LEAN_EXPORT lean_obj_res tl_test_zero_write(lean_obj_arg w) {
     (void)w; return tl_sys_unsupported("zero_write");
 }
+#endif
+
 LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, uint32_t flags, lean_obj_arg w) {
     (void)base; (void)rel; (void)flags; (void)w; return tl_sys_unsupported("open");
 }
 LEAN_EXPORT lean_obj_res tl_sys_read_all(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("read_all");
 }
-LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, lean_obj_arg w) {
-    (void)fd; (void)length; (void)w; return tl_sys_unsupported("truncate");
+LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, uint64_t expected, lean_obj_arg w) {
+    (void)fd; (void)length; (void)expected; (void)w; return tl_sys_unsupported("truncate");
 }
 LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean_obj_arg w) {
     (void)fd; (void)data; (void)w; return tl_sys_unsupported("write_all");
@@ -259,6 +262,7 @@ LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, ui
     return lean_io_result_mk_ok(lean_box_uint32((uint32_t)fd));
 }
 
+#ifdef TL_TEST_HOOKS
 static int tl_test_foreign_owner(int fd) { (void)fd; return 0; }
 
 LEAN_EXPORT lean_obj_res tl_test_unowned_truncate(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
@@ -270,6 +274,7 @@ LEAN_EXPORT lean_obj_res tl_test_unowned_truncate(b_lean_obj_arg base, b_lean_ob
     close(fd);
     return lean_io_result_mk_ok(lean_box(0));
 }
+#endif
 
 /*
  * Create `rel` (a path of components) under `base`, like a no-follow
@@ -341,10 +346,15 @@ LEAN_EXPORT lean_obj_res tl_sys_read_all(uint32_t fd, lean_obj_arg w) {
     return lean_io_result_mk_ok(arr);
 }
 
-LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, lean_obj_arg w) {
+LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, uint64_t expected, lean_obj_arg w) {
     (void)w;
     off_t end = (off_t)length;
     if (end < 0 || (uint64_t)end != length) return tl_sys_err("truncate", EOVERFLOW);
+    struct stat st;
+    while (fstat((int)fd, &st) < 0) {
+        if (errno != EINTR) return tl_sys_err("truncate", errno);
+    }
+    if ((uint64_t)st.st_size != expected) return tl_sys_err("truncate", EAGAIN);
     while (ftruncate((int)fd, end) < 0) {
         if (errno != EINTR) return tl_sys_err("truncate", errno);
     }
@@ -372,6 +382,7 @@ LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean
                              lean_sarray_size((lean_object *)data), write);
 }
 
+#ifdef TL_TEST_HOOKS
 static ssize_t tl_test_write_zero(int fd, const void *data, size_t len) {
     (void)fd; (void)data; (void)len;
     return 0;
@@ -380,7 +391,7 @@ LEAN_EXPORT lean_obj_res tl_test_zero_write(lean_obj_arg w) {
     (void)w;
     return tl_write_all_with(-1, (const uint8_t *)"x", 1, tl_test_write_zero);
 }
-
+#endif
 
 /*
  * The durability barrier, and the one policy decision inside it.

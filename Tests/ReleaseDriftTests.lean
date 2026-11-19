@@ -767,19 +767,21 @@ private def staticReleaseRecipeRows (lakefile : String) : List Outcome :=
 
 private def nativeBuildRows (lakefile : String) : List Outcome :=
   let objects := linkObjectLines lakefile
-  [ -- Every executable that links a native object links the same one, and it is
-    -- the in-repository shim ADR-0019 records.
+  [ -- Only the test worker can link the shim compiled with fault injection.
     check "release natives: every linked native object is the in-repository shim"
-      (objects.all fun line => line == "moreLinkObjs := #[`@/tlsys.o]")
+      ((objects.filter (· == "moreLinkObjs := #[`@/tlsys.o]")).length == 2 &&
+        lakefile.contains "lean_exe tltestWorker where\n  root := `Tests.Main\n  moreLinkObjs := #[`@/tlsysTest.o]")
       s!"{objects}",
     check "release natives: the three executables that need the shim link it"
       (objects.length == 3) s!"{objects.length} target(s) declare moreLinkObjs: {objects}",
-    -- The recipe. One custom target, compiling exactly one source.
+    -- Both variants compile the same source.
     check "release natives: the shim is compiled from exactly ffi/tlsys.c"
       (occurrences lakefile "inputTextFile <| pkg.dir / \"ffi\" / \"tlsys.c\"" == 1)
       "the tlsys.o recipe must read exactly one source, and it is ffi/tlsys.c",
     check "release natives: only the shim and static packaging targets exist"
-      (occurrences lakefile "\ntarget " == 2 &&
+      (occurrences lakefile "\ntarget " == 3 &&
+        occurrences lakefile "buildSysObject pkg \"tlsys.o\" #[]" == 1 &&
+        occurrences lakefile "buildSysObject pkg \"tlsysTest.o\" #[\"-DTL_TEST_HOOKS\"]" == 1 &&
         occurrences lakefile "\ntarget tlreleaseStatic pkg : System.FilePath := do" == 1)
       "pin every custom target; static packaging must reuse the existing object graph",
     check "release natives: and it is tlsys.o"

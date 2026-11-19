@@ -203,6 +203,8 @@ def sysTests : IO (List Outcome) := do
   let fd ← Sys.openNoFollow base "seg.jsonl" (flagCreateExcl ||| flagAppend)
   Sys.writeAll fd payload
   let strength ← Sys.sync fd
+  outcomes := outcomes ++ [← expectErrno "a stale size refuses truncation and preserves the payload" ["EAGAIN"]
+    (Sys.truncate fd 0 (payload.size + 1).toUInt64)]
   Sys.close fd
   let back ← Sys.withFd base "seg.jsonl" 0 Sys.readAll
   outcomes := outcomes ++
@@ -224,9 +226,9 @@ def sysTests : IO (List Outcome) := do
   outcomes := outcomes ++
     [← expectErrno "sync on an unopened fd refuses with EBADF" ["EBADF"]
         (Sys.sync 999999),
-     ← expectErrno "truncate on an unopened fd refuses" ["EBADF"] (Sys.truncate 999999 0),
+     ← expectErrno "truncate on an unopened fd refuses" ["EBADF"] (Sys.truncate 999999 0 0),
      ← expectErrno "truncate rejects lengths outside off_t" ["EOVERFLOW"]
-        (Sys.truncate 999999 0xffffffffffffffff)]
+        (Sys.truncate 999999 0xffffffffffffffff 0)]
 
   -- a second append lands after the first (O_APPEND positioning)
   let fd2 ← Sys.openNoFollow base "seg.jsonl" flagAppend

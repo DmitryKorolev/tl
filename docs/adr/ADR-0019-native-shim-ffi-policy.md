@@ -137,9 +137,11 @@ test.
 
 ### Build wiring (and its one-time cost)
 
-The C file is compiled by the toolchain's bundled compiler via a custom Lake
+The C file is compiled by the host C compiler via a custom Lake
 target linked through `moreLinkObjs` (the pinned Lake deprecates `extern_lib`
-in favor of exactly this). The product and `tlrelease` may both link that
+in favor of exactly this). The test worker builds the same source with
+`TL_TEST_HOOKS` to inject an ownership refusal and a zero-progress write.
+The product and `tlrelease` link the production
 object, but ADR-0028 requires a drift gate to pin `tlrelease`'s complete native
 linker inputs, the `tlsys.o` source/build recipe, and every release-scope extern's
 declaring module, native symbol, and full Lean signature: Lean's stored import

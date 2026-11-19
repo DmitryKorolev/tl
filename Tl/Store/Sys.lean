@@ -48,9 +48,9 @@ opaque openNoFollow (base : @&String) (rel : @&String) (flags : UInt32) : IO UIn
 @[extern "tl_sys_read_all"]
 opaque readAll (fd : UInt32) : IO ByteArray
 
-/-- Set the length of an already opened file descriptor. -/
+/-- Trim the open file only if its size still matches the locked snapshot. -/
 @[extern "tl_sys_truncate"]
-opaque truncate (fd : UInt32) (length : UInt64) : IO Unit
+opaque truncate (fd : UInt32) (length expected : UInt64) : IO Unit
 
 /-- Write the whole buffer (restarting on `EINTR`/short writes). -/
 @[extern "tl_sys_write_all"]
