@@ -157,6 +157,7 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
   let mut warnings : List String := []
   let mut n := 0
   let lines := completeLines sd.bytes
+  let mut quarantinedLines := 0
   let mut quarantine : Option (Std.HashSet (Array UInt8)) := none
   for lineBytes in lines do
     n := n + 1
@@ -184,7 +185,7 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
       quarantine := some targets
       if (quarantineTarget? sd.replicaId lineBytes).isSome then continue
       if excludesDamage targets lineBytes e then
-        warnings := s!"segment {sd.replicaId}.jsonl line {n}: explicitly quarantined malformed bytes" :: warnings
+        quarantinedLines := quarantinedLines + 1
         continue
       if skipBad then
         skipped := n :: skipped
@@ -192,16 +193,19 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
         let error := enrich sd.replicaId n e
         let error := if repairableDamage lineBytes e then
             let fingerprint := Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest lineBytes)
+            let command := s!"tl quarantine {sd.replicaId} {n} {fingerprint}"
             { error with
-              message := s!"segment {sd.replicaId}.jsonl line {n}: {(e.message.splitOn " — ").head!}. Inspect with --skip-bad. To retain these bytes and share their exclusion, run `tl quarantine {sd.replicaId} {n} {fingerprint}`"
-              context := error.context ++ [("sha256", .str fingerprint)] }
+              message := s!"segment {sd.replicaId}.jsonl line {n}: {(e.message.splitOn " — ").head!}. Inspect with --skip-bad. To retain these bytes and share their exclusion, run `{command}`"
+              context := error.context ++ [("sha256", .str fingerprint), ("repairCommand", .str command)] }
           else if e.code == .malformedLine then
-            { error with message := s!"segment {sd.replicaId}.jsonl line {n}: unrecognized record kind or version — upgrade tl to interpret it" }
+            { error with message := s!"segment {sd.replicaId}.jsonl line {n}: this record declares a newer log version — upgrade tl to interpret it" }
           else error
         refusal := some { replicaId := sd.replicaId, line := n, error }
   -- a refused segment contributes only its refusal: it is repaired, not waited
   -- on, so suppress its deferred lines (and their lead) too — a read/doctor must
   -- never say "held back, appears later" for a line that is actually refused
+  if quarantinedLines > 0 then
+    warnings := s!"segment {sd.replicaId}.jsonl: {quarantinedLines} malformed line(s) explicitly quarantined" :: warnings
   let kept := if refusal.isSome then [] else ops.reverse
   let deferredKept := if refusal.isSome then [] else deferred.reverse
   let maxDeferredKept := if refusal.isSome then 0 else maxDeferred

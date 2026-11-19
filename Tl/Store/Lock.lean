@@ -79,15 +79,21 @@ def quarantineLine (d : Dirs) (rid : String) (line : Nat) (expected actor : Stri
       let previous ← readSegment d rid
       let lines := completeLines previous
       let some raw := lines[line - 1]?
-        | throw (.mk' .usage "the selected line is absent — rerun tl doctor for its current location")
+        | throw (.mk' .notFound "the selected line is absent — rerun tl doctor for its current location")
       unless Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest raw) == expected.toLower do
-        throw (.mk' .usage "the selected line has changed — rerun tl doctor and inspect the current bytes")
+        throw (.mk' .staleLine "the selected line has changed — rerun tl doctor and inspect the current bytes")
       let .error error := decodeOwnedLine rid raw
-        | throw (.mk' .usage "the selected line is a valid operation — use the ordinary task commands to change its state")
+        | throw {
+            code := .notQuarantinable
+            message := "the selected line is a valid operation — use the ordinary task commands to change its state"
+            context := [("reason", .str "valid-operation")] }
       if (quarantineTarget? rid raw).isSome then
-        throw (.mk' .usage "this line is a quarantine decision — select the damaged line reported by tl doctor")
+        throw {
+          code := .notQuarantinable
+          message := "this line is a quarantine decision — select the damaged line reported by tl doctor"
+          context := [("reason", .str "quarantine-marker")] }
       unless repairableDamage raw error do
-        throw (.mk' .usage "this record kind or version is protected — upgrade tl to interpret it")
+        throw (.mk' .unknownVersion "this record declares a newer log version — upgrade tl to interpret it")
       let replica ← loadOrMintReplica d
       if (quarantineIndex rid lines).contains raw.data then return (replica, false)
       let marker := (quarantineRecord rid raw (some actor)).render.toUTF8

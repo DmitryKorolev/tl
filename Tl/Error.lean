@@ -24,6 +24,8 @@ open Lean (Json)
     wire strings are lowercase-hyphen via `wire`. -/
 inductive ErrorCode where
   | usage
+  | staleLine
+  | notQuarantinable
   | internal
   | noProject
   | notFound
@@ -53,6 +55,8 @@ namespace ErrorCode
 
 /-- The stable lowercase-hyphen wire string — the `--json` `error.code`. -/
 def wire : ErrorCode → String
+  | .staleLine => "stale-line"
+  | .notQuarantinable => "not-quarantinable"
   | .usage => "usage"
   | .internal => "internal"
   | .noProject => "no-project"
@@ -75,6 +79,8 @@ def wire : ErrorCode → String
 /-- The stable nonzero process exit code (ADR-0008; `corrupt-clock` and
     `corrupt-replica` share `9` by that assignment). -/
 def exitCode : ErrorCode → UInt32
+  | .staleLine => 4
+  | .notQuarantinable => 2
   | .usage => 2
   | .internal => 1
   | .noProject => 3
@@ -99,7 +105,7 @@ def all : List ErrorCode :=
   [.usage, .internal, .noProject, .notFound, .ambiguousId, .forceRequired,
    .malformedLine, .unknownVersion, .corruptClock, .corruptReplica,
    .pushRejected, .noUpstream, .stealthMode, .lockBusy,
-   .notClaimable, .notCloseable, .unsafePath, .verifyFailed]
+   .notClaimable, .notCloseable, .unsafePath, .verifyFailed, .staleLine, .notQuarantinable]
 
 end ErrorCode
 

@@ -352,7 +352,16 @@ the line, excluding LF. The digest guards the operator's selection. After
 sync, readers match exact bytes within that replica irrespective of ordering
 or duplicates. Matching malformed lines produce a warning and the remaining
 operations fold normally. Valid task operations, valid quarantine decisions,
-recognizable future versions and unknown operation kinds are protected.
+and recognizable future versions are protected. The operation enum is closed within
+each version, so a misspelled operation can be explicitly quarantined. Reads
+summarize excluded lines once per segment. Human doctor output shows the
+messages for warnings and failures, including the repair command.
+
+The command reports malformed arguments as `usage`, an absent line as
+`not-found`, a changed digest as `stale-line` (exit 4), and a future version
+as `unknown-version`. Selecting a valid operation or marker returns
+`not-quarantinable` (exit 2), with `error.reason` set to `valid-operation`
+or `quarantine-marker`. An already recorded exclusion succeeds idempotently.
 Quarantine metadata carries zero ordering fields and never advances the clock.
 Decisions accumulate through union and have no undo record.
 
@@ -409,14 +418,14 @@ ad-hoc shape under the additive-only rule; ADR-0011 §1 cross-references this):
   ownership mismatch, or a `--dir`/`TL_DIR` target failing the same
   validation; ADR-0014 T4), `verify-failed` (`claim --verify` could not confirm
   freshness because a configured remote was unreachable — the take is refused;
-  distinct from a best-effort `--sync` failure, which only degrades) (extend as
-  new conditions arise). The enum
+  distinct from a best-effort `--sync` failure, which only degrades),
+  `stale-line`, and `not-quarantinable` (see *Shared quarantine* above). The enum
   obeys the same additive-only
   rule: codes may be *added* within a `schemaVersion`, never renamed or
   removed, so a consumer matching a known code is never broken. Each code
   maps to a stable nonzero process exit code, assigned once and never
   renumbered (additive like the enum; several codes may share one exit number):
-  `0` success, `1` internal, `2` usage, then `3` no-project, `4` not-found,
+  `0` success, `1` internal, `2` usage / not-quarantinable, then `3` no-project, `4` not-found / stale-line,
   `5` ambiguous-id, `6` force-required, `7` malformed-line, `8` unknown-version,
   `9` corrupt-clock / corrupt-replica, `10` push-rejected, `11` no-upstream,
   `12` stealth-mode, `13` lock-busy, `14` not-claimable, `15` not-closeable,

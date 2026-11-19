@@ -2721,10 +2721,11 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let v : View := View.ofLoaded d loaded now own
   let logRows := loaded.refused.map (fun r =>
     let isOwn := own.any (·.id == r.replicaId)
-    (Json.mkObj [("name", Json.str "log"),
+    let repair := r.error.context.lookup "repairCommand"
+    (Json.mkObj <| [("name", Json.str "log"),
                  ("status", Json.str (if isOwn then "fail" else "warn")),
                  ("message", Json.str s!"segment {r.replicaId}.jsonl refused: {r.error.message}"),
-                 ("segment", Json.str r.replicaId)], isOwn))
+                 ("segment", Json.str r.replicaId)] ++ (repair.map ("repairCommand", ·)).toList, isOwn))
   let logOk := match loadFail with
     | some e =>
       [(Json.mkObj [("name", Json.str "log"), ("status", Json.str "fail"),
@@ -2751,12 +2752,13 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     | some t => !v.has t || (v.duplicateOf t).isSome
     | none => false)).length
   let graphBad := decide (cyc > 0)
-  let graphRow := (Json.mkObj
+  let graphRow := (Json.mkObj <|
     [("name", Json.str "graph"),
      ("status", Json.str (if graphBad then "fail"
                           else if multi + dangling + dupIssues > 0 then "warn" else "ok")),
      ("cycles", jnum cyc), ("multiParent", jnum multi),
-     ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)], graphBad)
+     ("danglingEdges", jnum dangling), ("duplicateOfIssues", jnum dupIssues)] ++
+     (if graphBad then [("message", Json.str s!"{cyc} dependency cycle(s) — run tl dep cycles to inspect them")] else []), graphBad)
   -- stale claims: the window is the `tl.staleAfter` git config (a compact
   -- duration like 1h / 45m / 24h) — there is no hardcoded default (ADR-0013,
   -- amended). Unset ⇒ no stale verdict at all, so the row is omitted; set but
@@ -2951,9 +2953,18 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let data := Json.mkObj
     [("healthy", Json.bool healthy),
      ("checks", Json.arr (rows.map (·.1)).toArray)]
-  let human := (if healthy then "healthy" else "PROBLEMS FOUND") ++
+  let details := rows.filterMap fun (row, _) => do
+    let field := fun key => ((row.getObjVal? key).bind (·.getStr?)).toOption
+    let status ← field "status"
+    guard (status != "ok")
+    let name ← field "name"
+    let message := (field "message").getD s!"run tl doctor --json for {name} details"
+    let shown := sanitizeSingle message
+    let command := (field "repairCommand").filter (fun cmd => !shown.contains cmd)
+    return String.intercalate "\n" (s!"{status} {name}: {shown}" :: command.toList)
+  let summary := (if healthy then "healthy" else "PROBLEMS FOUND") ++
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
-  return { data, human, notes := syncNotes }
+  return { data, human := String.intercalate "\n" (summary :: details), notes := syncNotes }
 
 def cmdQuarantine (dirOverride : Option String) (rid : String) (line : Nat)
     (expected actor : String) : TlM CmdOut := do

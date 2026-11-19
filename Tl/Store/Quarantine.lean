@@ -37,15 +37,13 @@ theorem quarantineIndex_contains (replica : String) (lines : List ByteArray) (ta
   rw [quarantineIndex, Std.HashSet.contains_ofList, List.contains_iff_mem, List.mem_filterMap]
 
 /-- A missing envelope can itself be damage. Preserve recognizable future
-    versions and unknown operation kinds even when another field is broken. -/
+    versions even when another field is broken. Operation kinds are closed within a version. -/
 def repairableDamage (raw : ByteArray) (e : Tl.Error) : Bool := Id.run do
   if e.code != .malformedLine then return false
   let some text := String.fromUTF8? raw | return true
   let .ok j := Json.parse text | return true
   if let .ok v := (j.getObjVal? "v").bind (·.getNat?) then
     if v > supportedVersion then return false
-  if let .ok op := (j.getObjVal? "op").bind (·.getStr?) then
-    return op == "quarantine" || !(consumedKeys op).isEmpty
   return true
 
 /-- Applied only after normal decoding fails and the line is not a valid marker. -/

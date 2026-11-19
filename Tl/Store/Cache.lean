@@ -67,7 +67,7 @@ open Lean (Json)
     *semantics*, not only the bytes: bump it for any change to per-line
     classification, `WireOp.toOp`, or kernel `apply`/`merge` (see the module
     header). -/
-def cacheVersion : Nat := 6
+def cacheVersion : Nat := 7
 
 /-- One segment's content key at snapshot time. -/
 structure CacheSegMeta where

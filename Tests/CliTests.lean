@@ -433,7 +433,7 @@ def cliDepTests : IO (List Outcome) := do
       (fun j => jBool j "healthy" == some false
         && (jArr j "checks").any (fun c =>
              jStr c "name" == some "graph" && jStr c "status" == some "fail"
-               && jNat c "cycles" == some 1)),
+               && jNat c "cycles" == some 1 && (jStr c "message").any (·.contains "tl dep cycles"))),
      ← expectData "neither cycle member is ready" ["ready", "--dir", dir]
       (fun j => jNat j "count" == some 0)]
   -- the human repair hint is kind-aware. Blocks-only witnesses teach
@@ -4107,15 +4107,28 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     let lines := completeLines (← IO.FS.readBinFile foreignPath)
     let n := toString (lines.idxOf raw + 1)
     let digest := fingerprint raw
-    let invalid := fun a => expectErr "refuse invalid quarantine request" a .usage
+    let invocation := "tl quarantine " ++ absorbedRep ++ " " ++ n ++ " " ++ digest
+    for dir in [tlA, tlB] do
+      match ← run' ["doctor", "--dir", dir] with
+      | .error e => o := o ++ [check "doctor can diagnose a refused segment" false e.message]
+      | .ok out =>
+        let disk ← IO.FS.readBinFile (System.FilePath.mk dir / "log" / (absorbedRep ++ ".jsonl"))
+        let cmd := "tl quarantine " ++ absorbedRep ++ " " ++ toString ((completeLines disk).idxOf raw + 1) ++ " " ++ digest
+        o := o ++ [check "human doctor shows the exact command for own and foreign refusals"
+          (out.human.contains cmd) out.human]
+    let usage := fun a => expectErr "malformed quarantine arguments" a .usage
     o := o ++ [← expectData "doctor gives the exact repair invocation" ["doctor", "--dir", tlB]
-        (fun j => j.compress.contains ("tl quarantine " ++ absorbedRep ++ " " ++ n ++ " " ++ digest)),
-      ← invalid ["quarantine", "--dir", tlB], ← invalid (args absorbedRep "zero" digest),
-      ← invalid (args absorbedRep "0" digest), ← invalid (args "?" n digest),
-      ← invalid (args absorbedRep "999999" digest), ← invalid (args absorbedRep n "?"),
-      ← invalid (args absorbedRep n (fingerprint .empty))]
-    if let some valid := lines.find? (fun l => (decodeOwnedLine absorbedRep l).isOk) then
-      o := o ++ [← invalid (args absorbedRep (toString (lines.idxOf valid + 1)) (fingerprint valid))]
+        (fun j => j.compress.contains invocation),
+      ← usage ["quarantine", "--dir", tlB], ← usage (args absorbedRep "zero" digest),
+      ← usage (args absorbedRep "0" digest), ← usage (args "?" n digest),
+      ← usage (args absorbedRep n "?"),
+      ← expectErr "absent line" (args absorbedRep "999999" digest) .notFound,
+      ← expectErr "stale digest" (args absorbedRep n (fingerprint .empty)) .staleLine]
+    let some valid := lines.find? (fun l => (decodeOwnedLine absorbedRep l).isOk)
+      | throw (IO.userError "two-clone quarantine fixture requires a valid operation")
+    let reason := fun (tag : String) (e : Tl.Error) => e.context.lookup "reason" == some (.str tag)
+    o := o ++ [← expectErr "valid operation cannot be quarantined"
+      (args absorbedRep (toString (lines.idxOf valid + 1)) (fingerprint valid)) .notQuarantinable (reason "valid-operation")]
     o := o ++ [← expectData "foreign operator records explicit quarantine" (args absorbedRep n digest)
         (fun j => jStr j "outcome" == some "recorded")]
     let repaired := completeLines (← IO.FS.readBinFile foreignPath)
@@ -4132,18 +4145,33 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     o := o ++ [← expectData "new owner operation materializes"
       ["show", "tl-" ++ created, "--dir", tlA] (fun j => jStr j "title" == some "Owner can write after quarantine")]
     let marker := fun b => (quarantineRecord absorbedRep b none).render.toUTF8
-    for protectedLine in ["{\"v\":4}".toUTF8, "{\"op\":\"unknown-kind\"}".toUTF8] do
-      let result := decodeSegment ⟨absorbedRep, joinLines [protectedLine, marker protectedLine]⟩
-      o := o ++ [check "future or unknown records remain refused with a matching marker" result.refusal.isSome ""]
-    if let some valid := lines.find? (fun l => (decodeOwnedLine absorbedRep l).isOk) then
-      let result := decodeSegment ⟨absorbedRep, joinLines [valid, marker valid]⟩
-      o := o ++ [check "a marker targeting a valid operation cannot hide it" (result.ops.length == 1) ""]
+    let result := decodeSegment ⟨absorbedRep, joinLines [valid, marker valid]⟩
+    o := o ++ [check "a marker targeting a valid operation cannot hide it" (result.ops.length == 1) ""]
+    let some text := String.fromUTF8? valid | throw (IO.userError "expected UTF-8 operation")
+    let typo := (text.replace "\"op\":\"create\"" "\"op\":\"creat\"").toUTF8
+    unless typo != valid do throw (IO.userError "expected create fixture")
+    let future := "{\"v\":4,\"op\":\"new-kind\"}".toUTF8
+    let result := decodeSegment ⟨absorbedRep, joinLines [future, marker future]⟩
+    o := o ++ [check "future version remains refused with a matching marker" result.refusal.isSome ""]
     let prior ← IO.FS.readBinFile foreignPath
-    let protectedLines := [marker raw, "{\"v\":4}".toUTF8, "{\"op\":\"unknown-kind\"}".toUTF8]
-    IO.FS.writeBinFile foreignPath (prior ++ joinLines protectedLines)
-    for (protectedLine, offset) in protectedLines.zipIdx do
-      o := o ++ [← invalid (args absorbedRep (toString ((completeLines prior).length + offset + 1))
-        (fingerprint protectedLine))]
+    let first := (completeLines prior).length + 1
+    let large := (text.replace "\"op\":\"create\"" (s!"\"op\":\"{String.ofList (List.replicate 1500 'x')}\"")).toUTF8
+    IO.FS.writeBinFile foreignPath (prior ++ joinLines [large])
+    match ← run' ["doctor", "--dir", tlB] with
+    | .ok out => o := o ++ [check "a long damaged op name cannot truncate the human repair command"
+        (out.human.contains s!"tl quarantine {absorbedRep} {first} {fingerprint large}") out.human]
+    | .error e => o := o ++ [check "doctor examines long damaged operation" false e.message]
+
+    let select := fun idx line => args absorbedRep (toString (first + idx)) (fingerprint line)
+    IO.FS.writeBinFile foreignPath (prior ++ joinLines [marker raw, future, typo])
+    o := o ++ [← expectErr "marker is protected" (select 0 (marker raw)) .notQuarantinable (reason "quarantine-marker"),
+      ← expectErr "future version requires upgrade" (select 1 future) .unknownVersion,
+      ← expectData "misspelled operation at a supported version is repairable" (select 2 typo)
+        (fun j => jStr j "outcome" == some "recorded")]
+    let decoded := decodeSegment ⟨absorbedRep, joinLines [typo, raw, marker typo, marker raw, valid]⟩
+    o := o ++ [check "two exclusions yield one segment disclosure and retain healthy ops"
+      (decoded.refusal.isNone && decoded.ops.length == 1 && decoded.warnings.length == 1 &&
+        decoded.warnings.any (·.contains "2 malformed line(s)")) ""]
     let template := quarantineRecord absorbedRep raw none
     for invalidRecord in [{template with replica := "different"}, {template with v := 2},
         {template with hlc := "1"}, {template with nonce := "1"}, {template with op := "other"},
