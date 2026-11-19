@@ -361,6 +361,8 @@ private def policyTests : List Outcome :=
         `Tl.Kernel.fold_perm,
         `Tl.Kernel.fold_append,
         `Tl.Kernel.fold_append_self,
+        `Tl.Store.committedEnd_prefix,
+        `Tl.Store.completeLines_trim_append,
         `Tl.Sync.unionLines_mem_iff,
         `Tl.Sync.unionLines_comm,
         `Tl.Sync.unionLines_idem,

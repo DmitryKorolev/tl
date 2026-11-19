@@ -48,6 +48,10 @@ opaque openNoFollow (base : @&String) (rel : @&String) (flags : UInt32) : IO UIn
 @[extern "tl_sys_read_all"]
 opaque readAll (fd : UInt32) : IO ByteArray
 
+/-- Set the length of an already opened file descriptor. -/
+@[extern "tl_sys_truncate"]
+opaque truncate (fd : UInt32) (length : UInt64) : IO Unit
+
 /-- Write the whole buffer (restarting on `EINTR`/short writes). -/
 @[extern "tl_sys_write_all"]
 opaque writeAll (fd : UInt32) (data : @&ByteArray) : IO Unit

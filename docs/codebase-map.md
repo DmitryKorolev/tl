@@ -336,7 +336,7 @@ Tl/Store/               -- I/O shell: local persistence (tested)
   Lines.lean            --   single-pass complete-line scan and LF framing,
                         --   with split, delimiter exclusion and round-trip proofs
   Segment.lean          --   segment append/enumerate/read; torn-tail skip;
-                        --   crash-fragment closing; one O_APPEND write per
+                        --   crash-fragment trimming; one O_APPEND write per
                         --   record + fsync (ADR-0008 §corruption, ADR-0015
                         --   §2/§5); enumeration validates log/ through the
                         --   shim walk before listing and only canonical

@@ -50,6 +50,9 @@ LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, ui
 LEAN_EXPORT lean_obj_res tl_sys_read_all(uint32_t fd, lean_obj_arg w) {
     (void)fd; (void)w; return tl_sys_unsupported("read_all");
 }
+LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, lean_obj_arg w) {
+    (void)fd; (void)length; (void)w; return tl_sys_unsupported("truncate");
+}
 LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean_obj_arg w) {
     (void)fd; (void)data; (void)w; return tl_sys_unsupported("write_all");
 }
@@ -128,6 +131,7 @@ static const char *tl_errno_name(int e) {
     case EMFILE: return "EMFILE";
     case EBADF: return "EBADF";
     case EIO: return "EIO";
+    case EOVERFLOW: return "EOVERFLOW";
     /* The conditions a flush reports. A deferred write failure surfaces at the
        barrier rather than at `write`, so these are the names a durability
        refusal is read by; without them ENOSPC is indistinguishable from any
@@ -308,6 +312,16 @@ LEAN_EXPORT lean_obj_res tl_sys_read_all(uint32_t fd, lean_obj_arg w) {
     memcpy(lean_sarray_cptr(arr), buf, len);
     free(buf);
     return lean_io_result_mk_ok(arr);
+}
+
+LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, lean_obj_arg w) {
+    (void)w;
+    off_t end = (off_t)length;
+    if (end < 0 || (uint64_t)end != length) return tl_sys_err("truncate", EOVERFLOW);
+    while (ftruncate((int)fd, end) < 0) {
+        if (errno != EINTR) return tl_sys_err("truncate", errno);
+    }
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean_obj_arg w) {

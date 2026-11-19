@@ -9,7 +9,7 @@ bytes here; per-line UTF-8/JSON decode happens at the codec stage so one bad
 line refuses one segment, never the whole read.
 
 Writing is the own-segment append discipline: ensure the log dir exists,
-close any crash fragment with a single LF first (ADR-0008 crash hygiene — a
+trim any uncommitted suffix on the open descriptor (ADR-0008 crash hygiene — a
 writer never appends onto a newline-less tail), then one `O_APPEND` write
 per record line, then fsync. All opens ride the no-follow walk (§6).
 -/
@@ -68,17 +68,17 @@ def readSegments (d : Dirs) : TlM (List SegmentData × List String) := do
   return (segs, notes)
 
 /-- Does the segment end in a newline-less crash fragment the next writer
-    must close (ADR-0008 crash hygiene)? -/
+    must trim (ADR-0008 crash hygiene)? -/
 def tornTail (bytes : ByteArray) : Bool :=
   match bytes[bytes.size - 1]? with
   | some b => b != 10
   | none => false
 
 /-- Append rendered record lines to the replica's own segment under the
-    mutation lock (the caller holds it): close a crash fragment if needed,
+    mutation lock (the caller holds it): trim a crash fragment if needed,
     one `O_APPEND` write per record (§2), fsync (§2; F_FULLFSYNC on Darwin). -/
 def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
-    (closeFragment : Bool) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
+    (previous : ByteArray) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   -- create .tl/log through the no-follow shim mkdir (a planted
   -- `.tl/log -> /elsewhere` symlink is refused, never followed and created
   -- through — ADR-0015 §6; init makes only .tl/local, so the first write is
@@ -88,8 +88,9 @@ def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
   liftSys (mapSysError rel) do
     let fd ← Sys.openNoFollow d.base rel (Sys.flagCreate ||| Sys.flagAppend)
     try
-      if closeFragment then
-        Sys.writeAll fd "\n".toUTF8
+      let stop := committedEnd previous
+      if stop < previous.size then
+        Sys.truncate fd stop.toUInt64
       for line in lines do
         Sys.writeAll fd (line ++ "\n".toUTF8)
       Sys.syncBestEffortWith syncMechanism fd
@@ -99,7 +100,7 @@ def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
 /-- Rendered local operations use the same raw append path as recovered
     complete lines. Recovery must preserve even unknown/non-UTF-8 bytes. -/
 def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
-    (closeFragment : Bool) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit :=
-  appendOwnRaw d replicaId (lines.map String.toUTF8) closeFragment syncMechanism
+    (previous : ByteArray) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit :=
+  appendOwnRaw d replicaId (lines.map String.toUTF8) previous syncMechanism
 
 end Tl.Store

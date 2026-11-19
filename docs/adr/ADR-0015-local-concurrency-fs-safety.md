@@ -48,8 +48,7 @@ Each record is one `O_APPEND` write of a single LF-terminated line; the writer
 never `seek`s. On a local POSIX filesystem `O_APPEND` makes the offset-update +
 write atomic, so even a lock-bypassing or cross-tool writer cannot interleave
 bytes within a record. Crash hygiene: on open a writer first ensures the
-segment ends in `\n` (appending one if a crashed fragment left a newline-less
-tail) so a later append never fuses onto a partial record (ADR-0008). The writer
+segment ends in `\n` (truncating an uncommitted suffix under the mutation lock) so a later append never fuses onto a partial record (ADR-0008). The writer
 fsyncs after appending — durability is best-effort; the durable publish is `git
 push` (ADR-0001).
 
@@ -215,7 +214,7 @@ with `--dir` / `TL_DIR` (ADR-0012).
   holds via the nonce; ownership, HLC monotonicity, and recent-write durability
   do not). Tier-3: tested where testable, trusted at the boundary.
 - Tier-2 shell, tested comprehensively: every branch — lock contention,
-  crash-fragment close, torn-trailing-line skip, atomic-rename-under-read,
+  crash-fragment trim, torn-trailing-line skip, atomic-rename-under-read,
   push-window re-snapshot, symlink refusal — ships with per-platform tests
   (AGENTS.md DoD).
 

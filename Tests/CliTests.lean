@@ -4041,7 +4041,15 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
   let _ ← run' ["init", "--dir", tlA]
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA, "remote", "add", "origin", bare.toString] }
   let _ ← IO.Process.output { cmd := "git", args := #["-C", rootA, "config", "protocol.file.allow", "always"] }
-  let _ ← mkIssue tlA "From clone A"
+  let _ ← mkIssue tlA "Before the interrupted append"
+  let #[segment] ← (System.FilePath.mk tlA / "log").readDir
+    | throw (IO.userError "expected one own segment")
+  let bytes ← IO.FS.readBinFile segment.path
+  IO.FS.writeBinFile segment.path (bytes ++ "{".toUTF8)
+  let recoveredId ← mkIssue tlA "From clone A"
+  o := o ++ [← expectData "create after interruption is visible on an ordinary read"
+    ["show", "tl-" ++ recoveredId, "--dir", tlA] (fun j => jStr j "title" == some "From clone A")]
+  let _ ← mkIssue tlA "After recovery"
   let _ ← run' ["sync", "--dir", tlA]
   -- clone B: a sync pulls A's replica from the remote
   let rootB ← mkClone
@@ -4056,6 +4064,8 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     absorbedRep := (absorbed.head?.bind (·.getStr?.toOption)).getD ""
     o := o ++ [check "sync reports a remote-pulled replica in absorbed (not [])" (!absorbed.isEmpty) out.data.compress]
   | .error e => o := o ++ [{ name := "B sync absorb", passed := false, msg := e.message }]
+  o := o ++ [← expectData "peer reads the issue written immediately after interruption"
+    ["show", "tl-" ++ recoveredId, "--dir", tlB] (fun j => jStr j "title" == some "From clone A")]
   -- doctor refMark: ok while disk matches, warn after the foreign segment is deleted
   match ← run' ["doctor", "--dir", tlB] with
   | .ok out => o := o ++ [check "doctor refMark ok when on-disk matches the marker"

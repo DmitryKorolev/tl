@@ -5,8 +5,7 @@ ADR-0012, ADR-0015).
 Discrete tests per documented branch: discovery (found / repo-boundary stop /
 not-found / override validation / uninitialized / symlinked `.tl`), the
 locked write path (create commit, guard refusal writes nothing, zero-record
-no-op), crash-fragment hygiene and its pinned cascade (the closed fragment
-becomes a malformed line and the own segment is refused loudly), hostile
+no-op), trimming uncommitted tails before appending, hostile
 foreign segments (segment-scoped refusal; `--skip-bad` with disclosures),
 the line-scoped HLC scan, clock recovery (absent → reseed above the
 segments' max; corrupt → fail-closed `reason:"unreadable"`), replica
@@ -497,28 +496,21 @@ def storeAdversityTests : IO (List Outcome) := do
     [← expectOk "absent replica auto-mints" (transact d none 1 (buildCreate "reborn"))
         (fun (ctx, _) => check "absent replica auto-mints"
           (ctx.replica.id != fixedReplica && ctx.replica.valid) ctx.replica.id)]
-  -- crash fragment: the next writer closes it; the closed line then refuses
+  -- The final LF commits a record, even when the fragment already parses.
   IO.FS.writeFile (root / ".tl" / "local" / "replica") (fixedReplica ++ "\n")
-  let pre ← IO.FS.readBinFile ownSeg
-  IO.FS.writeBinFile ownSeg (pre ++ "{\"v\":1,\"op\"".toUTF8)   -- torn, no LF
-  outcomes := outcomes ++
-    [← expectOk "torn tail is skipped on read (uncommitted, not corruption)" (readState d)
-        (fun loaded => check "torn tail is skipped on read (uncommitted, not corruption)"
-          (loaded.refused.all (fun r => r.replicaId != fixedReplica))),
-     ← expectOk "next write closes the crash fragment" (transact d none 1 (buildCreate "after-crash"))
-        (fun _ => check "next write closes the crash fragment" true)]
-  let bytes ← IO.FS.readBinFile ownSeg
-  let lines := completeLines bytes
-  outcomes := outcomes ++
-    [check "fragment became its own complete line"
-      (lines.any (fun l => String.fromUTF8? l == some "{\"v\":1,\"op\"")) "",
-     -- and the pinned cascade: the own segment is now refused, loudly
-     ← expectCode "the closed fragment now refuses the own segment (write path)"
-        .malformedLine (transact d none 1 (buildCreate "blocked")),
-     ← expectOk "the closed fragment refuses the own segment on read (disclosed)"
-        (readState d)
-        (fun loaded => check "the closed fragment refuses the own segment on read (disclosed)"
-          (loaded.refused.any (fun r => r.replicaId == fixedReplica)))]
+  for fragment in ["{\"v\":1,", "{}"] do
+    let pre ← IO.FS.readBinFile ownSeg
+    IO.FS.writeBinFile ownSeg (pre ++ fragment.toUTF8)
+    outcomes := outcomes ++
+      [← expectOk "first write after a torn tail succeeds" (transact d none 1 (buildCreate "after-crash"))
+          (fun (_, parsed) => check "first write appends one record" (parsed.length == 1))]
+    let bytes ← IO.FS.readBinFile ownSeg
+    outcomes := outcomes ++
+      [check "trim preserves committed bytes" (bytes.extract 0 pre.size == pre),
+       ← expectOk "after-crash issue can be read" (readState d)
+         (fun loaded => check "own segment remains readable" loaded.refused.isEmpty),
+       ← expectOk "subsequent write succeeds" (transact d none 1 (buildCreate "next"))
+         (fun (_, parsed) => check "second write appends one record" (parsed.length == 1))]
   return outcomes
 
 def storeLockTests : IO (List Outcome) := do

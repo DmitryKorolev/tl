@@ -91,7 +91,7 @@ def recoverOwnSegment (d : Dirs) (own : String) (incoming : ByteArray)
     let current ← readSegment d own
     let delta := recoveryDelta (completeLines current) received
     if delta.isEmpty then return false
-    appendOwnRaw d own delta (tornTail current) syncMechanism
+    appendOwnRaw d own delta current syncMechanism
     return true
   finally
     releaseLock fd

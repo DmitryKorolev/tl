@@ -163,7 +163,7 @@ def transact (d : Dirs) (actor : Option String) (nStamps : Nat)
       wireOps stamps
     unless parsed.isEmpty do
       let ownBytes := ((segs.find? (·.replicaId == replica.id)).map (·.bytes)).getD ByteArray.empty
-      appendOwn d replica.id (parsed.map renderLine) (tornTail ownBytes) syncMechanism
+      appendOwn d replica.id (parsed.map renderLine) ownBytes syncMechanism
       persistClock d clockN syncMechanism
     return (ctx, parsed)
   finally

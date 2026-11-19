@@ -300,13 +300,11 @@ both with a stated policy:
   is ignored this read, and the next read sees it complete. This is normal
   concurrent operation, not corruption. Crash-then-append: if a writer
   *crashed* mid-append, the torn fragment has no trailing newline, and a later
-  append would concatenate onto it and fuse two records. So every writer, on
-  open, first ensures the segment ends in `\n` — if it does not, it appends a
-  single `\n` to close the orphaned fragment before writing its own line. That
-  turns the crash fragment into a self-contained line, which the mid-log
-  malformed-line policy (below) then handles (fail-closed by default,
-  `--skip-bad` to drop it with disclosure). A writer never appends onto a
-  newline-less tail, so a crash can damage at most the one in-flight record.
+  append would concatenate onto it and fuse two records. Under the mutation lock, the next writer trims the own
+  segment to its last complete LF on the same no-follow descriptor used for
+  append. With no LF it trims to zero. A complete JSON object still needs its
+  LF to commit. Same-replica recovery uses the same append routine. A later
+  append preserves every committed byte and adds only its fresh records.
 - A malformed line mid-segment (a bad manual edit, a botched merge, or a
   hostile/garbage record another replica pushed) — including a complete,
   well-formed record whose stamp `replica` does not encode to its segment's

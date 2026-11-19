@@ -1107,10 +1107,10 @@ def syncRecoveryTests : IO (List Outcome) := do
   let result ← runTl do
     liftSys (fun e => .mk' .internal (toString e)) (Sys.mkdirNoFollow d.base d.relLocal)
     writeLocalFile d d.relReplica (rid ++ "\n")
-    appendOwnRaw d rid ["old".toUTF8] false
+    appendOwnRaw d rid ["old".toUTF8] .empty
     let changed ← recoverOwnSegment d rid "old\npeer\n".toUTF8 (beforeLock := do
       let fd ← acquireLock d
-      try appendOwnRaw d rid ["concurrent".toUTF8, "peer".toUTF8] false
+      try appendOwnRaw d rid ["concurrent".toUTF8, "peer".toUTF8] .empty
       finally releaseLock fd)
     let bytes ← readSegment d rid
     let untouched ← recoverOwnSegment d rid "peer\n".toUTF8 (beforeLock :=
@@ -1143,15 +1143,15 @@ def syncRecoveryTests : IO (List Outcome) := do
     releaseLock released
     rows := rows ++ [check "recovery reports a failed durability barrier and releases the lock"
       (match failed with | .error _ => true | .ok _ => false)]
-    -- A crash fragment is closed using the same discipline as a local write.
-    appendOwnRaw d rid [] false
+    -- A crash fragment is trimmed using the same discipline as a local write.
+    appendOwnRaw d rid [] .empty
     liftSys (fun e => .mk' .internal (toString e)) do
       Sys.withFd d.base (d.relSegment rid) Sys.flagAppend fun fd =>
         Sys.writeAll fd "tail".toUTF8
     let oldTail ← readSegment d rid
     let closed ← recoverOwnSegment d rid "final\n".toUTF8
-    rows := rows ++ [check "recovery preserves and closes a torn tail before appending"
-      (closed && (← readSegment d rid) == oldTail ++ "\nfinal\n".toUTF8)]
+    rows := rows ++ [check "recovery trims a torn tail before appending"
+      (closed && (← readSegment d rid) == oldTail.extract 0 (oldTail.size - 4) ++ "final\n".toUTF8)]
     -- Markers from the old recovery semantics cannot suppress a first read.
     writeLocalFile d d.relRefMark "old-tip\n"
     writeLocalFile d d.relSyncPub "old-tip 3 5\n"

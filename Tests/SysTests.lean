@@ -217,7 +217,10 @@ def sysTests : IO (List Outcome) := do
   -- so propagates rather than falling back to a plain fsync.
   outcomes := outcomes ++
     [← expectErrno "sync on an unopened fd refuses with EBADF" ["EBADF"]
-        (Sys.sync 999999)]
+        (Sys.sync 999999),
+     ← expectErrno "truncate on an unopened fd refuses" ["EBADF"] (Sys.truncate 999999 0),
+     ← expectErrno "truncate rejects lengths outside off_t" ["EOVERFLOW"]
+        (Sys.truncate 999999 0xffffffffffffffff)]
 
   -- a second append lands after the first (O_APPEND positioning)
   let fd2 ← Sys.openNoFollow base "seg.jsonl" flagAppend

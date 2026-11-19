@@ -186,4 +186,59 @@ theorem completeLines_joinLines (lines : List ByteArray)
   rw [List.nil_append, split_join_data lines lfFree, List.dropLast_concat, List.map_map]
   change lines.map (fun line => lineOfBytes line.data.toList) = lines
   exact List.map_id'' lineOfBytes_data lines
+private def findCommittedEnd (bytes : ByteArray) : (n : Nat) → n ≤ bytes.size → Nat
+  | 0, _ => 0
+  | i + 1, bound =>
+    if bytes[i]'(Nat.lt_of_succ_le bound) == 10 then i + 1
+    else findCommittedEnd bytes i (Nat.le_trans (Nat.le_succ _) bound)
+
+/-- First offset after the last committed record. A clean segment costs one byte probe. -/
+def committedEnd (bytes : ByteArray) : Nat :=
+  findCommittedEnd bytes bytes.size (Nat.le_refl _)
+
+private theorem prefixBytes (bytes : ByteArray) (i : Nat) :
+    (bytes.extract 0 i).data.toList = bytes.data.toList.take i := by
+  rw [extract_data_eq bytes (Nat.zero_le _), Array.toList_extract, List.extract_eq_take_drop,
+    Nat.sub_zero, List.drop_zero]
+
+theorem committedEnd_prefix (bytes : ByteArray) :
+    (bytes.extract 0 (committedEnd bytes)).data.toList <+: bytes.data.toList := by
+  rw [prefixBytes]
+  exact List.take_prefix _ _
+
+-- Each backwards step moves a non-LF byte into the uncommitted suffix.
+private theorem committedSplit (bytes : ByteArray) (n : Nat) (bound : n ≤ bytes.size)
+    (tail : List UInt8) (free : (10 : UInt8) ∉ tail) (suffix : List UInt8) :
+    (((bytes.data.toList.take (findCommittedEnd bytes n bound)) ++ suffix).splitOn 10).dropLast =
+      (((bytes.data.toList.take n) ++ tail).splitOn 10).dropLast ++ (suffix.splitOn 10).dropLast := by
+  induction n generalizing tail with
+  | zero =>
+    simp only [findCommittedEnd, List.take_zero, List.nil_append, List.splitOn_eq_singleton free,
+      List.dropLast_singleton]
+  | succ i ih =>
+    have hi := Nat.lt_of_succ_le bound
+    have hl : i < bytes.data.toList.length := by rw [Array.length_toList]; exact hi
+    have step := List.take_succ_eq_append_getElem hl
+    simp only [Array.getElem_toList] at step
+    by_cases hit : bytes[i] = 10
+    · simp only [findCommittedEnd, hit, BEq.rfl, ite_true, step, ← ByteArray.getElem_eq_getElem_data,
+        List.append_assoc, List.singleton_append, List.splitOn_append_cons_self,
+        List.splitOn_eq_singleton free, List.dropLast_concat,
+        List.dropLast_append_of_ne_nil (List.splitOn_ne_nil _ _)]
+    · simp only [findCommittedEnd, beq_eq_false_iff_ne.mpr hit, Bool.false_eq_true, ite_false,
+        step, ← ByteArray.getElem_eq_getElem_data, List.append_assoc, List.singleton_append]
+      exact ih _ _ (fun h => (List.mem_cons.mp h).elim (Ne.symm hit) free)
+
+theorem completeLines_trim_append (old : ByteArray) (fresh : List ByteArray)
+    (free : ∀ line ∈ fresh, (10 : UInt8) ∉ line.data.toList) :
+    completeLines (old.extract 0 (committedEnd old) ++ joinLines fresh) =
+      completeLines old ++ fresh := by
+  have split := committedSplit old old.size (Nat.le_refl _) [] List.not_mem_nil
+    (joinLines fresh).data.toList
+  have whole : old.data.toList.take old.size = old.data.toList := List.take_length
+  simp only [whole, List.append_nil] at split
+  rw [completeLines_eq_splitOn, ← ByteArray.append_eq, ByteArray.toList_data_append',
+    prefixBytes, committedEnd, split, List.map_append, ← completeLines_eq_splitOn, ← completeLines_eq_splitOn,
+    completeLines_joinLines fresh free]
+
 end Tl.Store
