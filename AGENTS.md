@@ -12,6 +12,10 @@ for the decisions and their rationale, read the ADRs in
 > [ADR-0011](docs/adr/ADR-0011-agent-consumption.md) — machine-readable reads
 > and skill), not this.
 
+When updating this repository’s own tracker as a development agent, set
+`TL_ACTOR=tl-dev` on the tracker command. This keeps the local Git email
+out of shared claim and note attribution.
+
 ## Core principles
 
 1. **Prove inside the TCB, test outside it — and every part has a home.**
