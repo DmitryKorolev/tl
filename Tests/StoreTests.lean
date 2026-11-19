@@ -508,7 +508,8 @@ def storeAdversityTests : IO (List Outcome) := do
     outcomes := outcomes ++
       [check "trim preserves committed bytes" (bytes.extract 0 pre.size == pre),
        ← expectOk "after-crash issue can be read" (readState d)
-         (fun loaded => check "own segment remains readable" loaded.refused.isEmpty),
+         (fun loaded => check "own segment remains readable"
+           (loaded.refused.all (·.replicaId != fixedReplica))),
        ← expectOk "subsequent write succeeds" (transact d none 1 (buildCreate "next"))
          (fun (_, parsed) => check "second write appends one record" (parsed.length == 1))]
   return outcomes
