@@ -304,6 +304,22 @@ def syncRefreshTests : IO (List Outcome) := do
         (if isRoot then true else (!r.refreshed && r.degraded.isSome)) (toString (repr r))
     | .error e => { name := "refresh degrades on read-only FS", passed := false, msg := s!"threw: {e.message}" }]
   let _ ← (IO.Process.output { cmd := "chmod", args := #["0700", logDir.toString] } : IO _)
+  -- Advance the ref between the first reader’s rename and its marker write.
+  -- The second reader must degrade here; its retry installs the newer tip.
+  let interleaved ← runTl do
+    let _ ← writeRef d [seg ridB "prior\n"] [] (← refTip d)
+    let observed ← IO.mkRef false
+    let _ ← refreshFromRef d (some ridC) (beforeMark := do
+      let _ ← writeRef d [seg ridB "new\n"] [] (← refTip d)
+      let other ← refreshFromRef d (some ridC)
+      observed.set other.degraded.isSome)
+    let _ ← refreshFromRef d (some ridC)
+    let pinned ← refTip d
+    let mark ← loadRefMark d
+    return (← observed.get) && pinned.isSome && pinned == mark &&
+      (completeLines (← readSegment d ridB)).contains "new".toUTF8
+  o := o ++ [check "overlapping refreshes serialize replacement and marker publication"
+    (interleaved.toOption == some true)]
   return o
 
 /-- Set `protocol.file.allow=always` in a repo's *local* config so its `tl`

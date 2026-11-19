@@ -2,7 +2,7 @@
 `Tl.Sync.AutoSync` — the write-path freshness bracket (ADR-0016 write-path freshness +
 ADR-0021), composed over the sync legs and exposed to the CLI write verbs.
 
-A write verb brackets `Store.transact` with two best-effort steps (the ordinary unique-replica path is lock-free),
+A write verb brackets `Store.transact` with two best-effort steps,
 both built from the primitives in `Tl.Sync.Local`/`Tl.Sync.Ref`:
 
   - `preWriteRefresh` — absorb the shared `refs/tl/log` before the write's
@@ -48,7 +48,7 @@ def preWriteRefresh (dirOverride : Option String) :
 /-- Auto-sync (ADR-0021): if `tl.autosync` is on, publish this replica's segment
     into the shared ref (and absorb siblings). The replica comes from the
     completed transaction, which may have minted it. A worktree sibling sees the
-    write with no explicit `tl sync`. Best-effort and lock-free — runs after the
+    write with no explicit `tl sync`. Best-effort — runs after the
     write's lock is released; any failure (no git, read-only FS, ref contention
     surviving the CAS retry) is swallowed and disclosed as a non-fatal note,
     never failing the write. Catches both thrown `Tl.Error`s and raw

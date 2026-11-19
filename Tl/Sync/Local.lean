@@ -23,7 +23,7 @@ It does two things against the shared ref, both idempotent:
 
 The ordinary unique-replica path takes no mutation lock. Same-replica recovery
 uses the mutation lock to reread and append; foreign-cache writeback stays
-lock-free, and CAS is the cross-worktree serialization. The remote
+serialized with marker publication, and CAS is the cross-worktree serialization. The remote
 `fetch → union → push` leg (ADR-0001 §5) layers on top of these primitives and
 is a separate increment. Tested I/O shell; no Mathlib.
 -/
@@ -218,8 +218,12 @@ def syncLocal (d : Dirs) (ownReplica : Option String)
     (beforeCas : TlM Unit := pure ()) (usePublishMarker : Bool := false) : TlM LocalOutcome := do
   if !(← inGitRepo d) then
     return { ran := false, published := false, absorbed := [], tip := none }
-  let (localSegs, _) ← readSegments d
-  reconcile d ownReplica localSegs beforeCas usePublishMarker maxAttempts
+  liftSys (mapSysError d.relLocal) (Sys.mkdirNoFollow d.base d.relLocal)
+  let lock ← acquireLock d (materialization := true)
+  try
+    let (localSegs, _) ← readSegments d
+    reconcile d ownReplica localSegs beforeCas usePublishMarker maxAttempts
+  finally releaseLock lock
 
 /-! ## Read-time refresh (ADR-0016 §3) -/
 
@@ -237,23 +241,35 @@ structure RefreshOutcome where
   degraded : Option String
 deriving Repr, Inhabited
 
-private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
-  let captured ← try pinLogRef d catch e => do
-    if ← inGitRepo d then throw e else pure none
-  match captured with  -- the O(1) trigger: one `rev-parse`, no object store
+private def refreshLocked (d : Dirs) (ownReplica : Option String) (beforeMark : TlM Unit) :
+    TlM RefreshOutcome := do
+  match ← pinLogRef d with
   | none => return { refreshed := false, absorbed := [], tip := none, degraded := none }
   | some pinned =>
     let tip := pinned.oid
     if (← loadRefMark d) == some tip then
-      -- unchanged (the common case): fold the local files, git untouched
       return { refreshed := false, absorbed := [], tip := some tip, degraded := none }
     -- A previously owned segment may now be foreign after a re-mint.
     -- Materialize the union so its unpublished complete lines survive.
     let (refSegs, _) ← readPinnedEntries d pinned
     let (localSegs, _) ← readSegments d
     let absorbed ← absorbForeign d ownReplica localSegs (unionSegments refSegs localSegs)
+    beforeMark
     storeRefMark d tip
     return { refreshed := true, absorbed, tip := some tip, degraded := none }
+
+private def refreshBody (d : Dirs) (ownReplica : Option String) (beforeMark : TlM Unit) :
+    TlM RefreshOutcome := do
+  let pinned ← try pinLogRef d catch e => do
+    if ← inGitRepo d then throw e else pure none
+  let tip := pinned.map (·.oid)
+  if tip.isNone || (← loadRefMark d) == tip then
+    return { refreshed := false, absorbed := [], tip, degraded := none }
+  -- A busy reader can fall back to its current disk view. The winner owns
+  -- materialization through marker publication. Re-pin after taking the lock.
+  let lock ← acquireLock d 0 (materialization := true)
+  try refreshLocked d ownReplica beforeMark
+  finally releaseLock lock
 
 /-- Read-time refresh: before a read folds `.tl/log/`, cheaply detect whether a
     sibling published to the shared `refs/tl/log` (an O(1) OID compare against
@@ -264,19 +280,20 @@ private def refreshBody (d : Dirs) (ownReplica : Option String) : TlM RefreshOut
     while git stays off the steady-state read path (an unchanged ref costs one
     `rev-parse` + one small file read).
 
-    Best-effort, with a lock only for same-replica recovery: any failure — git absent, a read-only
+    Best-effort, with a worktree lock when materialization is needed: any failure — git absent, a read-only
     filesystem, a concurrent refresher — degrades to "fold what is on disk"
     and never fails the read (ADR-0016 §3). It catches both thrown `Tl.Error`s
     and raw `IO.Error`s for that reason. A genuine path-safety / corruption
     problem is not hidden: the subsequent `readState` fold re-encounters and
     surfaces it through the normal read policy. -/
-def refreshFromRef (d : Dirs) (ownReplica : Option String) : TlM RefreshOutcome := do
+def refreshFromRef (d : Dirs) (ownReplica : Option String)
+    (beforeMark : TlM Unit := pure ()) : TlM RefreshOutcome := do
   -- stealth (ADR-0001 §7): a single local replica that is never shared — so it
   -- neither publishes nor absorbs. Skip the ref entirely (no `rev-parse`, no
   -- foreign-segment writeback): a clean no-op, not a degraded read.
   if ← isStealth d then
     return { refreshed := false, absorbed := [], tip := none, degraded := none }
-  match ← ((refreshBody d ownReplica).run.toBaseIO : IO _) with
+  match ← ((refreshBody d ownReplica beforeMark).run.toBaseIO : IO _) with
   | .ok (.ok o) => return o
   | .ok (.error e) =>
     return { refreshed := false, absorbed := [], tip := none, degraded := some e.message }

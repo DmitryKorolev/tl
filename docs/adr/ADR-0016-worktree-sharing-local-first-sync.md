@@ -136,9 +136,9 @@ lock (not by `doctor`, which stays a pure diagnostic). The marker is
 `.tl/local/ref-mark`
 (gitignored, no `v` bump). The trigger is one `git rev-parse refs/tl/log`
 compared against the mark: equal ⇒ fold the local files, git untouched;
-different ⇒ combine the captured ref and local segments with the transport
+different ⇒ take the worktree materialization lock, re-pin the ref, combine the pinned ref and local segments with the transport
 union, materialize changes through the §3 writeback, record the new OID, then
-fold. The whole refresh is best-effort; the normal unique-replica path is lock-free — it catches both thrown `Tl.Error`s
+fold. The whole refresh is best-effort; the unchanged-tip path is lock-free — it catches both thrown `Tl.Error`s
 and raw `IO.Error`s (git absent, a read-only FS) and degrades to "fold what is
 on disk," never failing the read; a genuine path-safety/corruption problem is
 still surfaced by the subsequent fold. It does **not** publish — that is the
@@ -168,7 +168,7 @@ or — worse for coordination — let two worktrees both claim the same item (th
 LWW join still converges, but the readiness guard that exists to prevent the
 double-claim was bypassed). The decision: a **pre-transact local absorb**. Every
 write verb runs the *same* `refreshFromRef` reads use, in the CLI layer *before*
-`transact` acquires the mutation lock (the normal foreign absorb is lock-free; any same-replica recovery
+`transact` acquires the mutation lock (foreign absorb holds only the materialization lock; any same-replica recovery
 takes and releases its own lock before the transaction — `Tl.Store.transact` is in the `Store` layer and cannot import
 `Sync` anyway). Guards then run against the freshest local-leg state. This is
 symmetric with reads — a write is never staler than a read — at the cost of one
@@ -180,8 +180,7 @@ remains by default); pinning a "read before a directed write" contract in docs
 (a silent footgun for exactly the multi-agent case tl targets).
 
 Hardening notes (review-driven): the marker write reuses the atomic-replace
-`writeLocalFile`, which carries a per-call CSPRNG temp suffix so two lock-free
-refreshers in one `.tl/` never collide on a temp inode (matching
+`writeLocalFile`, which carries a per-call CSPRNG temp suffix for a fresh temporary inode per replacement (matching
 `writeForeignSegment`). The materialize never overwrites the own segment; when
 the own replica id is *unknown* (the `.tl/local/replica` file was removed) it
 creates absent segments and leaves every existing segment alone. After a
@@ -297,3 +296,10 @@ that replaying the same received snapshot selects no more lines. These internal
 selector theorems do
 not prove disk I/O or scheduling: native recovery and copied-clone tests cover
 the append, lock, clock, marker, and failure paths.
+
+Local sync and read refresh share the per-worktree materialization lock from the
+disk snapshot through marker publication. A read that encounters a busy lock
+reports a degraded refresh and folds its disk view. Same-replica recovery takes
+the mutation lock inside the materialization lock. Ordinary transactions
+release the mutation lock before local sync. Remote network calls run outside
+both locks.

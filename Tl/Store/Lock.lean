@@ -29,16 +29,18 @@ private def lockPollMs : Nat := 50
 
 /-- Acquire the mutation lock, polling up to `timeoutMs`. Returns the held
     fd; the caller must `releaseLock` it. -/
-def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs) : TlM UInt32 := do
-  let rel := d.relLock
+def acquireLock (d : Dirs) (timeoutMs : Nat := defaultLockTimeoutMs)
+    (materialization : Bool := false) : TlM UInt32 := do
+  let rel := if materialization then d.relLocal ++ "/refresh.lock" else d.relLock
+  let purpose := if materialization then "refresh" else "mutation"
   let fd ← liftSys (mapSysError rel)
     (Sys.openNoFollow d.base rel (Sys.flagCreate ||| Sys.flagWrite))
   let attempts := timeoutMs / lockPollMs + 1
   let rec loop : Nat → TlM UInt32
     | 0 => do
       throw { code := .lockBusy
-              message := "another tl process holds the mutation lock — retry shortly; a crashed holder's lock is released by the OS automatically"
-              context := [("path", .str (d.tlPath ++ "/local/lock")),
+              message := s!"another tl process holds the {purpose} lock — retry shortly; a crashed holder's lock is released by the OS automatically"
+              context := [("path", .str (d.absOf rel).toString),
                           ("timeoutMs", .num ⟨timeoutMs, 0⟩)] }
     | n + 1 => do
       if ← liftSys (mapSysError rel) (Sys.tryLock fd true) then
