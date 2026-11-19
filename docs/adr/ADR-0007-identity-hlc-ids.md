@@ -131,9 +131,9 @@ CSPRNG, not a code path.
   16 chars cover the full 64 bits. (Same encoding for the `.tl/local/clock`
   value.)
 - Local event: `physical = max(last.physical, now())`; if equal, `logical++`
-  else `logical = 0`. Observe remote (folding ops from sync):
-  `physical = max(last, remote, now())`, `logical` advanced to strictly exceed
-  both on a tie — keeping causality across the transport.
+  else `logical = 0`. Sync folds received operations into the task view.
+  A working copy with a persisted clock floors its next stamp by that clock
+  and its own segment maximum.
 - Persistence: the last HLC lives in `.tl/local/clock`, reloaded each
   invocation (each `tl` call is a fresh process; a reset would regress
   monotonicity). Wall-clock running backward → `logical` absorbs it (physical
@@ -325,17 +325,27 @@ component.
 - Convergence rests on boundary facts outside the kernel: replica-id
   uniqueness and durable HLC monotonic persistence are recorded as carried
   assumptions (overview.md Trusted). The clock/ID implementation is still
-  tested — clock-file parse/render, local/remote HLC update rules,
+  tested — clock-file parse/render, local HLC updates and remote skew admission,
   backward-clock handling, overflow, and the recovery branches (absent-clock
   reseed from the segments' max, corrupt-clock fail-closed) — but those tests
   do not prove the
   real-world uniqueness/durability assumptions.
-- LWW behaves sanely under skew: causally-ordered edits resolve correctly and
-  the log reads in roughly real-time order; only *genuinely concurrent* same-field
-  writes are arbitrated by the (skew-bounded) timestamp — the accepted LWW
-  tradeoff (sets use OR-Sets instead).
+- Within one replica, successive writes advance the clock. Across replicas,
+  an admitted future stamp can win even when the local writer has seen it.
+  For example a reopened issue may stay closed. The reopen response reports
+  the winning state. The same stamp ordering applies to other LWW fields.
 
 ## Alternatives considered
+
+- **Advance the persisted clock after observing any admitted peer stamp.**
+  This would allow an edit to outstamp every observed operation. The admission
+  window also accepts a peer nearly 24 hours ahead. Taking that stamp as a floor
+  would advance unrelated local edits, their displayed update times, and writes
+  subsequently observed by other replicas. A logical overflow at the window
+  boundary could push a new stamp beyond the next receiver’s admission window.
+  The present policy confines that clock lead to the records carrying it.
+  The absent-clock reseed is a separate recovery case where the previous own
+  identity and monotonic floor may both have been lost.
 
 - Sequential counter / dotted hierarchical ids. Rejected: coordination,
   concurrent collision, renumbering-breaks-references.
