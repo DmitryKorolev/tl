@@ -1135,10 +1135,10 @@ def syncRecoveryTests : IO (List Outcome) := do
   let result ← runTl do
     liftSys (fun e => .mk' .internal (toString e)) (Sys.mkdirNoFollow d.base d.relLocal)
     writeLocalFile d d.relReplica (rid ++ "\n")
-    appendOwnRaw d rid ["old".toUTF8] .empty
+    appendSegmentRawLocked d rid ["old".toUTF8] .empty
     let changed ← recoverOwnSegment d rid "old\npeer\n".toUTF8 (beforeLock := do
       let fd ← acquireLock d
-      try appendOwnRaw d rid ["concurrent".toUTF8, "peer".toUTF8] .empty
+      try appendSegmentRawLocked d rid ["concurrent".toUTF8, "peer".toUTF8] .empty
       finally releaseLock fd)
     let bytes ← readSegment d rid
     let untouched ← recoverOwnSegment d rid "peer\n".toUTF8 (beforeLock :=
@@ -1172,7 +1172,7 @@ def syncRecoveryTests : IO (List Outcome) := do
     rows := rows ++ [check "recovery reports a failed durability barrier and releases the lock"
       (match failed with | .error _ => true | .ok _ => false)]
     -- A crash fragment is trimmed using the same discipline as a local write.
-    appendOwnRaw d rid [] .empty
+    appendSegmentRawLocked d rid [] .empty
     liftSys (fun e => .mk' .internal (toString e)) do
       Sys.withFd d.base (d.relSegment rid) Sys.flagAppend fun fd =>
         Sys.writeAll fd "tail".toUTF8

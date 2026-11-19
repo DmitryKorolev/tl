@@ -108,7 +108,7 @@ def cliBasicTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- version
   o := o ++ [← expectData "version payload" ["version"]
-    (fun j => jStr j "version" == some "0.1.0" && jNat j "logFormat" == some 2)]
+    (fun j => jStr j "version" == some "0.1.0" && jNat j "logFormat" == some 3)]
   -- licenses (ADR-0006): the embedded notice is byte-equal to the repo-root
   -- THIRD-PARTY-LICENSES file (the source of truth — a drifted regeneration
   -- fails here), human output IS the notice (human/json parity), the
@@ -708,7 +708,7 @@ def cliBinaryTests : IO (List Outcome) := do
   let expectedVersion :=
     "{\"schemaVersion\":3,\"ok\":true,\"data\":{\"build\":"
       ++ (Tl.Cli.buildProvenanceJson Tl.Build.current).compress
-      ++ ",\"logFormat\":2,\"version\":\"0.1.0\"}}\n"
+      ++ ",\"logFormat\":3,\"version\":\"0.1.0\"}}\n"
   o := o ++
     [check "version --json envelope bytes" (out.stdout == expectedVersion)
       s!"got {out.stdout}want {expectedVersion}",
@@ -4097,6 +4097,62 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     | .ok out => o := o ++ [check "doctor confirms the prescribed sync repaired the segment"
         ((refMarkRow out).bind (jStr · "status") == some "ok") out.data.compress]
     | .error e => o := o ++ [{ name := "doctor after repair", passed := false, msg := e.message }]
+    let raw : ByteArray := ⟨#[255, 13]⟩
+    IO.FS.writeBinFile segment.path ((← IO.FS.readBinFile segment.path) ++ joinLines [raw])
+    let foreignPath := System.FilePath.mk tlB / "log" / (absorbedRep ++ ".jsonl")
+    let fingerprint := fun (b : ByteArray) => Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest b)
+    let args := fun r n h => ["quarantine", r, n, h, "--dir", tlB]
+    let sync := fun dir => expectData "sync carries original bytes and decisions" ["sync", "--dir", dir] (fun _ => true)
+    o := o ++ [← sync tlA, ← sync tlB]
+    let lines := completeLines (← IO.FS.readBinFile foreignPath)
+    let n := toString (lines.idxOf raw + 1)
+    let digest := fingerprint raw
+    let invalid := fun a => expectErr "refuse invalid quarantine request" a .usage
+    o := o ++ [← expectData "doctor gives the exact repair invocation" ["doctor", "--dir", tlB]
+        (fun j => j.compress.contains ("tl quarantine " ++ absorbedRep ++ " " ++ n ++ " " ++ digest)),
+      ← invalid ["quarantine", "--dir", tlB], ← invalid (args absorbedRep "zero" digest),
+      ← invalid (args absorbedRep "0" digest), ← invalid (args "?" n digest),
+      ← invalid (args absorbedRep "999999" digest), ← invalid (args absorbedRep n "?"),
+      ← invalid (args absorbedRep n (fingerprint .empty))]
+    if let some valid := lines.find? (fun l => (decodeOwnedLine absorbedRep l).isOk) then
+      o := o ++ [← invalid (args absorbedRep (toString (lines.idxOf valid + 1)) (fingerprint valid))]
+    o := o ++ [← expectData "foreign operator records explicit quarantine" (args absorbedRep n digest)
+        (fun j => jStr j "outcome" == some "recorded")]
+    let repaired := completeLines (← IO.FS.readBinFile foreignPath)
+    o := o ++ [← expectData "recording identical damage is idempotent"
+        (args absorbedRep (toString (repaired.idxOf raw + 1)) digest)
+        (fun j => jStr j "outcome" == some "already-recorded"), ← sync tlB, ← sync tlA]
+    for dir in [tlA, tlB] do
+      let disk := completeLines (← IO.FS.readBinFile (System.FilePath.mk dir / "log" / (absorbedRep ++ ".jsonl")))
+      o := o ++ [check "both replicas retain the exact damage and the v3 decision"
+          (disk.contains raw && (quarantineIndex absorbedRep disk).contains raw.data) "",
+        ← expectData "ordinary reads recover after a peer records quarantine"
+          ["show", "tl-" ++ recoveredId, "--dir", dir] (fun j => jStr j "title" == some "From clone A")]
+    let created ← mkIssue tlA "Owner can write after quarantine"
+    o := o ++ [← expectData "new owner operation materializes"
+      ["show", "tl-" ++ created, "--dir", tlA] (fun j => jStr j "title" == some "Owner can write after quarantine")]
+    let marker := fun b => (quarantineRecord absorbedRep b none).render.toUTF8
+    for protectedLine in ["{\"v\":4}".toUTF8, "{\"op\":\"unknown-kind\"}".toUTF8] do
+      let result := decodeSegment ⟨absorbedRep, joinLines [protectedLine, marker protectedLine]⟩
+      o := o ++ [check "future or unknown records remain refused with a matching marker" result.refusal.isSome ""]
+    if let some valid := lines.find? (fun l => (decodeOwnedLine absorbedRep l).isOk) then
+      let result := decodeSegment ⟨absorbedRep, joinLines [valid, marker valid]⟩
+      o := o ++ [check "a marker targeting a valid operation cannot hide it" (result.ops.length == 1) ""]
+    let prior ← IO.FS.readBinFile foreignPath
+    let protectedLines := [marker raw, "{\"v\":4}".toUTF8, "{\"op\":\"unknown-kind\"}".toUTF8]
+    IO.FS.writeBinFile foreignPath (prior ++ joinLines protectedLines)
+    for (protectedLine, offset) in protectedLines.zipIdx do
+      o := o ++ [← invalid (args absorbedRep (toString ((completeLines prior).length + offset + 1))
+        (fingerprint protectedLine))]
+    let template := quarantineRecord absorbedRep raw none
+    for invalidRecord in [{template with replica := "different"}, {template with v := 2},
+        {template with hlc := "1"}, {template with nonce := "1"}, {template with op := "other"},
+        {template with fields := []}, {template with fields := [("bytes", .null)]},
+        {template with fields := [("bytes", .arr #[.str "255"])]},
+        {template with fields := [("bytes", .arr #[Lean.toJson 256])]},
+        {template with fields := [("bytes", .arr #[Lean.toJson 10])]}] do
+      o := o ++ [check "invalid quarantine envelope or target is never indexed"
+        (quarantineTarget? absorbedRep invalidRecord.render.toUTF8).isNone ""]
   return o
 
 /-- An unreachable (configured-but-broken) remote: read `--sync` degrades and

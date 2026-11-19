@@ -96,7 +96,7 @@ def cleanReadNotes (v : View) : TlM (List String) := do
       |>.getD (.mk' .internal "every segment refused — repair or remove the damaged segments under .tl/log/"))
   return v.refreshNote.toList
     ++ v.loaded.refused.map (fun r =>
-      s!"segment {r.replicaId}.jsonl refused (line {r.line}): folded the others; its owner repairs or re-syncs it")
+      s!"segment {r.replicaId}.jsonl refused (line {r.line}): folded the others; run tl doctor for the record-specific recovery instructions")
     ++ v.loaded.warnings ++ v.loaded.skipped.map (fun (rid, n) =>
       s!"--skip-bad: dropped segment {rid}.jsonl line {n}")
     ++ v.loaded.deferred.map (fun (rid, n) => deferredNote rid n)
@@ -108,7 +108,7 @@ def cleanReadNotes (v : View) : TlM (List String) := do
     categories so neither path silently omits a dropped op. -/
 def writeNotes (ctx : TxContext) : List String :=
   ctx.loaded.refused.map (fun r =>
-    s!"segment {r.replicaId}.jsonl refused (line {r.line}): this write was checked against a fold without it; its owner repairs or re-syncs it")
+    s!"segment {r.replicaId}.jsonl refused (line {r.line}): this write was checked against a fold without it; run tl doctor for the record-specific recovery instructions")
   ++ ctx.loaded.warnings
   ++ ctx.loaded.deferred.map (fun (rid, n) => deferredNote rid n)
 
@@ -2954,6 +2954,16 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
   let human := (if healthy then "healthy" else "PROBLEMS FOUND") ++
     s!" — {rows.length} checks ({(rows.filter (·.2)).length} failing)"
   return { data, human, notes := syncNotes }
+
+def cmdQuarantine (dirOverride : Option String) (rid : String) (line : Nat)
+    (expected actor : String) : TlM CmdOut := do
+  let d ← discover dirOverride
+  let (replica, changed) ← quarantineLine d rid line expected actor
+  let notes ← Tl.Sync.autoSyncLocal d replica (usePublishMarker := false)
+  let outcome := if changed then "recorded" else "already-recorded"
+  return { data := Json.mkObj [("segment", .str rid), ("line", jnum line),
+             ("sha256", .str expected.toLower), ("outcome", .str outcome)],
+           human := s!"Quarantine {outcome} for {rid}.jsonl line {line}. Original bytes retained.", notes }
 
 /-- `tl sync`: reconcile through the shared `refs/tl/log` — the local-first leg
     (ADR-0016 §1: publish the own segment, absorb same-machine siblings), then

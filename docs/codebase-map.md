@@ -1107,3 +1107,5 @@ an explanation query, with no write or readiness/rollup changes.
 and `Tl/Cli/Render.lean` renders one row per target per parent with cached node text and a
 shared output array. `Tests/CliTests.lean` covers field projection, human
 wording, cyclic/shared rendering and the public command.
+
+`Tl/Store/Quarantine.lean` defines the v3 marker, exact-byte lookup and repair eligibility. `Tl/Sync/Merge.lean` proves that shared decisions accumulate through the production line union.

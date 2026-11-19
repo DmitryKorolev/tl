@@ -21,6 +21,7 @@ refusal/`--skip-bad`/disclosure machinery as a parse failure, never a new
 code path.
 -/
 import Tl.Store.Segment
+import Tl.Store.Quarantine
 import Tl.Format.Codec
 import Tl.Kernel.Apply
 import Tl.Clock.Skew
@@ -124,6 +125,20 @@ structure SegmentDecode where
       a line) — the fold cache's prefix boundary. -/
   lineCount : Nat
 
+def decodeOwnedLine (replicaId : String) (lineBytes : ByteArray) : Except Tl.Error ParsedOp :=
+  match String.fromUTF8? lineBytes with
+  | none => .error (.mk' .malformedLine
+      "the line is not valid UTF-8 — repair it or rerun the read with --skip-bad")
+  | some line =>
+    match decodeLine line with
+    | .ok p =>
+      -- segments are per-replica authored (ADR-0001): a record stamped
+      -- by another replica cannot live in this file
+      if toCrockford p.stamp.replica 13 == replicaId then .ok p
+      else .error (.mk' .malformedLine
+        s!"the record is stamped by replica {toCrockford p.stamp.replica 13} but sits in {replicaId}.jsonl — the segment is mis-assembled; restore it from sync or remove it")
+    | .error e => .error e
+
 /-- Decode one segment: kept ops, the refusal (first bad line, unless
     `skipBad`), skipped lines, skew-deferred lines, the line-scoped max HLC, and
     clamp warnings. `skewBound`, when set, is the packed-HLC *physical* ceiling
@@ -141,21 +156,11 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
   let mut maxDeferred := 0
   let mut warnings : List String := []
   let mut n := 0
-  for lineBytes in completeLines sd.bytes do
+  let lines := completeLines sd.bytes
+  let mut quarantine : Option (Std.HashSet (Array UInt8)) := none
+  for lineBytes in lines do
     n := n + 1
-    let decoded : Except Tl.Error ParsedOp :=
-      match String.fromUTF8? lineBytes with
-      | none => .error (.mk' .malformedLine
-          "the line is not valid UTF-8 — repair it or rerun the read with --skip-bad")
-      | some line =>
-        match decodeLine line with
-        | .ok p =>
-          -- segments are per-replica authored (ADR-0001): a record stamped
-          -- by another replica cannot live in this file
-          if toCrockford p.stamp.replica 13 == sd.replicaId then .ok p
-          else .error (.mk' .malformedLine
-            s!"the record is stamped by replica {toCrockford p.stamp.replica 13} but sits in {sd.replicaId}.jsonl — the segment is mis-assembled; restore it from sync or remove it")
-        | .error e => .error e
+    let decoded := decodeOwnedLine sd.replicaId lineBytes
     match decoded with
     | .ok p =>
       -- a foreign op from beyond the skew window is deferred (ADR-0007): held
@@ -173,10 +178,27 @@ def decodeSegment (sd : SegmentData) (skipBad : Bool := false)
         if refusal.isNone then
           ops := (n, p) :: ops
     | .error e =>
+      let targets := match quarantine with
+        | some index => index
+        | none => quarantineIndex sd.replicaId lines
+      quarantine := some targets
+      if (quarantineTarget? sd.replicaId lineBytes).isSome then continue
+      if excludesDamage targets lineBytes e then
+        warnings := s!"segment {sd.replicaId}.jsonl line {n}: explicitly quarantined malformed bytes" :: warnings
+        continue
       if skipBad then
         skipped := n :: skipped
       else if refusal.isNone then
-        refusal := some { replicaId := sd.replicaId, line := n, error := enrich sd.replicaId n e }
+        let error := enrich sd.replicaId n e
+        let error := if repairableDamage lineBytes e then
+            let fingerprint := Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest lineBytes)
+            { error with
+              message := s!"segment {sd.replicaId}.jsonl line {n}: {(e.message.splitOn " — ").head!}. Inspect with --skip-bad. To retain these bytes and share their exclusion, run `tl quarantine {sd.replicaId} {n} {fingerprint}`"
+              context := error.context ++ [("sha256", .str fingerprint)] }
+          else if e.code == .malformedLine then
+            { error with message := s!"segment {sd.replicaId}.jsonl line {n}: unrecognized record kind or version — upgrade tl to interpret it" }
+          else error
+        refusal := some { replicaId := sd.replicaId, line := n, error }
   -- a refused segment contributes only its refusal: it is repaired, not waited
   -- on, so suppress its deferred lines (and their lead) too — a read/doctor must
   -- never say "held back, appears later" for a line that is actually refused

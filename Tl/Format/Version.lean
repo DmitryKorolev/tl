@@ -20,9 +20,9 @@ namespace Tl.Format
 /-- The newest log format version this binary reads. Writers stamp per
     record: the two note kinds carry `v: 2` (ADR-0027 — exactly what a
     pre-journal reader cannot fold, so it fail-closes with the upgrade
-    message on any segment containing note ops), every other record stays
+    message on any segment containing note ops), quarantine markers carry v3, and every other record stays
     `v: 1` (`WireOp.recordVersion`). -/
-def supportedVersion : Nat := 2
+def supportedVersion : Nat := 3
 
 /-- Fail closed on a version this binary cannot fold (ADR-0008). -/
 def checkVersion (v : Nat) : Except Tl.Error Unit :=

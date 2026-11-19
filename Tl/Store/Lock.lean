@@ -63,6 +63,39 @@ def releaseLock (fd : UInt32) : TlM Unit := do
   let _ ← (Sys.close fd).toBaseIO
   return ()
 
+/-- A quarantine is segment metadata. It can be recorded by an operator
+    holding a foreign copy as well as the owner. Use refresh → mutation lock
+    order to exclude both foreign replacement and an ordinary own append.
+    The line number is only a locator; its digest must still match under lock. -/
+def quarantineLine (d : Dirs) (rid : String) (line : Nat) (expected actor : String) :
+    TlM (Tl.Clock.Replica × Bool) := do
+  unless (Tl.Clock.Replica.mk rid).valid && line > 0 && expected.length == 64 &&
+      expected.toList.all Char.isHexDigit do
+    throw (.mk' .usage "use the canonical replica ID, positive line number and SHA-256 from the current refusal")
+  let refreshLock ← acquireLock d (materialization := true)
+  try
+    let fd ← acquireLock d
+    try
+      let previous ← readSegment d rid
+      let lines := completeLines previous
+      let some raw := lines[line - 1]?
+        | throw (.mk' .usage "the selected line is absent — rerun tl doctor for its current location")
+      unless Tl.Hash.Sha256.toHex (Tl.Hash.Sha256.digest raw) == expected.toLower do
+        throw (.mk' .usage "the selected line has changed — rerun tl doctor and inspect the current bytes")
+      let .error error := decodeOwnedLine rid raw
+        | throw (.mk' .usage "the selected line is a valid operation — use the ordinary task commands to change its state")
+      if (quarantineTarget? rid raw).isSome then
+        throw (.mk' .usage "this line is a quarantine decision — select the damaged line reported by tl doctor")
+      unless repairableDamage raw error do
+        throw (.mk' .usage "this record kind or version is protected — upgrade tl to interpret it")
+      let replica ← loadOrMintReplica d
+      if (quarantineIndex rid lines).contains raw.data then return (replica, false)
+      let marker := (quarantineRecord rid raw (some actor)).render.toUTF8
+      appendSegmentRawLocked d rid [marker] previous
+      return (replica, true)
+    finally releaseLock fd
+  finally releaseLock refreshLock
+
 /-- What a write sees under the lock: the materialized state (for guards),
     the located dirs, this working copy's replica, and the injected `now`. -/
 structure TxContext where

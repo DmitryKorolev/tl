@@ -17,6 +17,7 @@ append-only segment is harmless: the kernel fold is order-insensitive
 Pure byte and segment operations with exact membership and canonicality proofs.
 -/
 import Tl.Store.Segment
+import Tl.Store.Quarantine
 import Init.Data.List.Lex
 import Init.Data.List.BasicAux
 import Init.Data.UInt.Package
@@ -225,6 +226,51 @@ private theorem completeLines_unionLines (a b : ByteArray) :
 theorem unionLines_mem_iff (a b line : ByteArray) :
     line ∈ completeLines (unionLines a b) ↔ line ∈ completeLines a ∨ line ∈ completeLines b := by
   rw [completeLines_unionLines, canonicalLines_mem, List.mem_append]
+
+/-- The exact-byte exclusion set observed by materialization is a grow-only
+    set under transport union, including after delivery in a different order. -/
+def quarantined (replica : String) (bytes : ByteArray) (target : Array UInt8) : Bool :=
+  (quarantineIndex replica (completeLines bytes)).contains target
+
+theorem quarantined_union (replica : String) (a b : ByteArray) (target : Array UInt8) :
+    quarantined replica (unionLines a b) target =
+      (quarantined replica a target || quarantined replica b target) := by
+  apply Bool.eq_iff_iff.mpr
+  simp only [quarantined, Bool.or_eq_true, quarantineIndex_contains, unionLines_mem_iff]
+  constructor
+  · rintro ⟨line, ha | hb, matchTarget⟩
+    · exact Or.inl ⟨line, ha, matchTarget⟩
+    · exact Or.inr ⟨line, hb, matchTarget⟩
+  · rintro (⟨line, ha, matchTarget⟩ | ⟨line, hb, matchTarget⟩)
+    · exact ⟨line, Or.inl ha, matchTarget⟩
+    · exact ⟨line, Or.inr hb, matchTarget⟩
+
+theorem quarantine_merge_comm (r : String) (a b : ByteArray) (t : Array UInt8) :
+    quarantined r (unionLines a b) t = quarantined r (unionLines b a) t := by
+  rw [quarantined_union, quarantined_union, Bool.or_comm]
+
+theorem quarantine_merge_assoc (r : String) (a b c : ByteArray) (t : Array UInt8) :
+    quarantined r (unionLines (unionLines a b) c) t =
+      quarantined r (unionLines a (unionLines b c)) t := by
+  simp only [quarantined_union, Bool.or_assoc]
+
+theorem quarantine_merge_idem (r : String) (a : ByteArray) (t : Array UInt8) :
+    quarantined r (unionLines a a) t = quarantined r a t := by
+  rw [quarantined_union, Bool.or_self]
+
+theorem quarantine_survives_merge (r : String) (a b : ByteArray) (t : Array UInt8)
+    (held : quarantined r a t = true) : quarantined r (unionLines a b) t = true := by
+  rw [quarantined_union, held, Bool.true_or]
+
+/-- The decoder's exact exclusion predicate survives any subsequent transport merge. -/
+theorem excludesDamage_after_merge (r : String) (a b raw : ByteArray) (error : Tl.Error)
+    (excluded : excludesDamage (quarantineIndex r (completeLines a)) raw error = true) :
+    excludesDamage (quarantineIndex r (completeLines (unionLines a b))) raw error = true := by
+  change (repairableDamage raw error && quarantined r a raw.data) = true at excluded
+  change (repairableDamage raw error && quarantined r (unionLines a b) raw.data) = true
+  obtain ⟨eligible, marked⟩ := (Bool.and_eq_true ..).mp excluded
+  rw [eligible, quarantine_survives_merge r a b raw.data marked, Bool.true_and]
+
 
 /-- Opposite merge directions yield byte-identical canonical output. -/
 theorem unionLines_comm (a b : ByteArray) : unionLines a b = unionLines b a := by

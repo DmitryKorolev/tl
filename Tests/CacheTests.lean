@@ -570,7 +570,7 @@ def cacheVersionGuardTests : List Outcome :=
   -- the recorded (cacheVersion, digest) the guard is pinned to. On an intended
   -- semantics change, bump Tl.Store.cacheVersion and set this to the printed value.
   let expectedFold : Nat × String :=
-    (5, "5947146394705743800")
+    (6, "5947146394705743800")
   -- the stamp `mkLine idx stem` emits — lets a remove tombstone a prior add-tag
   let stamp (idx : Nat) (stem : String) : Stamp :=
     ⟨now0 * 2 ^ 16 + idx, (ofCrockford? stem).getD 0, 5000 + idx⟩
@@ -613,9 +613,11 @@ def cacheVersionGuardTests : List Outcome :=
       mkLine (.create idD { title := some "Delta" }) 25 ownStem,
       mkLine (.claim idD "carol") 26 ownStem ]
   -- forStem segment: a higher-stamped title write wins the LWW on idA.title
-  -- (cross-segment merge over the create at idx 0)
+  -- (cross-segment merge over the create at idx 0). If the decoder stops
+  -- honoring a valid quarantine, refusal loses this winning update.
   let foreign : List String :=
-    [ mkLine (.update idA { title := some "Alpha-merged" }) 23 forStem ]
+    [ mkLine (.update idA { title := some "Alpha-merged" }) 23 forStem, "{",
+      (quarantineRecord forStem "{".toUTF8 none).render ]
   -- a separate segment whose one line is stamped by ownStem (not newStem): the
   -- per-segment owner check refuses the whole segment, so it folds nothing. A
   -- regression that accepted it would re-take idA.title at the higher hlc 24 and

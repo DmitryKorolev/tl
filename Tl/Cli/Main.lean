@@ -443,6 +443,13 @@ def runVerb : List String → TlM CmdOut
         | [x] => cmdMetaList (a.get? "dir") (some x) (a.has "skip-bad")
         | _ => throw (usageErr "meta list takes an optional <id>")
       | _ => throw (usageErr "meta takes set|get|clear|list")
+    | "quarantine" => do
+      let a ← parse "quarantine"
+      let [rid, n, digest] := a.positionals
+        | throw (usageErr "quarantine takes a replica ID, line number and SHA-256 from the refusal")
+      let some line := n.toNat?
+        | throw (usageErr "quarantine requires the positive line number from the refusal")
+      cmdQuarantine (a.get? "dir") rid line digest (← actorOf a)
     | "sync" => do
       let a ← parse "sync"
       MonadExcept.ofExcept (noPositionals a "sync")

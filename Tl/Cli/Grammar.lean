@@ -223,6 +223,8 @@ def commandSpecs : List CommandSpec :=
       flags := [logLimitFlag, logSinceFlag, logUntilFlag, logLastFlag] },
     { command := "stats", positionals := "",
       summary := "counts by state plus ready / blocked / cycles totals" },
+    { command := "quarantine", positionals := "<replica> <line> <sha256>",
+      summary := "retain a malformed record and share its explicit exclusion from the fold", flags := [actorFlag] },
     { command := "sync", positionals := "",
       summary := "reconcile via refs/tl/log: publish + absorb siblings, then fetch/union/push to a configured remote" },
     { command := "doctor", positionals := "",

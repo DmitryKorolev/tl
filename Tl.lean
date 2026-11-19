@@ -64,6 +64,7 @@ import Tl.Store.Sys
 import Tl.Store.Paths
 import Tl.Store.Local
 import Tl.Store.Lines
+import Tl.Store.Quarantine
 import Tl.Store.Segment
 import Tl.Store.Materialize
 import Tl.Store.Cache

@@ -1057,7 +1057,7 @@ def buildProvenanceTests : IO (List Outcome) := do
   let compiled := Tl.Build.current
   outs := outs ++ [
     checkEq "tl version: product version" (jStr out.data "version") (some "0.1.0"),
-    checkEq "tl version: log format" ((jGet out.data "logFormat").bind (·.getNat?.toOption)) (some 2),
+    checkEq "tl version: log format" ((jGet out.data "logFormat").bind (·.getNat?.toOption)) (some 3),
     check "tl version: the build object is present" (jGet out.data "build").isSome
       "tl version --json lost its build provenance",
     checkEq "tl version: the build object is this binary's stamp"

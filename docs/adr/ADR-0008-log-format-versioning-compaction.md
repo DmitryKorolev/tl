@@ -323,7 +323,7 @@ both with a stated policy:
   whole log would let any single writer — or an accidental `v` skew — deny
   service to *every* replica, an availability failure the integrity rule must
   not cause (ADR-0014 threat T2). A refused segment drops that one replica's ops
-  from the view (loudly); its owner repairs/re-syncs it while everyone else
+  from the view (loudly); an operator can record a shared quarantine of identified damage while other segments
   converges normally. Reader-side handling of torn vs malformed lines is pinned
   in ADR-0015 §5.
 
@@ -336,6 +336,29 @@ both with a stated policy:
   answer, not a disclosure). `tl doctor` is the one exemption — reporting
   refused segments is its job, so an own-segment refusal is a `fail` check
   inside an `ok: true` response (ADR-0020).
+
+### Shared quarantine of published damage
+
+Run `tl doctor` to locate a refused segment. Inspect the original line in
+`.tl/log/<replica>.jsonl`. For malformed bytes the diagnostic gives
+`tl quarantine <replica> <line> <sha256>`. Any operator with the segment can
+record this decision. The command checks the one-based line number and digest
+again under the materialization and mutation locks. If sync has reordered
+lines, use the new location from doctor. Run `tl sync` to share the decision.
+
+The affected segment retains the original complete line and gains a v3
+`quarantine` record. Its `bytes` field contains the exact byte values of
+the line, excluding LF. The digest guards the operator's selection. After
+sync, readers match exact bytes within that replica irrespective of ordering
+or duplicates. Matching malformed lines produce a warning and the remaining
+operations fold normally. Valid task operations, valid quarantine decisions,
+recognizable future versions and unknown operation kinds are protected.
+Quarantine metadata carries zero ordering fields and never advances the clock.
+Decisions accumulate through union and have no undo record.
+
+Readers supporting v1 or v2 continue to refuse the affected segment, including
+after repair, until upgraded. Ordinary task records retain their existing
+versions. Other replicas remain readable under the usual per-segment policy.
 
 ### The `--json` output is a versioned stability contract
 

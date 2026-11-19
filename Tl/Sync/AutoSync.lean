@@ -53,12 +53,12 @@ def preWriteRefresh (dirOverride : Option String) :
     surviving the CAS retry) is swallowed and disclosed as a non-fatal note,
     never failing the write. Catches both thrown `Tl.Error`s and raw
     `IO.Error`s, mirroring `refreshFromRef`. The remote leg stays explicit. -/
-def autoSyncLocal (d : Dirs) (replica : Replica) : TlM (List String) := do
+def autoSyncLocal (d : Dirs) (replica : Replica) (usePublishMarker : Bool := true) : TlM (List String) := do
   let publish : TlM Unit := do
     if (← gitConfig d "tl.autosync") != some "true" then return
     -- The stealth marker takes precedence over the Git config setting.
     if ← isStealth d then return
-    let _ ← syncLocal d (some replica.id) (usePublishMarker := true)
+    let _ ← syncLocal d (some replica.id) (usePublishMarker := usePublishMarker)
   match ← (publish.run.toBaseIO : IO _) with
   | .ok (.ok _) => return []
   | .ok (.error e) =>

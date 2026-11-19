@@ -74,10 +74,10 @@ def tornTail (bytes : ByteArray) : Bool :=
   | some b => b != 10
   | none => false
 
-/-- Append rendered record lines to the replica's own segment under the
+/-- Append complete lines for the owner or a shared quarantine decision under the
     mutation lock (the caller holds it): trim a crash fragment if needed,
     one `O_APPEND` write per record (§2), fsync (§2; F_FULLFSYNC on Darwin). -/
-def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
+def appendSegmentRawLocked (d : Dirs) (replicaId : String) (lines : List ByteArray)
     (previous : ByteArray) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit := do
   -- create .tl/log through the no-follow shim mkdir (a planted
   -- `.tl/log -> /elsewhere` symlink is refused, never followed and created
@@ -101,6 +101,6 @@ def appendOwnRaw (d : Dirs) (replicaId : String) (lines : List ByteArray)
     complete lines. Recovery must preserve even unknown/non-UTF-8 bytes. -/
 def appendOwn (d : Dirs) (replicaId : String) (lines : List String)
     (previous : ByteArray) (syncMechanism : Sys.SyncMechanism := Sys.sync) : TlM Unit :=
-  appendOwnRaw d replicaId (lines.map String.toUTF8) previous syncMechanism
+  appendSegmentRawLocked d replicaId (lines.map String.toUTF8) previous syncMechanism
 
 end Tl.Store
