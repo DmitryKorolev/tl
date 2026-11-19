@@ -4077,6 +4077,15 @@ def cliSyncTwoCloneTests : IO (List Outcome) := do
     | .ok out => o := o ++ [check "doctor refMark warns when a marked foreign segment is gone on disk"
         ((refMarkRow out).bind (jStr · "status") == some "warn") out.data.compress]
     | .error e => o := o ++ [{ name := "refMark warn", passed := false, msg := e.message }]
+    o := o ++ [← expectData "explicit sync restores the missing foreign replica"
+      ["sync", "--dir", tlB] (fun j =>
+        (jArr ((jGet j "local").getD Json.null) "absorbed").contains (.str absorbedRep)),
+      ← expectData "ordinary read sees the restored issue" ["show", "tl-" ++ recoveredId, "--dir", tlB]
+        (fun j => jStr j "title" == some "From clone A")]
+    match ← run' ["doctor", "--dir", tlB] with
+    | .ok out => o := o ++ [check "doctor confirms the prescribed sync repaired the segment"
+        ((refMarkRow out).bind (jStr · "status") == some "ok") out.data.compress]
+    | .error e => o := o ++ [{ name := "doctor after repair", passed := false, msg := e.message }]
   return o
 
 /-- An unreachable (configured-but-broken) remote: read `--sync` degrades and

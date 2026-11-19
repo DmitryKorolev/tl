@@ -170,22 +170,16 @@ private def maxAttempts : Nat := 8
     the ref like a racing sibling between the read and the `update-ref`) and
     pin the retry's re-read. Production callers omit it. -/
 private def reconcile (d : Dirs) (ownReplica : Option String)
-    (localSegs : List SegmentData) (beforeCas : TlM Unit) : Nat → TlM LocalOutcome
+    (localSegs : List SegmentData) (beforeCas : TlM Unit) (usePublishMarker : Bool) : Nat → TlM LocalOutcome
   | 0 => throw (.mk' .internal
       "sync: refs/tl/log kept moving under concurrent writers — retry `tl sync`")
   | fuel + 1 => do
     let pinned ← pinLogRef d
     let tip := pinned.map (·.oid)
-    -- Publish-marker fast-out (ADR-0023 write-path analogue of the fold cache):
-    -- if the ref still sits at the OID our own segment is published into, and the
-    -- own segment is byte-identical to then, nothing publishes and the absorbed
-    -- siblings are already current — return without the readRef + whole-log
-    -- union the publish check would otherwise pay on every write. The marker is
-    -- written only after the own segment is in the tip (`markPub`), so a match
-    -- provably means "already published" — never a skipped publish. The outcome
-    -- equals the no-publish branch below (published := false, nothing absorbed).
+    -- Auto-publication can skip an unchanged own segment. Explicit sync also
+    -- repairs materialized foreign files, whose bytes this marker does not cover.
     let ownBytes := ownBytesOf ownReplica localSegs
-    if ownReplica.isSome then
+    if usePublishMarker && ownReplica.isSome then
       if let some (mTip, mLen, mHash) ← loadSyncPub d then
         if tip == some mTip && ownBytes.size == mLen && ByteArray.hash ownBytes == mHash then
           return { ran := true, published := false, absorbed := [], tip }
@@ -199,7 +193,7 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
     if publish then
       beforeCas
       match ← writeRefCas d merged refForeign tip with
-      | none => reconcile d ownReplica localSegs beforeCas fuel  -- lost the CAS race: retry
+      | none => reconcile d ownReplica localSegs beforeCas usePublishMarker fuel  -- lost the CAS race: retry
       | some newTip =>
         let absorbed ← absorbForeign d ownReplica localSegs merged
         markTip d (some newTip)
@@ -221,11 +215,11 @@ private def reconcile (d : Dirs) (ownReplica : Option String)
     `beforeCas` is the test-only CAS-race seam (see `reconcile`); production
     callers omit it. -/
 def syncLocal (d : Dirs) (ownReplica : Option String)
-    (beforeCas : TlM Unit := pure ()) : TlM LocalOutcome := do
+    (beforeCas : TlM Unit := pure ()) (usePublishMarker : Bool := false) : TlM LocalOutcome := do
   if !(← inGitRepo d) then
     return { ran := false, published := false, absorbed := [], tip := none }
   let (localSegs, _) ← readSegments d
-  reconcile d ownReplica localSegs beforeCas maxAttempts
+  reconcile d ownReplica localSegs beforeCas usePublishMarker maxAttempts
 
 /-! ## Read-time refresh (ADR-0016 §3) -/
 

@@ -251,7 +251,7 @@ def syncLocalTests : IO (List Outcome) := do
     | some bytes => check "the publish marker is recorded after a sync" (!bytes.isEmpty) ""
     | none => { name := "publish marker recorded", passed := false, msg := "no sync-pub file" }]
   let tipE ← runTl (refTip d)
-  o := o ++ [match ← runTl (syncLocal d (some ridA)), tipE with
+  o := o ++ [match ← runTl (syncLocal d (some ridA) (usePublishMarker := true)), tipE with
     | .ok r, .ok t => check "a converged third sync fast-outs (no republish, tip kept)"
         (r.ran && !r.published && r.absorbed.isEmpty && r.tip == t) (toString (repr r))
     | _, _ => { name := "third syncLocal fast-out", passed := false, msg := "unexpected error" }]

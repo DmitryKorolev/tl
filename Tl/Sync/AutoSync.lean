@@ -58,7 +58,7 @@ def autoSyncLocal (d : Dirs) (replica : Replica) : TlM (List String) := do
     if (← gitConfig d "tl.autosync") != some "true" then return
     -- The stealth marker takes precedence over the Git config setting.
     if ← isStealth d then return
-    let _ ← syncLocal d (some replica.id)
+    let _ ← syncLocal d (some replica.id) (usePublishMarker := true)
   match ← (publish.run.toBaseIO : IO _) with
   | .ok (.ok _) => return []
   | .ok (.error e) =>

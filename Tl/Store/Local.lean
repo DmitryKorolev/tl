@@ -201,9 +201,8 @@ def loadSyncPub (d : Dirs) : TlM (Option (String × Nat × UInt64)) := do
     | _ => return none
 
 /-- Record the publish marker (atomic-replace, best-effort like the ref-mark).
-    The caller writes it only when the own segment `ownBytes` is in `oid`, so a
-    later fast-out at this `(oid, len, hash)` provably skips an already-published
-    own segment — never a real publish. -/
+    Auto-publication compares the recorded tip and own-segment fingerprint.
+    Explicit sync checks the foreign materialization regardless of this marker. -/
 def storeSyncPub (d : Dirs) (oid : String) (ownBytes : ByteArray) : TlM Unit :=
   writeLocalFile d d.relSyncPub s!"2 {oid} {ownBytes.size} {ByteArray.hash ownBytes}\n"
 
