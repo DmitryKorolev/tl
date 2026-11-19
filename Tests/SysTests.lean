@@ -28,6 +28,12 @@ namespace Tl.Tests
 open Tl.Store
 open Tl.Store.Sys (flagWrite flagAppend flagCreateExcl flagDirectory flagCreate)
 
+@[extern "tl_test_zero_write"]
+private opaque zeroWrite : IO Unit
+
+@[extern "tl_test_unowned_truncate"]
+private opaque unownedTruncate (base rel : @&String) : IO Unit
+
 /-- Run an IO action, expecting a shim failure with one of the errno tokens. -/
 private def expectErrno (name : String) (codes : List String) (act : IO α) : IO Outcome := do
   match ← act.toBaseIO with
@@ -231,6 +237,14 @@ def sysTests : IO (List Outcome) := do
     [check "O_APPEND writes land at the tail"
       (String.fromUTF8! back2 == "hello\nshim\ntail\n") (String.fromUTF8! back2)]
 
+  outcomes := outcomes ++ [← expectErrno "zero-progress writes fail" ["EIO"] zeroWrite,
+    ← expectErrno "ownership refusal precedes truncation" ["ENOTOWNED"]
+      (unownedTruncate base "seg.jsonl"),
+    check "ownership refusal preserves every existing byte"
+      ((← Sys.withFd base "seg.jsonl" 0 Sys.readAll) == back2)]
+  Sys.withFd base "seg.jsonl" Sys.flagTruncate fun _ => pure ()
+  outcomes := outcomes ++ [check "an owned file is truncated after the check"
+    (← Sys.withFd base "seg.jsonl" 0 Sys.readAll).isEmpty]
   -- O_EXCL collision
   outcomes := outcomes ++
     [← expectErrno "create-excl collision is EEXIST" ["EEXIST"]

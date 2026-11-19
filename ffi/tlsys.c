@@ -44,6 +44,12 @@ static lean_obj_res tl_sys_unsupported(const char *op) {
     return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string(buf)));
 }
 
+LEAN_EXPORT lean_obj_res tl_test_unowned_truncate(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
+    (void)base; (void)rel; (void)w; return tl_sys_unsupported("unowned_truncate");
+}
+LEAN_EXPORT lean_obj_res tl_test_zero_write(lean_obj_arg w) {
+    (void)w; return tl_sys_unsupported("zero_write");
+}
 LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, uint32_t flags, lean_obj_arg w) {
     (void)base; (void)rel; (void)flags; (void)w; return tl_sys_unsupported("open");
 }
@@ -187,7 +193,7 @@ static int tl_owned_by_caller(int fd) {
  * symlinked home) is legitimate. An empty base means the current directory.
  * Returns the fd, or -1 with *err_out set (TL_E_NOTOWNED for ownership).
  */
-static int tl_open_walk(const char *base, const char *rel, int final_flags, int *err_out) {
+static int tl_open_walk(const char *base, const char *rel, int final_flags, int (*owned_by_caller)(int), int *err_out) {
     if (rel[0] == '\0') { *err_out = EINVAL; return -1; }
     char *dup = strdup(rel);
     if (!dup) { *err_out = ENOMEM; return -1; }
@@ -205,17 +211,26 @@ static int tl_open_walk(const char *base, const char *rel, int final_flags, int 
         if (next) {
             fd = openat(dirfd, tok, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         } else {
-            fd = openat(dirfd, tok, final_flags | O_NOFOLLOW | O_CLOEXEC, 0644);
+            fd = openat(dirfd, tok, (final_flags & ~O_TRUNC) | O_NOFOLLOW | O_CLOEXEC, 0644);
         }
         int e = errno;
         if (dirfd != AT_FDCWD) close(dirfd);
         if (fd < 0) { *err_out = e; free(dup); return -1; }
-        int owned = tl_owned_by_caller(fd);
+        int owned = owned_by_caller(fd);
         if (owned != 1) {
             *err_out = (owned == 0) ? TL_E_NOTOWNED : errno;
             close(fd);
             free(dup);
             return -1;
+        }
+        if (!next && (final_flags & O_TRUNC)) {
+            while (ftruncate(fd, 0) < 0) {
+                if (errno == EINTR) continue;
+                *err_out = errno;
+                close(fd);
+                free(dup);
+                return -1;
+            }
         }
         dirfd = fd;
         tok = next;
@@ -239,9 +254,21 @@ LEAN_EXPORT lean_obj_res tl_sys_open(b_lean_obj_arg base, b_lean_obj_arg rel, ui
         final_flags = O_RDONLY;
     }
     int err = 0;
-    int fd = tl_open_walk(lean_string_cstr(base), lean_string_cstr(rel), final_flags, &err);
+    int fd = tl_open_walk(lean_string_cstr(base), lean_string_cstr(rel), final_flags, tl_owned_by_caller, &err);
     if (fd < 0) return tl_sys_err("open", err);
     return lean_io_result_mk_ok(lean_box_uint32((uint32_t)fd));
+}
+
+static int tl_test_foreign_owner(int fd) { (void)fd; return 0; }
+
+LEAN_EXPORT lean_obj_res tl_test_unowned_truncate(b_lean_obj_arg base, b_lean_obj_arg rel, lean_obj_arg w) {
+    (void)w;
+    int err = 0;
+    int fd = tl_open_walk(lean_string_cstr(base), lean_string_cstr(rel),
+                          O_WRONLY | O_TRUNC, tl_test_foreign_owner, &err);
+    if (fd < 0) return tl_sys_err("open", err);
+    close(fd);
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 /*
@@ -324,21 +351,36 @@ LEAN_EXPORT lean_obj_res tl_sys_truncate(uint32_t fd, uint64_t length, lean_obj_
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean_obj_arg w) {
-    (void)w;
-    const uint8_t *ptr = lean_sarray_cptr((lean_object *)data);
-    size_t len = lean_sarray_size((lean_object *)data);
+static lean_obj_res tl_write_all_with(int fd, const uint8_t *ptr, size_t len,
+                                      ssize_t (*write_bytes)(int, const void *, size_t)) {
     size_t off = 0;
     while (off < len) {
-        ssize_t n = write((int)fd, ptr + off, len - off);
+        ssize_t n = write_bytes(fd, ptr + off, len - off);
         if (n < 0) {
             if (errno == EINTR) continue;
             return tl_sys_err("write_all", errno);
         }
+        if (n == 0) return tl_sys_err("write_all", EIO);
         off += (size_t)n;
     }
     return lean_io_result_mk_ok(lean_box(0));
 }
+
+LEAN_EXPORT lean_obj_res tl_sys_write_all(uint32_t fd, b_lean_obj_arg data, lean_obj_arg w) {
+    (void)w;
+    return tl_write_all_with((int)fd, lean_sarray_cptr((lean_object *)data),
+                             lean_sarray_size((lean_object *)data), write);
+}
+
+static ssize_t tl_test_write_zero(int fd, const void *data, size_t len) {
+    (void)fd; (void)data; (void)len;
+    return 0;
+}
+LEAN_EXPORT lean_obj_res tl_test_zero_write(lean_obj_arg w) {
+    (void)w;
+    return tl_write_all_with(-1, (const uint8_t *)"x", 1, tl_test_write_zero);
+}
+
 
 /*
  * The durability barrier, and the one policy decision inside it.
