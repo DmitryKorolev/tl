@@ -29,7 +29,7 @@ private def dispatchVerbs : List String :=
    "label add", "label remove", "label list",
    "note add", "note list", "note remove",
    "meta set", "meta get", "meta clear", "meta list",
-   "why", "unblocks", "show", "list", "log", "stats", "sync", "doctor", "version", "licenses", "help"]
+   "why", "unblocks", "show", "list", "log", "stats", "quarantine", "sync", "doctor", "version", "licenses", "help"]
 
 def grammarSchemaTests : List Outcome := Id.run do
   let schema := helpJson none
