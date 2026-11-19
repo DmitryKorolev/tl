@@ -381,32 +381,24 @@ not contain that source at all. `--selftest` exercises each refusal in
 throwaway directories and runs in CI, so a generator that quietly stopped
 refusing cannot pass unnoticed.
 
-### Runtime prerequisite: git ≥ 2.17
+### Runtime prerequisite: git ≥ 2.29
 
 `git` is a runtime prerequisite — `tl` shells out to git plumbing for the
-`refs/tl/log` transport and discovery. The floor is **git 2.17**, with a
+`refs/tl/log` transport and discovery. The floor is **git 2.29**, with a
 `doctor`/`init` check that parses `git --version` (the stable `git version
 X.Y.Z` line) and emits a teaching warning below it rather than letting an older
 git fail cryptically.
 
-The floor reflects the support matrix rather than a plumbing need. The only feature `tl`
-uses above the ~1.8 era is `git rev-parse --git-common-dir` (2.5, for
-linked-worktree detection); `-C` (1.8.5), `config`, `ls-tree`, `cat-file`,
-`hash-object --stdin`, `mktree`, `commit-tree`, the positional `update-ref`
-compare-and-set, `fetch`, `push --porcelain`, and `symbolic-ref` are all older,
-and there is no `git worktree` shell-out. 2.17 sits above that 2.5 feature floor
-with margin and matches the oldest Supported-tier glibc baseline (glibc 2.27,
-Ubuntu 18.04, which ships git 2.17); a higher round number such as 2.20 would
-drop 18.04 despite its in-tier glibc. CI pins and tests the floor version so a
-future plumbing dependency above it cannot slip in unnoticed (decided
-2026-06-21).
+Git 2.29 introduced `fetch --no-write-fetch-head`, which isolates task-log
+fetches from the user's pending fetch result. A supported libc baseline can
+require a separately upgraded Git. CI builds and tests the floor version.
 
 The runtime check shipped 2026-06-21: `Tl.Sync.parseGitVersion` /
 `gitMeetsFloor` / `gitVersion` (a bounded `git --version`), surfaced as a
 `doctor` `gitVersion` check row (`ok` at/above the floor, a teaching `warn`
 below it or when git is unreadable — a warn, never a doctor failure) and an
 `init` below-floor note. The CI leg is the `git-floor` job
-([ADR-0026](ADR-0026-continuous-integration.md)): it builds git 2.17.1 from a
+([ADR-0026](ADR-0026-continuous-integration.md)): it builds git 2.29.0 from a
 hash-pinned tarball, runs the full test suite under it, and smoke-asserts that
 `doctor` reports the floor git's `gitVersion` row as `ok` — so a future
 plumbing dependency above the floor cannot slip in unnoticed.

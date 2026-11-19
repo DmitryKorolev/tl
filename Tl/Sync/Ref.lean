@@ -519,8 +519,8 @@ def configFromGlobal (d : Dirs) (key : String) : TlM Bool := do
   return !g.isEmpty && l.isEmpty && w.isEmpty
 
 /-- The git runtime floor (ADR-0006): `tl` shells out to git plumbing for the
-    `refs/tl/log` transport and discovery, and requires git ≥ 2.17. -/
-def gitFloor : Nat × Nat := (2, 17)
+    `refs/tl/log` transport and discovery, and requires git ≥ 2.29. -/
+def gitFloor : Nat × Nat := (2, 29)
 
 /-- Parse `git --version` output to `(major, minor)`. Scans every line for the
     `git version ` marker (so a prepended banner/warning line on stdout does not
@@ -611,14 +611,13 @@ def effectivePushUrls (d : Dirs) (remote : String) : TlM (List String) := do
 /-- Fetch into an invocation-private ref. `FETCH_HEAD` belongs to ordinary
     Git users too, so it is never read as transport evidence. The private ref
     is removed on success and failure; a captured OID supplies both the tree
-    and merge parent. Git 2.17 transfers the advertised object in dry-run mode.
+    and merge parent. The fetch leaves ordinary FETCH_HEAD untouched.
 
     `afterFetch` forces concurrent ordinary fetches and nested syncs in tests;
     `entropy` covers unavailable/short entropy without probabilistic fixtures. -/
 def fetchRemoteLog (d : Dirs) (remote : String)
     (afterFetch : TlM Unit := pure ())
-    (entropy : UInt32 → IO ByteArray := Sys.entropy)
-    (version : IO (Option (Nat × Nat)) := gitVersion) :
+    (entropy : UInt32 → IO ByteArray := Sys.entropy) :
     TlM (Option String × List SegmentData × List ForeignEntry) := do
   let ls ← run d "ls-remote" ["ls-remote", remote, "refs/tl/log"] (remote := true)
   if ls.trimAscii.isEmpty then return (none, [], [])
@@ -630,22 +629,8 @@ def fetchRemoteLog (d : Dirs) (remote : String)
   try
     -- Empty refmap prevents configured tracking refspecs from moving the
     -- local task-log ref as a side effect of this fetch.
-    let modern := (← version).any (fun (major, minor) => major > 2 || (major == 2 && minor ≥ 29))
-    if modern then
-      let _ ← run d "fetch" ["fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
-        s!"refs/tl/log:{scratch}"] (remote := true)
-    else
-      -- Git 2.17 dry-run still transfers objects and checks connectivity.
-      -- Request the advertised OID itself so a ref move cannot change the
-      -- snapshot. Pin only after Git confirms the object exists locally.
-      let some oid := (ls.splitOn "\n").findSome? (fun line =>
-        match line.splitOn "\t" with
-        | [id, "refs/tl/log"] =>
-          if (id.length == 40 || id.length == 64) && id.toList.all Char.isHexDigit then some id else none
-        | _ => none)
-        | throw (.mk' .internal "git did not advertise a valid task-log object ID — check the remote and retry sync")
-      let _ ← run d "fetch" ["fetch", "--dry-run", "--no-tags", "--refmap=", remote, oid] (remote := true)
-      let _ ← run d "update-ref" ["update-ref", scratch, oid, ""]
+    let _ ← run d "fetch" ["fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
+      s!"refs/tl/log:{scratch}"] (remote := true)
     afterFetch
     let some pinned ← pinRef d scratch
       | throw (.mk' .internal "the private fetched ref disappeared — retry `tl sync`; another process may be modifying internal refs")

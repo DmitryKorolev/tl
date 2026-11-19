@@ -2602,21 +2602,21 @@ def cmdMetaList (dirOverride : Option String) (idTok : Option String) (skipBad :
 /-! ## doctor / init / version -/
 
 /-- The `doctor` git-version check row from a parsed `git --version` (ADR-0006):
-    `ok` at/above the floor (git ≥ 2.17), `warn` below it or when git is unreadable.
+    `ok` at/above the floor (git ≥ 2.29), `warn` below it or when git is unreadable.
     Always a warn, never a failure (doctor reports, does not fail — ADR-0008). Pure,
     so the below-floor branch is unit-testable without an actually-old git. -/
 def gitVersionRow (v : Option (Nat × Nat)) : Json × Bool :=
   match v with
   | none =>
     (Json.mkObj [("name", Json.str "gitVersion"), ("status", Json.str "warn"),
-      ("message", Json.str "could not read `git --version` — git ≥ 2.17 is a runtime prerequisite for the refs/tl/log transport; ensure git is on PATH")], false)
+      ("message", Json.str "could not read `git --version` — git ≥ 2.29 is a runtime prerequisite for the refs/tl/log transport; ensure git is on PATH")], false)
   | some (mj, mn) =>
     let ok := Tl.Sync.gitMeetsFloor (mj, mn)
     (Json.mkObj <|
       [("name", Json.str "gitVersion"), ("status", Json.str (if ok then "ok" else "warn")),
        ("version", Json.str s!"{mj}.{mn}")]
       ++ (if ok then [] else
-          [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git")]), false)
+          [("message", Json.str s!"git {mj}.{mn} is below the required floor git ≥ 2.29 — tl's git plumbing may fail cryptically; upgrade git")]), false)
 
 /-- A remote whose *effective* push URL (after `url.*.insteadOf` /
     `pushInsteadOf`) differs from its configured push target — one visible face
@@ -2867,7 +2867,7 @@ def cmdDoctor (dirOverride : Option String) (sync : Bool) : TlM CmdOut := do
     catch e =>
       pure (Json.mkObj [("name", Json.str "refMark"), ("status", Json.str "warn"),
                         ("message", Json.str s!"could not check the refresh marker: {e.message}")], false)
-  -- git runtime floor (ADR-0006): a teaching warn below 2.17, so an older git
+  -- git runtime floor (ADR-0006): a teaching warn below 2.29, so an older git
   -- surfaces here rather than failing the plumbing cryptically later. doctor
   -- reports, never fails (ADR-0008) — any read error folds to the warn row, like
   -- the sibling shell-touching rows.
@@ -3113,7 +3113,7 @@ def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
   let human := match created with
     | some r => s!"Initialized tl in {target} (replica {r.id})" ++ (if stealthy then " — stealth (local-only)" else "")
     | none => s!"{target} already initialized — nothing to do (idempotent)"
-  -- git runtime floor (ADR-0006): warn at setup if a present git is below 2.17, so
+  -- git runtime floor (ADR-0006): warn at setup if a present git is below 2.29, so
   -- the prerequisite is caught now rather than as a cryptic plumbing failure. git
   -- absent ⇒ no note: init can create local-only state outside any repo.
   -- a git read error must never fail init (it can create local-only state outside
@@ -3122,7 +3122,7 @@ def cmdInit (dirOverride : Option String) (stealth : Bool) : TlM CmdOut := do
       liftSys (fun e => .mk' .internal s!"{e}") (do
         match ← Tl.Sync.gitVersion with
         | some v => if Tl.Sync.gitMeetsFloor v then pure ([] : List String)
-                    else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.17 — tl's git plumbing may fail cryptically; upgrade git"]
+                    else pure [s!"git {v.1}.{v.2} is below the required floor git ≥ 2.29 — tl's git plumbing may fail cryptically; upgrade git"]
         | none => pure [])
     catch _ => pure ([] : List String))
   return { data, human, notes := note ++ stealthNote ++ pointerNote ++ autosyncNote ++ gitFloorNote }

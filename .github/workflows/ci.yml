@@ -339,9 +339,9 @@ jobs:
           path: .lake/packages
           key: trusted-main-v1-lake-packages-src-${{ hashFiles('lake-manifest.json') }}
 
-  # ADR-0006 pins a runtime floor of git >= 2.17; this job proves the suite
+  # ADR-0006 pins a runtime floor of git >= 2.29; this job proves the suite
   # still passes at exactly that floor, so a plumbing dependency above it
-  # cannot slip in unnoticed. git 2.17.1 is built from a hash-pinned tarball
+  # cannot slip in unnoticed. git 2.29.0 is built from a hash-pinned tarball
   # on the modern runner (an ubuntu:18.04 container cannot run current
   # node-based actions), and the PATH override is scoped to the test steps —
   # checkout and the action steps keep the runner's modern git.
@@ -350,8 +350,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GIT_FLOOR_VERSION: "2.17.1"
-      GIT_FLOOR_SHA256: "79136e7aa83abae4d8a25c8111f113d3c5a63aeb5fd93cc72c26d49c6d5ba65e"
+      GIT_FLOOR_VERSION: "2.29.0"
+      GIT_FLOOR_SHA256: "28432d995257c4626fe0fb2091f588df6eed98e9571419e72c83bc23372e6b89"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -367,7 +367,7 @@ jobs:
       # two independent mirrors are tried; the pinned sha256 (which matches
       # the upstream-signed sha256sums.asc) keeps the download trustworthy
       # regardless of which mirror answered.
-      - name: build git 2.17.1 from the hash-pinned tarball
+      - name: build git 2.29.0 from the hash-pinned tarball
         run: |
           if [ -x "$HOME/git-floor/bin/git" ] \
              && [ "$("$HOME/git-floor/bin/git" --version)" = "git version ${GIT_FLOOR_VERSION}" ]; then
@@ -427,7 +427,7 @@ jobs:
       # no toolchain needed in this job. The loaded-environment group skips
       # itself here on the observed absence of a Lean sysroot; this job passes
       # no opt-out variable, so no environment can fake that skip elsewhere.
-      - name: run the suite under git 2.17
+      - name: run the suite under git 2.29
         run: |
           chmod +x .lake/build/bin/tl .lake/build/bin/tltest .lake/build/bin/tltestWorker .lake/build/bin/tlrelease
           export PATH="$HOME/git-floor/bin:$PATH"
@@ -441,7 +441,7 @@ jobs:
       # Floor smoke: doctor's gitVersion row must report the floor git as ok
       # (the row can only ever warn, never flip doctor's exit code — so the
       # assertion is on the row itself, not on `healthy`).
-      - name: floor smoke — init + doctor at git 2.17
+      - name: floor smoke — init + doctor at git 2.29
         run: |
           export PATH="$HOME/git-floor/bin:$PATH"
           v=$(git --version)
@@ -461,4 +461,4 @@ jobs:
           fi
           "$tlbin" doctor --json > doctor.json
           cat doctor.json
-          jq -e '.data.checks[] | select(.name == "gitVersion") | (.status == "ok") and (.version == "2.17")' doctor.json
+          jq -e '.data.checks[] | select(.name == "gitVersion") | (.status == "ok") and (.version == "2.29")' doctor.json

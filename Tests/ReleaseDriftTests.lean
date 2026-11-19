@@ -162,7 +162,7 @@ private def gitFloorReleaseToolShape (workflow : String) : Bool := Id.run do
       (fun step => step.name == "upload binaries for the git-floor job")
     | return false
   let some run := (stepsOf floorLines).find?
-      (fun step => step.name == "run the suite under git 2.17")
+      (fun step => step.name == "run the suite under git 2.29")
     | return false
   return (upload.code.map (fun line => line.trimAscii.toString)).contains
       ".lake/build/bin/tlrelease"
@@ -924,7 +924,7 @@ unsafe def releaseDriftTests : IO (List Outcome) := do
         (swap ciWorkflow "name: upload binaries for the git-floor job" "name: renamed upload")),
     check "git floor: a missing test step cannot pass the handoff guard"
       (!gitFloorReleaseToolShape
-        (swap ciWorkflow "name: run the suite under git 2.17" "name: renamed test")),
+        (swap ciWorkflow "name: run the suite under git 2.29" "name: renamed test")),
     -- Non-vacuity against the live file, which the fixtures cannot give: the
     -- scan finds consumers by what they do, so a parser that stopped reading
     -- the download step would report a clean workflow having checked one job.

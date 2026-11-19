@@ -563,7 +563,7 @@ def ciContract : Contract := {
                  "steps.mathlib-cache.outputs.cache-hit"] },
 { name := "git-floor",
   fields := [("env",
-              "\n      GIT_FLOOR_VERSION: \"2.17.1\"\n      GIT_FLOOR_SHA256: \"79136e7aa83abae4d8a25c8111f113d3c5a63aeb5fd93cc72c26d49c6d5ba65e\""),
+              "\n      GIT_FLOOR_VERSION: \"2.29.0\"\n      GIT_FLOOR_SHA256: \"28432d995257c4626fe0fb2091f588df6eed98e9571419e72c83bc23372e6b89\""),
              ("needs", "build-and-test"),
              ("runs-on", "ubuntu-latest"),
              ("timeout-minutes", "30")],

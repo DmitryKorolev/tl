@@ -8,7 +8,7 @@
 The coverage mandate in ADR-0004 needs a mechanized enforcement point. A
 warning-free Lean build checks every elaborated proof, but it does not reject a
 new `axiom`, and stored `.olean` files are trusted when imported. ADR-0006 also
-requires the test suite to run at the git 2.17 runtime floor.
+requires the test suite to run at the git 2.29 runtime floor.
 
 The first implementation of the trust gate grew into a source-text scanner, a
 custom probe command, a verdict parser, a cache-deletion wrapper, and a
@@ -673,7 +673,7 @@ Focused runs accelerate local diagnosis, not the required final full validation.
 ### Git runtime floor
 
 The Ubuntu build uploads `tl`, the `tltest` supervisor, and `tltestWorker`. The `git-floor` job builds git
-2.17.1 from a hash-pinned tarball with optional subsystems disabled, puts only
+2.29.0 from a hash-pinned tarball with optional subsystems disabled, puts only
 that binary on `PATH` for the tests, runs the complete suite, and checks that
 `tl init` and the `doctor --json` `gitVersion` row accept exactly the floor.
 

@@ -4552,12 +4552,12 @@ def cliListStaleTests : IO (List Outcome) := do
 /-- The git runtime-floor check (ADR-0006): the `git --version` parser, the floor
     comparison, the doctor row builder (incl. the below-floor warn — pure, so it is
     covered without an actually-old git), and the doctor/init integration on the
-    live git (≥ 2.17 ⇒ ok / no note). -/
+    live git (≥ 2.29 ⇒ ok / no note). -/
 def cliGitFloorTests : IO (List Outcome) := do
   let mut o : List Outcome := []
   -- (1) parseGitVersion: canonical X.Y.Z, a build suffix, two-component, garbage
   o := o ++
-    [check "parseGitVersion: canonical X.Y.Z" (Tl.Sync.parseGitVersion "git version 2.17.1" == some (2, 17)) "",
+    [check "parseGitVersion: canonical X.Y.Z" (Tl.Sync.parseGitVersion "git version 2.29.0" == some (2, 29)) "",
      check "parseGitVersion: Apple build suffix" (Tl.Sync.parseGitVersion "git version 2.39.3 (Apple Git-145)" == some (2, 39)) "",
      check "parseGitVersion: two-component X.Y" (Tl.Sync.parseGitVersion "git version 2.9" == some (2, 9)) "",
      check "parseGitVersion: trailing newline tolerated" (Tl.Sync.parseGitVersion "git version 2.37.2\n" == some (2, 37)) "",
@@ -4565,29 +4565,29 @@ def cliGitFloorTests : IO (List Outcome) := do
      check "parseGitVersion: a banner line before the version is scanned past" (Tl.Sync.parseGitVersion "warning: setlocale\ngit version 2.40.0" == some (2, 40)) "",
      check "parseGitVersion: non-git output → none" (Tl.Sync.parseGitVersion "not a git line" == none) "",
      check "parseGitVersion: missing minor → none" (Tl.Sync.parseGitVersion "git version 2" == none) ""]
-  -- (2) gitMeetsFloor: at, below, above the 2.17 floor (major and minor)
+  -- (2) gitMeetsFloor: at, below, above the 2.29 floor (major and minor)
   o := o ++
-    [check "gitMeetsFloor: exactly 2.17 meets" (Tl.Sync.gitMeetsFloor (2, 17) == true) "",
-     check "gitMeetsFloor: 2.16 is below" (Tl.Sync.gitMeetsFloor (2, 16) == false) "",
+    [check "gitMeetsFloor: exactly 2.29 meets" (Tl.Sync.gitMeetsFloor (2, 29) == true) "",
+     check "gitMeetsFloor: 2.28 is below" (Tl.Sync.gitMeetsFloor (2, 28) == false) "",
      check "gitMeetsFloor: 2.39 is above" (Tl.Sync.gitMeetsFloor (2, 39) == true) "",
      check "gitMeetsFloor: 1.99 (older major) is below" (Tl.Sync.gitMeetsFloor (1, 99) == false) "",
      check "gitMeetsFloor: 3.0 (newer major) is above" (Tl.Sync.gitMeetsFloor (3, 0) == true) ""]
   -- (3) gitVersionRow: below-floor warns + teaches; at-floor ok; unreadable warns;
   --     never fails doctor (warn, not fail — ADR-0008)
   let rowStatus (v : Option (Nat × Nat)) : Option String := jStr (gitVersionRow v).1 "status"
-  let rowSaysFloor (v : Option (Nat × Nat)) : Bool := (((jStr (gitVersionRow v).1 "message").getD "").splitOn "2.17").length ≥ 2
+  let rowSaysFloor (v : Option (Nat × Nat)) : Bool := (((jStr (gitVersionRow v).1 "message").getD "").splitOn "2.29").length ≥ 2
   o := o ++
     [check "gitVersionRow: below floor → warn + teaching message"
-       (rowStatus (some (2, 16)) == some "warn" && rowSaysFloor (some (2, 16))) "",
-     check "gitVersionRow: at floor → ok" (rowStatus (some (2, 17)) == some "ok") "",
+       (rowStatus (some (2, 28)) == some "warn" && rowSaysFloor (some (2, 28))) "",
+     check "gitVersionRow: at floor → ok" (rowStatus (some (2, 29)) == some "ok") "",
      check "gitVersionRow: unreadable git (none) → warn + message"
        (rowStatus none == some "warn" && rowSaysFloor none) "",
      check "gitVersionRow: never fails doctor (warn, not fail)"
-       ((gitVersionRow (some (2, 16))).2 == false && (gitVersionRow none).2 == false) ""]
+       ((gitVersionRow (some (2, 28))).2 == false && (gitVersionRow none).2 == false) ""]
   -- (4) doctor integration: the gitVersion row is present and ok on the live git
   let dir ← freshDir
   let _ ← mkIssue dir "x"
-  o := o ++ [← expectData "doctor reports a gitVersion check, ok on the live (≥2.17) git"
+  o := o ++ [← expectData "doctor reports a gitVersion check, ok on the live (≥2.29) git"
       ["doctor", "--json", "--dir", dir]
       (fun j => match (jArr j "checks").find? (fun c => jStr c "name" == some "gitVersion") with
         | some c => jStr c "status" == some "ok" && (jStr c "version").isSome
@@ -4595,7 +4595,7 @@ def cliGitFloorTests : IO (List Outcome) := do
   -- (5) init integration: no git-floor note on the live git
   let root ← IO.FS.createTempDir
   o := o ++ [← (do match ← run' ["init", "--dir", (root / ".tl").toString] with
-    | .ok out => pure (check "init emits no git-floor note on the live (≥2.17) git"
+    | .ok out => pure (check "init emits no git-floor note on the live (≥2.29) git"
         (out.notes.all (fun n => (n.splitOn "below the required floor").length == 1))
         (String.intercalate " | " out.notes))
     | .error e => pure { name := "init git-floor note", passed := false, msg := e.message })]

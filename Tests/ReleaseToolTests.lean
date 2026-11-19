@@ -3679,7 +3679,7 @@ private def tapSigningPureTests : List Outcome :=
     checkEq "tap signing: another program's answer is not read" (TapSigning.parseGitVersion "hub version 2.40.0") none,
     check "tap signing: git 2.34 signs with SSH" (TapSigning.signsWithSsh (2, 34)) "",
     check "tap signing: git 2.33 does not" (!TapSigning.signsWithSsh (2, 33)) "",
-    check "tap signing: the floor git 2.17 does not" (!TapSigning.signsWithSsh (2, 17)) "",
+    check "tap signing: the floor git 2.29 does not" (!TapSigning.signsWithSsh (2, 29)) "",
     check "tap signing: a later major version does" (TapSigning.signsWithSsh (3, 0)) "",
     check "tap signing: an earlier major version does not" (!TapSigning.signsWithSsh (1, 99)) "",
     checkEq "tap signing: a complete record parses"

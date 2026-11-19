@@ -35,7 +35,7 @@ normally. Native Windows is refused rather than installed: `tl`'s filesystem
 primitives are unimplemented there, so the binary would start but could not
 safely create or mutate task state.
 
-`git` must be on `PATH` (2.17 or newer) — `tl` shells out to it for transport.
+`git` must be on `PATH` (2.29 or newer) — `tl` shells out to it for transport.
 
 ## Verifying what you installed
 

@@ -265,9 +265,7 @@ Local/remote reconciliation and refresh retain the same identity for contents,
 CAS expectations, parents, and markers. Remote fetch uses an invocation-private
 `refs/tl/incoming/` destination and an empty refmap; ordinary `FETCH_HEAD` and
 configured tracking updates cannot substitute a different tree. The private
-fetch leaves ordinary FETCH_HEAD intact. Git 2.29 and later use the explicit
-no-write flag. On older Git the dry-run fetch transfers the advertised object
-without updating refs, then an explicit update pins it locally. The private
+fetch leaves ordinary FETCH_HEAD intact. The fetch uses `--no-write-fetch-head`. The private
 ref is removed on normal success and exceptions. Abrupt process death may leave
 a private ref behind; uniqueness relies on the same OS entropy assumption as
 other temporary names, and an old ref is never reused as a new fetch result.
