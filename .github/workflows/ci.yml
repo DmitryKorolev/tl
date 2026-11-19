@@ -137,6 +137,9 @@ jobs:
         run: |
           set -euo pipefail
           brew tap-new tlci/formula --no-git
+          # Homebrew refuses to load formulae from a tap it has not been told
+          # to trust. This tap is the job's own scratch copy of the files above.
+          brew trust tlci/formula
           tap=$(brew --repository tlci/formula)
           failures=0
           for candidate in Formula/tl.rb Tests/fixtures/homebrew/full.rb \
