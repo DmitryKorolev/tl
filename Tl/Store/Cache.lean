@@ -49,6 +49,8 @@ Tested-shell tier (ADR-0004): codec round-trip, every validity branch, and
 the property test pinning `materializeCached` = `materialize` live in
 `Tests/CacheTests.lean`.
 -/
+import Std.Data.HashMap.Lemmas
+import Std.Data.HashSet.Lemmas
 import Tl.Store.Materialize
 import Tl.Store.Local
 import Tl.Kernel.FoldFast
@@ -369,31 +371,89 @@ def decodeCache (s : String) : Option FoldCache := do
 
 /-! ## Validity and the cached fold -/
 
-/-- Is the cache valid against the live segments and their decode? See the
-    module header for why each conjunct exists. -/
-def cacheValid (c : FoldCache) (pairs : List (SegmentData × SegmentDecode)) : Bool :=
-  c.segments.all (fun m =>
-    match pairs.find? (fun pr => pr.1.replicaId == m.replicaId) with
-    | none => false
-    | some (sd, dec) =>
-      decide (m.byteLen ≤ sd.bytes.size)
-      && ckOf (sd.bytes.extract 0 m.byteLen) == m.ck
-      && dec.refusal.isSome == m.refused
-      && dec.deferred.all (fun n => decide (m.lineCount < n) || m.deferred.contains n))
+/-- One index insertion per input row. Folding from the right preserves the
+    first-match semantics even for callers supplying duplicate replica IDs. -/
+private def replicaIndex (key : α → String) (rows : List α) : Std.HashMap String α :=
+  rows.foldr (fun row index => index.insert (key row) row) ∅
 
-/-- The live ops a valid cache has not folded: a segment the cache never saw
-    contributes everything; a known segment contributes its appended lines plus
-    the snapshot-deferred lines that are admissible now. With validity this is
-    exactly `keptNow \ foldedAtSnapshot` (kept prefix lines outside the snapshot
-    deferral set were folded then — same bytes, same classification — and a
-    snapshot-folded line cannot be deferred now, or validity failed). -/
-def extraOps (c : FoldCache) (pairs : List (SegmentData × SegmentDecode)) :
-    List ParsedOp :=
-  pairs.flatMap (fun (sd, dec) =>
-    match c.segments.find? (fun m => m.replicaId == sd.replicaId) with
+private theorem replicaIndex_lookup (key : α → String) (rows : List α) (id : String) :
+    (replicaIndex key rows)[id]? = rows.find? (fun row => key row == id) := by
+  induction rows with
+  | nil => simp only [replicaIndex, List.foldr_nil, Std.HashMap.getElem?_empty, List.find?_nil]
+  | cons row tail ih =>
+    change ((replicaIndex key tail).insert (key row) row)[id]? = _
+    rw [Std.HashMap.getElem?_insert, List.find?_cons, ih]
+    cases key row == id <;> rfl
+
+/-- A logical trace of an indexed pass. The fold uses the production insertion
+    step and counts its invocations. The query list records one lookup per
+    request, an upper bound when validation returns early. Neither trace is
+    allocated by the executable. -/
+private def countedIndex (key : α → String) (rows : List α) : Nat × Std.HashMap String α :=
+  rows.foldr (fun row (n, index) => (n + 1, index.insert (key row) row)) (0, ∅)
+
+private theorem countedIndex_eq (key : α → String) (rows : List α) :
+    countedIndex key rows = (rows.length, replicaIndex key rows) := by
+  induction rows with
+  | nil => rfl
+  | cons row tail ih =>
+    change (match countedIndex key tail with | (n, index) => (n + 1, index.insert (key row) row)) = _
+    rw [ih]
+    rfl
+
+theorem replicaPass_entries (key : α → String) (request : β → String)
+    (rows : List α) (queries : List β) :
+    let (insertions, index) := countedIndex key rows
+    let results := queries.map (fun q => index[request q]?)
+    insertions + results.length = rows.length + queries.length ∧
+      results = queries.map (fun q => rows.find? (fun row => key row == request q)) := by
+  rw [countedIndex_eq]
+  simp only [List.length_map, replicaIndex_lookup, and_self]
+
+private def validPrefix (m : CacheSegMeta) (pair : SegmentData × SegmentDecode)
+    (wasDeferred : Nat → Bool) : Bool :=
+  let (sd, dec) := pair
+  decide (m.byteLen ≤ sd.bytes.size)
+    && ckOf (sd.bytes.extract 0 m.byteLen) == m.ck
+    && dec.refusal.isSome == m.refused
+    && dec.deferred.all (fun n => decide (m.lineCount < n) || wasDeferred n)
+
+private theorem deferred_lookup (m : CacheSegMeta) :
+    (Std.HashSet.ofList m.deferred).contains = m.deferred.contains := by
+  funext n
+  exact Std.HashSet.contains_ofList
+
+abbrev DecodedPair := SegmentData × SegmentDecode
+
+/-- A cached replica must still exist and its complete prefix must remain valid. -/
+def cacheValid (c : FoldCache) (pairs : List DecodedPair) : Bool :=
+  let live := replicaIndex (fun (pair : DecodedPair) => pair.1.replicaId) pairs
+  c.segments.all fun m => live[m.replicaId]?.any fun pair => validPrefix m pair (Std.HashSet.ofList m.deferred).contains
+
+theorem cacheValid_eq_scan (c : FoldCache) (pairs : List DecodedPair) :
+    cacheValid c pairs = c.segments.all (fun m =>
+      (pairs.find? (fun pair => pair.1.replicaId == m.replicaId)).any fun pair =>
+        validPrefix m pair m.deferred.contains) := by
+  simp only [cacheValid, replicaIndex_lookup, deferred_lookup]
+
+private def keptSuffix (dec : SegmentDecode) (m : CacheSegMeta)
+    (wasDeferred : Nat → Bool) : List ParsedOp :=
+  (dec.ops.filter (fun (n, _) => decide (m.lineCount < n) || wasDeferred n)).map (·.2)
+
+/-- Select appended ops and formerly deferred ops that are now admissible. -/
+def extraOps (c : FoldCache) (pairs : List DecodedPair) : List ParsedOp :=
+  let metadata := replicaIndex CacheSegMeta.replicaId c.segments
+  pairs.flatMap fun (sd, dec) =>
+    match metadata[sd.replicaId]? with
     | none => dec.ops.map (·.2)
-    | some m =>
-      (dec.ops.filter (fun (n, _) => decide (m.lineCount < n) || m.deferred.contains n)).map (·.2))
+    | some m => keptSuffix dec m (Std.HashSet.ofList m.deferred).contains
+
+theorem extraOps_eq_scan (c : FoldCache) (pairs : List DecodedPair) :
+    extraOps c pairs = pairs.flatMap (fun (sd, dec) =>
+      match c.segments.find? (fun m => m.replicaId == sd.replicaId) with
+      | none => dec.ops.map (·.2)
+      | some m => keptSuffix dec m m.deferred.contains) := by
+  simp only [extraOps, replicaIndex_lookup, deferred_lookup]
 
 /-- The per-segment content keys for a cache written against these segments. -/
 def liveMeta (pairs : List (SegmentData × SegmentDecode)) : List CacheSegMeta :=

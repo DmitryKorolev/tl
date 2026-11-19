@@ -463,30 +463,56 @@ def perfBinaryTests : IO (List Outcome) := do
   let listArgs (dir : String) : Array String :=
     #["list", "--all", "--flat", "--limit", "0", "--dir", dir]
   -- (best warm ms over 3 runs, line count of the rendered list)
-  let run (n : Nat) : IO (Nat × Nat) := do
+  let run (n : Nat) (populate : System.FilePath → Nat → IO Unit) : IO (Nat × Nat) := do
     let root ← IO.FS.createTempDir
     let dir := (root / ".tl").toString
     let _ ← IO.Process.output { cmd := exe.toString, args := #["init", "--dir", dir] }
-    IO.FS.createDirAll (System.FilePath.mk dir / "log")
-    let ops := synthOps n 1000000000000  -- past-dated ⇒ a foreign segment that folds
-    IO.FS.writeFile (System.FilePath.mk dir / "log" / (stem ++ ".jsonl"))
-      (ops.foldl (fun a p => a ++ renderLine p ++ "\n") "")
+    let log := System.FilePath.mk dir / "log"
+    IO.FS.createDirAll log
+    populate log n
     -- warm-up: the first read folds cold and writes the cache; capture its output
     -- for the fold-correctness guard
     let warm ← IO.Process.output { cmd := exe.toString, args := listArgs dir }
+    unless warm.exitCode == 0 do throw (IO.userError warm.stderr)
     let lines := (warm.stdout.splitOn "\n").length
     let mut best := 1000000
     for _ in [0:3] do
       let (_, ms) ← timeMs (do
-        let _ ← IO.Process.output { cmd := exe.toString, args := listArgs dir }
+        let out ← IO.Process.output { cmd := exe.toString, args := listArgs dir }
+        unless out.exitCode == 0 do throw (IO.userError out.stderr)
         pure 0)
       best := min best ms
     return (best, lines)
-  let (small, _) ← run 500
-  let (big, bigLines) ← run 2000
+  let workload (log : System.FilePath) (n : Nat) : IO Unit :=
+    IO.FS.writeFile (log / (stem ++ ".jsonl"))
+      (String.join ((synthOps n 1000000000000).map (fun p => renderLine p ++ "\n")))
+  let populate (manyReplicas : Bool) (log : System.FilePath) (n : Nat) : IO Unit := do
+    let mut mixed := #[]
+    let now ← nowMs
+    for i in [0:n] do
+      let replica := if manyReplicas then i + 1 else 1
+      let record : ParsedOp := {
+        v := 1, op := .create (synthId i) { title := some "scale" }
+        stamp := ⟨now * 2^16, replica, i⟩, actor := none }
+      let line := renderLine record ++ "\n"
+      if manyReplicas then
+        IO.FS.writeFile (log / (toCrockford replica 13 ++ ".jsonl")) line
+      else
+        mixed := mixed.push line
+        let future := { record with stamp := { record.stamp with hlc := (now + 2 * skewWindowMs) * 2^16 } }
+        mixed := mixed.push (renderLine future ++ "\n")
+    unless manyReplicas do IO.FS.writeFile (log / (toCrockford 1 13 ++ ".jsonl")) (String.join mixed.toList)
+  let (small, _) ← run 500 workload
+  let (big, bigLines) ← run 2000 workload
+  let mut scaling := []
+  for (name, many, n) in [("replica count", true, 100), ("deferred lines", false, 500)] do
+    let (a, _) ← run n (populate many)
+    let (b, lines) ← run (4*n) (populate many)
+    scaling := scaling ++ [ratioRow ("warm binary list by " ++ name) a b,
+      check ("warm binary list folds the scaled " ++ name ++ " fixture") (lines ≥ 4*n)]
   return [
     check "end-to-end binary: the scaled repo folds (guard against a vacuous timing)"
       (bigLines ≥ 2000) s!"`list --all` emitted {bigLines} lines (expected ≥ 2000)",
-    ratioRow "end-to-end binary `tl list` (compiled, warm)" small big]
+    ratioRow "end-to-end binary `tl list` (compiled, warm)" small big] ++ scaling
 
 end Tl.Tests
