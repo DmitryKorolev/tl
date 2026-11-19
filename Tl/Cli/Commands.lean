@@ -2004,9 +2004,14 @@ def cmdReopen (dirOverride : Option String) (tok : String) (actor : String) : Tl
     else .ok [.reopen i])
   let v := writeNow ctx parsed
   let i ← MonadExcept.ofExcept (resolveToken v.state tok)
-  return { data := issueObj v i
-           human := if parsed.isEmpty then s!"{displayId i} is already open"
-                    else s!"Reopened {displayId i}"
+  let status := (v.state.issueData i).statusOf
+  let won := status == .Open
+  let outcome := Json.mkObj [("outcome", Json.str (if won then "won" else "superseded")),
+    ("status", Json.str (statusWire status))]
+  let human := if parsed.isEmpty then s!"{displayId i} is already open"
+    else if won then s!"Reopened {displayId i}"
+    else s!"reopen of {displayId i} was superseded — the issue is {statusWire status}; inspect it with `tl show {displayId i}`"
+  return { data := (issueObj v i).setObjVal! "reopen" outcome, human,
            notes := freshNotes ++ writeNotes ctx ++ (← Tl.Sync.autoSyncLocal d ctx.replica) }
 
 /-- Where a `defer` lands: an absolute instant (`--until`, resolved before the

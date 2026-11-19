@@ -2222,6 +2222,17 @@ def cliReviewBatchTests : IO (List Outcome) := do
       (fun j => jStr j "status" == some "cancelled"
         && (jGet j "close").bind (fun c => jStr c "outcome") == some "won"
         && (jGet j "close").bind (fun c => jStr c "resolution") == some "cancelled")]
+  for (dir, id, expected, status) in [(dirCR, tgtCR, "superseded", "cancelled"),
+      (dirCW, tgtCW, "won", "open")] do
+    match ← run' ["reopen", "tl-" ++ id, "--dir", dir] with
+    | .error e => o := o ++ [check "reopen returned an outcome" false e.message]
+    | .ok out =>
+      let block := jGet out.data "reopen"
+      o := o ++ [check s!"reopen reports {expected} and the folded status"
+        (block.bind (jStr · "outcome") == some expected && block.bind (jStr · "status") == some status
+          && jStr out.data "status" == some status
+          && (if expected == "won" then out.human.startsWith "Reopened"
+              else out.human.contains "superseded" && out.human.contains status)) out.data.compress]
   -- --as duplicate, same resolution but a DIFFERENT canonical won: the
   -- resolution register matches (duplicate), so only the duplicate-target
   -- check flips this to superseded. The human line names the TARGET (never
