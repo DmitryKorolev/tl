@@ -38,7 +38,7 @@ best-effort async remote push for fully-sandboxed agents — deferred, not now.)
 ### 2. Synchronous, not a background process
 
 Because the local leg is cheap, it runs **inline** after the mutation — after
-the mutation lock is released (the local leg is lock-free,
+the mutation lock is released (the local leg takes the worktree materialization lock,
 [ADR-0016](ADR-0016-worktree-sharing-local-first-sync.md) §3). This avoids all
 process-management complexity — no detached spawn, no orphan/zombie processes,
 no parent-exits-before-child race, no invisible errors — and honors the daemon
@@ -79,8 +79,7 @@ the other tl knobs.
 ### 6. Wiring — one hook after `transact`
 
 Every write verb funnels through `Store.transact`; auto-sync is a single,
-lock-free hook invoked **after** `transact` returns (never inside the lock — the
-local leg must stay lock-free). So every mutation gets it uniformly, in one
+hook invoked **after** `transact` returns and releases the mutation lock. So every mutation gets it uniformly, in one
 place, and the hook reads `tl.autosync` and runs `syncLocal` best-effort.
 
 **Built form.** Implemented in `Tl/Sync/AutoSync.lean` — a composition of the
@@ -115,7 +114,7 @@ failure disclosed while the write survives, and the no-git no-op.
   relies on explicit `tl sync` (or a session-boundary sync) to push — by design,
   not a defect.
 - Tested (shell): the best-effort swallow + the non-fatal note, the
-  config-driven on/off, and the lock-free-after-`transact` ordering.
+  config-driven on/off, and the required post-`transact` lock ordering.
 
 ## Alternatives considered
 

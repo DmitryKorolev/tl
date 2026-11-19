@@ -80,7 +80,7 @@ def segsEquiv (a b : List SegmentData) : Bool :=
 /-- Materialize a foreign replica's segment into `.tl/log/<rid>.jsonl` by an
     atomic temp-file + rename (ADR-0015 §3, ADR-0016 §1). The caller guarantees
     `replicaId` is not the own replica. The temp name carries CSPRNG bytes so
-    concurrent lock-free refreshes (ADR-0016 §3) never collide on a temp path;
+    each replacement has a fresh temp path;
     the log dir is created no-follow first, the temp open is no-follow, and the
     `rename` replaces the target name atomically (raw bytes, never a lossy
     String round-trip — a foreign segment may not be valid UTF-8). -/

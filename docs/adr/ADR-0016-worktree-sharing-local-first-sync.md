@@ -251,7 +251,7 @@ and nothing to resume.
 - The read path stays cheap and git-free in steady state — the hot
   `ready`/`show`/`list` path the agent loop hammers pays only an O(1) ref
   check until something actually changes.
-- Reads can now write a foreign cache (atomic rename, no lock) — a deliberate
+- Reads can now write a foreign cache (atomic rename under the worktree materialization lock) — a deliberate
   softening of "reads never mutate," gated on filesystem writability.
 - Staging: the local leg is part of the sync machinery
   ([Stage 3](../vision.md)); worktree-per-agent dogfooding therefore wants a

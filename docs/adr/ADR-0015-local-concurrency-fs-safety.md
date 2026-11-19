@@ -110,7 +110,7 @@ appended mid-round are picked up by the next attempt, never dropped. The remote
 leg works at the ref level and holds no mutation lock.
 
 ### 5. Readers are lock-free and see a consistent-enough snapshot
-`ready`/`show`/`list`/… normally take no lock. Their refresh may acquire the
+`ready`/`show`/`list`/… normally take no lock. A moved tip triggers the worktree materialization lock. Their refresh may also acquire the
 mutation lock to recover missing same-replica lines after a directory copy. Atomic appends (§2) and atomic
 renames (§3) mean each segment reads as a coherent snapshot: a concurrent append
 is fully present or absent (never torn), and a concurrent foreign-segment refresh
@@ -130,8 +130,8 @@ check). If the ref moved — a sibling worktree synced — it materializes the c
 foreign segments via the §3 atomic rename, so a *read* may perform the same
 foreign-cache writeback as `sync` (no mutation lock). On a read-only filesystem it
 skips the refresh and folds what it has (a moment stale), never failing the read;
-concurrent refreshers are safe (the content is a pure function of the ref OID, and
-atomic rename makes last-writer-wins harmless).
+the materialization lock serializes the disk snapshot, replacements and marker publication.
+A refresher rechecks the ref and marker under that lock.
 
 ### 6. Path and symlink hardening
 All `.tl/` files are opened without following symlinks (POSIX `O_NOFOLLOW`,
