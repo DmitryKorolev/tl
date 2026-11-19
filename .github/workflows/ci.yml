@@ -394,7 +394,11 @@ jobs:
           fi
           echo "${GIT_FLOOR_SHA256}  git.tar.xz" | sha256sum -c -
           tar xf git.tar.xz
+          # This source predates C23, where `thread_local` became a keyword
+          # that index-pack uses as a struct tag. Build it as the C dialect
+          # it was written in rather than whatever the runner's GCC defaults to.
           make -C "git-${GIT_FLOOR_VERSION}" -j"$(nproc)" prefix="$HOME/git-floor" \
+            CFLAGS="-g -O2 -std=gnu17" \
             NO_CURL=1 NO_OPENSSL=1 NO_EXPAT=1 NO_GETTEXT=1 NO_PERL=1 NO_PYTHON=1 NO_TCLTK=1 \
             install >/dev/null
 
