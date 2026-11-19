@@ -122,12 +122,14 @@ private def richMeta : List CacheSegMeta := [metaOwn, metaFor]
 private def sign (payload : String) : String :=
   toString (ByteArray.hash payload.toUTF8) ++ "\n" ++ payload ++ "\n"
 
+private def versionField (version : Nat) : String := "\"v\":" ++ toString version
+
 private def orsetJson (a r : String) : String := "{\"a\":" ++ a ++ ",\"r\":" ++ r ++ "}"
 
 /-- A handcrafted, correctly-signed payload with all three state components
     injectable — for shapes the encoder can never produce. -/
 private def handState (issues data edges : String) : String :=
-  sign ("{\"v\":5,\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
+  sign ("{" ++ versionField cacheVersion ++ ",\"segments\":[],\"state\":{\"issues\":" ++ issues ++ ",\"data\":" ++ data
     ++ ",\"edges\":" ++ edges ++ "}}")
 
 private def handIssues (aaa rrr : String) : String :=
@@ -161,7 +163,7 @@ private def emptyStateJson : String :=
   "{\"issues\":" ++ orsetJson "[]" "[]" ++ ",\"data\":[],\"edges\":" ++ orsetJson "[]" "[]" ++ "}"
 
 private def handSeg (segJson : String) : String :=
-  sign ("{\"v\":5,\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
+  sign ("{" ++ versionField cacheVersion ++ ",\"segments\":[" ++ segJson ++ "],\"state\":" ++ emptyStateJson ++ "}")
 
 private def validTag : String := tagOfStamp (mkst 10 1)
 
@@ -202,9 +204,9 @@ def cacheCodecTests : List Outcome :=
     check "non-JSON input is rejected" (decodeCache "{not json").isNone,
     check "a signed non-JSON payload is rejected" (decodeCache (sign "{not json")).isNone,
     check "a future cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":5}" "\"v\":6}").isNone,
+      (surgery (versionField cacheVersion ++ "}") (versionField (cacheVersion + 1) ++ "}")).isNone,
     check "the previous cache version is rejected (forces a rebuild)"
-      (surgery "\"v\":5}" "\"v\":4}").isNone,
+      (surgery (versionField cacheVersion ++ "}") (versionField (cacheVersion - 1) ++ "}")).isNone,
     check "a missing version is rejected"
       (decodeCache (sign ("{\"segments\":[],\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a non-numeric version is rejected"
@@ -212,12 +214,12 @@ def cacheCodecTests : List Outcome :=
     check "truncated input is rejected"
       (decodeCache (enc.take (enc.length / 2)).toString).isNone,
     check "a missing state object is rejected"
-      (decodeCache (sign "{\"v\":5,\"segments\":[]}")).isNone,
+      (decodeCache (sign ("{" ++ versionField cacheVersion ++ ",\"segments\":[]}"))).isNone,
     check "a state missing a component is rejected"
-      (decodeCache (sign ("{\"v\":5,\"segments\":[],\"state\":{\"issues\":"
+      (decodeCache (sign ("{" ++ versionField cacheVersion ++ ",\"segments\":[],\"state\":{\"issues\":"
         ++ orsetJson "[]" "[]" ++ ",\"data\":[]}}"))).isNone,
     check "segments must be an array"
-      (decodeCache (sign ("{\"v\":5,\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
+      (decodeCache (sign ("{" ++ versionField cacheVersion ++ ",\"segments\":{},\"state\":" ++ emptyStateJson ++ "}"))).isNone,
     check "a segment entry missing fields is rejected"
       (decodeCache (handSeg "{\"replica\":\"x\"}")).isNone,
     check "a wrongly-typed segment scalar is rejected"
