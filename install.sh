@@ -322,10 +322,11 @@ main() {
   # `tl` either sees the old binary or the new one — never a half-written file.
   # The temporary lives in $install_dir rather than $work because a rename
   # across filesystems is not atomic and would fall back to a copy.
-  staged="$install_dir/.tl.install.$$"
+  staged=$(mktemp "$install_dir/.tl.install.XXXXXXXXXX") \
+    || die "could not create a staging file in ${install_dir}. Choose a writable TL_INSTALL_DIR."
   cp "$work/$asset" "$staged" \
     || die "could not write to ${install_dir}. Choose a writable location with TL_INSTALL_DIR."
-  chmod +x "$staged"
+  chmod +rx "$staged"
   mv -f "$staged" "$install_dir/tl" \
     || die "could not replace ${install_dir}/tl. Close any running tl and re-run, or choose another TL_INSTALL_DIR."
   # The rename consumed it; clear the name so the trap does not chase a path

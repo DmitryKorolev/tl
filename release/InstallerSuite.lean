@@ -114,6 +114,8 @@ private def installCases : List InstallCase := [
     diagnostic := "is not writable" },
   { name := "occupied", fault := "occupied", status := 1, installed := false,
     diagnostic := "not a regular file" },
+  { name := "stage-allocation-failure", fault := "stage", status := 1, installed := false,
+    diagnostic := "could not create a staging file" },
   { name := "copy-failure", fault := "cp", status := 1, installed := false,
     diagnostic := "could not write", reached := ["cp"] },
   { name := "rename-failure", fault := "mv", status := 1, installed := false,
@@ -174,7 +176,8 @@ private def installObserverTool (tool : String) : String :=
   (match tool with
   | "uname" => "case $1 in -s) echo \"$PROBE_OS\" ;; -m) echo \"$PROBE_ARCH\" ;; *) exit 91 ;; esac\n"
   | "sysctl" => "[ \"$#\" -eq 2 ] && [ \"$1\" = -n ] && [ \"$2\" = sysctl.proc_translated ] || exit 91\n[ \"$PROBE_TRANSLATED\" != fail ] || exit 1\necho \"$PROBE_TRANSLATED\"\n"
-  | "cp" => "case $2 in */.tl.install.*) if [ \"$PROBE_FAULT\" = cp ]; then : > \"$2\"; exit 1; fi ;; */THIRD-PARTY-LICENSES) [ \"$PROBE_FAULT\" != notice-cp ] || exit 1 ;; esac\nexec \"$PROBE_REAL_CP\" \"$@\"\n"
+  | "mktemp" => "if [ \"$1\" != -d ] && [ \"$PROBE_FAULT\" = stage ]; then exit 1; fi\nexec \"$PROBE_REAL_MKTEMP\" \"$@\"\n"
+  | "cp" => "case $2 in */.tl.install.*) [ -f \"$2\" ] && [ ! -L \"$2\" ] || exit 96; if [ \"$PROBE_FAULT\" = cp ]; then : > \"$2\"; exit 1; fi ;; */THIRD-PARTY-LICENSES) [ \"$PROBE_FAULT\" != notice-cp ] || exit 1 ;; esac\nexec \"$PROBE_REAL_CP\" \"$@\"\n"
   | "mv" => "if [ \"$PROBE_FAULT\" = mv ]; then [ -f \"$2\" ] || exit 92; printf 'staged-rename\\n' >> \"$PROBE_EVENTS\"; exit 1; fi\nexec \"$PROBE_REAL_MV\" \"$@\"\n"
   | "mkdir" => "if [ \"$2\" = \"$PROBE_DEST\" ] && [ \"$PROBE_FAULT\" = mkdir ]; then exit 1; fi\nif [ \"$2\" = \"$PROBE_SHARE\" ] && [ \"$PROBE_FAULT\" = notice-mkdir ]; then exit 1; fi\nexec \"$PROBE_REAL_MKDIR\" \"$@\"\n"
   | _ => "exit 95\n")
@@ -190,6 +193,7 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
         #["-c", "command -v \"$1\"", "probe", tool])).stdout.trimAscii.toString
     let backend ← resolve digester.command
     let realCp ← resolve "cp"
+    let realMktemp ← resolve "mktemp"
     let realMv ← resolve "mv"
     let realMkdir ← resolve "mkdir"
     let identityPath := root / "release/identity.json"
@@ -202,10 +206,10 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
     for mode in modes do
       let bin := base / ("bin-" ++ mode)
       IO.FS.createDirAll bin
-      for tool in ["awk", "chmod", "dirname", "mktemp", "rm", "tr"] do
+      for tool in ["awk", "chmod", "dirname", "rm", "tr"] do
         runTool "ln" #["-s", ← resolve tool, (bin / tool).toString]
       let mut executables : Array String := #[]
-      for tool in ["uname", "sysctl", "cp", "mv", "mkdir"] do
+      for tool in ["uname", "sysctl", "cp", "mv", "mkdir", "mktemp"] do
         IO.FS.writeFile (bin / tool) (installObserverTool tool)
         executables := executables.push (bin / tool).toString
       for (tool, content) in [("curl", installCurl), ("cosign", cosignFixture)] do
@@ -263,6 +267,9 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
       if ["existing", "cp", "mv"].contains row.fault then
         IO.FS.createDirAll dest
         IO.FS.writeFile (dest / "tl") oldBinary
+      if row.fault == "existing" then
+        IO.FS.writeFile (root / "preserved") "original contents"
+        runTool "ln" #["-s", (root / "preserved").toString, (dest / ".tl.install.existing").toString]
       if row.fault == "readonly" then
         IO.FS.createDirAll dest
         runTool "chmod" #["0555", dest.toString]
@@ -291,7 +298,7 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
         s!"PROBE_EVENTS={events}", s!"PROBE_SIGNATURES={signatures}", s!"PROBE_FETCHES={fetches}",
         s!"PROBE_DIGESTS={digests}", s!"PROBE_OS={row.os}", s!"PROBE_ARCH={row.arch}",
         s!"PROBE_TRANSLATED={row.translated}", s!"PROBE_FAULT={row.fault}",
-        s!"PROBE_REAL_CP={realCp}", s!"PROBE_REAL_MV={realMv}", s!"PROBE_REAL_MKDIR={realMkdir}",
+        s!"PROBE_REAL_MKTEMP={realMktemp}", s!"PROBE_REAL_CP={realCp}", s!"PROBE_REAL_MV={realMv}", s!"PROBE_REAL_MKDIR={realMkdir}",
         s!"PROBE_DEST={dest}", s!"PROBE_SHARE={share}", s!"PROBE_BACKEND={backend}",
         s!"PROBE_DIGEST_MODE={row.digestMode}", s!"PROBE_BACKEND_SHASUM={if digester.command == "shasum" then "1" else "0"}",
         s!"PROBE_ISSUER={signingIdentity.certificateOidcIssuer}", s!"PROBE_IDENTITY={certificate}",
@@ -316,7 +323,8 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
       let notice ← if ← (share / "THIRD-PARTY-LICENSES").pathExists then
         IO.FS.readFile (share / "THIRD-PARTY-LICENSES") else pure ""
       let leftovers ← if ← dest.isDir then do
-        pure ((← dest.readDir).toList.filter (·.fileName.startsWith ".tl.install."))
+        pure ((← dest.readDir).toList.filter fun entry =>
+          entry.fileName.startsWith ".tl.install." && !(row.fault == "existing" && entry.fileName == ".tl.install.existing"))
         else pure []
       rows := rows ++ [
         check s!"installer branch {row.name}: temporary work cleaned"
@@ -329,6 +337,9 @@ private def runInstallerBranches (root script : System.FilePath) (cases : List I
         checkEq s!"installer branch {row.name}: ordered signature calls" signed
           (row.signatures.map fun name => if name == "asset" then asset else name),
         check s!"installer branch {row.name}: no staging debris" leftovers.isEmpty (repr leftovers).pretty]
+      if row.fault == "existing" then
+        rows := rows ++ [check "pre-existing staging entry and its target survive installation"
+          ((← (dest / ".tl.install.existing").symlinkMetadata).type == .symlink && (← IO.FS.readFile (root / "preserved")) == "original contents") ""]
       for tool in row.reached do
         rows := rows ++ [check s!"installer branch {row.name}: reaches {tool}" (observed.contains tool) (repr observed).pretty]
       for tool in row.absent do
