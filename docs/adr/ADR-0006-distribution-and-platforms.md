@@ -391,7 +391,7 @@ git fail cryptically.
 
 Git 2.29 introduced `fetch --no-write-fetch-head`, which isolates task-log
 fetches from the user's pending fetch result. A supported libc baseline can
-require a separately upgraded Git. CI builds and tests the floor version.
+require a separately upgraded Git. Ubuntu 20.04 ships Git 2.25 and requires this upgrade. CI builds and tests the floor version.
 
 The runtime check shipped 2026-06-21: `Tl.Sync.parseGitVersion` /
 `gitMeetsFloor` / `gitVersion` (a bounded `git --version`), surfaced as a

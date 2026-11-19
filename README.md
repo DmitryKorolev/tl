@@ -33,7 +33,8 @@ on your `PATH`, and either `sha256sum` or `shasum`. It selects the binary for
 your platform, verifies its Sigstore signatures and SHA-256 digest, and installs
 it to `~/.local/bin`. When available, the companion `THIRD-PARTY-LICENSES`
 file goes in `~/.local/share/tl` by default; `tl licenses` also prints the
-notices. Using `tl` requires `git`.
+notices. Using `tl` requires Git 2.29 or newer. On Ubuntu 20.04, upgrade
+from the stock Git 2.25 before syncing.
 
 If `~/.local/bin` is not on your `PATH`, add
 `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
