@@ -972,6 +972,12 @@ private def publishDecision (args : PublishArgs) : Decision String := do
   -- refusal: nothing went wrong, this release does not update the tap.
   if !description.homebrew.push then
     return s!"{description.tag} is a prerelease, so {description.homebrew.tap} keeps the formula it has — a tap carries one formula, and `brew install tl` resolves to whatever is in it"
+  -- A git that cannot sign makes every later step pointless, and is refused
+  -- before the first command against the tap. Between 2.19 and 2.33 git knows
+  -- `gpg.format` but not `ssh`, so an operator configuration naming it makes
+  -- `show`, `log` and `diff` exit before the signer is ever prepared, and that
+  -- error would replace the refusal that says which git is needed.
+  TapSigning.requireSigningGit
   -- Both urls, and before anything else about the checkout: which repository
   -- this would publish into does not depend on the checkout having commits, and
   -- an empty tap is a legitimate first publication. They can differ, and only

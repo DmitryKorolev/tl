@@ -3090,8 +3090,22 @@ private def gitVersionGateTests : IO (List Outcome) := do
     ["cannot sign a commit with an SSH key", "git 2.33", "2.34 or newer"]
   let garbled ← tapPublishFloorTests (← reporting "garbled" "git version banana") "under an unreadable git version"
     ["does not read as a version", "2.34 or newer"]
+  -- Git 2.19 to 2.33 with an operator configuration naming `gpg.format=ssh`:
+  -- the commands that read signing configuration exit with git's own error.
+  -- The version refusal must come first, or that error is all the operator sees.
+  let rejectingDir := base / "rejecting"
+  IO.FS.createDirAll rejectingDir
+  IO.FS.writeFile (rejectingDir / "git")
+    ("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'git version 2.29.0'; exit 0; fi\n" ++
+     "for arg in \"$@\"; do case \"$arg\" in show|log|diff) " ++
+     "echo 'error: unsupported value for gpg.format: ssh' >&2; exit 128 ;; esac; done\n" ++
+     s!"exec {realGit} \"$@\"\n")
+  let _ ← toolFixture "chmod" ["755", (rejectingDir / "git").toString]
+  let rejecting ← tapPublishFloorTests (commandWithEnv #[("PATH", some s!"{rejectingDir}:{path}")])
+    "under git 2.29 with gpg.format=ssh configured"
+    ["cannot sign a commit with an SSH key", "git 2.29", "2.34 or newer"]
   IO.FS.removeDirAll base
-  return older ++ garbled
+  return older ++ garbled ++ rejecting
 
 set_option maxRecDepth 4096 in
 private def tapPublishTests (drive : CommandDriver := runCommand) : IO (List Outcome) := do
