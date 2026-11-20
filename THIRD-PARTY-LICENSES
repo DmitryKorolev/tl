@@ -15,22 +15,22 @@ Inventory (link-time and compile-time dependency cone of the shipped binary):
 
 | Component | Version / rev | License |
 |---|---|---|
-| Lean 4 runtime & stdlib | v4.35.0 | Apache-2.0 |
+| Lean 4 runtime & stdlib | v4.36.0 | Apache-2.0 |
 | GMP (bundled in the Lean toolchain, statically linked) | toolchain-bundled | LGPL-3.0-or-later (elected from the LGPLv3+/GPLv2+ dual license) |
 | libuv (bundled in the Lean toolchain, statically linked) | toolchain-bundled | MIT |
 | LLVM components (bundled in the Lean toolchain) | toolchain-bundled | Apache-2.0 WITH LLVM-exception (+ legacy NCSA parts) |
 | glibc (Linux artifacts only) | toolchain-bundled | LGPL-2.1 |
 | CaDiCaL (bundled in the Lean toolchain) | toolchain-bundled | MIT |
 | leantar (Lean tooling) | toolchain-bundled | Apache-2.0 |
-| mathlib (https://github.com/leanprover-community/mathlib4) | 56a005855ea17e0b0958f73ec801ae140b0a1679 | Apache-2.0 |
-| batteries (https://github.com/leanprover-community/batteries) | 66e469188fe07963e5cf666c7d4433f45b8131c5 | Apache-2.0 |
-| plausible (https://github.com/leanprover-community/plausible) | dfa4f38190d07c37e315953e08b90fe2d95b3c24 | Apache-2.0 |
-| LeanSearchClient (https://github.com/leanprover-community/LeanSearchClient) | d6b4c7be5be75ec4917c873ac50c756dc1436372 | Apache-2.0 |
-| importGraph (https://github.com/leanprover-community/import-graph) | a41f0e9a4dea23188ea9cc1c41ac9f8bbafe0b93 | Apache-2.0 |
-| proofwidgets (https://github.com/leanprover-community/ProofWidgets4) | df72b022e558978a1c50264cfc4d7fec86fa8e04 | Apache-2.0 |
-| aesop (https://github.com/leanprover-community/aesop) | 4a174c490d8707121c4a9290800489f105d85e07 | Apache-2.0 |
-| Qq (https://github.com/leanprover-community/quote4) | dce0ad79c486cb1fb504af04f953c3466b0c6db8 | Apache-2.0 |
-| Cli (https://github.com/leanprover/lean4-cli) | c24fe6078c630e89b489bffe59b3e20ac30d12c8 | MIT |
+| mathlib (https://github.com/leanprover-community/mathlib4) | fc4f59e577feb1a4956671bc04ac18aaaf8cd842 | Apache-2.0 |
+| batteries (https://github.com/leanprover-community/batteries) | b4b25a3886a16daacaf6615c2eea7170a6e8f458 | Apache-2.0 |
+| plausible (https://github.com/leanprover-community/plausible) | 054b228ce0ac61d767c6e71ba73a24728f191b72 | Apache-2.0 |
+| LeanSearchClient (https://github.com/leanprover-community/LeanSearchClient) | 4fb58e749ef3fc0395fe274f6cab70c2ea85f1c9 | Apache-2.0 |
+| importGraph (https://github.com/leanprover-community/import-graph) | 8370c640afcd1cc3fb1cb9bf1560cc66eafee5e0 | Apache-2.0 |
+| proofwidgets (https://github.com/leanprover-community/ProofWidgets4) | 2f0f3520daeac2d9310ff25b7a877a0e5cdaa203 | Apache-2.0 |
+| aesop (https://github.com/leanprover-community/aesop) | 66ff77cf0c4c898799e4b94d14db55f7a02d0c5a | Apache-2.0 |
+| Qq (https://github.com/leanprover-community/quote4) | ff055a2fcc835935e0ae607339b455a5f5896b4b | Apache-2.0 |
+| Cli (https://github.com/leanprover/lean4-cli) | 50810f72af7618bee62fe9800dc26e806c188703 | MIT |
 
 GMP notice (LGPL-3.0-or-later, elected): tl links an UNMODIFIED GMP as bundled
 by the official Lean 4 toolchain. Corresponding source: https://gmplib.org/
@@ -297,7 +297,7 @@ mathlib, batteries, plausible, LeanSearchClient, importGraph, proofwidgets, aeso
    limitations under the License.
 ==============================================================================
 Notices propagated verbatim from the Lean 4 toolchain's bundled LICENSES file
-(leanprover/lean4 v4.35.0 — LLVM, glibc, GMP/LGPLv3, CaDiCaL, leantar):
+(leanprover/lean4 v4.36.0 — LLVM, glibc, GMP/LGPLv3, CaDiCaL, leantar):
 ==============================================================================
 
 ==============================================================================
@@ -1675,7 +1675,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ==============================================================================
 leantar and lean4lean are by Mario Carneiro, nanoda is by Chris Bailey,
-con-leche and con-ron are by Lean FRO; all are distributed under the
+con-leche, con-ron, and lean-beam are by Lean FRO; all are distributed under the
 Apache 2.0 License:
 ==============================================================================
                                  Apache License

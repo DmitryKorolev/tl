@@ -352,7 +352,7 @@ private theorem replicaBytes_before (x : SegmentData) (xs : List SegmentData) (r
     have eq := beq_iff_eq.mp hit
     rw [List.mem_cons] at found
     rcases found with h | h
-    · exact earlier (by rw [← eq, h]; exact String.le_refl _)
+    · exact earlier (by rw [← eq, h]; exact Std.le_refl _)
     · exact earlier (eq ▸ of_decide_eq_true ((List.pairwise_cons.mp sorted).1 other h))
   simp only [replicaBytes, absent, Option.map_none, Option.getD_none]
 
@@ -407,7 +407,7 @@ private theorem unionSegmentsGo_replicaBytes (fuel : Nat) (xs ys : List SegmentD
           · simp only [le, decide_true, ite_true]
             by_cases hit : x.replicaId = replica
             · have earlier : ¬ y.replicaId ≤ replica := fun rev =>
-                same (String.le_antisymm le (hit.symm ▸ rev))
+                same (Std.le_antisymm le (hit.symm ▸ rev))
               rw [replicaBytes_cons_match ⟨x.replicaId, unionLines x.bytes .empty⟩ _ _ hit,
                 replicaBytes_cons_match x xs replica hit,
                 replicaBytes_before y ys replica sy earlier]
@@ -427,10 +427,10 @@ termination_by fuel
 
 private theorem segmentLe_trans (x y z : SegmentData) (xy : segmentLe x y = true) (yz : segmentLe y z = true) :
     segmentLe x z = true :=
-  decide_eq_true (String.le_trans (of_decide_eq_true xy) (of_decide_eq_true yz))
+  decide_eq_true (Std.le_trans (of_decide_eq_true xy) (of_decide_eq_true yz))
 
 private theorem segmentLe_total (x y : SegmentData) : (segmentLe x y || segmentLe y x) = true :=
-  Bool.or_eq_true_iff.mpr ((String.le_total x.replicaId y.replicaId).imp decide_eq_true decide_eq_true)
+  Bool.or_eq_true_iff.mpr ((Std.le_total (a := x.replicaId) (b := y.replicaId)).imp decide_eq_true decide_eq_true)
 
 private theorem filteredReplica_sorted (segments : List SegmentData) (replica : String) :
     (segments.filter (fun s => s.replicaId == replica)).Pairwise (fun a b => segmentLe a b = true) := by
@@ -444,7 +444,7 @@ private theorem filteredReplica_sorted (segments : List SegmentData) (replica : 
       refine ⟨?_, ih⟩
       intro y found
       have h := (List.mem_filter.mp found).2
-      exact decide_eq_true (by rw [beq_iff_eq.mp hit, beq_iff_eq.mp h]; exact String.le_refl _)
+      exact decide_eq_true (by rw [beq_iff_eq.mp hit, beq_iff_eq.mp h]; exact Std.le_refl _)
 
 private theorem replicaBytes_mergeSort (segments : List SegmentData) (replica : String) :
     replicaBytes (segments.mergeSort segmentLe) replica = replicaBytes segments replica := by
@@ -508,7 +508,7 @@ private theorem id_absent_before (x : SegmentData) (xs : List SegmentData) (repl
   intro found
   obtain ⟨s, present, eq⟩ := List.mem_map.mp found
   rcases List.mem_cons.mp present with head | tail
-  · exact earlier (by rw [← eq, head]; exact String.le_refl _)
+  · exact earlier (by rw [← eq, head]; exact Std.le_refl _)
   · exact earlier (eq ▸ of_decide_eq_true ((List.pairwise_cons.mp sorted).1 s tail))
 
 private theorem unionSegmentsGo_ids_nodup (fuel : Nat) (xs ys : List SegmentData)
@@ -540,7 +540,7 @@ private theorem unionSegmentsGo_ids_nodup (fuel : Nat) (xs ys : List SegmentData
           exact ⟨fun h => h.elim (same ▸ xAbsent) yAbsent,
             unionSegmentsGo_ids_nodup fuel xs ys tailBound sx.tail sy.tail nxTail nyTail⟩
         · by_cases le : x.replicaId ≤ y.replicaId
-          · have earlier : ¬ y.replicaId ≤ x.replicaId := fun rev => same (String.le_antisymm le rev)
+          · have earlier : ¬ y.replicaId ≤ x.replicaId := fun rev => same (Std.le_antisymm le rev)
             simp only [beq_iff_eq, same, ite_false, le, decide_true, ite_true, List.map_cons,
               List.nodup_cons, unionSegmentsGo_id_mem fuel xs (y :: ys) x.replicaId leftBound]
             exact ⟨fun h => h.elim xAbsent (id_absent_before y ys x.replicaId sy earlier),

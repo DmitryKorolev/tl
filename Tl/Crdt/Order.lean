@@ -408,7 +408,7 @@ private theorem charListLe_iff_coreLe :
     semantics. -/
 private theorem stringLe_iff_totalLe (a b : String) :
     a ≤ b ↔ TotalOrd.le a.toList b.toList := by
-  change a.toList ≤ b.toList ↔ TotalOrd.listLe a.toList b.toList
+  rw [← String.toList_le_toList_iff]
   exact (charListLe_iff_coreLe a.toList b.toList).symm
 
 /-- `String` ordered lexicographically by its characters (the canonical issue-id,

@@ -42,7 +42,7 @@ default.
 
 ### Mathlib adopted under the escape hatch, scoped
 
-Mathlib is a pinned dependency (`mathlib4 @ v4.35.0`, matching the
+Mathlib is a pinned dependency (`mathlib4 @ v4.36.0`, matching the
 toolchain), taken under the escape hatch above for a genuine need: the
 remaining tracker theorems — honest liveness (ADR-0004 thm 5), cycle-diagnostic
 correctness (thm 6), `why`/`unblocks` correctness (thm 10), and epic-rollup
@@ -90,10 +90,10 @@ proof file (Mathlib zone), at the cost of some duplication of private helpers.
 
 ## Toolchain and test harness (pinned)
 
-- Lean and Mathlib are pinned to v4.35.0. Mathlib's immutable revision is
-  `56a005855ea17e0b0958f73ec801ae140b0a1679`; its dependency revisions match
+- Lean and Mathlib are pinned to v4.36.0. Mathlib's immutable revision is
+  `fc4f59e577feb1a4956671bc04ac18aaaf8cd842`; its dependency revisions match
   the project's resolved manifest, including batteries
-  at `66e469188fe07963e5cf666c7d4433f45b8131c5`. License notices and development
+  at `b4b25a3886a16daacaf6615c2eea7170a6e8f458`. License notices and development
   provenance are generated from these pins, and validation checks that the
   resolved dependencies match Mathlib's cache inputs.
   Mathlib now marks its API as designed for Lean's module system; the project
